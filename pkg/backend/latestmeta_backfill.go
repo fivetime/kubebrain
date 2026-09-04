@@ -67,16 +67,18 @@ type latestMetadataBackfillTask struct {
 }
 
 type latestMetadataBackfillQueue struct {
-	ch      chan latestMetadataBackfillTask
-	mu      sync.Mutex
-	pending map[latestMetadataBackfillID]struct{}
-	bytes   int
+	ch         chan latestMetadataBackfillTask
+	cloneBytes func([]byte) []byte
+	mu         sync.Mutex
+	pending    map[latestMetadataBackfillID]struct{}
+	bytes      int
 }
 
 func newLatestMetadataBackfillQueue() *latestMetadataBackfillQueue {
 	return &latestMetadataBackfillQueue{
-		ch:      make(chan latestMetadataBackfillTask, latestMetadataBackfillQueueCapacity),
-		pending: make(map[latestMetadataBackfillID]struct{}, latestMetadataBackfillQueueCapacity),
+		ch:         make(chan latestMetadataBackfillTask, latestMetadataBackfillQueueCapacity),
+		cloneBytes: bytes.Clone,
+		pending:    make(map[latestMetadataBackfillID]struct{}, latestMetadataBackfillQueueCapacity),
 	}
 }
 
@@ -104,11 +106,14 @@ func (b *backend) queueLatestMetadataBackfill(task latestMetadataBackfillTask) {
 	if queue == nil {
 		return
 	}
-	task.key = append([]byte(nil), task.key...)
-	task.expectedMetadata = append([]byte(nil), task.expectedMetadata...)
 	id := latestMetadataBackfillTaskID(task)
 	taskBytes := latestMetadataBackfillTaskSize(task)
 
+	// Reserve both identity and logical bytes before taking owned copies. In
+	// particular, a corrupt auxiliary row can be arbitrarily larger than the
+	// valid fixed-width encoding; copying it before the budget check would let a
+	// rejected repair transiently defeat the queue's memory bound. Reservation
+	// also makes duplicate readers allocation-free.
 	queue.mu.Lock()
 	if _, exists := queue.pending[id]; exists {
 		queue.mu.Unlock()
@@ -122,10 +127,14 @@ func (b *backend) queueLatestMetadataBackfill(task latestMetadataBackfillTask) {
 	}
 	queue.pending[id] = struct{}{}
 	queue.bytes += taskBytes
+	queue.mu.Unlock()
+
+	task.key = queue.cloneBytes(task.key)
+	task.expectedMetadata = queue.cloneBytes(task.expectedMetadata)
 	select {
 	case queue.ch <- task:
-		queue.mu.Unlock()
 	default:
+		queue.mu.Lock()
 		delete(queue.pending, id)
 		queue.bytes -= taskBytes
 		queue.mu.Unlock()

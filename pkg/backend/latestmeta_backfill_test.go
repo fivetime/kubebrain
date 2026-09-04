@@ -80,6 +80,47 @@ func TestLatestMetadataBackfillQueueOwnsTaskBytes(t *testing.T) {
 	require.Equal(t, []byte("old"), queued.expectedMetadata)
 }
 
+func TestLatestMetadataBackfillQueueRejectsWithoutCopyingTaskBytes(t *testing.T) {
+	t.Run("duplicate", func(t *testing.T) {
+		queue := newLatestMetadataBackfillQueue()
+		var copies int
+		queue.cloneBytes = func(value []byte) []byte {
+			copies++
+			return bytes.Clone(value)
+		}
+		b := &backend{latestMetadataBackfill: queue}
+		task := latestMetadataBackfillTask{
+			key: bytes.Repeat([]byte("k"), 1<<20), revision: 7,
+			expectedMetadata: bytes.Repeat([]byte("m"), 1<<20), expectedMetadataFound: true,
+		}
+		b.queueLatestMetadataBackfill(task)
+		require.Equal(t, 2, copies)
+		b.queueLatestMetadataBackfill(task)
+		require.Equal(t, 2, copies,
+			"a deduplicated repair must not copy bytes that cannot enter the queue")
+	})
+
+	t.Run("absolute byte limit", func(t *testing.T) {
+		queue := newLatestMetadataBackfillQueue()
+		var copies int
+		queue.cloneBytes = func(value []byte) []byte {
+			copies++
+			return bytes.Clone(value)
+		}
+		b := &backend{latestMetadataBackfill: queue}
+		task := latestMetadataBackfillTask{
+			key: bytes.Repeat([]byte("k"), latestMetadataBackfillQueueMaxBytes), revision: 8,
+			expectedMetadata: []byte("oversized"), expectedMetadataFound: true,
+		}
+		b.queueLatestMetadataBackfill(task)
+		require.Zero(t, copies,
+			"a repair above the absolute byte limit must be rejected before copying")
+		require.Empty(t, queue.ch)
+		require.Empty(t, queue.pending)
+		require.Zero(t, queue.bytes)
+	})
+}
+
 func TestLatestMetadataBackfillMetricsInitializeAuthoritativeZero(t *testing.T) {
 	recorder := &compactMetricRecorder{}
 	initLatestMetadataBackfillMetrics(recorder)
