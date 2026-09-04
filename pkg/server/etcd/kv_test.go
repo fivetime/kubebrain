@@ -41,6 +41,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	gproto "google.golang.org/protobuf/proto"
 
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
@@ -125,6 +126,27 @@ type checkpointCountBackendShim struct {
 	*checkpointRangeBackendShim
 	countCalled bool
 	listCalled  bool
+}
+
+type filteredCountRouteBackendShim struct {
+	BackendShim
+	countCalled bool
+	listCalled  bool
+	request     *etcdserverpb.RangeRequest
+}
+
+func (b *filteredCountRouteBackendShim) Count(_ context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	b.countCalled = true
+	b.request = gproto.Clone(request).(*etcdserverpb.RangeRequest)
+	return &etcdserverpb.RangeResponse{
+		Header: txnHeader(int64(b.GetCurrentRevision())),
+		Count:  7,
+	}, nil
+}
+
+func (b *filteredCountRouteBackendShim) List(context.Context, *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
+	b.listCalled = true
+	return nil, errors.New("filtered CountOnly unexpectedly materialized List")
 }
 
 func (b *checkpointCountBackendShim) Count(ctx context.Context, _ *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -2530,6 +2552,40 @@ func TestRangeCountOnlyTakesPrecedenceOverKeysOnly(t *testing.T) {
 	require.False(t, response.More)
 	require.NotNil(t, response.Header)
 	require.Positive(t, response.Header.Revision)
+}
+
+// TestRangeFilteredCountOnlyUsesCountPath pins upstream's execution order:
+// MVCC CountOnly obtains cardinality directly from CountRevisions, producing no
+// KVs for the later revision filters to prune. Filters, sorting, and Limit are
+// therefore semantically inert and must not force KubeBrain to materialize the
+// complete range before returning the same unfiltered count.
+func TestRangeFilteredCountOnlyUsesCountPath(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+
+	shim := &filteredCountRouteBackendShim{BackendShim: server.backend}
+	server.backend = shim
+	request := &etcdserverpb.RangeRequest{
+		Key:               []byte("/registry/filtered-count/"),
+		RangeEnd:          []byte("/registry/filtered-count0"),
+		Limit:             1,
+		SortOrder:         etcdserverpb.RangeRequest_DESCEND,
+		SortTarget:        etcdserverpb.RangeRequest_VALUE,
+		CountOnly:         true,
+		MinModRevision:    100,
+		MaxModRevision:    10,
+		MinCreateRevision: 200,
+		MaxCreateRevision: 20,
+	}
+
+	response, err := server.Range(context.Background(), request)
+	require.NoError(t, err)
+	require.True(t, shim.countCalled)
+	require.False(t, shim.listCalled)
+	require.Equal(t, request, shim.request, "Count must retain the wire request while ignoring inert projection options")
+	require.Equal(t, int64(7), response.Count)
+	require.Empty(t, response.Kvs)
+	require.False(t, response.More)
 }
 
 func TestRangeEmptyNonFromKeyRangeMatchesEtcd(t *testing.T) {
