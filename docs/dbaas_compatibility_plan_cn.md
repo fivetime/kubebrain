@@ -71476,6 +71476,59 @@ shell runner 均 GREEN。提交前 inventory 为 703=`170/193/180/160`，四片�
 `255.103/448.670/300.129/576.675s` 通过。百万 key/多 Region 的实际容量曲线和独立 CSI StorageClass 仍需在
 生产等价环境验证；本项先关闭共享卷、只读根文件系统晚失败和无限制磁盘增长三项确定性风险。
 
+最终代码提交 `b9320a3497b39dfbbdf62421e422b66664f03aac` 前 verifier 仍精确为
+703=`170/193/180/160`，四分片 `248.004/440.756/297.708/569.067s` 全绿；提交后 verifier 不变，四分片
+`249.830/444.752/299.660/573.073s` 再次全绿。`hack/production` 全包分别在默认 10m 和提高后的 20m
+聚合 timeout 上先后停在不同的长时 shell 子测试；对应 rollout 子测试 `5.056s`、dataplane readonly 子测试
+`150.753s` 单独重跑均通过，因此记录为包级总时限不足，未把 timeout 隐藏成完整包通过。
+
+候选 `docker.io/library/kubebrain:a5736-b9320a34` 内嵌版本 `0.0.0-b9320a34`、完整 commit、build time
+`2026-09-05T05:20:02Z`、`linux/amd64` 与 TiKV。OCI archive 为 914,695,168 bytes，SHA-256
+`d0e64c3979df44a10b70df5d95193f5009ec410ee2d0ddf7b8f01dc08ebb6f0f`；顶层 `index.json` SHA-256/runtime
+imageID、nested index、platform manifest/config 分别为
+`sha256:79b4e4dff730d988bb859303715a9245b71fdde90693a802ab7bd3be9c2cc3ea`、
+`sha256:162efb96ce767c5bf0b36d8736ea1b3224f7f0efacd41a6dc8e44ba51643039f`、
+`sha256:f6860491e79911448327e83d0841e3c16e7973827d71ce012bbd9a0c888d756c`、
+`sha256:9f2dcdd46034ee1689a6c94b5cf0b923495c837066a62a30055747951cb28295`。attestation manifest/config 与
+SPDX/SLSA layer 为 `sha256:79b72e2cd53cc06c2ac60499c4d6d4ca2d07f3c96a2901cfbb2de44af84c3157`/
+`sha256:2b3427a7060c4a033abb56d193b98cf754877ec983f27ff9d8c1096bf9527c7c`、
+`sha256:eb5336893973d5f0eefb3e84c5933283f1c3c20cefc65dcd084d5f7491e931a7`/
+`sha256:ceb0b01c95c3b4469cc1e7123279590f7117308b5b106b5e304f2ddbe453ba2c`。首次 graph 脚本误把两个缺省
+optional config 字段的 `null` 当 descriptor 而退出 1；修正为过滤 null 后，78 blobs/78 条真实 descriptor edge 的
+size/hash 全部通过。71 layers/diff IDs、SPDX 2,592 packages/381 files/8,096 relationships、SLSA 四项 build
+args/三项固定 materials、`65532:65532`、入口、labels、镜像内 `version` 和两个新 help flag 均匹配。只读根文件系统
+且不挂载显式目录时，容器在 PD 连接前按预期 fail closed；同样的只读根加可写 bind mount 时会清理预置 stale run，
+完成 fsync 探针后才进入 PD 重试，foreign 文件合同由单元测试覆盖。
+
+稳定基线 gate GREEN：revision/index/applied `67002`、HashKV `2925771455`、direct Hash `2618518429`、compact
+`66760`、term `607`，Auth disabled/revision 281，Alarm、Lease 和前缀均为空。以 UID/resourceVersion/generation/
+container/current image/full 22 args 六类原子 JSON test，从 generation `868`/RV `8503768` 投放 nested digest；候选
+generation/observed `869/869`、RV `8519012`，三 Pod runtime 均为上述顶层 digest、3/3 Ready、restart 0，新增
+`--range-stream-spill-dir=/tmp` 与 64Gi 上限精确一致。这里特意使用现有 Kind 实例可写 `/tmp` 验证应用行为；production
+清单中的独立 generic ephemeral PVC 由静态合同和只读根 bind-mount 启动测试覆盖，不把单节点 `/tmp` 误报为 CSI 证据。
+完整候选 gate（含本代 info metrics 与两个参数期望）GREEN，term `609`。
+
+专属探针先以同类六项原子 test 把 count-index 上限和 spill 上限分别改为 `1` key/`1` byte，generation `870`、
+RV `8520052`。写入三个 512KiB `/a5736/range-stream-spill-quota/{0,1,2}` 后，三个公开 endpoint 的 raw etcd 3.7
+`RangeStream{KeysOnly:true,Serializable:true}` 全部返回 `ResourceExhausted`，每个均为 `frames=0`、`kvs=0`，错误精确包含
+`range ordering spill quota 1 bytes exceeded`；没有把 backend 终止错误降级为 Unknown，也没有泄漏部分成功前缀。
+删除三键推进 revision `67006`，前缀 count、Lease、Alarm 与所有运行容器的
+`/tmp/.kubebrain-range-order-*` 均为 0。恢复 500 万/64Gi 后 generation `871`、RV `8520992`；终态候选 gate GREEN：
+revision/index/applied `67006`、HashKV `1097477549`、direct Hash `2528215154`、compact `66760`、term `613`。
+候选三轮九次 health `47.785–75.352ms`；三个 TiKV store 均 Up、各 13 Regions，pending/down/miss/extra/learner/
+offline 全为 0；当前候选日志 `480/504/303` 行、筛选 `44/43/50`，critical 与最近 30 秒 critical 均为 0。
+
+以同类六项原子 test 从候选 generation `871`/RV `8520992` 回滚稳定 digest；generation/observed `872/872`、
+RV `8521795`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、3/3 Ready、restart 0、22 参数不变。
+稳定终态 gate GREEN，revision/HashKV/direct Hash/compact 保持 `67006/1097477549/2528215154/66760`、term `615`；
+三轮九次 health `48.857–69.929ms`，TiKV/Region 六类检查继续全绿，稳定日志 `475/452/330`、筛选
+`94/47/64`、critical 0。最终关闭六个受跟踪 port-forward，确认候选 Pod/container 引用为 0 后精确删除 Kind 的
+tag/nested/import/config 四个名称、Docker candidate、OCI/审计/context/runtime 临时路径，以及唯一 4.143GB
+BuildKit record `hd8q0ua9thqmbeydlfzwh2qvb`；listener、候选 Kind/Docker 引用、候选路径和该 cache ID 均为 0，稳定
+镜像、源码和数据卷未删除，根盘可用约 59GiB。Kind local-path 非 CSI、单节点承载全部 KubeBrain/PD/TiKV，以及百万 key、
+多 Region、慢客户端/取消下的独立 PVC 容量曲线仍是明确的生产验证缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
