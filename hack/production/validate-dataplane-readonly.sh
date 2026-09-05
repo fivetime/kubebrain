@@ -709,7 +709,7 @@ expect_info_metrics_boundary() {
     exit 1
   fi
   spill_outcome_rows="$(awk '
-    $1 == "backend_range_stream_spill_outcome_total" || index($1, "backend_range_stream_spill_outcome_total{") == 1 {
+    $1 == "backend_range_stream_spill_outcome" || index($1, "backend_range_stream_spill_outcome{") == 1 {
       metric = $1
       path = ""
       outcome = ""
@@ -725,7 +725,7 @@ expect_info_metrics_boundary() {
     }
   ' <<<"$info_metrics" | LC_ALL=C sort)"
   if [[ "$spill_outcome_rows" != $'decoded\tcanceled\ndecoded\tcompleted\ndecoded\tfailed\ndecoded\tquota_exhausted\nlatest_metadata\tcanceled\nlatest_metadata\tcompleted\nlatest_metadata\tfailed\nlatest_metadata\tquota_exhausted' ]]; then
-    echo "info metrics mismatch: backend_range_stream_spill_outcome_total must contain exactly the two paths and four bounded outcomes, got ${spill_outcome_rows//$'\n'/,}" >&2
+    echo "info metrics mismatch: backend_range_stream_spill_outcome must contain exactly the two paths and four bounded outcomes, got ${spill_outcome_rows//$'\n'/,}" >&2
     exit 1
   fi
   spill_wait_rows="$(awk '

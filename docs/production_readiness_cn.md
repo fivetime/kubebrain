@@ -5418,7 +5418,7 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   当前 Ready 副本并验证 current 为 `[0,2^53]` 精确整数、increase 有限同范围；任一增量 warning，缺失、
   陈旧或非法 telemetry 也不能解释为所有大范围读取、watch-cache 冷启动和 count-index 重建均成功。
 - `backend_range_stream_spill_active` 在每个 backend 构造时初始化为 0，并且只能为 0/1；
-  `backend_range_stream_spill_outcome_total{path,outcome}` 必须精确覆盖 `decoded|latest_metadata` 与
+  `backend_range_stream_spill_outcome{path,outcome}` 必须精确覆盖 `decoded|latest_metadata` 与
   `completed|quota_exhausted|canceled|failed` 的八个有界组合，`backend_range_stream_spill_wait_seconds_count{path}`
   必须覆盖两个路径。发布只读 gate 拒绝缺失、重复、未知标签、负数、NaN/Inf 或非法 active；这样即使稳定期
   没有触发外排，也能证明 telemetry 合同已加载。已取消 context 在竞争空闲共享 slot 前直接记为 canceled，
