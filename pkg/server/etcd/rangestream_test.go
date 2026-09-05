@@ -904,6 +904,7 @@ func TestFollowerRangeStreamRejectsInvalidProxyPayload(t *testing.T) {
 		{name: "nil key-value", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{nil}}}, message: "forwarded range stream returned a nil key-value"},
 		{name: "outside range", request: &etcdserverpb.RangeRequest{Key: []byte("b"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned a key outside the requested range"},
 		{name: "cross-frame descending", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Kvs: []*mvccpb.KeyValue{validKV("b")}}, {Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned key-values outside the requested sort order", sent: 1},
+		{name: "default duplicate across frames", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Kvs: []*mvccpb.KeyValue{validKV("a")}}, {Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned a duplicate key", sent: 1},
 		{name: "none version target descending", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), SortTarget: etcdserverpb.RangeRequest_VERSION}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(3), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 1, ModRevision: 2, Version: 2}, {Key: []byte("b"), CreateRevision: 3, ModRevision: 3, Version: 1}}}}, message: "forwarded range stream returned key-values outside the requested sort order"},
 		{name: "duplicate key with equal version", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), SortTarget: etcdserverpb.RangeRequest_VERSION}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a"), validKV("a")}}}, message: "forwarded range stream returned a duplicate key"},
 		{name: "keys-only value", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned a value for a keys-only request"},
@@ -1030,6 +1031,29 @@ func TestRangeStreamProxyPayloadValidatorAcceptsCanonicalStreams(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRangeStreamProxyPayloadValidatorBoundsDefaultKeyOrderingState(t *testing.T) {
+	const keyCount = 10_000
+	request := &etcdserverpb.RangeRequest{
+		Key: []byte("/proxy-bounded/"), RangeEnd: []byte("/proxy-bounded0"),
+	}
+	validator := newRangeStreamProxyPayloadValidator(request)
+	for index := 0; index < keyCount; index++ {
+		response := &etcdserverpb.RangeResponse{Kvs: []*mvccpb.KeyValue{{
+			Key: []byte(fmt.Sprintf("/proxy-bounded/%08d", index)), CreateRevision: 1, ModRevision: 1, Version: 1,
+		}}}
+		if index == keyCount-1 {
+			response.Header = txnHeader(1)
+			response.Count = keyCount
+		}
+		require.NoError(t, validator.validate(response))
+	}
+	// The default RangeStream order is strictly ascending by key, so adjacent
+	// comparison detects both disorder and duplicates. Retaining every key here
+	// would make a follower's validation memory grow with an unlimited LIST.
+	require.Nil(t, validator.seenKeys)
+	require.Equal(t, &mvccpb.KeyValue{Key: []byte("/proxy-bounded/00009999")}, validator.previousKV)
 }
 
 func TestFollowerRangeStreamRejectsNegativeTerminalRevision(t *testing.T) {

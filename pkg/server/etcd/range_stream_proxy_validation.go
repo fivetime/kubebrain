@@ -15,6 +15,8 @@
 package etcd
 
 import (
+	"bytes"
+
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"google.golang.org/grpc/codes"
@@ -23,15 +25,25 @@ import (
 )
 
 type rangeStreamProxyPayloadValidator struct {
-	request    *etcdserverpb.RangeRequest
-	sentCount  int64
-	previousKV *mvccpb.KeyValue
-	seenKeys   map[string]struct{}
-	maxModRev  int64
+	request        *etcdserverpb.RangeRequest
+	sentCount      int64
+	previousKV     *mvccpb.KeyValue
+	seenKeys       map[string]struct{}
+	maxModRev      int64
+	strictKeyOrder bool
 }
 
 func newRangeStreamProxyPayloadValidator(request *etcdserverpb.RangeRequest) *rangeStreamProxyPayloadValidator {
-	return &rangeStreamProxyPayloadValidator{request: request, seenKeys: make(map[string]struct{})}
+	validator := &rangeStreamProxyPayloadValidator{
+		request: request,
+		strictKeyOrder: request.GetSortTarget() == etcdserverpb.RangeRequest_KEY &&
+			(request.GetSortOrder() == etcdserverpb.RangeRequest_NONE ||
+				request.GetSortOrder() == etcdserverpb.RangeRequest_ASCEND),
+	}
+	if !validator.strictKeyOrder {
+		validator.seenKeys = make(map[string]struct{})
+	}
+	return validator
 }
 
 func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.RangeResponse) error {
@@ -63,11 +75,23 @@ func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.Range
 		if !rangeProxyContainsKey(v.request.GetKey(), v.request.GetRangeEnd(), kv.GetKey()) {
 			return fail("returned a key outside the requested range")
 		}
-		if _, ok := v.seenKeys[string(kv.GetKey())]; ok {
-			return fail("returned a duplicate key")
+		if v.seenKeys != nil {
+			if _, ok := v.seenKeys[string(kv.GetKey())]; ok {
+				return fail("returned a duplicate key")
+			}
 		}
-		if v.previousKV != nil && !rangeProxyOrderValid(v.request, v.previousKV, kv) {
-			return fail("returned key-values outside the requested sort order")
+		if v.previousKV != nil {
+			if v.strictKeyOrder {
+				comparison := bytes.Compare(v.previousKV.GetKey(), kv.GetKey())
+				if comparison == 0 {
+					return fail("returned a duplicate key")
+				}
+				if comparison > 0 {
+					return fail("returned key-values outside the requested sort order")
+				}
+			} else if !rangeProxyOrderValid(v.request, v.previousKV, kv) {
+				return fail("returned key-values outside the requested sort order")
+			}
 		}
 		if v.request.GetKeysOnly() && len(kv.GetValue()) != 0 {
 			return fail("returned a value for a keys-only request")
@@ -78,8 +102,15 @@ func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.Range
 		if validateProxyKeyValueLifecycle(kv) != nil {
 			return fail("returned invalid key-value revision metadata")
 		}
-		v.seenKeys[string(kv.GetKey())] = struct{}{}
-		v.previousKV = proto.Clone(kv).(*mvccpb.KeyValue)
+		if v.seenKeys != nil {
+			v.seenKeys[string(kv.GetKey())] = struct{}{}
+			v.previousKV = proto.Clone(kv).(*mvccpb.KeyValue)
+		} else {
+			// Default RangeStream ordering is strictly ascending by key. Retain
+			// only the adjacent key so follower validation stays bounded even
+			// when an unlimited stream contains millions of key-values.
+			v.previousKV = &mvccpb.KeyValue{Key: bytes.Clone(kv.GetKey())}
+		}
 		if kv.GetModRevision() > v.maxModRev {
 			v.maxModRev = kv.GetModRevision()
 		}
