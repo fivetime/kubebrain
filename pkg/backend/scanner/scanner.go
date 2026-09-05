@@ -72,6 +72,28 @@ const (
 // globalScanSem is the process-wide scan-worker semaphore (see globalScanWorkers).
 var globalScanSem = make(chan struct{}, globalScanWorkers)
 
+var errRangeStreamLimitSatisfied = stderrors.New("range stream limit satisfied")
+
+// WithRangeStreamLimitCancellation distinguishes a successful client Limit
+// from an ordinary caller cancellation all the way down to scanner workers.
+// The first cancellation cause wins.
+func WithRangeStreamLimitCancellation(ctx context.Context) (
+	streamCtx context.Context,
+	stop context.CancelFunc,
+	limitSatisfied context.CancelFunc,
+) {
+	streamCtx, cancel := context.WithCancelCause(ctx)
+	return streamCtx,
+		func() { cancel(context.Canceled) },
+		func() { cancel(errRangeStreamLimitSatisfied) }
+}
+
+// RangeStreamLimitSatisfied reports whether a server stopped backend work
+// because the public RangeStream had already produced its requested Limit.
+func RangeStreamLimitSatisfied(ctx context.Context) bool {
+	return stderrors.Is(context.Cause(ctx), errRangeStreamLimitSatisfied)
+}
+
 // NewScanner create a Scanner
 func NewScanner(store storage.KvStorage, coder coder.Coder, config Config, metricCli metrics.Metrics) Scanner {
 	return &scanner{
@@ -280,6 +302,12 @@ func (r *scanner) rangeStream(ctx context.Context, start, end []byte, revision u
 		}
 		if err != nil {
 			if ctx.Err() != nil {
+				if RangeStreamLimitSatisfied(ctx) {
+					klog.V(4).InfoS("range stream stopped after satisfying client limit",
+						"revision", revision, "start", util.LoggedKey(start), "end", util.LoggedKey(end))
+					r.metricCli.EmitCounter("backend.list.by.stream.limit_satisfied", 1)
+					return
+				}
 				// The caller tore the stream down (client disconnect, a canceled
 				// watch-cache sync) and that cancellation aborted the scan. This is
 				// normal operation — worker errors here are just "context canceled"

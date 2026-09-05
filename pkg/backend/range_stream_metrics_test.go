@@ -209,6 +209,8 @@ func TestRangeStreamFailureMetricInitializeAuthoritativeZero(t *testing.T) {
 
 	require.Equal(t, []compactMetricRecord{
 		{kind: "counter", name: "backend.list.by.stream.failed", value: 0},
+		{kind: "counter", name: "backend.list.by.stream.canceled", value: 0},
+		{kind: "counter", name: "backend.list.by.stream.limit_satisfied", value: 0},
 	}, recorder.records)
 }
 
@@ -224,6 +226,25 @@ func TestRangeStreamFailureMetricExcludesCallerCancellation(t *testing.T) {
 		for range b.scanner.RangeStream(context.Background(), []byte("a"), []byte("z"), 1, false) {
 		}
 		require.Equal(t, float64(1), recorder.get("backend.list.by.stream.failed"))
+	})
+
+	t.Run("successful client limit", func(t *testing.T) {
+		recorder := newRecordCounters()
+		store := &cancelFirstPartitionsKV{KvStorage: memkv.NewKvStorage(), entered: make(chan struct{})}
+		defer func() { require.NoError(t, store.Close()) }()
+		b := NewBackend(store, Config{Prefix: prefix, Identity: getStorageIdentity()}, recorder).(*backend)
+		defer func() { require.NoError(t, b.Close()) }()
+		ctx, stop, limitSatisfied := WithRangeStreamLimitCancellation(context.Background())
+		defer stop()
+		stream := b.scanner.RangeStream(ctx, []byte("a"), []byte("z"), 1, false)
+		<-store.entered
+		limitSatisfied()
+		for range stream {
+		}
+
+		require.Zero(t, recorder.get("backend.list.by.stream.failed"))
+		require.Zero(t, recorder.get("backend.list.by.stream.canceled"))
+		require.Equal(t, float64(1), recorder.get("backend.list.by.stream.limit_satisfied"))
 	})
 
 	t.Run("caller cancellation", func(t *testing.T) {

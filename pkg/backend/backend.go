@@ -779,6 +779,8 @@ func initRangeStreamFailureMetrics(metricCli metrics.Metrics) {
 		return
 	}
 	_ = metricCli.EmitCounter("backend.list.by.stream.failed", 0)
+	_ = metricCli.EmitCounter("backend.list.by.stream.canceled", 0)
+	_ = metricCli.EmitCounter("backend.list.by.stream.limit_satisfied", 0)
 }
 
 func (b *backend) startWorker(run func(context.Context)) bool {

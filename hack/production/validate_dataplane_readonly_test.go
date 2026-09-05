@@ -393,7 +393,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
 			wantOK:     true,
-			wantOutput: "info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, apply_duration_metrics=optional-ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, raft_snapshot_file_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, range_stream_spill_metrics=ok, lease_metrics=ok, promhttp_metrics=ok",
+			wantOutput: "info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, apply_duration_metrics=optional-ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, raft_snapshot_file_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, range_stream_outcome_metrics=ok, range_stream_spill_metrics=ok, lease_metrics=ok, promhttp_metrics=ok",
 		},
 		{
 			name: "selects leader info metrics endpoint from status",
@@ -954,6 +954,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`etcd_debugging_mvcc_slow_watcher_total{cluster="default"} 0`,
 				`etcd_debugging_mvcc_events_total{cluster="default"} 0`,
 				`watch_range_prefilter_dropped{cluster="default"} 0`,
+				`backend_list_by_stream_failed{cluster="default"} 0`,
+				`backend_list_by_stream_canceled{cluster="default"} 0`,
+				`backend_list_by_stream_limit_satisfied{cluster="default"} 0`,
 				`backend_range_stream_spill_active{cluster="default"} 0`,
 				`backend_range_stream_spill_outcome{cluster="default",outcome="completed",path="decoded"} 0`,
 				`backend_range_stream_spill_outcome{cluster="default",outcome="quota_exhausted",path="decoded"} 0`,
@@ -1288,6 +1291,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`etcd_debugging_lease_granted_total{cluster="default"} 0`,
 				`etcd_debugging_lease_revoked_total{cluster="default"} 0`,
 				`etcd_debugging_lease_renewed_total{cluster="default"} 0`,
+				`backend_list_by_stream_failed{cluster="default"} 0`,
+				`backend_list_by_stream_canceled{cluster="default"} 0`,
+				`backend_list_by_stream_limit_satisfied{cluster="default"} 0`,
 				`promhttp_metric_handler_requests_in_flight 1`,
 			}, "\n") + "\n",
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
@@ -2284,6 +2290,59 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			),
 			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
 			wantOutput: "info metrics mismatch: expected watch_range_prefilter_dropped",
+		},
+		{
+			name: "rejects missing info range stream limit outcome metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.Replace(
+				defaultInfoMetrics(""),
+				"backend_list_by_stream_limit_satisfied{cluster=\"default\"} 0\n",
+				"",
+				1,
+			),
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOutput: "info metrics mismatch: backend list stream outcomes must contain failed, canceled, and limit_satisfied",
+		},
+		{
+			name: "rejects duplicate info range stream limit outcome metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: defaultInfoMetrics("") +
+				"backend_list_by_stream_limit_satisfied{cluster=\"duplicate\"} 0\n",
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOutput: "info metrics mismatch: backend list stream outcomes must contain failed, canceled, and limit_satisfied",
+		},
+		{
+			name: "rejects negative info range stream outcome metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.Replace(
+				defaultInfoMetrics(""),
+				"backend_list_by_stream_canceled{cluster=\"default\"} 0\n",
+				"backend_list_by_stream_canceled{cluster=\"default\"} -1\n",
+				1,
+			),
+			extraEnv:   []string{"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_INFO_METRICS_CHECKS=1"},
+			wantOutput: "info metrics mismatch: backend list stream outcomes must contain failed, canceled, and limit_satisfied",
 		},
 		{
 			name: "rejects missing info range stream spill active metric",
@@ -6383,6 +6442,9 @@ func defaultInfoMetrics(value string) string {
 		`etcd_debugging_mvcc_slow_watcher_total{cluster="default"} 0`,
 		`etcd_debugging_mvcc_events_total{cluster="default"} 0`,
 		`watch_range_prefilter_dropped{cluster="default"} 0`,
+		`backend_list_by_stream_failed{cluster="default"} 0`,
+		`backend_list_by_stream_canceled{cluster="default"} 0`,
+		`backend_list_by_stream_limit_satisfied{cluster="default"} 0`,
 		`backend_range_stream_spill_active{cluster="default"} 0`,
 		`backend_range_stream_spill_outcome{cluster="default",outcome="completed",path="decoded"} 0`,
 		`backend_range_stream_spill_outcome{cluster="default",outcome="quota_exhausted",path="decoded"} 0`,
