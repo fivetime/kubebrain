@@ -104,7 +104,7 @@ func TestClientRangeStreamCommonShapesMatchUnaryRange(t *testing.T) {
 	require.NoError(t, err)
 	second, err := client.Put(ctx, prefix+"b", "v2")
 	require.NoError(t, err)
-	updated, err := client.Put(ctx, prefix+"a", "v3")
+	_, err = client.Put(ctx, prefix+"a", "v3")
 	require.NoError(t, err)
 	prefixEnd := clientv3.GetPrefixRangeEnd(prefix)
 
@@ -123,13 +123,6 @@ func TestClientRangeStreamCommonShapesMatchUnaryRange(t *testing.T) {
 		{name: "from-key", key: prefix, opts: []clientv3.OpOption{clientv3.WithFromKey()}},
 		{name: "keys-only", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithKeysOnly()}},
 		{name: "count-only-limit", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithCountOnly(), clientv3.WithLimit(1)}},
-		{name: "minimum-mod-revision", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithMinModRev(second.Header.Revision)}},
-		{name: "maximum-mod-revision", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithMaxModRev(second.Header.Revision)}},
-		{name: "minimum-create-revision", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithMinCreateRev(second.Header.Revision)}},
-		{name: "maximum-create-revision", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithMaxCreateRev(first.Header.Revision)}},
-		{name: "filter-exhausted-at-limit", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithMinModRev(updated.Header.Revision), clientv3.WithLimit(1)}},
-		{name: "contradictory-filters", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithMinModRev(updated.Header.Revision), clientv3.WithMaxModRev(first.Header.Revision)}},
-		{name: "historical-filter", key: prefix, opts: []clientv3.OpOption{clientv3.WithRange(prefixEnd), clientv3.WithRev(second.Header.Revision), clientv3.WithMinCreateRev(second.Header.Revision)}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -220,6 +213,16 @@ func TestClientRangeStreamValidationErrorsMatchEtcd(t *testing.T) {
 			notErr:  rpctypes.ErrGRPCInvalidSortOption,
 			code:    codes.Unimplemented,
 			message: "RangeStream does not support custom sort orders",
+		},
+		{
+			name: "revision-filter",
+			req: &etcdserverpb.RangeRequest{
+				Key: []byte("/a989/rangestream-validation"), RangeEnd: []byte("/a989/rangestream-validation0"),
+				MinModRevision: 1,
+			},
+			notErr:  rpctypes.ErrGRPCInvalidSortOption,
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support revision filters",
 		},
 		{
 			name: "custom-sort-before-revision-filter",

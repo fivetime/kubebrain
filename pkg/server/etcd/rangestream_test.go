@@ -92,37 +92,6 @@ type limitedRangeStreamCountProbeShim struct {
 	countRequest *etcdserverpb.RangeRequest
 }
 
-type filteredRangeStreamProbeShim struct {
-	BackendShim
-	kvs      []*mvccpb.KeyValue
-	produced int
-}
-
-func (b *filteredRangeStreamProbeShim) RangeStreamChan(
-	ctx context.Context, _, _ []byte, revision uint64,
-) (<-chan rangeStreamChunk, error) {
-	ch := make(chan rangeStreamChunk)
-	go func() {
-		defer close(ch)
-		for _, kv := range b.kvs {
-			chunk := rangeStreamChunk{resp: &etcdserverpb.RangeResponse{
-				Header: txnHeader(int64(revision)), Kvs: []*mvccpb.KeyValue{proto.Clone(kv).(*mvccpb.KeyValue)},
-			}}
-			select {
-			case ch <- chunk:
-				b.produced++
-			case <-ctx.Done():
-				return
-			}
-		}
-		select {
-		case ch <- rangeStreamChunk{resp: &etcdserverpb.RangeResponse{Header: txnHeader(int64(revision))}}:
-		case <-ctx.Done():
-		}
-	}()
-	return ch, nil
-}
-
 func (b *limitedRangeStreamCountProbeShim) RangeStreamChan(
 	ctx context.Context, _, _ []byte, revision uint64,
 ) (<-chan rangeStreamChunk, error) {
@@ -940,12 +909,10 @@ func TestFollowerRangeStreamRejectsInvalidProxyPayload(t *testing.T) {
 		{name: "keys-only value", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned a value for a keys-only request"},
 		{name: "fast keys-only lease", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 1, ModRevision: 1, Version: 1, Lease: 7}}}}, message: "forwarded range stream returned a lease for a fast keys-only request"},
 		{name: "invalid lifecycle", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a")}}}}, message: "forwarded range stream returned invalid key-value revision metadata"},
-		{name: "outside revision filters", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), MinModRevision: 2}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned a key-value outside the requested revision filters"},
 		{name: "future key-value", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Revision: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 2, ModRevision: 2, Version: 1}}}}, message: "forwarded range stream returned a key-value newer than the requested snapshot"},
 		{name: "early aggregate metadata", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned aggregate metadata before the terminal frame"},
 		{name: "count below sent", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned an invalid terminal count"},
 		{name: "inconsistent more", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Limit: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned inconsistent terminal count and more metadata"},
-		{name: "filtered more without remaining cardinality", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Limit: 1, MinModRevision: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, More: true, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned inconsistent terminal count and more metadata"},
 		{name: "count-only payload", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned key-values for a count-only request"},
 		{name: "exact key count above cardinality", request: &etcdserverpb.RangeRequest{Key: []byte("a"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2}}, message: "forwarded range stream returned count 2 above exact-key cardinality"},
 		{name: "exact key limited pagination above cardinality", request: &etcdserverpb.RangeRequest{Key: []byte("a"), Limit: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, More: true, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned count 2 above exact-key cardinality"},
@@ -1039,7 +1006,6 @@ func TestRangeStreamProxyPayloadValidatorAcceptsCanonicalStreams(t *testing.T) {
 		{name: "exact key limited", request: &etcdserverpb.RangeRequest{Key: []byte("a"), Limit: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{kv("a")}}}},
 		{name: "from key count only", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte{0}, CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 3}}},
 		{name: "keys only", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{kv("a")}}}},
-		{name: "filtered count remains unfiltered", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Limit: 1, MinModRevision: 2}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{kv("a")}}}},
 		{name: "value-sort keys only retains lease", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true, SortTarget: etcdserverpb.RangeRequest_VALUE}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 2, ModRevision: 2, Version: 1, Lease: 7}}}}},
 		{name: "none version target ascending", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), SortTarget: etcdserverpb.RangeRequest_VERSION}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(3), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 1, ModRevision: 1, Version: 1}, {Key: []byte("a"), CreateRevision: 1, ModRevision: 2, Version: 2}}}}},
 		{name: "none value target keys-only projected order", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), KeysOnly: true, SortTarget: etcdserverpb.RangeRequest_VALUE}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(3), Count: 2, Kvs: []*mvccpb.KeyValue{{Key: []byte("b"), CreateRevision: 1, ModRevision: 1, Version: 1, Lease: 7}, {Key: []byte("a"), CreateRevision: 1, ModRevision: 2, Version: 2, Lease: 8}}}}},
@@ -1399,6 +1365,31 @@ func TestRangeStreamRejectsUnsupportedShapes(t *testing.T) {
 			message: "etcdserver: invalid sort option",
 		},
 		{
+			name:    "modRevisionFilter",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MinModRevision: 5},
+			notErr:  rpctypes.ErrGRPCInvalidSortOption,
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support revision filters",
+		},
+		{
+			name:    "maxModRevisionFilter",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MaxModRevision: 5},
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support revision filters",
+		},
+		{
+			name:    "minCreateRevisionFilter",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MinCreateRevision: 5},
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support revision filters",
+		},
+		{
+			name:    "maxCreateRevisionFilter",
+			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), MaxCreateRevision: 5},
+			code:    codes.Unimplemented,
+			message: "RangeStream does not support revision filters",
+		},
+		{
 			name:    "sortOrder",
 			req:     &etcdserverpb.RangeRequest{Key: []byte("/a"), RangeEnd: []byte("/b"), SortOrder: etcdserverpb.RangeRequest_DESCEND, SortTarget: etcdserverpb.RangeRequest_KEY},
 			notErr:  rpctypes.ErrGRPCInvalidSortOption,
@@ -1439,21 +1430,17 @@ func TestRangeStreamSupportedOptionsMatchUnaryRange(t *testing.T) {
 	server, cleanup := newRangeStreamTestServer(t)
 	defer cleanup()
 	ctx := context.Background()
-	var revisions []int64
 	for i := 0; i < 8; i++ {
-		put, err := server.Put(ctx, &etcdserverpb.PutRequest{
+		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
 			Key: []byte(fmt.Sprintf("/options/%02d", i)), Value: []byte(fmt.Sprintf("value-%02d", 7-i)),
 		})
 		require.NoError(t, err)
-		revisions = append(revisions, put.Header.Revision)
 	}
 	lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 30, ID: 37161})
 	require.NoError(t, err)
 	_, err = server.Put(ctx, &etcdserverpb.PutRequest{
 		Key: []byte("/options/08"), Value: []byte("leased-value"), Lease: lease.ID,
 	})
-	require.NoError(t, err)
-	updated, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: []byte("/options/00"), Value: []byte("updated")})
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -1470,14 +1457,6 @@ func TestRangeStreamSupportedOptionsMatchUnaryRange(t *testing.T) {
 		{name: "none promotes non-key target to ascending", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3, SortOrder: etcdserverpb.RangeRequest_NONE, SortTarget: etcdserverpb.RangeRequest_VALUE}},
 		{name: "none value sort precedes keys-only projection", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), Limit: 3, KeysOnly: true, SortOrder: etcdserverpb.RangeRequest_NONE, SortTarget: etcdserverpb.RangeRequest_VALUE}},
 		{name: "keys only", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), KeysOnly: true}},
-		{name: "minimum mod revision", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), MinModRevision: revisions[4]}},
-		{name: "maximum mod revision", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), MaxModRevision: revisions[4]}},
-		{name: "minimum create revision", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), MinCreateRevision: revisions[4]}},
-		{name: "maximum create revision", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), MaxCreateRevision: revisions[4]}},
-		{name: "filter before limit has more", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), MinCreateRevision: revisions[4], Limit: 2}},
-		{name: "filter exhausted at limit has no more", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), MinModRevision: updated.Header.Revision, Limit: 1}},
-		{name: "contradictory filters preserve count", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), MinModRevision: updated.Header.Revision, MaxModRevision: revisions[0]}},
-		{name: "keys only revision filter", req: &etcdserverpb.RangeRequest{Key: []byte("/options/"), RangeEnd: []byte("/options0"), MaxCreateRevision: revisions[3], KeysOnly: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1589,40 +1568,6 @@ func TestRangeStreamChunksRespectConfiguredMessageTarget(t *testing.T) {
 	require.Equal(t, 5, limitedKeys)
 	require.Zero(t, tracked.listCalls,
 		"bounded RangeStream must not materialize a unary List response")
-}
-
-func TestRangeStreamRevisionFilterDrainsEmptyChunksForExactMore(t *testing.T) {
-	server, cleanup := newRangeStreamTestServer(t)
-	defer cleanup()
-	ctx := context.Background()
-	for i := 0; i < 3; i++ {
-		_, err := server.Put(ctx, &etcdserverpb.PutRequest{
-			Key: []byte(fmt.Sprintf("/outside/%d", i)), Value: []byte("value"),
-		})
-		require.NoError(t, err)
-	}
-	probe := &filteredRangeStreamProbeShim{
-		BackendShim: server.backend,
-		kvs: []*mvccpb.KeyValue{
-			{Key: []byte("/filter/a"), Value: []byte("old"), CreateRevision: 1, ModRevision: 1, Version: 1},
-			{Key: []byte("/filter/b"), Value: []byte("match"), CreateRevision: 2, ModRevision: 2, Version: 1},
-			{Key: []byte("/filter/c"), Value: []byte("later-match"), CreateRevision: 3, ModRevision: 3, Version: 1},
-		},
-	}
-	server.backend = probe
-
-	stream := &fakeRangeStreamServer{ctx: ctx}
-	require.NoError(t, server.RangeStream(&etcdserverpb.RangeRequest{
-		Key: []byte("/filter/"), RangeEnd: []byte("/filter0"), MinModRevision: 2, Limit: 1, Serializable: true,
-	}, stream))
-
-	require.Equal(t, 3, probe.produced, "filtered limits must scan through terminal metadata to determine More")
-	require.Len(t, stream.sent, 1)
-	response := stream.sent[0].RangeResponse
-	require.EqualValues(t, 3, response.Count, "Count remains the unfiltered interval cardinality")
-	require.True(t, response.More)
-	require.Len(t, response.Kvs, 1)
-	require.Equal(t, []byte("/filter/b"), response.Kvs[0].Key)
 }
 
 func TestRangeStreamLimitStopsBackendAndCountsAtPinnedRevision(t *testing.T) {
