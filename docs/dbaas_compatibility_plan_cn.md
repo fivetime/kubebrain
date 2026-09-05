@@ -71791,6 +71791,69 @@ direct/gateway Hash 一致为 `3577487876`；三轮九次 health `38.898–61.85
 本项关闭了 workspace 删除失败被普通取消掩盖的告警缺口；百万 key、并发慢客户端、独立 CSI spill PVC 的真实故障模式、
 吞吐/backpressure、节点隔离和延迟分位仍需在生产等价多节点环境继续验证。
 
+### A5741：RangeStream 达到客户端 Limit 后停止值流并固定 revision 计数
+
+继续对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `rangeStream`，发现 upstream 在返回 KV 数达到
+`RangeRequest.Limit` 后会立即停止继续取值，并在同一固定 revision 上用 `txn.Count` 补出整个原始区间的 Count；旧
+KubeBrain 虽只向客户端发送 Limit 个 KV，却继续排空所有 backend chunk/value 才得到 Count。大范围小 Limit LIST 因此仍
+把全部 value 从 TiKV 读取、解码并跨进程传输，失去 Limit 应有的读取放大保护。
+
+确定性 TDD 用无缓冲 100-KV producer 先复现服务端在 Limit=1 后仍读完整流；实现为 serving layer 与 backend 增加区分普通
+停止和“Limit 已满足”的 cancel cause，首个非终态 chunk 达限即取消值流，再以原 Key/RangeEnd、固定正 revision、原
+Serializable 和 CountOnly 调用 Count。Count 小于已发送数、空响应或没有 pending response 均 fail closed 为 DataLoss；
+终态继续使用原 stream header revision，并令 `More = Count > sentCount`。spill attempt 只把该内部原因归为 completed，真实
+cleanup error 仍保持 failed。聚焦普通与 race 各 `count=10`、backend/server 全包 `49.901s/139.979s`、vet 与 diff check
+全绿。代码提交 `a76a4483795947d597238dcf77e1652459fd312c` 前 verifier 为
+703=`170/193/180/160`，四分片 `257.536/461.364/305.767/591.301s`；提交后 verifier 不变，四分片
+`260.285/450.433/303.804/582.987s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5741-a76a4483` 内嵌版本 `0.0.0-a76a4483`、完整 commit、build time
+`2026-09-05T14:43:03Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI archive 914,709,504 bytes，SHA-256
+`6233ada05f96d157071387ef80ca3543e4bbfa190471bff82eeca1706f174f0c`；顶层 `index.json` SHA-256/runtime
+imageID、nested/spec index、platform manifest/config 分别为
+`sha256:3f1b9e964ff1e62051fe28cbca3a662bd8290a87f6c29ed9ff850b66eaff2e51`、
+`sha256:613b22678217098601effb204020f2335f6f2171cc1ac221c03faf215547e056`、
+`sha256:797a7ddade7c2d7a220fad7267df98efee3fde9bda7d97a8fab0f947799913fe`、
+`sha256:8b5bdfa9d5ac8bc9adbabf90cfe607cf9a220b8aaebf4c5d999bfe5cc8311c01`。attestation manifest/config 与
+SPDX/SLSA layer 为 `sha256:729da5307198cb4666fde9581eb821e90f9f7965b9f2378e14438e2790e72bd2`/
+`sha256:f405fd8c668bdfab47bdfefd5ec6dbeaca42a578773ced6e657e7c7966926b7e`、
+`sha256:e647ee389a08aed340eaa45d78e514072b9b36fc6645e8d4bdd00cd4ca9e807a`/
+`sha256:e3ccf6d7eea3eff54c2826b27f774de2a4e9ec423d75f77dde0a6b3b00fb0da3`。78 blobs/78 条真实 descriptor
+edge、71 layers/diff IDs 全匹配；SPDX 2,592 packages/381 files/8,096 relationships，SLSA 仅四项固定 build args/
+三项固定 materials，`65532:65532`、入口、labels 与镜像内 version 精确。
+
+镜像加载前 Kind 节点容器于 `14:41:41Z` 独立整体重启，所有 KubeBrain/PD/TiKV 与其他 fixture 同时留下
+`Unknown/255`，候选当时尚未投放且 StatefulSet UID/spec 未变；节点恢复 Ready 后稳定适用门禁重新 GREEN，revision/HashKV/
+compact/term 为 `74510/1397934186/66760/650`，direct/gateway Hash 均 `3629737091`，才允许继续。以
+UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test 原子投放候选并追加两项 spill 参数；
+generation/observed `891/891`、RV `8589327`，三 Pod runtime 精确为上述顶层 index hash、3/3 Ready、restart 0。重建随
+Pod 替换失效的六条 port-forward 后，候选初始完整 HEAD gate GREEN，数据水位不变、term `653`。
+
+公开 9 个 320KiB value 的 multi-frame 测试 `0.677s` GREEN，限量请求精确返回 8 KV、Count=9、More=true。再以同类
+六项 test 把 count-index 上限临时降为 1，generation/observed `892/892`、RV `8590467`；同一候选 endpoint 上用两个
+独立前缀执行两遍 64 组 stream-vs-unary 生成场景，`2.418s` GREEN，覆盖 Limit=1、KeysOnly、CountOnly、历史 revision
+与 Serializable。leader 的 `latest_metadata/completed` 从 0 精确增至 2，canceled/failed 保持 0、active 回到 0；两个
+测试前缀最终 Count 均为 0。测试写删使 revision 推进到 `74542`，三副本 HashKV 均为 `1922437493`。
+
+恢复 500 万上限后 generation/observed `893/893`、RV `8591261`，候选最终完整 gate GREEN：revision/index/applied
+`74542`、HashKV `1922437493`、compact `66760`、term `656`，direct/gateway Hash `4195924819`。三轮九次 health
+`32.648–95.476ms`；三个 PD 全健康，三个 TiKV store 均 Up、各 21 Regions，六类异常 Region 均为 0；候选日志
+`491/502/319` 行、critical 0。
+
+以同类六项 test 从候选 generation `893`/RV `8591261` 回滚稳定 digest；generation/observed `894/894`、RV
+`8592103`，三 Pod 恢复稳定 runtime imageID、3/3 Ready、restart 0、22 参数。稳定适用 gate GREEN：revision/HashKV/
+compact `74542/1922437493/66760`、term `658`，direct/gateway Hash 均 `1820942190`；三轮九次 health
+`33.442–51.649ms`，PD/TiKV、六类 Region 与稳定日志 `447/467/327` 行、critical 0 继续全绿。
+
+最终关闭六个 listener，精确删除候选 Kind/Docker 四个引用、OCI/审计目录；按子到父顺序逐 ID 回收 71 条候选独占
+装配记录，再以 `--all` 精确回收 4.143GB 编译根与 38.77MB 源码 COPY 根。本轮 BuildKit 窗口只保留七条 module、
+kubectl 与基础 COPY 共享依赖 cache，private=0；候选引用、候选路径、listener 与三 Pod spill workspace 均为 0，根盘
+可用约 58GiB。
+
+本项关闭了小 Limit RangeStream 仍读取整个 value range 的放大缺口；单元测试以可观测无缓冲 producer 直接证明后端在首条
+后停止，真实集群则证明公开 Count/More 与内部 completed 分类。TiKV 侧逐请求 value-read 字节尚无低基数生产指标，百万 key、
+多客户端慢消费下的读取节省、延迟分位与跨 Region 曲线仍需在生产等价多节点环境量化。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
