@@ -71913,6 +71913,63 @@ direct/gateway Hash 均 `3949744664`；三轮九次 health `37.155–55.483ms`�
 本项关闭了成功 bounded LIST 被误报成客户端断连的告警缺口；百万 key、多客户端慢消费、跨 Region 时 cancel 生效延迟与指标
 基数/告警阈值仍需在生产等价多节点、独立 CSI 环境继续量化。
 
+### A5743：RangeStream 支持 revision filters 并保持 etcd 的 Count/More 语义
+
+上游 etcd 的 RangeStream 会把 `MinModRevision`、`MaxModRevision`、`MinCreateRevision` 和
+`MaxCreateRevision` 交给每次 Range；KubeBrain 过去却在流入口直接返回 `Unimplemented`。更隐蔽的兼容点是 etcd 的
+`Count` 始终表示过滤前区间基数，而 `More` 表示 Limit 后是否仍有匹配过滤器的 KV，不能用 `Count > 已发送数` 推导。
+本项复用 unary Range 的逐 KV filter，在判定原始 scanner terminal 并累计原始 Count 后、Limit 和 KeysOnly 投影前过滤每个
+有界 chunk；带过滤器的有限流会继续排空 scanner，以匹配数准确计算 More，不走 A5741 仅适用于无过滤器的提前取消/Count
+优化。全 chunk 被过滤为空时不会误判 terminal。follower 代理校验同步拒绝违反任一 revision filter 的 KV；由于 Count 未过滤，
+过滤请求允许 `Count > sent` 且 `More=false`，但继续拒绝 `More=true && Count<=sent`、未填满 Limit 却 More=true 等不可能状态。
+
+测试先把四类过滤器从拒绝矩阵移入 unary/stream 等价矩阵，旧实现以 `Unimplemented` RED；随后覆盖过滤后 Limit、恰好耗尽
+时 More=false、仍有匹配时 More=true、矛盾过滤器返回空 KV 但保留原始 Count、KeysOnly、历史 revision、过滤为空的中间
+scanner chunk，以及 follower 伪造过滤结果。官方 client/v3 bufconn 黑盒同时覆盖上述主要形状。聚焦普通测试为 `0.289s`，
+聚焦 race `count=10` 为 `11.392s`，完整 server 包 `137.566s`，vet 与 diff check 全绿。代码提交
+`0cd69865b6ca8ee243c0076a930bcc5d48e62e5a` 前 verifier 为 703=`170/193/180/160`，四分片为
+`258.966/458.633/304.346/590.706s`；提交后 verifier 不变，四分片为
+`258.327/452.317/304.906/583.418s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5743-0cd69865b6ca` 内嵌版本 `0.0.0-0cd69865b6ca`、完整 commit、build time
+`2026-09-05T18:42:01Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI archive 914,715,648 bytes，SHA-256
+`ec1e1186f3eccead043b50ac11e99ef8c64908c220964efb4bbb1cddba8f9b59`。顶层 `index.json` SHA-256/Kind runtime
+imageID、nested index、platform manifest/config 分别为
+`sha256:d328b25ce0ed82d44409ff28e03cfd220d28da7f96403ebccc5a58a782e219e7`、
+`sha256:39402ffb94d6f790f4347a886eac1da0cbae1c683e162c8534547beb62b44643`、
+`sha256:82cbf376c3487994fe3f197fc5588b2c90717dea4664575b26ab0ff837157454`、
+`sha256:44b2d337f904b24bb7d23b4444efac6fb73066b4cdb63b96b71a75a926060e1b`。attestation manifest/config 与
+SPDX/SLSA layer 为 `sha256:a6a78246a89e96b13be0ea02df9d5867ef2d8e7622744acae35c2bd8ce903fec`/
+`sha256:dfd191193ade0b553577810c6836d40c7db8ec75f0304c86daa33f5050cc6738`、
+`sha256:0a327d4874bae14a5df6a9c5c85701aa56ef027c10c5169d4eb7b485d8f5d4da`/
+`sha256:cd79b8041070eed2dc0b927838c2196592f21ea6939da94c6f3605373a4ef240`。78 blobs/78 条 descriptor edge、
+71 layers/diff IDs 全匹配；SPDX 2,592 packages/381 files/8,096 relationships，SLSA subject、四项固定 build args 与
+三项 materials 精确，非 root `65532:65532`、入口、labels 和镜像内 version 全部通过。
+
+稳定基线适用门禁最终 GREEN，revision/HashKV/compact/term 为 `74630/1020690611/66760/663`。首次误启用旧稳定镜像
+不含的新版 info-metrics 合同，被 `watch_range_prefilter_dropped` 缺失正确拒绝；随后 10/30 秒预算又小于三端点 HashKV
+实际总耗时（单端点约 11 秒），提高单探针预算到 60 秒后完整通过。以 UID/resourceVersion/generation/container/current image/
+完整 22 args 六类 JSON test 原子投放候选；generation/observed `897/897`、RV `8617503`，三 Pod runtime 精确为上述顶层
+index hash、3/3 Ready、restart 0、参数未漂移。候选写入前完整 HEAD gate GREEN，revision 与数据 hash 未变化、term `665`。
+
+真实 TiKV 上使用官方 client/v3 写入六键并更新一键，逐项对比 unary Range 与 RangeStream 的四类 filter、filter+Limit、
+矛盾 filter、KeysOnly 和历史 revision，共九种形状全部一致。关键边界中原始 Count=6、唯一匹配 KV、Limit=1 正确返回
+More=false；另一个仍有匹配项的 Limit=2 正确返回 More=true；矛盾 filter 返回 0 KV 但 Count 仍为 6。探针删除前缀后
+Count=0，终态 revision `74638`，三副本 HashKV `816093835`、compact `66760`；候选完整 gate 再次 GREEN。
+三轮九次 health 为 `58.285–84.591ms`；三个 PD 健康，三个 TiKV store 均 Up、各 18 Regions，pending/down/miss/extra/
+learner/offline 六类异常连续为 0。候选日志 `916/885/340` 行、critical 0、spill 文件 0。
+
+以新鲜六类 test 从候选 RV `8617503` 回滚稳定 digest；generation/observed `898/898`、RV `8619055`，三 Pod 恢复稳定
+runtime imageID、3/3 Ready、restart 0、22 参数未漂移。稳定适用 gate GREEN：revision/HashKV/compact `74638/816093835/66760`、
+term `667`，direct/gateway hash 均 `2160326947`；三轮九次 health `55.885–79.288ms`，PD/TiKV 与六类 Region 继续全绿，
+稳定日志 `488/351/580` 行、critical 0。
+
+最终关闭六个 listener，精确删除候选 Kind 的 tag/import/config 三条引用、Docker tag、OCI archive、审计目录和临时 client
+探针。构建时间窗内 80 条候选专属 BuildKit 记录按子到父逐 ID 回收：71 条 private 用普通模式，剩余 9 条 shared 用
+`--all` 加精确 ID；没有执行全局 prune，窗口剩余 0，根盘恢复约 56 GiB 可用。候选引用、候选路径、listener 与测试前缀均为 0。
+严格 CSI/容量脚本仍会按设计拒绝该单节点 Kind 的 hostPath PVC 和 98% 共享根盘；本轮只声明独立 PD/TiKV/Region API 的
+数据面结果，不把实验存储拓扑冒充生产 CSI 合格。大规模过滤流的扫描成本和跨 Region 慢消费者行为仍需在生产等价环境量化。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
