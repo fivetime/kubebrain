@@ -71724,6 +71724,73 @@ Normal/3/3、store 全 Up、异常 Region 全 0。最终关闭六个 port-forwar
 旧镜像在大量历史版本下 60 秒 Hash 门禁超时的容量敏感性。百万 key、并发慢客户端取消、独立 CSI spill PVC 的吞吐/
 backpressure、节点隔离与延迟分位仍需在生产等价多节点环境继续验证。
 
+### A5740：外排 workspace 延迟清理失败不再被取消掩盖
+
+继续审计 A5739 的取消清理路径发现两处结果分类漏洞：decoded-boundary 与 latest-metadata 的早退 defer 都忽略
+`sorter.Close()`，而 `rangeStreamSpillAttempt.finish` 会在 caller context 已取消时把默认 `failed` 无条件改写为
+`canceled`。因此即使业务请求已正确停止，PVC 权限、I/O 或目录损坏导致的 workspace 删除失败也可能既不进入响应错误链，
+又被指标误报成普通客户端取消，值班侧无法发现持久残留和容量泄漏。
+
+确定性 TDD `TestRangeStreamSpillCleanupFailureWinsOverCallerCancellation` 用含 NUL 的无效路径制造真实
+`os.RemoveAll` 失败，并在取消 caller context 后先得到 `expected failed, got canceled`。实现为 attempt 增加只在显式
+`recordError` 时设置的 `errorRecorded`，`finish` 仅把“没有记录任何错误的默认失败”归类为取消；新增
+`recordSorterCleanup`，两条早退 defer 都执行真实 Close 并把包装后的清理错误交给同一分类器。聚焦测试与 race 各
+`count=10`，分别为 `0.057s`/`1.185s`；backend 全包 `50.071s`，vet 与 diff check 全绿。代码提交
+`a73ea9d77da78c1914224f39491c0490304246ae` 前 verifier 为 703=`170/193/180/160`，四分片
+`252.932/451.800/306.143/579.769s`；提交后 verifier 不变，四分片
+`299.138/508.347/344.291/623.665s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5740-a73ea9d7` 内嵌版本 `0.0.0-a73ea9d7`、完整 commit、build time
+`2026-09-05T12:49:50Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI archive 914,705,920 bytes，SHA-256
+`0cc76bc89bad543d24639be977fd8d607d1974f76a4aa6f7983c4ec27ffe469b`；顶层 `index.json` SHA-256/runtime
+imageID、nested/spec index、platform manifest/config 分别为
+`sha256:0ff0e38fe666228534671e546e747d6172ed835e22ddc2f59e60aff2e73e08a8`、
+`sha256:14bb56ceff03c7aa73913e7d1502066e101b846db3b3a6e523bdaa49e5b3dfd8`、
+`sha256:58e048dc359cb94f00977d8811e592d0449adadcd4140a1757f325d7cf494e09`、
+`sha256:1cdf5507da149570bcf984fb5839068bfe3c61c1257c95db34d849db9e96640f`。attestation manifest/config 与
+SPDX/SLSA layer 为 `sha256:2993150fdf3ad6fea104ece6bfc7abb89624d1a2f610fe554c310c09553e27c6`/
+`sha256:e8fd455fe260b30d84f87913e803197ebc57a84d1ac952722d365df15a639c57`、
+`sha256:350ddafd6d7f8b581e280e7a291ead23a3974537d1c3e976e641b00a574614cd`/
+`sha256:2e2a4d1686664fbe8a85ddc6dba960f7fe95f1effcd1970e853f9c3f54c86342`。78 blobs/78 条真实 descriptor
+edge、71 layers/diff IDs 全匹配；SPDX 2,592 packages/381 files/8,096 relationships，SLSA 仅四项固定
+build args/三项固定 materials，`65532:65532`、入口和 labels 精确。
+
+稳定基线 gate 在 2 分钟预算下 GREEN：generation/observed `886/886`、revision `73910`、HashKV
+`1089793526`、compact `66760`。以 UID/resourceVersion/generation/container/current image/full 22 args 六类
+JSON test 原子投放候选并追加两项 spill 参数；generation/observed `887/887`、RV `8573113`，三 Pod runtime
+精确为上述顶层 digest、3/3 Ready、restart 0，候选初始完整 gate GREEN，term `643`。
+
+再以同类六项 test 把 count-index 上限从 500 万临时降为 1，generation/observed `888/888`、RV `8574621`。
+300 个、每个 100 Put 的事务写入 30,000 个 `/a5740/cleanup-failure/` 小键。第一次权限注入在初始 run 阶段过早命中，
+8 个文件时把 workspace 改成 `000`，请求直接得到 `Unavailable`，只作为 `latest_metadata/failed` 从 0 到 1 的诊断证据；
+恢复权限、精确删除该唯一目录后严格重跑。第二次在 leader Pod 内等待精确出现首个 merge 输出
+`run-00000000000000000101`，同一 UID 进程把唯一 workspace 改为 `000` 后立即向同一线性一致
+RangeStream client 发 SIGINT。客户端得到 `Canceled`、`frames=0`，但服务端
+`latest_metadata/failed` 从 1 精确增至 2、`canceled` 保持 0、`active` 回到 0，且 mode 000 workspace 保留，证明
+延迟 cleanup 的真实 permission denied 优先于 caller cancellation。恢复 mode 700 后只删除该精确目录；300 个、每个
+100 Delete 的事务清空全部测试键，revision 推进到 `74510`、prefix count 0，三 Pod workspace 均为 0。
+
+恢复 500 万上限后 generation/observed `889/889`、RV `8577005`。候选终态完整 gate GREEN：revision/index/applied
+`74510`、HashKV `1397934186`、direct/gateway Hash `3629737091`、compact `66760`、term `648`；三轮九次 health
+`36.407–55.732ms`。三个 PD 均 health=true，三个 TiKV store 均 Up、各 21 Regions，miss/extra/pending/down/
+offline/learner 六类异常 Region 全为 0；候选日志 `631/663/328` 行、critical 0，三 Pod Ready/restart 为
+`true/0`。
+
+以同类六项 test 从候选 generation `889`/RV `8577005` 回滚稳定 digest；generation/observed `890/890`、RV
+`8578336`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、3/3 Ready、restart 0、22 参数。
+稳定适用 gate 在 2 分钟预算下 GREEN，revision/HashKV/compact 保持 `74510/1397934186/66760`、term `650`，
+direct/gateway Hash 一致为 `3577487876`；三轮九次 health `38.898–61.853ms`，PD/TiKV 与六类 Region 检查继续
+全绿，稳定日志 `500/552/353` 行、critical 0。
+
+最终关闭六个 port-forward，确认候选 container 引用和 Pod 临时文件为 0 后精确删除 Kind 的 tag/nested/import/config
+四个名称、Docker candidate、OCI/审计目录及临时探针。BuildKit 构建窗口精确包含 80 条记录；按子到父顺序逐 ID 回收
+71 条候选独占装配记录，再以 `--all` 精确回收 4.143GB 编译根和 38.76MB 源码 COPY 根，只保留七条 module、kubectl
+与基础 COPY 共享依赖 cache。listener、候选 Kind/Docker 引用、候选路径及该窗口独占 cache 均为 0。
+
+本项关闭了 workspace 删除失败被普通取消掩盖的告警缺口；百万 key、并发慢客户端、独立 CSI spill PVC 的真实故障模式、
+吞吐/backpressure、节点隔离和延迟分位仍需在生产等价多节点环境继续验证。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
