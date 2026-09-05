@@ -71316,6 +71316,73 @@ Kind tag/nested digest/config/raw-config 四个名称、A5732/A5733 OCI/审计�
 数据卷与共享 cache 未删除。Kind local-path 非 CSI 隔离、宿主 100% 显示口径与仅约 4.5 GiB 余量仍是明确生产
 阻塞风险，不用本轮 Hash 修复结论掩盖。
 
+### A5734：count-index 不可用时 latest unary KeysOnly 仍不搬运 value
+
+A5730 的 metadata directory 快路依赖 count index 已 ready；index 不可用时仍会退回普通 scanner。虽然
+backend 最终只投影 key，TiKV Scan RPC 已经搬运 inline object 的完整 value，大对象范围查询仍可能产生与
+payload 成比例的网络和内存成本。又因为 mixed-version rollout 中旧 writer 可能尚未写 metadata directory，
+不能把 directory 本身误当作完整 key 集。A5734 新增可选 `storage.KeyIterator`，TiKV 实现通过
+`snapshot.SetKeyOnly(true)` 对物理 object-key 范围执行真正的 key-only Scan；latest unary `FastKeysOnly`
+在 count index 不可用且后端同时支持固定 snapshot 与 KeyIterator 时，先在同一 storage snapshot 发现完整
+物理 key 集，再对用户 key 去重、排序、过滤边界，并批量读取小型 revision-index/latest-metadata 行。只有旧式、
+缺失、陈旧、损坏或并发变化的例外 key 才逐键回退权威 object，并在安全时进入 A5731 的有界 metadata 回填。
+新指标 `backend.range.latest_metadata_key_scan_hit` 明确暴露这条路径。这既保留 old-writer object、孤立版本和
+`$` 边界键的正确性，也避免用“metadata 目录已经完整”这一不安全假设换取性能。
+
+测试覆盖三个 2 MiB value、`$` 碰撞排序、失效 count index、缺失 metadata 后回填、tombstone 抑制、分页与
+`More`；完整 metadata 情况证明调用 key-only iterator，且普通 iterator 与 object payload 均未读取。聚焦测试
+连续 10 次和 race 均通过，storage/backend、server 全包与 vet/diff check 全绿；一次 server 大包仅受既有时序
+用例瞬时负载影响，独立完整重跑 `133.827s` 通过。代码提交
+`ce772fae` 前 verifier 精确覆盖 703 项并分为 `170/193/180/160`，四分片
+`270.757/463.280/318.731/589.036s` 全绿；提交后四分片
+`246.961/453.780/300.589/581.045s` 再次全绿。
+
+首次候选构建在 Docker packaging 阶段如实失败：固定 Alpine 3.23 仓库已将 `curl 8.20.0-r0`、
+`jq 1.8.1-r0` 替换为 `curl 8.22.0-r0`、`jq 1.8.2-r0`。提交
+`3787ccdd` 同步更新 Dockerfile 所有 stage 的精确 pin 与 `build/dockerignore_test.go`，并在固定
+`alpine:3.23` digest 上验证精确 package set 和版本。该提交前 verifier 仍为 703 项，四分片
+`247.624/453.113/306.967/581.099s`；提交后为
+`260.733/451.501/311.376/580.258s`，全部 GREEN。失败构建的唯一 4.143 GB BuildKit record 被按 ID
+精确删除；没有清理无法证明独占的旧共享 cache。
+
+最终 `docker.io/library/kubebrain:a5734-3787ccdd` OCI 为 914,672,128 bytes，archive SHA-256
+`ca5bb35327584acf2f2d1509e272242e92fe9b21d61d46c7d7b206e721e0ee7f`；顶层 index/nested index/
+platform manifest/config 为 `sha256:41708f29e38606234daf02e5ca503d133818e225d391712aa2d4d89704724dfa`、
+`sha256:2fef5b51c734b050313ef3530ef6e8a0b6519bdd0b2f4984df30b947d7e91ffe`、
+`sha256:53566a68486b1d519ade2b1b0fc6f768fb6205c5176d9a424258fea2e27223b0`、
+`sha256:c65e346f2e57f47237dcd3562b62bee87f5b44aa5110d7ceeeeafab100ae2c2f`。attestation
+manifest/config 为 `sha256:9a9952457be4c6050d215f368d3f32869e9c081e7bfdb5aa306d33d8fab19655`/
+`sha256:2a54543a9e26ccb6b45e1cdf885b08acfb8f2828959e482f43490415438f53d8`，SPDX/SLSA layer 为
+`sha256:f4ba9229ae1926308173beb7f8605318eb35f1df2d6a1596b0b8dff1f3dabed0`/
+`sha256:3e6c4a11531df0b215d85d086f6d0f053e561c728abd954c2376dc60b0e9df2f`。78 blobs 均逐项校验
+content SHA，71 layers/diff IDs 一致；SPDX 含 2,592 packages/381 files/8,096 relationships，SLSA
+只有四项固定 build args 与三项固定 materials；`65532:65532`、入口、commit/version/time labels 全部匹配。
+
+稳定基线完整 readonly gate GREEN：revision/index/applied `66994`、HashKV `1959592162`、direct Hash
+`37466396`、compact `66760`、term `590`。以 UID/resourceVersion/generation/container/current image/full
+22 args 六类 JSON test 原子投放候选，generation/observed `861/861`、3/3 Ready、restart 0、参数无漂移；
+刷新 rollout 后失效的 port-forward 后，候选完整 gate GREEN，term `592`。随后只把
+`--count-index-max-keys=5000000` 原子改为 `=1`（generation `862`），写入三个 512 KiB
+`/a5734/keyscan/{0,1,2}`，对三个 endpoint 的 serializable KeysOnly prefix 均得到三个有序 key、Value 长度全为
+0；pod1 指标 `backend_range_latest_metadata_index_miss=3` 且
+`backend_range_latest_metadata_key_scan_hit=3`，证明真实 TiKV 命中新增 fallback。三个测试键删除后 revision
+`66998`，前缀为空、lease 为 0、alarm 为空；参数恢复 500 万（generation `863`）后终态候选 gate GREEN，
+revision/index/applied `66998`、HashKV `3431185610`、direct Hash `2229346391`、compact `66760`、term `596`。
+候选三轮九次 health 为 `38.8–60.4ms`；三个 TiKV store 全部 Up、各 14 Regions、pending/down 为 0，日志
+critical pattern 为 0。
+
+以相同六类原子 test 回滚稳定 digest，generation/observed `864/864`、三 Pod 恢复稳定 runtime
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、3/3 Ready、restart 0、22 参数不变。
+稳定终态 gate GREEN，revision/index/applied `66998`、HashKV `3431185610`、direct Hash `2229346391`、
+compact `66760`、term `598`；三轮九次 health `40.9–50.9ms`，三个 store 仍 Up/14 Regions/pending 0/down 0，
+三 Pod 日志 critical 均为 0。最终关闭六个 port-forward，精确删除候选 Kind 四个引用、914,672,128-byte OCI、
+审计展开目录以及最终构建的独占 4.143 GB BuildKit record；根盘可用约 5.6 GiB。稳定镜像、源码、数据卷与
+共享 cache 未删除。Kind local-path 非 CSI、单节点承载全部 Pod、宿主仅剩低个位 GiB 的容量风险仍是生产阻塞项。
+
+A5734 只覆盖 latest unary `ListKeysOnly` 的 count-index miss。`RangeStreamKeysOnly` 在 index ready 时继续使用
+metadata 快路，但 miss 时仍走普通 `MetadataScanner`，可能搬运 payload；下一里程碑需要用有界外部排序与小索引
+join 把 streaming fallback 也改为真正 key-only，并验证百万 key 下的 Region、内存与背压行为。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
