@@ -30,6 +30,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -694,10 +695,18 @@ func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T
 	metricRecorder.mu.Lock()
 	defer metricRecorder.mu.Unlock()
 	var observedMetric []interface{}
+	var positiveOutcomes [][]metrics.T
 	for _, metric := range metricRecorder.records {
 		if metric.kind == "gauge" && metric.name == "backend.range_stream.decoded_spill_keys" {
 			observedMetric = append(observedMetric, metric.value)
 		}
+		if metric.kind == "counter" && metric.name == "backend.range_stream.spill_outcome" && metric.value == int64(1) {
+			positiveOutcomes = append(positiveOutcomes, metric.tags)
+		}
 	}
 	require.Equal(t, []interface{}{int64(len(keys))}, observedMetric)
+	require.Equal(t, [][]metrics.T{
+		{metrics.Tag("path", "decoded"), metrics.Tag("outcome", "completed")},
+		{metrics.Tag("path", "decoded"), metrics.Tag("outcome", "quota_exhausted")},
+	}, positiveOutcomes)
 }

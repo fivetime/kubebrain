@@ -36,6 +36,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
@@ -44,6 +45,116 @@ const (
 	decodedRangeSpillRunBytes = decodedRangeStreamIndexBytes
 	decodedRangeSpillMergeFan = 16
 )
+
+const (
+	rangeStreamSpillPathDecoded        = "decoded"
+	rangeStreamSpillPathLatestMetadata = "latest_metadata"
+
+	rangeStreamSpillOutcomeCompleted      = "completed"
+	rangeStreamSpillOutcomeQuotaExhausted = "quota_exhausted"
+	rangeStreamSpillOutcomeCanceled       = "canceled"
+	rangeStreamSpillOutcomeFailed         = "failed"
+)
+
+var (
+	rangeStreamSpillPaths = []string{
+		rangeStreamSpillPathDecoded,
+		rangeStreamSpillPathLatestMetadata,
+	}
+	rangeStreamSpillOutcomes = []string{
+		rangeStreamSpillOutcomeCompleted,
+		rangeStreamSpillOutcomeQuotaExhausted,
+		rangeStreamSpillOutcomeCanceled,
+		rangeStreamSpillOutcomeFailed,
+	}
+)
+
+func initRangeStreamSpillMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitGauge("backend.range_stream.spill_active", int64(0))
+	for _, path := range rangeStreamSpillPaths {
+		for _, outcome := range rangeStreamSpillOutcomes {
+			_ = metricCli.EmitCounter("backend.range_stream.spill_outcome", int64(0),
+				metrics.Tag("path", path), metrics.Tag("outcome", outcome))
+		}
+	}
+	if registrar, ok := metricCli.(metrics.HistogramRegistrar); ok {
+		for _, path := range rangeStreamSpillPaths {
+			_ = registrar.RegisterHistogram("backend.range_stream.spill_wait_seconds", metrics.Tag("path", path))
+		}
+	}
+}
+
+// rangeStreamSpillAttempt owns the single shared spill admission slot. Its
+// fixed path/outcome vocabulary makes quota pressure distinguishable from
+// storage faults and caller cancellation without introducing unbounded metric
+// labels. finish must be deferred immediately after a successful acquisition.
+type rangeStreamSpillAttempt struct {
+	backend *backend
+	path    string
+	outcome string
+}
+
+func (b *backend) acquireRangeStreamSpill(ctx context.Context, path string) (*rangeStreamSpillAttempt, bool) {
+	started := time.Now()
+	emitWait := func() {
+		if b.metricCli != nil {
+			_ = b.metricCli.EmitHistogram("backend.range_stream.spill_wait_seconds", time.Since(started).Seconds(),
+				metrics.Tag("path", path))
+		}
+	}
+	if ctx.Err() != nil {
+		emitWait()
+		emitRangeStreamSpillOutcome(b.metricCli, path, rangeStreamSpillOutcomeCanceled)
+		return nil, false
+	}
+	select {
+	case b.decodedRangeSpillSem <- struct{}{}:
+		emitWait()
+		if b.metricCli != nil {
+			_ = b.metricCli.EmitGauge("backend.range_stream.spill_active", int64(1))
+		}
+		return &rangeStreamSpillAttempt{backend: b, path: path, outcome: rangeStreamSpillOutcomeFailed}, true
+	case <-ctx.Done():
+		emitWait()
+		emitRangeStreamSpillOutcome(b.metricCli, path, rangeStreamSpillOutcomeCanceled)
+		return nil, false
+	}
+}
+
+func emitRangeStreamSpillOutcome(metricCli metrics.Metrics, path, outcome string) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("backend.range_stream.spill_outcome", int64(1),
+		metrics.Tag("path", path), metrics.Tag("outcome", outcome))
+}
+
+func (a *rangeStreamSpillAttempt) recordError(err error) {
+	switch {
+	case status.Code(err) == codes.ResourceExhausted:
+		a.outcome = rangeStreamSpillOutcomeQuotaExhausted
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		a.outcome = rangeStreamSpillOutcomeCanceled
+	default:
+		a.outcome = rangeStreamSpillOutcomeFailed
+	}
+}
+
+func (a *rangeStreamSpillAttempt) complete() { a.outcome = rangeStreamSpillOutcomeCompleted }
+
+func (a *rangeStreamSpillAttempt) finish(ctx context.Context) {
+	if ctx.Err() != nil && a.outcome == rangeStreamSpillOutcomeFailed {
+		a.outcome = rangeStreamSpillOutcomeCanceled
+	}
+	if a.backend.metricCli != nil {
+		emitRangeStreamSpillOutcome(a.backend.metricCli, a.path, a.outcome)
+		_ = a.backend.metricCli.EmitGauge("backend.range_stream.spill_active", int64(0))
+	}
+	<-a.backend.decodedRangeSpillSem
+}
 
 // decodedUserRangeStreamFromSpill is the bounded-memory correctness path when
 // the in-memory ordering index cannot serve (overflow, old untrusted history,
@@ -74,21 +185,23 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 				return false
 			}
 		}
+		attempt, admitted := b.acquireRangeStreamSpill(ctx, rangeStreamSpillPathDecoded)
+		if !admitted {
+			return
+		}
+		defer attempt.finish(ctx)
 		fail := func(err error) {
-			if err == nil || ctx.Err() != nil {
+			if err == nil {
+				return
+			}
+			attempt.recordError(err)
+			if ctx.Err() != nil {
 				return
 			}
 			send(&proto.StreamRangeResponse{
 				RangeResponse: &proto.RangeResponse{Header: responseHeader(revision)},
 				Err:           streamerror.Encode(err),
 			})
-		}
-
-		select {
-		case b.decodedRangeSpillSem <- struct{}{}:
-			defer func() { <-b.decodedRangeSpillSem }()
-		case <-ctx.Done():
-			return
 		}
 
 		started := time.Now()
@@ -244,7 +357,9 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 		b.metricCli.EmitCounter("backend.range_stream.decoded_spill", 1)
 		b.metricCli.EmitGauge("backend.range_stream.decoded_spill_keys", observed)
 		b.metricCli.EmitHistogram("backend.range_stream.decoded_spill_latency_seconds", time.Since(started).Seconds())
-		send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{Header: responseHeader(revision)}})
+		if send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{Header: responseHeader(revision)}}) {
+			attempt.complete()
+		}
 	}()
 	return stream
 }
@@ -288,17 +403,19 @@ func (b *backend) latestMetadataRangeStreamFromKeyScan(
 				return false
 			}
 		}
+		attempt, admitted := b.acquireRangeStreamSpill(ctx, rangeStreamSpillPathLatestMetadata)
+		if !admitted {
+			return
+		}
+		defer attempt.finish(ctx)
 		fail := func(streamErr error) {
-			if streamErr != nil && ctx.Err() == nil {
+			if streamErr == nil {
+				return
+			}
+			attempt.recordError(streamErr)
+			if ctx.Err() == nil {
 				send(rangeStreamErrorEnd(revision, streamErr))
 			}
-		}
-
-		select {
-		case b.decodedRangeSpillSem <- struct{}{}:
-			defer func() { <-b.decodedRangeSpillSem }()
-		case <-ctx.Done():
-			return
 		}
 
 		started := time.Now()
@@ -451,7 +568,9 @@ func (b *backend) latestMetadataRangeStreamFromKeyScan(
 		b.metricCli.EmitGauge("backend.range_stream.latest_metadata_key_spill_bytes", spillBytes)
 		b.metricCli.EmitGauge("backend.range_stream.latest_metadata_key_spill_keys", observed)
 		b.metricCli.EmitHistogram("backend.range_stream.latest_metadata_key_spill_latency_seconds", time.Since(started).Seconds())
-		send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{Header: responseHeader(revision)}})
+		if send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{Header: responseHeader(revision)}}) {
+			attempt.complete()
+		}
 	}()
 	return stream, true, nil
 }

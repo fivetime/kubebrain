@@ -402,6 +402,9 @@ expect_info_metrics_boundary() {
   local raft_snapshot_metric_values
   local leader_state_rows
   local server_identity_rows
+  local spill_active_values
+  local spill_outcome_rows
+  local spill_wait_rows
 
   client_response="$(run_with_probe_timeout "$CURL" -sS -i "$client_metrics_url")"
   client_status_line="${client_response%%$'\n'*}"
@@ -692,6 +695,54 @@ expect_info_metrics_boundary() {
   fi
   if [[ "$info_metrics" != *"watch_range_prefilter_dropped{"* && "$info_metrics" != *"watch_range_prefilter_dropped "* ]]; then
     echo "info metrics mismatch: expected watch_range_prefilter_dropped" >&2
+    exit 1
+  fi
+  spill_active_values="$(awk '
+    $1 == "backend_range_stream_spill_active" || index($1, "backend_range_stream_spill_active{") == 1 { print $2 }
+  ' <<<"$info_metrics")"
+  if [[ -z "$spill_active_values" ]]; then
+    echo "info metrics mismatch: expected backend_range_stream_spill_active" >&2
+    exit 1
+  fi
+  if [[ "$spill_active_values" != "0" && "$spill_active_values" != "1" ]]; then
+    echo "info metrics mismatch: backend_range_stream_spill_active must be exactly one 0 or 1 sample, got ${spill_active_values//$'\n'/,}" >&2
+    exit 1
+  fi
+  spill_outcome_rows="$(awk '
+    $1 == "backend_range_stream_spill_outcome_total" || index($1, "backend_range_stream_spill_outcome_total{") == 1 {
+      metric = $1
+      path = ""
+      outcome = ""
+      if (match(metric, /path="[^"]+"/)) path = substr(metric, RSTART + 6, RLENGTH - 7)
+      if (match(metric, /outcome="[^"]+"/)) outcome = substr(metric, RSTART + 9, RLENGTH - 10)
+      if ((path != "decoded" && path != "latest_metadata") ||
+          (outcome != "completed" && outcome != "quota_exhausted" && outcome != "canceled" && outcome != "failed") ||
+          $2 !~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ || $2 < 0) {
+        print "invalid"
+      } else {
+        print path "\t" outcome
+      }
+    }
+  ' <<<"$info_metrics" | LC_ALL=C sort)"
+  if [[ "$spill_outcome_rows" != $'decoded\tcanceled\ndecoded\tcompleted\ndecoded\tfailed\ndecoded\tquota_exhausted\nlatest_metadata\tcanceled\nlatest_metadata\tcompleted\nlatest_metadata\tfailed\nlatest_metadata\tquota_exhausted' ]]; then
+    echo "info metrics mismatch: backend_range_stream_spill_outcome_total must contain exactly the two paths and four bounded outcomes, got ${spill_outcome_rows//$'\n'/,}" >&2
+    exit 1
+  fi
+  spill_wait_rows="$(awk '
+    $1 == "backend_range_stream_spill_wait_seconds_count" || index($1, "backend_range_stream_spill_wait_seconds_count{") == 1 {
+      metric = $1
+      path = ""
+      if (match(metric, /path="[^"]+"/)) path = substr(metric, RSTART + 6, RLENGTH - 7)
+      if ((path != "decoded" && path != "latest_metadata") ||
+          $2 !~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ || $2 < 0) {
+        print "invalid"
+      } else {
+        print path
+      }
+    }
+  ' <<<"$info_metrics" | LC_ALL=C sort)"
+  if [[ "$spill_wait_rows" != $'decoded\nlatest_metadata' ]]; then
+    echo "info metrics mismatch: backend_range_stream_spill_wait_seconds_count must contain exactly decoded and latest_metadata paths, got ${spill_wait_rows//$'\n'/,}" >&2
     exit 1
   fi
   if [[ "$info_metrics" != *"etcd_debugging_mvcc_pending_events_total{"* && "$info_metrics" != *"etcd_debugging_mvcc_pending_events_total "* ]]; then
@@ -2152,7 +2203,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_info_metrics_boundary "${ENDPOINT%/}/metrics" "$info_metrics_url" "$EXPECTED_STATUS_VERSION" "$expected_cluster_version" "$info_metrics_must_be_leader" "$expected_info_server_id_hex"
-    status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, apply_duration_metrics=optional-ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, raft_snapshot_file_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
+    status_summary+=", info_metrics=ok, client_metrics=404, server_identity_metrics=ok, grpc_metrics=ok, client_request_metrics=ok, network_metrics=ok, server_stream_metrics=ok, mvcc_operation_metrics=ok, range_duration_metrics=ok, apply_duration_metrics=optional-ok, runtime_metrics=ok, fd_metrics=ok, server_state_metrics=ok, snapshot_apply_metrics=ok, raft_heartbeat_metrics=ok, slow_apply_metrics=ok, raft_proposal_metrics=ok, read_index_metrics=ok, wal_metrics=ok, raft_snapshot_file_metrics=ok, backend_commit_metrics=ok, backend_bbolt_commit_phase_metrics=ok, backend_snapshot_metrics=ok, backend_defrag_metrics=ok, health_metrics=ok, auth_metrics=ok, quota_metrics=ok, mvcc_db_size_metrics=ok, mvcc_key_metrics=ok, mvcc_put_size_metrics=ok, mvcc_pending_event_metrics=ok, mvcc_revision_metrics=ok, mvcc_compaction_metrics=ok, mvcc_watch_metrics=ok, range_stream_spill_metrics=ok, lease_metrics=ok, promhttp_metrics=ok"
     if [[ -n "$INFO_ENDPOINTS" ]]; then
       post_info_status_json="$(run_etcdctl_with_probe_timeout --endpoints="$STATUS_ENDPOINTS" endpoint status -w json)"
       post_info_status_fence="$(status_info_selection_fence "$post_info_status_json" "$expected_status_endpoints")"

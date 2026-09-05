@@ -5417,6 +5417,12 @@ smoke、in-cluster apiserver smoke 以及 logical backup drill 也会在依赖�
   worker 失败。production 从 60 秒内样本生成 Ready Pod UID 级 current/10 分钟 increase，要求完整覆盖
   当前 Ready 副本并验证 current 为 `[0,2^53]` 精确整数、increase 有限同范围；任一增量 warning，缺失、
   陈旧或非法 telemetry 也不能解释为所有大范围读取、watch-cache 冷启动和 count-index 重建均成功。
+- `backend_range_stream_spill_active` 在每个 backend 构造时初始化为 0，并且只能为 0/1；
+  `backend_range_stream_spill_outcome_total{path,outcome}` 必须精确覆盖 `decoded|latest_metadata` 与
+  `completed|quota_exhausted|canceled|failed` 的八个有界组合，`backend_range_stream_spill_wait_seconds_count{path}`
+  必须覆盖两个路径。发布只读 gate 拒绝缺失、重复、未知标签、负数、NaN/Inf 或非法 active；这样即使稳定期
+  没有触发外排，也能证明 telemetry 合同已加载。已取消 context 在竞争空闲共享 slot 前直接记为 canceled，
+  不得创建临时工作区；quota_exhausted 与 failed 必须分离，非操作窗口 active 应回到 0。
 - `read_range_stream_failure{stage="backend|send|protocol"}` 在 RPC server 创建时初始化三类权威零值，补足
   底层 worker 指标看不到的公开流边界。production 只消费 60 秒新鲜 Ready Pod UID current/10 分钟 increase，
   要求 `3×Ready` 完整、current 为 `[0,2^53]` 精确整数、increase 有限同范围且拒绝未知 stage。backend/send
