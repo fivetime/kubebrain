@@ -71854,6 +71854,65 @@ kubectl 与基础 COPY 共享依赖 cache，private=0；候选引用、候选路
 后停止，真实集群则证明公开 Count/More 与内部 completed 分类。TiKV 侧逐请求 value-read 字节尚无低基数生产指标，百万 key、
 多客户端慢消费下的读取节省、延迟分位与跨 Region 曲线仍需在生产等价多节点环境量化。
 
+### A5742：把成功的 RangeStream Limit 停止从 caller cancellation 中独立分类
+
+A5741 的 Limit cancel cause 已能让 spill 把提前停止归为 `completed`，但普通 scanner 的错误出口仍只看
+`ctx.Err()`，会把同一成功停止记到 `backend.list.by.stream.canceled` 并输出“canceled by caller”。本项把 cause 判定下沉到
+scanner 包，新增低基数 counter `backend.list.by.stream.limit_satisfied`；只有取消真正中断 scanner 时才增加该计数，普通调用方
+取消继续记 `canceled`，真实扫描错误继续记 `failed`。backend 启动时权威初始化三项为 0；完整只读 gate 要求三项各且仅出现
+一次、值为非负数，并在成功摘要输出 `range_stream_outcome_metrics=ok`。
+
+确定性测试先复现成功 Limit 会错误增加 canceled，再验证 limit_satisfied=1 且 canceled/failed=0；门禁测试先证明缺项未被拒绝，
+再覆盖缺失、重复、负值和成功摘要。聚焦普通/race 各 `count=10` 为 `0.299/1.814s`，scanner/backend/server 包为
+`0.285/51.395/145.848s`，vet、shell 语法与 diff check 全绿。代码提交
+`a94ee8889f7d6593ee476c9bda5b5f423bccc841` 前 verifier 为 703=`170/193/180/160`，完整成功四分片为
+`269.977/464.328/314.355/596.648s`；提交后 verifier 不变，四分片为
+`267.820/465.743/321.168/597.799s`，全部 GREEN。并行高负载下曾使一个无关 final-heartbeat 测试提前命中普通 heartbeat
+围栏，隔离 `count=10` 和重跑所属完整分片均通过；另两处本项 gate fixture 遗漏在提交前被完整分片发现并修正。
+
+最终候选 `docker.io/library/kubebrain:a5742-a94ee888` 内嵌版本 `0.0.0-a94ee888`、完整 commit、build time
+`2026-09-05T16:48:30Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。第一次产物因人工提供的 build time 早于实际构建约一小时而
+主动拒绝，未进入集群；最终 OCI archive 914,706,432 bytes，SHA-256
+`dd84e68f3b0599177c38546f2dddc3ab008eb07a080ef172c2b8d17e7c78407b`。顶层 `index.json` SHA-256/runtime imageID、
+nested/spec index、platform manifest/config 分别为
+`sha256:0cc417a1644f10ff354b86c4cf8364452c41082835be56db6d74e9b6a2a2c143`、
+`sha256:24d67f0757bd8d0cb0ad9c7d72775a06d211b4311f2200f56a3ba04d811d75ce`、
+`sha256:f2d8567051592d660f7b224fe788c469e543d6af9d167105ccf02da2198d58b2`、
+`sha256:2390cc2e4d7f57c1ea3c463d1f2aa588d243d2a2bab95468c46330edb1503857`。attestation manifest/config 与 SPDX/SLSA
+layer 为 `sha256:4a0df7e8033f79dd4aa24ca7c60bf55e84ac78342ed4581808fabcf45fe000a6`/
+`sha256:ea7742bf402f658a9430259b016c2a8f255e47754e8d195664a3276d8efbfe7b`、
+`sha256:fde2f921ba9b41e5ff773730dfc28928d273cf73d8374d5a1113e0195e8443ac`/
+`sha256:daab4c525465ea4c2fc79d288987be2de9bf4318c1c12e5fdbf66d38fc7118ed`。78 blobs/78 条真实 descriptor edge、
+71 layers/diff IDs 全匹配；SPDX 2,592 packages/381 files/8,096 relationships，SLSA 仅四项固定 build args/三项固定
+materials，`65532:65532`、入口、labels 与镜像内 version 精确。
+
+稳定基线适用 gate 在 2 分钟预算下 GREEN，revision/HashKV/compact/term 为
+`74542/1922437493/66760/658`。以 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test
+原子投放候选并追加两项 spill 参数；补齐本地 Kind digest 引用后 generation/observed `895/895`、RV `8605463`，三 Pod
+runtime 精确为上述顶层 index hash、3/3 Ready、restart 0、24 参数。候选初始完整 HEAD gate GREEN，包含
+`range_stream_outcome_metrics=ok`，数据水位不变、term `660`。
+
+真实 TiKV 上第一次 5,000 个 8KiB value 的历史 revision/Limit=1 请求已令 leader 的 limit_satisfied 从 0 增到 1，但紧接的
+整段删除同时触发 2,000/s 限流与 1,024-key delete 上限；改为五段精确删除后前缀 Count=0、revision `74597`。第二个独立前缀
+以 3,000 个同尺寸 value 完整证明公开 RangeStream 在 revision `74627` 只返回 1 frame/1 KV、Count=3000、More=true；
+limit_satisfied 再从 1 增至 2，三 Pod canceled/failed 始终为 0，三段退避清理后 Count=0。最终 revision/index/applied
+`74630`，三副本 HashKV `1020690611`、compact `66760`；候选完整 gate 继续 GREEN。三轮九次 health
+`43.096–66.289ms`；三个 PD 均健康，三个 TiKV store 均 Up、各 18 Regions，六类异常 Region 均为 0；候选日志
+`1340/1221/340` 行、critical 0、spill workspace 0。严格 CSI/容量脚本按设计拒绝该单节点 Kind 的 hostPath PVC 和 98% 共享根盘，
+因此本轮沿用适用于该实验拓扑的 PD/TiKV/Region 直接检查，不把实验 hostPath 声称为生产 CSI 合格。
+
+以新鲜六类 test 回滚稳定 digest 和原 22 参数；generation/observed `896/896`、RV `8607748`，三 Pod 恢复稳定 runtime
+imageID、3/3 Ready、restart 0。稳定适用 gate GREEN：revision/HashKV/compact `74630/1020690611/66760`、term `663`，
+direct/gateway Hash 均 `3949744664`；三轮九次 health `37.155–55.483ms`，PD/TiKV、六类 Region 与稳定日志
+`566/614/393` 行、critical 0 继续全绿。
+
+最终关闭六个 listener，精确删除候选 Kind/Docker 五条引用、两个 OCI 构建产物、审计目录和临时探针。两次构建产生的 140 条
+剩余独占装配记录按子到父逐 ID 回收，再以 `--all` 精确回收两个 4.143GB 编译根与 38.79MB 源码 COPY 根；构建窗口只保留
+七条 module、kubectl 与基础 COPY 共享依赖 cache，private=0。候选引用、候选路径、listener 与三 Pod spill workspace 均为 0。
+
+本项关闭了成功 bounded LIST 被误报成客户端断连的告警缺口；百万 key、多客户端慢消费、跨 Region 时 cancel 生效延迟与指标
+基数/告警阈值仍需在生产等价多节点、独立 CSI 环境继续量化。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
