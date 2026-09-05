@@ -71529,6 +71529,73 @@ BuildKit record `hd8q0ua9thqmbeydlfzwh2qvb`；listener、候选 Kind/Docker 引�
 镜像、源码和数据卷未删除，根盘可用约 59GiB。Kind local-path 非 CSI、单节点承载全部 KubeBrain/PD/TiKV，以及百万 key、
 多 Region、慢客户端/取消下的独立 PVC 容量曲线仍是明确的生产验证缺口。
 
+### A5737：RangeStream 外排并发占用与结果分类指标
+
+A5736 已用独立目录和峰值预算限制外排，但生产侧仍只能从 bytes/keys/latency 推断结果，无法区分正常完成、配额拒绝、
+取消和内部失败，也无法直接观察共享 semaphore 是否被长期占用。本轮为 decoded-boundary 与 latest-metadata 两条外排路径
+增加同一组有界指标：`backend.range_stream.spill_active` gauge、按固定 `path`/`outcome` 枚举的
+`backend.range_stream.spill_outcome` counter，以及按固定 `path` 的 `backend.range_stream.spill_wait_seconds` histogram。
+两条 path 固定为 `decoded/latest_metadata`，四种 outcome 固定为
+`completed/quota_exhausted/canceled/failed`，启动时预建全部 8 个 counter child 和 2 个 histogram child，避免按错误文本或
+租户生成高基数 label。admission 先检查 context，再等待共享 slot；获取 slot 后 `active` 精确加一，结束时只记录一个结果并
+在释放 slot 前归零 gauge，避免 scrape 看到“结果已完成但 slot 仍空缺”的时序歧义。
+
+测试覆盖成功、1-byte quota、已取消 context、workspace 清理和 metrics 初始化；聚焦 backend race `count=10` 为
+`3.278s`，backend 全包 `50.937s`，CLI/Prometheus metrics、vet、shell syntax/diff check 及 readonly gate fixture 全绿。
+代码提交 `df8739f1` 前 verifier 为 703=`170/193/180/160`，四分片
+`276.864/478.308/332.940/605.376s`；提交后四分片
+`260.001/460.667/300.475/592.120s`。真实 Prometheus exposition 随后证明项目 wrapper 保留逻辑 counter 名
+`backend_range_stream_spill_outcome`，不会自动追加 `_total`；修正 gate fixture/文档的提交 `a20cc719` 前完整 readonly
+runner `153.382s`，四分片 `248.364/441.362/300.096/571.941s`，提交后 verifier 仍为 703，四分片
+`247.031/439.180/298.774/571.332s`，全部 GREEN。
+
+首次候选 `a5737-df8739f1` 只用于发现上述 exposition 差异，随后被最终候选完全取代。最终
+`docker.io/library/kubebrain:a5737-a20cc719` 内嵌完整 commit
+`a20cc7196d3a8db787f2f796a9b814799c03f7ee`、build time `2026-09-05T08:03:40Z`、Go `1.26.5`、
+`linux/amd64` 与 TiKV。OCI archive 为 914,700,800 bytes，SHA-256
+`9ba059c791b25a2c7be218c0cc28107abf5d246e0afeb048a8cb392921df57ef`；顶层 `index.json` SHA-256/runtime
+imageID、nested index、platform manifest/config 分别为
+`sha256:5e74c39093d016fd5234ce1d4b249b9d03c02fb6c482e6c97afb15660525ea9d`、
+`sha256:9cb52143dca6688a80e9ae627d3f4b924520a2b8a107f0305a4387cae11a3bf4`、
+`sha256:2cb82a28409955f5f1f3d9d3ef4b7bfc3772a0c69bfec8455a3d69fa5984e6ef`、
+`sha256:4966867bf24bb9ad233b26f917011ad7697c1d0ea1e7be22d6476153f007ec9a`。attestation manifest/config 与
+SPDX/SLSA layer 为 `sha256:3d8d589c704778844a102d11765dc692890f743691501f54f7593a50281c97c6`/
+`sha256:b11a402ebb90f9a372f977a3cb7e7780279af64d290e621815649247d7104fa1`、
+`sha256:f9d09114406ccdb4491b98534fa3c65372bdf495b9646099659cd1e716661f21`/
+`sha256:b2e2ab33b8de8630f08c1aa35105a0cb841a96c1bc2caae261bf38aa58330c56`。只沿 OCI index/manifest
+descriptor 图审计后，78 条 edge/blob 的 size/hash、71 layers/diff IDs 全部一致；SPDX 为 2,592 packages/381 files/
+8,096 relationships，SLSA 只有四项固定 build args 和三项固定 materials，`65532:65532`、入口、labels 与 runtime
+version 均匹配。两次把 SPDX/SLSA 文档内部 digest 误当 OCI descriptor 的早期审计退出结果作废，未用于放行。
+
+稳定基线为 revision/index/applied `67006`、HashKV `1097477549`、direct Hash `2528215154`、compact `66760`、
+term `615`。最终候选以 UID/resourceVersion/generation/container/current image/full args 六类 JSON test 原子投放；
+generation `874` 后三 Pod runtime 均为上述顶层 digest、3/3 Ready、restart 0。把 count-index 上限临时降为 1 后，三个
+512KiB probe value 触发 latest-metadata 外排，leader 精确得到 `completed=1`、wait count=1、`active=0`，其余有界
+label 行均为 0。1ms 客户端取消得到 `Canceled`，但指标没有增加，说明取消发生在服务端进入外排前；因此只把已有
+取消竞态单测作为服务端结果分类证据，不把该客户端结果夸大为 live canceled counter 证据。
+
+随后以同类六项原子 test 把 spill quota 临时降为 1 byte，generation `876`；同一 keys-only stream 返回
+`ResourceExhausted`、`frames=0`、`kvs=0`，错误给出 `used 0, next operation requires up to 140`。leader 指标
+`latest_metadata/quota_exhausted=1`、wait count=1、`active=0`，三个 Pod spill workspace 均为空。删除三键推进
+revision `67010`，恢复 500 万/64Gi 后 generation `877`。最终候选完整 gate（含 info metrics）GREEN：
+revision/index/applied `67010`、HashKV `1183559713`、direct Hash `1099065000`、compact `66760`、term `625`；
+三轮九次单端点 health 的 etcd 服务端耗时 `54.752–81.832ms`（墙钟 `97–126ms`）。三个 PD 均 health=true，三个
+TiKV store 均 Up、各 13 Regions，miss/extra/pending/down/offline/learner 六类异常 region 全为 0；候选日志
+`541/565/267` 行、critical 0，三 Pod Ready、restart 0、spill workspace 0。
+
+以同类六项原子 test 从候选 generation `877`/RV `8540289` 回滚稳定 digest；generation/observed `878/878`、
+RV `8541204`，三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、3/3 Ready、restart 0、原 22 参数不变。
+稳定适用 gate（仅排除未来版本新增的 info metric 合同）GREEN，revision/HashKV/direct Hash/compact 保持
+`67010/1183559713/1099065000/66760`、term `627`。最终关闭六个 port-forward，精确删除首次和最终候选的
+Docker/Kind tag、digest、import/config aliases、两个各约 1.8GiB OCI/审计目录和临时 probe；按精确 cache ID 回收
+135 条独占装配记录 `5.717GB`，再以 `--all` 加四个精确 ID 回收两条源码/编译根 `8.363GB`，共享依赖 cache 保留。
+listener、候选 Kind/Docker 引用、候选路径和候选 cache ID 均为 0，根盘可用约 58GiB。
+
+本项关闭了外排 slot 占用不可见、结果无法分类以及配额错误难以告警三项可观测性缺口；百万 key、多 Region、慢客户端和
+服务端已进入外排后的真实取消仍需在独立 CSI spill PVC 的生产等价环境量化，Kind local-path 非 CSI、单节点承载全部
+KubeBrain/PD/TiKV 也继续作为明确生产验证缺口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
