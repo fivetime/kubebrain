@@ -71379,9 +71379,78 @@ compact `66760`、term `598`；三轮九次 health `40.9–50.9ms`，三个 stor
 审计展开目录以及最终构建的独占 4.143 GB BuildKit record；根盘可用约 5.6 GiB。稳定镜像、源码、数据卷与
 共享 cache 未删除。Kind local-path 非 CSI、单节点承载全部 Pod、宿主仅剩低个位 GiB 的容量风险仍是生产阻塞项。
 
-A5734 只覆盖 latest unary `ListKeysOnly` 的 count-index miss。`RangeStreamKeysOnly` 在 index ready 时继续使用
-metadata 快路，但 miss 时仍走普通 `MetadataScanner`，可能搬运 payload；下一里程碑需要用有界外部排序与小索引
-join 把 streaming fallback 也改为真正 key-only，并验证百万 key 下的 Region、内存与背压行为。
+A5734 只覆盖 latest unary `ListKeysOnly` 的 count-index miss；当时 `RangeStreamKeysOnly` 在 index miss 时仍走普通
+`MetadataScanner`，可能搬运 payload。该 streaming 差距已由 A5735 的 key-only Scan、有界外排与小索引 join 补齐；
+百万 key 下的 Region、临时盘、内存与背压验证继续保留为规模门禁。
+
+### A5735：latest KeysOnly stream 的有界 key-only fallback
+
+对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `rangeStream`：upstream 对每个 chunk 执行 revision-pinned Range，
+KeysOnly 仍保持 key 顺序和 MVCC lifecycle metadata，但不返回 value。KubeBrain 的 count-index metadata 快路已经满足
+该合同；index rebuild/overflow 时，旧 fallback 虽在 scanner receiver 内投影 value，却已让 TiKV Scan RPC 搬运完整
+inline object。A5735 在 count-index miss 后、普通 `MetadataScanner` 前增加 latest-only fallback：在一个固定 TiKV
+snapshot timestamp 上用 `storage.KeyIterator`/`SetKeyOnly(true)` 扫描完整物理 object-key 范围，包含 old-writer 版本和
+孤立行；沿用已有 SHA-256 校验的外排器，以 300 keys/约 1.5 MiB run 内存上限、16 路固定 fan-in 做去重和 user-key
+排序，再逐页批量连接 revision-index/latest-metadata 小行。缺失、陈旧或损坏 metadata 仍只对对应 key 读取权威 object，
+并复用有界异步回填；tombstone 在 join 阶段抑制。它不假设 rollout 期间 metadata directory 完整，也不把全 keyspace
+留在内存中。decoded-boundary spill 与 metadata key spill 共享每副本唯一 semaphore，避免两类异常全扫并发放大 TiKV
+和临时盘压力；新增 hit、spill bytes/keys/latency 指标并写入 observability 合同。
+
+tests-only RED 在现状准确得到 `keyIterReads=0`；实现后同一测试覆盖三个 2 MiB value、`$` 边界、302 个候选 key 的
+跨页排序、tombstone、缺失 metadata 的唯一 object fallback/回填、每帧 `More` 与唯一终止帧，并确认普通 value-carrying
+iterator 为 0、spill 目录终态为空。四项聚焦测试连续 10 次 `1.609s`，聚焦 race `2.162s`；backend 全包
+`49.937s`、storage 全包与 vet 全绿。首次并行 server 全包在约 `147.725s` 结束时出现一个被海量日志截断的既有时序
+失败；使用 `go test -json` 对同一包结构化完整重跑后无失败，未用局部测试替代。代码提交
+`49d167226c1a76efeba30ec45bb91d95db533fd3` 前 verifier 精确覆盖 703 项 `170/193/180/160`，四分片
+`265.667/458.572/315.402/581.625s` 全绿；提交后 verifier 不变，四分片
+`253.304/446.061/303.809/572.978s` 再次全绿。
+
+候选 `docker.io/library/kubebrain:a5735-49d16722` 内嵌版本 `0.0.0-49d16722`、完整 commit、build time
+`2026-09-05T03:01:01Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI archive 为 914,682,880 bytes，SHA-256
+`a89f721af79b02943581eda717fad87c3511b44241772d283b8cfd106774cd5d`；顶层 `index.json` SHA-256、nested index、
+platform manifest/config 分别为 `sha256:88aa2e89c6a65ebd5bf080b5eb4f10a369d19172aa954c8e219d2eb143b915fe`、
+`sha256:faa22d00d05ce4f97c688671282ae2a27344ed53bba5e108dccd9a90cfc3686f`、
+`sha256:fe86de11ab6459e3a74e7c5ae8f5d28bb4a6c0d9263c6ac540c5b797465165a7`、
+`sha256:fa53ee7723d4973acabcbc5e97239af4bea4e8b37915a495baa4f028707aeed7`。attestation manifest/config 为
+`sha256:609d735c182ad0ab4f594b7a6939b5eddfbb0cc395c2df0e304fd7dd923d782b`/
+`sha256:380ac42f27e4a2e8b7c828dc86faf25322d5399458ac3af06780c27b00088567`，SPDX/SLSA layer 为
+`sha256:0e8a5f4069baca08ba9ab24a16056ab5c5a0e4f3873bb761bd7998d44e8c56fd`/
+`sha256:d71736ae623c070a8ba1670836d5fab1f2bfb10b0c40e4e21cb05d12e77f4922`。78 blobs 和 78 条 descriptor
+edge 均逐项通过 content hash/size，71 layers/diff IDs 一致；SPDX 为 2,592 packages/381 files/8,096
+relationships，SLSA 只有四项预期 build args 与三项固定 materials。runtime `version`、`65532:65532`、入口和
+四项 OCI labels 全部与构建输入匹配。
+
+稳定适用基线在容量事件前后均通过；旧稳定镜像仅按预期缺新代码代际的 `watch_range_prefilter_dropped` info metric，
+排除该未来合同后 revision/index/applied `66998`、HashKV `3431185610`、direct Hash `2229346391`、compact
+`66760`，恢复后 term `599`。以 UID/resourceVersion/generation/container/current image/full 22 args 六类原子
+JSON test 从 generation `864` 投放候选，generation/observed `865/865`、3/3 Ready、restart 0。刷新 rollout 后
+失效的六个 port-forward 后，完整候选 gate（含 info metrics）GREEN，term `601`。
+
+专属探针以同类六项原子 test 把 `--count-index-max-keys=5000000` 临时改为 `=1`，generation `866`；写入三个
+512 KiB `/a5735/keyspill/{0,1,2}` 后 revision 为 `67001`。三个公共 endpoint 的 raw etcd 3.7
+`RangeStream{KeysOnly:true,Serializable:true}` 都返回三个严格升序 key、Value 长度全为 0、lifecycle metadata 合法且
+终止 identity/count 完整。服务按设计把公开 stream 代理到当前 mutation leader，因此 leader 指标准确记录
+`backend_range_stream_latest_metadata_index_miss=3`、`key_scan_hit=3`、spill histogram count=3，最终有序 run
+86 bytes、观察物理版本键数 6；所有 Pod 的 `/tmp/.kubebrain-range-order-*` 终态为空。删除三键推进 revision `67002`，
+前缀/lease/alarm 均为空；参数恢复 500 万后 generation `867`。候选终态完整 gate GREEN：revision/index/applied
+`67002`、HashKV `2925771455`、direct Hash `2618518429`、compact `66760`、term `605`；三轮九次 health
+`57.071–69.796ms`，三个 TiKV store 全部 Up、各 13 Regions，pending/down/miss/extra/learner/offline 为 0，候选
+日志 `433/467/308` 行、筛选 `12/7/6`、critical 0。
+
+以同类六项原子 test 回滚稳定 digest，generation/observed `868/868`；三 Pod runtime imageID 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、3/3 Ready、restart 0、22 参数不变。
+稳定终态 gate GREEN，revision/HashKV/direct Hash/compact 保持 `67002/2925771455/2618518429/66760`、term `607`；
+三轮九次 health `59.385–146.926ms`（首个请求冷启动，随后最高 `71.948ms`），三个 store 仍 Up/13 Regions、六类
+异常为 0，日志 `367/273/443`、筛选 `11/5/10`、critical 0。
+
+本轮唯一 4.143 GB BuildKit record 已按 ID 精确删除；但导入候选时宿主从约 2 GiB 可用降到 0，三个稳定 Pod
+readiness 暂时为 0。只读定位确认 `/root/.cache/go-build` 为 64 GiB 可重建测试缓存，执行标准
+`go clean -cache -testcache` 后恢复约 63 GiB，三个 Pod 无重启自动恢复 Ready，重新通过基线后才投放候选。最终关闭
+六个 port-forward，并精确删除候选 Kind tag/top/nested/platform/config/import 六个名称、OCI/审计展开、临时 probe 和
+测试 value；listener、候选 Pod/Kind 引用、临时文件均为 0，根盘约 65 GiB 可用。稳定镜像、源码、数据卷和旧共享
+BuildKit cache 未删除。Kind local-path 非 CSI、单节点承载全部 Pod，以及候选导入可令节点瞬时耗尽的容量风险仍是明确
+生产阻塞项；规模门禁还需给 spill 配置受配额 emptyDir/PVC，并在百万 key、多 Region、慢客户端和取消场景量化临时盘、
+内存、TiKV scan latency 与 backpressure。
 
 ## 提交规则
 
