@@ -71938,6 +71938,70 @@ port-forward listener 与该构建窗口的独占 cache 均已清零。纠正后
 本项没有新增能力；它纠正了审计方法：RangeStream 兼容性判断必须先以公开 gRPC validator 和 integration contract 定界，再
 审计内部执行路径。custom sort 与 revision filter 均继续保持 upstream `Unimplemented`，不得作为待补产品能力。
 
+### A5744：拒绝 follower 转发中不可能出现的空 RangeStream frame
+
+继续对照固定 upstream `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 时，先审计了 Count 响应 header
+revision 是否必须等于请求 revision；真实反例证明该假设不成立：固定 revision `3` 的历史 RangeStream 可合法返回当前
+header revision `4`，因此相关未提交修改全部撤销。随后从 `EtcdServer.rangeStream` 的推进条件重新核对 wire shape：上游只有
+Range 返回至少一个 KV 时才推进游标，完成循环的最后一批 KV 直接携带 terminal envelope。因此非终态空 frame 永远不可能，
+已经发送过数据后再出现一个空 terminal metadata frame 也永远不可能；旧 follower proxy 却会接受并转发两者，既可造成上游
+wire shape 分歧，也允许故障/恶意 peer 用空 frame 做无界资源放大。
+
+`pkg/server/etcd/range_stream_proxy_validation.go` 现在把上述两种 frame 都判为 `DataLoss`：空非终态 frame 立即拒绝；非
+CountOnly 且已有数据时，空 terminal metadata frame 也立即拒绝。`pkg/server/etcd/rangestream_test.go` 新增两个确定性负例，
+并为 payload fixture 写入合法的 cluster/member/term 身份，确保测试真正命中 payload validator。TDD RED 时两种输入都被错误
+当成成功；修复后聚焦普通/race 各 `count=10` 为 `2.075/7.869s`，vet 与 diff check 全绿。代码提交
+`3568832f25c2242643648e46da416395429f9809` 前 verifier 为 703=`170/193/180/160`；四分片首次为
+`258.406/455.746/RED/589.248s`，其中 shard 2 的无关 `TestValidateTiKVRegionHealth` fake kubectl 在并发负载下命中
+`PROBE_TIMEOUT=1s`。该测试隔离 `count=1` 为 `91.608s`，所属精确 shard 2 重跑 `296.063s` GREEN；提交后 verifier 不变，
+四分片为 `251.302/440.032/296.474/570.343s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5744-3568832f` 内嵌版本 `0.0.0-3568832f`、完整 commit、build time
+`2026-09-05T21:11:01Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI archive 为 914,708,992 bytes，SHA-256
+`862003bf5102d721b9bab28595ead7c3f6433eaf04feaffa0d65de7d35be3d31`；顶层 `index.json` SHA-256/runtime imageID、
+nested/spec index、platform manifest/config 分别为
+`sha256:7274a39fc0840c5de3d5f831a7b3760ca4f34a48409e4f70f25d3306e278268a`、
+`sha256:15529e10ec36099368dba165e0d23df55264b499b066031d63d277620485833a`、
+`sha256:f284e95b0ba7e3ca8e1b444d48ead84c88c1d433f71fd32306ee95ed602bdf61`、
+`sha256:a6e669d033e75441587ed72e02b5d7463cb71fd89c05e6991815fefa619c339d`。attestation manifest/config 与
+SPDX/SLSA layer 为 `sha256:48df65d690ece0d228f09dabdd9553b6bdc536ce289f23161582099895173a5c`/
+`sha256:cd2153e34d7241fda079627b12e0cd0e88c80b3dbfdf7fe15c8de4daf2c85cf3`、
+`sha256:c8d3ce65f800c13e105aa2aacaa7775a444723b99b9f8b25c2a845c7e6f5a4c5`/
+`sha256:a795c10796ea8b2d9310b4aa48a9ae13772f240a2f3ac8d0b33b347e882ec9c7`。78 blobs/78 条真实 descriptor edge
+逐项 size/hash 全匹配，71 layers/diff IDs 全匹配；SPDX 2.3 含 2,592 packages/381 files/8,096 relationships，
+SLSA 唯一 subject 精确绑定 platform manifest、四项固定 build args 与三项固定 materials，`65532:65532`、入口和 labels
+均正确。
+
+稳定基线适用 gate 在 revision/HashKV/compact/term `74638/816093835/66760/667` 上 GREEN；稳定镜像早于本项新增的
+`watch_range_prefilter_dropped` 指标，所以稳定基线只排除该未来 info metric 合同。以 UID/resourceVersion/generation/
+container/current image/full 22 args 六类 JSON test 原子投放候选；generation/observed `899/899`、RV `8636173`，三 Pod
+runtime 精确为上述顶层 index hash、3/3 Ready、restart 0、22 参数。候选初始和最终完整 HEAD gate 均 GREEN，最终
+revision/HashKV/compact/term 为 `74696/1608520263/66760/668`，direct/gateway Hash 均 `1846430328`，并包含当前
+`range_stream_outcome_metrics=ok` 与 `range_stream_spill_metrics=ok`。
+
+官方 `client/v3` rollout probe 在集群内以 digest-pinned 候选镜像、Downward API Pod UID、三个预留 lease ID 和独占前缀运行。
+完整 runner 因该长期 Kind StatefulSet 仍使用旧 `preStop/readiness/securityContext` 排空契约而在任何写入前拒绝；改用等价的
+最小非 root Pod 后，第一次参数校验又因非 canonical 前缀退出码 2，同样未连接数据面。修正为
+`/kubebrain-rollout-availability/a5744-range-envelope/` 后结果为 `ok=10 fail=0`、公开 Watch 10、三个直连 Watch 各 10、
+RangeStream 201、完整 16MiB Snapshot 1、stream retry/partial retry 均 0；最大 Put-to-Watch/direct 延迟均 130ms，PD TSO
+小于 1ms、TiKV Region 8ms。补偿模式随后返回 `status=absent, keys/users/roles/leases=0`，两个 Pod 均以 UID 和
+resourceVersion 前置条件删除。候选三轮九次 health 为 `53.443–68.600ms`，三 Pod critical 日志与 spill workspace 均为 0；
+三个 TiKV store 全部 Up，21 Regions 的 down/pending peer 均为 0。该单节点 Kind 仍是 hostPath 实验拓扑，不把这些检查声称为
+生产 CSI/故障域合格。
+
+以新鲜六类 JSON test 从候选 generation `899`/RV `8636173` 回滚稳定 digest；generation/observed `900/900`、RV
+`8640356`，三 Pod 恢复稳定 runtime imageID
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、3/3 Ready、restart 0、22 参数。稳定适用
+gate GREEN：revision/HashKV/compact `74696/1608520263/66760`、term `671`，direct/gateway Hash 均 `1846430328`；
+三轮九次 health 为 `51.126–73.155ms`，critical 与 spill workspace 继续为 0。
+
+最终关闭六个 listener，精确删除候选 Kind/Docker 四个引用、三个测试 Pod 对象以及 1,829,354,187 bytes OCI/审计临时目录。
+构建时间窗内 80 条候选 cache 先按单 ID、再按反向依赖拓扑回收；最后九条 internal/frontend 记录仅在单 ID 过滤上追加
+`--all` 后删除。候选 cache、镜像引用、临时路径、probe Pod、listener 与三 Pod spill workspace 最终均为 0。
+
+本项关闭 follower 接受上游不可能产生的空 frame 所造成的协议分歧与资源放大缺口；多节点独立 CSI、跨 Region 网络故障、
+恶意 peer 持续注入畸形流时的连接级限流和告警阈值，仍需在生产等价环境继续量化。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
