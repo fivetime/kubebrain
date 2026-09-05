@@ -264,3 +264,64 @@ func TestExternalKeySorterCancellationCleansPartialMerge(t *testing.T) {
 	_, err = os.Stat(directory)
 	require.ErrorIs(t, err, os.ErrNotExist)
 }
+
+type cancelAfterErrChecksContext struct {
+	context.Context
+	cancel    context.CancelFunc
+	remaining int
+}
+
+func (c *cancelAfterErrChecksContext) Err() error {
+	if c.remaining == 0 {
+		c.cancel()
+	} else {
+		c.remaining--
+	}
+	return c.Context.Err()
+}
+
+func TestMergeKeyRunsCancellationRemovesPartialOutput(t *testing.T) {
+	directory := t.TempDir()
+	inputs := make([]string, 0, 2)
+	for run, keys := range [][][]byte{
+		{[]byte("a"), []byte("c")},
+		{[]byte("b"), []byte("d")},
+	} {
+		path := filepath.Join(directory, fmt.Sprintf("input-%d", run))
+		writer, err := createKeyRun(path)
+		require.NoError(t, err)
+		for _, key := range keys {
+			require.NoError(t, writer.Write(key))
+		}
+		require.NoError(t, writer.Close())
+		inputs = append(inputs, path)
+	}
+
+	output := filepath.Join(directory, "partial-output")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := mergeKeyRuns(&cancelAfterErrChecksContext{
+		Context:   ctx,
+		cancel:    cancel,
+		remaining: 1,
+	}, inputs, output)
+	require.ErrorIs(t, err, context.Canceled)
+	_, err = os.Stat(output)
+	require.ErrorIs(t, err, os.ErrNotExist,
+		"a canceled merge must not leave a checksum-valid truncated run")
+}
+
+func TestMergeKeyRunsCancellationPrecedesInputIO(t *testing.T) {
+	directory := t.TempDir()
+	malformed := filepath.Join(directory, "malformed-input")
+	require.NoError(t, os.WriteFile(malformed, []byte("short"), 0o600))
+	output := filepath.Join(directory, "output")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := mergeKeyRuns(ctx, []string{malformed}, output)
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotContains(t, err.Error(), "too short for checksum")
+	_, err = os.Stat(output)
+	require.ErrorIs(t, err, os.ErrNotExist)
+}

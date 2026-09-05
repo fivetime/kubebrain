@@ -968,6 +968,9 @@ func mergeKeyRuns(ctx context.Context, inputs []string, output string) (retErr e
 	}()
 	items := make(keyRunHeap, 0, len(inputs))
 	for _, input := range inputs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		reader, err := openKeyRun(input)
 		if err != nil {
 			return err
@@ -980,14 +983,29 @@ func mergeKeyRuns(ctx context.Context, inputs []string, output string) (retErr e
 		if err != nil {
 			return err
 		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		items = append(items, keyRunHeapItem{key: key, reader: len(readers) - 1})
 	}
 	heap.Init(&items)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	writer, err := createKeyRun(output)
 	if err != nil {
 		return err
 	}
-	defer func() { retErr = errors.Join(retErr, writer.Close()) }()
+	writerClosed := false
+	keepOutput := false
+	defer func() {
+		if !writerClosed {
+			retErr = errors.Join(retErr, writer.Close())
+		}
+		if !keepOutput {
+			retErr = errors.Join(retErr, os.Remove(output))
+		}
+	}()
 	var previous []byte
 	for items.Len() != 0 {
 		if err := ctx.Err(); err != nil {
@@ -1007,5 +1025,14 @@ func mergeKeyRuns(ctx context.Context, inputs []string, output string) (retErr e
 			return err
 		}
 	}
+	if err = writer.Close(); err != nil {
+		writerClosed = true
+		return err
+	}
+	writerClosed = true
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	keepOutput = true
 	return nil
 }
