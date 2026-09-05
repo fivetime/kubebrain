@@ -42,6 +42,17 @@ func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.Range
 	if !terminal && (response.GetCount() != 0 || response.GetMore()) {
 		return fail("returned aggregate metadata before the terminal frame")
 	}
+	// Upstream advances the next key only after a Range response with KVs and
+	// attaches the envelope to the Range response that finishes the loop. Thus
+	// an empty frame is valid only as the sole terminal frame for an empty range
+	// (or for CountOnly). Rejecting the other shapes also prevents a bad peer
+	// from keeping a follower stream alive with unbounded empty messages.
+	if !terminal && len(response.GetKvs()) == 0 {
+		return fail("returned an empty non-terminal frame")
+	}
+	if terminal && !v.request.GetCountOnly() && v.sentCount > 0 && len(response.GetKvs()) == 0 {
+		return fail("returned terminal metadata without final key-values")
+	}
 	for _, kv := range response.GetKvs() {
 		if v.request.GetCountOnly() {
 			return fail("returned key-values for a count-only request")

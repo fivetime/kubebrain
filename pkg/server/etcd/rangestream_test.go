@@ -911,6 +911,8 @@ func TestFollowerRangeStreamRejectsInvalidProxyPayload(t *testing.T) {
 		{name: "invalid lifecycle", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a")}}}}, message: "forwarded range stream returned invalid key-value revision metadata"},
 		{name: "future key-value", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Revision: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{{Key: []byte("a"), CreateRevision: 2, ModRevision: 2, Version: 1}}}}, message: "forwarded range stream returned a key-value newer than the requested snapshot"},
 		{name: "early aggregate metadata", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned aggregate metadata before the terminal frame"},
+		{name: "empty non-terminal frame", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{}, {Header: txnHeader(2)}}, message: "forwarded range stream returned an empty non-terminal frame"},
+		{name: "empty terminal after data", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Kvs: []*mvccpb.KeyValue{validKV("a")}}, {Header: txnHeader(2), Count: 1}}, message: "forwarded range stream returned terminal metadata without final key-values", sent: 1},
 		{name: "count below sent", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z")}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned an invalid terminal count"},
 		{name: "inconsistent more", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), Limit: 1}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 2, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned inconsistent terminal count and more metadata"},
 		{name: "count-only payload", request: &etcdserverpb.RangeRequest{Key: []byte("a"), RangeEnd: []byte("z"), CountOnly: true}, frames: []*etcdserverpb.RangeResponse{{Header: txnHeader(2), Count: 1, Kvs: []*mvccpb.KeyValue{validKV("a")}}}, message: "forwarded range stream returned key-values for a count-only request"},
@@ -923,12 +925,23 @@ func TestFollowerRangeStreamRejectsInvalidProxyPayload(t *testing.T) {
 			rec := &recordingMetrics{}
 			server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
 			defer cleanup()
+			frames := make([]*etcdserverpb.RangeResponse, 0, len(test.frames))
+			for _, frame := range test.frames {
+				if frame.Header != nil {
+					identity := proxiedResponseHeader(server, frame.Header.Revision)
+					frame.Header.ClusterId = identity.ClusterId
+					frame.Header.MemberId = identity.MemberId
+					frame.Header.RaftTerm = identity.RaftTerm
+					server.staticMembers = []*etcdserverpb.Member{{ID: identity.MemberId}}
+				}
+				frames = append(frames, frame)
+			}
 			server.peers = testPeerService{
 				proxyEnabled: true,
 				epochFn:      func() (uint64, bool) { return 7, false },
 				rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
-					ch := make(chan etcdproxy.RangeStreamResult, len(test.frames))
-					for _, frame := range test.frames {
+					ch := make(chan etcdproxy.RangeStreamResult, len(frames))
+					for _, frame := range frames {
 						ch <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{RangeResponse: frame}}
 					}
 					close(ch)
