@@ -385,9 +385,6 @@ func (s *RPCServer) rangeStreamOnce(
 	if !isDefaultRangeStreamOrdering(r) {
 		return status.Error(codes.Unimplemented, "RangeStream does not support custom sort orders")
 	}
-	if hasRangeRevisionFilters(r) {
-		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
-	}
 	_, protectedSerializable := backend.SerializableCheckpointFromContext(ctx)
 	proxyLatestSerializable := r.Serializable && r.Revision <= 0 && !protectedSerializable && !s.peers.IsLeader()
 	if (!r.Serializable || proxyLatestSerializable) && s.peers.EtcdProxyEnabled() {
@@ -624,14 +621,16 @@ func (s *RPCServer) rangeStreamOnce(
 		return status.Error(codes.Unavailable, "range stream backend returned a nil result channel")
 	}
 	var (
-		terminalSeen bool
-		headerRev    int64
-		chunks       int
-		sentCount    int64
-		totalCount   int64
-		dataRevision uint64
-		pending      *etcdserverpb.RangeStreamResponse
+		terminalSeen  bool
+		headerRev     int64
+		chunks        int
+		sentCount     int64
+		totalCount    int64
+		matchingCount int64
+		dataRevision  uint64
+		pending       *etcdserverpb.RangeStreamResponse
 	)
+	revisionFiltered := hasRangeRevisionFilters(r)
 	sendResponse := func(response *etcdserverpb.RangeStreamResponse) error {
 		// etcd executes a revisioned Range for every chunk. If compaction
 		// advances past the pinned snapshot after a partial response, the
@@ -689,6 +688,10 @@ backendChunks:
 			terminalSeen = true
 		}
 		totalCount += int64(len(chunk.resp.Kvs))
+		if !terminal && revisionFiltered {
+			filterRangeKvs(chunk.resp, r)
+		}
+		matchingCount += int64(len(chunk.resp.Kvs))
 		// Scanner.More is an internal "another scanner chunk follows" marker.
 		// etcd's wire More means the client Limit truncated the requested range;
 		// an unlimited stream therefore reports false on every chunk. The terminal
@@ -697,7 +700,11 @@ backendChunks:
 		if terminal {
 			chunk.resp.Header = txnHeader(int64(streamHeaderRevision))
 			chunk.resp.Count = totalCount
-			chunk.resp.More = r.Limit > 0 && totalCount > sentCount
+			if revisionFiltered {
+				chunk.resp.More = r.Limit > 0 && matchingCount > sentCount
+			} else {
+				chunk.resp.More = r.Limit > 0 && totalCount > sentCount
+			}
 		} else if r.Limit > 0 {
 			remaining := r.Limit - sentCount
 			switch {
@@ -708,8 +715,9 @@ backendChunks:
 			}
 		}
 		if !terminal && len(chunk.resp.Kvs) == 0 {
-			// The limit was already satisfied; drain this scanner chunk only to
-			// compute the terminal Count/More without retaining or sending it.
+			// A revision filter removed the whole scanner chunk, or the limit was
+			// already satisfied. Drain without retaining or sending it so terminal
+			// Count/More can still be computed exactly.
 			continue
 		}
 		sentCount += int64(len(chunk.resp.Kvs))
@@ -753,11 +761,11 @@ backendChunks:
 			}
 			pending = response
 		}
-		if r.Limit > 0 && sentCount >= r.Limit {
-			// Upstream stops fetching values as soon as Limit is satisfied and
-			// runs Count over the fixed-revision remainder. Counting the complete
-			// original interval is equivalent and lets our count index answer in
-			// bounded memory without draining the value stream.
+		if r.Limit > 0 && sentCount >= r.Limit && !revisionFiltered {
+			// Without revision filters, upstream stops fetching values as soon as
+			// Limit is satisfied and runs Count over the fixed-revision remainder.
+			// Counting the complete original interval is equivalent and lets our
+			// count index answer in bounded memory without draining the value stream.
 			stopBackendStreamAtLimit()
 			countResponse, countErr := s.backend.Count(ctx, &etcdserverpb.RangeRequest{
 				Key:          append([]byte(nil), r.Key...),

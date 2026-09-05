@@ -67,6 +67,9 @@ func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.Range
 		if validateProxyKeyValueLifecycle(kv) != nil {
 			return fail("returned invalid key-value revision metadata")
 		}
+		if !rangeKVMatchesRevisionFilters(kv, v.request) {
+			return fail("returned a key-value outside the requested revision filters")
+		}
 		v.seenKeys[string(kv.GetKey())] = struct{}{}
 		v.previousKV = proto.Clone(kv).(*mvccpb.KeyValue)
 		if kv.GetModRevision() > v.maxModRev {
@@ -108,9 +111,14 @@ func (v *rangeStreamProxyPayloadValidator) validate(response *etcdserverpb.Range
 		}
 		return nil
 	}
-	wantMore := response.GetCount() > v.sentCount
-	if response.GetMore() != wantMore {
+	if response.GetMore() && response.GetCount() <= v.sentCount {
 		return fail("returned inconsistent terminal count and more metadata")
+	}
+	if !hasRangeRevisionFilters(v.request) {
+		wantMore := response.GetCount() > v.sentCount
+		if response.GetMore() != wantMore {
+			return fail("returned inconsistent terminal count and more metadata")
+		}
 	}
 	if v.request.GetLimit() <= 0 && response.GetMore() {
 		return fail("returned more=true for an unlimited request")

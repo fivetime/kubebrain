@@ -1190,22 +1190,20 @@ func filterRangeKvs(resp *etcdserverpb.RangeResponse, r *etcdserverpb.RangeReque
 	}
 	kvs := resp.Kvs[:0]
 	for _, kv := range resp.Kvs {
-		if r.MaxModRevision != 0 && kv.ModRevision > r.MaxModRevision {
-			continue
-		}
-		if r.MinModRevision != 0 && kv.ModRevision < r.MinModRevision {
-			continue
-		}
-		if r.MaxCreateRevision != 0 && kv.CreateRevision > r.MaxCreateRevision {
-			continue
-		}
-		if r.MinCreateRevision != 0 && kv.CreateRevision < r.MinCreateRevision {
+		if !rangeKVMatchesRevisionFilters(kv, r) {
 			continue
 		}
 		kvs = append(kvs, kv)
 	}
 	resp.Kvs = kvs
 	resp.More = false
+}
+
+func rangeKVMatchesRevisionFilters(kv *mvccpb.KeyValue, r *etcdserverpb.RangeRequest) bool {
+	return (r.MaxModRevision == 0 || kv.ModRevision <= r.MaxModRevision) &&
+		(r.MinModRevision == 0 || kv.ModRevision >= r.MinModRevision) &&
+		(r.MaxCreateRevision == 0 || kv.CreateRevision <= r.MaxCreateRevision) &&
+		(r.MinCreateRevision == 0 || kv.CreateRevision >= r.MinCreateRevision)
 }
 
 func sortRangeKvs(kvs []*mvccpb.KeyValue, r *etcdserverpb.RangeRequest) {
