@@ -72002,6 +72002,65 @@ gate GREEN：revision/HashKV/compact `74696/1608520263/66760`、term `671`，dir
 本项关闭 follower 接受上游不可能产生的空 frame 所造成的协议分歧与资源放大缺口；多节点独立 CSI、跨 Region 网络故障、
 恶意 peer 持续注入畸形流时的连接级限流和告警阈值，仍需在生产等价环境继续量化。
 
+### A5745：限制 follower 默认 RangeStream payload 校验的内存占用
+
+继续审计 follower 对 leader `RangeStream` 的逐 frame 校验时发现，默认无限量按 key 升序的 stream 虽然在数据面保持分块，
+validator 却把每个已见 key 永久保存在 `seenKeys`，使 follower 校验内存仍按总 key 数 O(N) 增长，抵消了 RangeStream 的
+有界内存合同。`pkg/server/etcd/range_stream_proxy_validation.go` 现在识别公开 validator 接受的默认
+`SortTarget=KEY` 且 `SortOrder=NONE/ASCEND` 路径，仅保留上一条 key 的拷贝并做严格相邻比较：相等仍报 duplicate，逆序仍报
+sort-order `DataLoss`；非 key 排序兼容路径继续保留全局集合和完整上一条 KV，避免改变既有重复键与排序判定。新增 10,000 frame
+回归固定 `seenKeys=nil` 且末态只持有最后一个 key，并新增跨 frame 默认重复键负例。TDD RED 明确因 `seenKeys` 非 nil 失败；修复后
+三个聚焦测试为 `0.278s`，普通/race `count=10` 分别为 `2.244/9.389s`，vet `0.854s`，完整
+`pkg/server/etcd` 为 `136.107s`。
+
+代码提交 `17ec8607522ffa044f467792475fdd57e858e2fd` 前 verifier 为 703=`170/193/180/160`，四分片为
+`268.465/462.238/312.544/591.327s`；提交后 verifier 不变，四分片为
+`253.471/448.086/302.619/578.813s`，全部 GREEN。候选
+`docker.io/library/kubebrain:a5745-17ec8607` 内嵌版本 `0.0.0-17ec8607`、完整 commit、build time
+`2026-09-05T23:06:11Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI archive 为 914,712,064 bytes，
+SHA-256 `80c6ca4c556cc86f53db510414ce798fcd952e404b3ffcb197c5ab82607c65b5`；顶层 `index.json` SHA-256/runtime
+imageID、nested/spec index、platform manifest/config 分别为
+`sha256:7d0acc5aa7d0efd578feb6d841eefbf2af22eac47b161946f31494715eca9b56`、
+`sha256:38151d5f0eedc42aecfdf9e9e57d076bc787e25d73ccdce1adbb8d736e39e575`、
+`sha256:4181666ba7de66600d19414b3baf9b7392b535c850caa2ff25420045bb0d868f`、
+`sha256:ef9a2aee17b2756094c63bac7e5c40f0a5c943c7aca2563ffdc1b91cdff1a528`。attestation manifest/config 与
+SPDX/SLSA layer 为 `sha256:2abed00c9ee4d155f25453f46a03aef2c15187563f2b635048147ce90997ef0d`/
+`sha256:fabcbb893fe91ca95dba60a5b55d3c51fe064d09b4baeb87409b1dbd770503ba`、
+`sha256:d1ac88e0183dc9708adec4064c06705dd6977616081e5e495970eafa5e8ad60f`/
+`sha256:82acb693e681ab794fb397ecac651a0728d6cbf758b90cfad4c71f92400825f0`。构建启用
+`--provenance=mode=max --sbom=true` 且 syft scanner 成功；78 blobs/78 descriptor edge 的 size/hash、71 layers/diff IDs
+逐项匹配。SPDX 2.3 含 2,592 packages/381 files/8,096 relationships；SLSA 唯一 subject 精确绑定 platform manifest、
+四项固定 build args 与三项固定 materials，runtime 用户 `65532:65532`、入口和 labels 均正确。
+
+稳定基线 generation/observed `900/900`、3/3 Ready、restart 0、22 参数；30 秒单步探针预算首次无语义输出地以 124
+超时，保持所有期望不变改用 60 秒预算后完整适用 gate GREEN，revision/HashKV/compact/term 为
+`74696/1608520263/66760/671`。以 UID/resourceVersion/generation/container/current image/full args 六类 JSON test
+原子投放候选；Kind 初次只导入 tag、未注册 digest alias，`kubebrain-2` 因本地 digest 无法解析短暂
+`ImagePullBackOff`，另外两个稳定副本持续 Ready。给同一 node-local 顶层 digest 增加不可变 alias 后 rollout 自愈完成；
+generation/observed `901/901`、RV `8651097`，三 Pod runtime imageID 一致、3/3 Ready、restart 0、22 参数。
+候选初始和探针后的完整 HEAD gate 均 GREEN，分别为 revision/HashKV/compact/term
+`74696/1608520263/66760/673` 与 `74754/1880008183/66760/673`。
+
+官方 `client/v3` 探针以 digest-pinned 非 root Pod、Downward API UID、三个预留 lease ID、独占前缀和三个 source info/direct
+endpoint 运行，要求 `snapshot-history-pin-before-write-barrier-release.v1`。结果为 `ok=10 fail=0`、公开 Watch 10、三个直连
+Watch 各 10、RangeStream 65、完整 16MiB Snapshot 1、stream retry/partial retry 均 0；最大总/direct 延迟 82ms、Put 66ms、
+watch-after-put 20ms、PD TSO 1ms、TiKV Region 6ms。独立补偿 Pod 返回
+`FIXTURE_CLEANUP_OK status=absent, keys/users/roles/leases=0`，两个 Pod 随后均以 UID/resourceVersion 前置条件删除。候选三轮
+九次 health 为 `56.906-86.384ms`，三 Pod critical 日志与 `/tmp` spill workspace 均为 0；三个 TiKV store 全部 Up，22 Regions
+的 down/pending peer 均为 0。
+
+以新鲜六类 JSON test 从候选 generation `901`/RV `8651097` 回滚稳定 digest；最终 generation/observed
+`902/902`、RV `8653231`，三 Pod 恢复稳定 runtime imageID
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、3/3 Ready、restart 0、22 参数。
+稳定适用 gate GREEN：revision/HashKV/compact/term `74754/1880008183/66760/675`，三轮九次 health 为
+`61.231-83.229ms`，critical 与 spill workspace 继续为 0。最终关闭六个 listener，精确删除候选 Kind/Docker 引用、两个测试
+Pod、1,829,360,313 bytes OCI/审计临时目录。本构建窗口共识别 80 条候选 cache；其中 79 条先按反向依赖拓扑逐 ID 清理，
+单 ID 模式保留的 9 条 internal/frontend 与独立 scanner 记录再逐 ID 加 `--all` 清理；候选 cache、镜像引用、临时路径、
+probe Pod 与 listener 最终均为 0。
+
+本项使常见的无限量默认 RangeStream 在 follower 上真正保持 O(1) 校验状态；custom sort 仍按兼容性要求使用 O(N) 去重集合，
+恶意 peer 的连接级总流量/并发限额和多节点独立 CSI、跨 Region 故障仍需在生产等价环境继续量化。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
