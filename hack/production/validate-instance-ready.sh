@@ -34,6 +34,8 @@ EXPECTED_ADVERTISE_HOST="${EXPECTED_ADVERTISE_HOST:-}"
 EXPECTED_COMPATIBLE_WITH_ETCD="${EXPECTED_COMPATIBLE_WITH_ETCD:-true}"
 EXPECTED_ENABLE_COUNT_INDEX="${EXPECTED_ENABLE_COUNT_INDEX:-true}"
 EXPECTED_COUNT_INDEX_MAX_KEYS="${EXPECTED_COUNT_INDEX_MAX_KEYS:-5000000}"
+EXPECTED_RANGE_STREAM_SPILL_DIR="${EXPECTED_RANGE_STREAM_SPILL_DIR:-}"
+EXPECTED_RANGE_STREAM_SPILL_MAX_BYTES="${EXPECTED_RANGE_STREAM_SPILL_MAX_BYTES:-}"
 EXPECTED_ENABLE_STORAGE_METRICS="${EXPECTED_ENABLE_STORAGE_METRICS:-true}"
 EXPECTED_ENABLE_GRPC_GATEWAY="${EXPECTED_ENABLE_GRPC_GATEWAY:-true}"
 EXPECTED_ALLOW_INSECURE="${EXPECTED_ALLOW_INSECURE:-false}"
@@ -261,6 +263,16 @@ for variable in EXPECTED_COUNT_INDEX_MAX_KEYS EXPECTED_MAX_TXN_OPS; do
     exit 2
   fi
 done
+if [[ -n "$EXPECTED_RANGE_STREAM_SPILL_MAX_BYTES" ]] &&
+  ! operation_is_positive_int64 "$EXPECTED_RANGE_STREAM_SPILL_MAX_BYTES"; then
+  echo "EXPECTED_RANGE_STREAM_SPILL_MAX_BYTES must be empty or a canonical positive int64" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_RANGE_STREAM_SPILL_DIR" ]] &&
+  { [[ "$EXPECTED_RANGE_STREAM_SPILL_DIR" != /* ]] || [[ "$EXPECTED_RANGE_STREAM_SPILL_DIR" == *[[:cntrl:]]* ]]; }; then
+  echo "EXPECTED_RANGE_STREAM_SPILL_DIR must be empty or an absolute path without control characters" >&2
+  exit 2
+fi
 if ! operation_is_positive_int64 "$EXPECTED_TIKV_CLIENT_NUM" || (( EXPECTED_TIKV_CLIENT_NUM > 128 )); then
   echo "EXPECTED_TIKV_CLIENT_NUM must be a canonical integer between 1 and 128" >&2
   exit 2
@@ -1175,6 +1187,8 @@ check_exact_kubebrain_arg "max-watches" "$EXPECTED_MAX_WATCHES" "max watches"
 check_exact_kubebrain_arg "compatible-with-etcd" "$EXPECTED_COMPATIBLE_WITH_ETCD" "etcd compatibility"
 check_exact_kubebrain_arg "enable-count-index" "$EXPECTED_ENABLE_COUNT_INDEX" "count index enablement"
 check_exact_kubebrain_arg "count-index-max-keys" "$EXPECTED_COUNT_INDEX_MAX_KEYS" "count index key cap"
+check_optional_kubebrain_arg "range-stream-spill-dir" "$EXPECTED_RANGE_STREAM_SPILL_DIR" "range stream spill directory"
+check_optional_kubebrain_arg "range-stream-spill-max-bytes" "$EXPECTED_RANGE_STREAM_SPILL_MAX_BYTES" "range stream spill byte cap"
 check_exact_kubebrain_arg "tikv-client-num" "$EXPECTED_TIKV_CLIENT_NUM" "TiKV client pool size"
 check_optional_kubebrain_arg "tikv-ca-file" "$EXPECTED_TIKV_CA_FILE" "TiKV TLS CA file"
 check_optional_kubebrain_arg "tikv-cert-file" "$EXPECTED_TIKV_CERT_FILE" "TiKV TLS cert file"

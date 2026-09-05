@@ -28,9 +28,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -89,7 +92,9 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 		}
 
 		started := time.Now()
-		sorter, err := newExternalKeySorter()
+		sorter, err := newExternalKeySorter(externalKeySorterConfig{
+			Root: b.config.RangeStreamSpillDir, MaxBytes: b.config.RangeStreamSpillMaxBytes,
+		})
 		if err != nil {
 			fail(fmt.Errorf("create decoded range ordering spill: %w", err))
 			return
@@ -297,7 +302,9 @@ func (b *backend) latestMetadataRangeStreamFromKeyScan(
 		}
 
 		started := time.Now()
-		sorter, createErr := newExternalKeySorter()
+		sorter, createErr := newExternalKeySorter(externalKeySorterConfig{
+			Root: b.config.RangeStreamSpillDir, MaxBytes: b.config.RangeStreamSpillMaxBytes,
+		})
 		if createErr != nil {
 			fail(fmt.Errorf("create latest metadata key ordering spill: %w", createErr))
 			return
@@ -454,18 +461,65 @@ func (b *backend) latestMetadataRangeStreamFromKeyScan(
 // supports etcd keys larger than bbolt's ~32KiB key limit.
 type externalKeySorter struct {
 	dir          string
+	maxBytes     int64
 	runs         []string
 	pending      [][]byte
 	pendingBytes int
 	sequence     uint64
 }
 
-func newExternalKeySorter() (*externalKeySorter, error) {
-	dir, err := os.MkdirTemp("", ".kubebrain-range-order-*")
+type externalKeySorterConfig struct {
+	Root     string
+	MaxBytes int64
+}
+
+// ValidateRangeStreamSpillDir verifies at process startup that the selected
+// workspace exists and permits private file creation. The probe is removed
+// before returning so a read-only root filesystem or broken PVC mount fails
+// closed before the serving endpoints become ready.
+func ValidateRangeStreamSpillDir(root string) (retErr error) {
+	if root != "" {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return fmt.Errorf("validate range-stream spill directory: %w", err)
+		}
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry.Name(), ".kubebrain-range-order-") {
+				continue
+			}
+			if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+				return fmt.Errorf("remove stale range-stream spill %q: %w", entry.Name(), err)
+			}
+		}
+	}
+	dir, err := os.MkdirTemp(root, ".kubebrain-range-order-probe-*")
+	if err != nil {
+		return fmt.Errorf("validate range-stream spill directory: %w", err)
+	}
+	defer func() { retErr = errors.Join(retErr, os.RemoveAll(dir)) }()
+	file, err := os.OpenFile(filepath.Join(dir, "probe"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("validate range-stream spill directory: %w", err)
+	}
+	if _, err = file.Write([]byte("kubebrain-range-stream-spill-probe")); err == nil {
+		err = file.Sync()
+	}
+	err = errors.Join(err, file.Close())
+	if err != nil {
+		return fmt.Errorf("validate range-stream spill directory: %w", err)
+	}
+	return nil
+}
+
+func newExternalKeySorter(config externalKeySorterConfig) (*externalKeySorter, error) {
+	dir, err := os.MkdirTemp(config.Root, ".kubebrain-range-order-*")
 	if err != nil {
 		return nil, err
 	}
-	return &externalKeySorter{dir: dir, pending: make([][]byte, 0, decodedRangeSpillRunKeys)}, nil
+	return &externalKeySorter{
+		dir: dir, maxBytes: config.MaxBytes,
+		pending: make([][]byte, 0, decodedRangeSpillRunKeys),
+	}, nil
 }
 
 func (s *externalKeySorter) Close() error { return os.RemoveAll(s.dir) }
@@ -489,6 +543,9 @@ func (s *externalKeySorter) flushRun() error {
 		return nil
 	}
 	sort.Slice(s.pending, func(i, j int) bool { return bytes.Compare(s.pending[i], s.pending[j]) < 0 })
+	if err := s.requireCapacity(encodedKeyRunSize(s.pending)); err != nil {
+		return err
+	}
 	path := s.nextPath()
 	writer, err := createKeyRun(path)
 	if err != nil {
@@ -522,6 +579,17 @@ func (s *externalKeySorter) Finish(ctx context.Context) (string, error) {
 		for start := 0; start < len(s.runs); start += decodedRangeSpillMergeFan {
 			end := min(start+decodedRangeSpillMergeFan, len(s.runs))
 			inputs := s.runs[start:end]
+			var maximumOutputBytes int64
+			for _, input := range inputs {
+				info, err := os.Stat(input)
+				if err != nil {
+					return "", err
+				}
+				maximumOutputBytes += info.Size()
+			}
+			if err := s.requireCapacity(maximumOutputBytes); err != nil {
+				return "", err
+			}
 			output := s.nextPath()
 			if err := mergeKeyRuns(ctx, inputs, output); err != nil {
 				return "", err
@@ -539,6 +607,46 @@ func (s *externalKeySorter) Finish(ctx context.Context) (string, error) {
 		return "", nil
 	}
 	return s.runs[0], nil
+}
+
+func encodedKeyRunSize(sortedKeys [][]byte) int64 {
+	size := int64(sha256.Size)
+	var previous []byte
+	var prefix [binary.MaxVarintLen64]byte
+	for _, key := range sortedKeys {
+		if previous != nil && bytes.Equal(previous, key) {
+			continue
+		}
+		size += int64(binary.PutUvarint(prefix[:], uint64(len(key)))) + int64(len(key))
+		previous = key
+	}
+	return size
+}
+
+func (s *externalKeySorter) requireCapacity(additional int64) error {
+	if s.maxBytes == 0 {
+		return nil
+	}
+	var used int64
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			used += info.Size()
+		}
+	}
+	if used > s.maxBytes || additional > s.maxBytes-used {
+		return status.Errorf(codes.ResourceExhausted,
+			"range ordering spill quota %d bytes exceeded (used %d, next operation requires up to %d)",
+			s.maxBytes, used, additional)
+	}
+	return nil
 }
 
 type keyRunWriter struct {

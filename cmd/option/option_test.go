@@ -424,6 +424,16 @@ func TestTransportLimitValidationRejectsInvalidStartupFlags(t *testing.T) {
 			want: "--count-index-max-keys must be non-negative",
 		},
 		{
+			name: "negative range stream spill byte cap",
+			args: []string{"--range-stream-spill-max-bytes=-1"},
+			want: "--range-stream-spill-max-bytes must be non-negative",
+		},
+		{
+			name: "relative range stream spill directory",
+			args: []string{"--range-stream-spill-dir=relative/path"},
+			want: "--range-stream-spill-dir must be an absolute path",
+		},
+		{
 			name: "count index without etcd compatibility",
 			args: []string{"--enable-count-index=true", "--compatible-with-etcd=false"},
 			want: "--enable-count-index requires --compatible-with-etcd=true",

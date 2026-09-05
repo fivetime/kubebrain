@@ -28,12 +28,77 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestExternalKeySorterUsesExplicitWorkspaceInsteadOfProcessTemp(t *testing.T) {
+	processTemp := t.TempDir()
+	spillRoot := t.TempDir()
+	t.Setenv("TMPDIR", processTemp)
+
+	sorter, err := newExternalKeySorter(externalKeySorterConfig{Root: spillRoot})
+	require.NoError(t, err)
+	directory := sorter.dir
+	require.Equal(t, spillRoot, filepath.Dir(directory))
+	require.NotEqual(t, processTemp, filepath.Dir(directory))
+	require.NoError(t, sorter.Close())
+}
+
+func TestExternalKeySorterEnforcesPeakDiskQuotaBeforeMerge(t *testing.T) {
+	sorter, err := newExternalKeySorter(externalKeySorterConfig{
+		Root:     t.TempDir(),
+		MaxBytes: 16 << 10,
+	})
+	require.NoError(t, err)
+	directory := sorter.dir
+	defer func() {
+		require.NoError(t, sorter.Close())
+		_, statErr := os.Stat(directory)
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+	}()
+
+	// Each 300-key run fits by itself and both input runs fit concurrently.
+	// The merge would need an output run alongside them and must be rejected
+	// before it can consume more than the configured workspace budget.
+	for index := 599; index >= 0; index-- {
+		require.NoError(t, sorter.Add([]byte(fmt.Sprintf("quota-key/%06d", index))))
+	}
+	_, err = sorter.Finish(context.Background())
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.ErrorContains(t, err, "range ordering spill quota")
+	entries, readErr := os.ReadDir(directory)
+	require.NoError(t, readErr)
+	for _, entry := range entries {
+		require.NotContains(t, entry.Name(), ".partial")
+	}
+}
+
+func TestValidateRangeStreamSpillDirProbesAndCleansWorkspace(t *testing.T) {
+	spillRoot := t.TempDir()
+	stale := filepath.Join(spillRoot, ".kubebrain-range-order-stale")
+	require.NoError(t, os.Mkdir(stale, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(stale, "run"), []byte("stale"), 0o600))
+	foreign := filepath.Join(spillRoot, "operator-owned")
+	require.NoError(t, os.WriteFile(foreign, []byte("keep"), 0o600))
+	require.NoError(t, ValidateRangeStreamSpillDir(spillRoot))
+	entries, err := os.ReadDir(spillRoot)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.Equal(t, "operator-owned", entries[0].Name())
+	_, err = os.Stat(stale)
+	require.ErrorIs(t, err, os.ErrNotExist)
+
+	notDirectory := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(notDirectory, []byte("not a directory"), 0o600))
+	err = ValidateRangeStreamSpillDir(notDirectory)
+	require.ErrorContains(t, err, "validate range-stream spill directory")
+}
 
 func TestExternalKeySorterMultiPassOrdersDeduplicatesAndSupportsLongKeys(t *testing.T) {
 	spillRoot := t.TempDir()
 	t.Setenv("TMPDIR", spillRoot)
-	sorter, err := newExternalKeySorter()
+	sorter, err := newExternalKeySorter(externalKeySorterConfig{})
 	require.NoError(t, err)
 	directory := sorter.dir
 
@@ -76,7 +141,7 @@ func TestExternalKeySorterMultiPassOrdersDeduplicatesAndSupportsLongKeys(t *test
 
 func TestExternalKeySorterBoundsRunRecordsWithoutCappingConfiguredKeySize(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
-	sorter, err := newExternalKeySorter()
+	sorter, err := newExternalKeySorter(externalKeySorterConfig{})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sorter.Close()) })
 
@@ -166,7 +231,7 @@ func TestKeyRunReaderRejectsEmptyOrNonIncreasingRecords(t *testing.T) {
 func TestExternalKeySorterCancellationCleansPartialMerge(t *testing.T) {
 	spillRoot := t.TempDir()
 	t.Setenv("TMPDIR", spillRoot)
-	sorter, err := newExternalKeySorter()
+	sorter, err := newExternalKeySorter(externalKeySorterConfig{})
 	require.NoError(t, err)
 	directory := sorter.dir
 	for index := decodedRangeSpillRunKeys * 2; index >= 0; index-- {

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -75,11 +76,13 @@ type KubeBrainOption struct {
 	watchFanoutBuffer int
 	storageGCLifetime time.Duration
 
-	enableCountIndex        bool
-	countIndexMaxKeys       int
-	quotaBackendBytes       int64
-	autoCompactionRetention uint64
-	historyScanRevBucket    uint64
+	enableCountIndex         bool
+	countIndexMaxKeys        int
+	rangeStreamSpillDir      string
+	rangeStreamSpillMaxBytes int64
+	quotaBackendBytes        int64
+	autoCompactionRetention  uint64
+	historyScanRevBucket     uint64
 
 	watchProgressNotifyInterval time.Duration
 }
@@ -296,6 +299,8 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 	fs.DurationVar(&o.storageGCLifetime, "storage-gc-lifetime", o.storageGCLifetime, "MVCC history retention when the leader advances the storage engine GC safepoint (TiKV; the gc_worker role on bare PD+TiKV). 0 disables — required if nothing else (e.g. a TiDB instance) drives GC, or reads degrade as versions accumulate")
 	fs.BoolVar(&o.enableCountIndex, "enable-count-index", o.enableCountIndex, "maintain an in-memory versioned key index eagerly on the leader and lazily on followers for exact counts and decoded RangeStream ordering (approach A-index; requires --compatible-with-etcd)")
 	fs.IntVar(&o.countIndexMaxKeys, "count-index-max-keys", o.countIndexMaxKeys, "cap on keys tracked by the count index; above it the index disables and counts fall back to a scan (0 = unlimited)")
+	fs.StringVar(&o.rangeStreamSpillDir, "range-stream-spill-dir", o.rangeStreamSpillDir, "parent directory for bounded-memory RangeStream ordering files; empty uses the process temporary directory")
+	fs.Int64Var(&o.rangeStreamSpillMaxBytes, "range-stream-spill-max-bytes", o.rangeStreamSpillMaxBytes, "maximum peak bytes of RangeStream ordering files per process, including merge input and output overlap; 0 disables the application-level limit")
 	fs.Uint64Var(&o.autoCompactionRetention, "auto-compaction-retention-revisions", o.autoCompactionRetention, "SAFETY NET: if >0, the leader caps MVCC history to the last N revisions should the apiserver's own compaction stop (KubeBrain never auto-compacts otherwise). 0 = off. Set generously large so it only bites when the primary compactor is far behind.")
 	fs.Uint64Var(&o.historyScanRevBucket, "watch-history-scan-rev-bucket", o.historyScanRevBucket, "reconnect herd (#30): watchers reconnecting to the same prefix within this many revisions share one watch-history storage scan (singleflight). Larger = more sharing across HA-apiserver replicas whose reconnect revisions are spread apart, at the cost of a shared scan window up to one bucket wider than requested. 1 = share only exact-revision reconnects. 0 = default.")
 	fs.DurationVar(&o.watchProgressNotifyInterval, "watch-progress-notify-interval", o.watchProgressNotifyInterval, "how often watch progress notifications advance/emit (drives kube-apiserver ConsistentListFromCache convergence; smaller = fresher at more marker traffic). Positive values below etcd's 100ms minimum are clamped; must be < 2.5s because the apiserver falls back to a full storage LIST after 3s")
@@ -368,6 +373,12 @@ func (o *KubeBrainOption) Validate() error {
 	if o.countIndexMaxKeys < 0 {
 		return fmt.Errorf("--count-index-max-keys must be non-negative")
 	}
+	if o.rangeStreamSpillMaxBytes < 0 {
+		return fmt.Errorf("--range-stream-spill-max-bytes must be non-negative")
+	}
+	if o.rangeStreamSpillDir != "" && !filepath.IsAbs(o.rangeStreamSpillDir) {
+		return fmt.Errorf("--range-stream-spill-dir must be an absolute path")
+	}
 	if o.enableCountIndex && !o.epsConf.EnableEtcdCompatibility {
 		return fmt.Errorf("--enable-count-index requires --compatible-with-etcd=true")
 	}
@@ -438,6 +449,9 @@ func (o *KubeBrainOption) buildIdentity() (string, error) {
 
 // Run runs the storage engine
 func (o *KubeBrainOption) Run(ctx context.Context) (retErr error) {
+	if err := backend.ValidateRangeStreamSpillDir(o.rangeStreamSpillDir); err != nil {
+		return err
+	}
 	// add cluster metric tag
 	metricsCli := metrics.NewMetrics(imetrics.Tag("cluster", o.ClusterName))
 
@@ -490,6 +504,8 @@ func (o *KubeBrainOption) Run(ctx context.Context) (retErr error) {
 		StorageGCLifetime:           o.storageGCLifetime,
 		EnableCountIndex:            o.enableCountIndex,
 		CountIndexMaxKeys:           o.countIndexMaxKeys,
+		RangeStreamSpillDir:         o.rangeStreamSpillDir,
+		RangeStreamSpillMaxBytes:    o.rangeStreamSpillMaxBytes,
 		AutoCompactionRetention:     o.autoCompactionRetention,
 		HistoryScanRevBucket:        o.historyScanRevBucket,
 		WatchProgressNotifyInterval: o.watchProgressNotifyInterval,

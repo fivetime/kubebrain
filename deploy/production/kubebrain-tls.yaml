@@ -131,6 +131,8 @@ spec:
             - --compatible-with-etcd=true
             - --enable-count-index=true
             - --count-index-max-keys=5000000
+            - --range-stream-spill-dir=/var/lib/kubebrain-range-stream-spill
+            - --range-stream-spill-max-bytes=68719476736
             - --enable-storage-metrics=true
             - --enable-grpc-gateway=true
             - --allow-insecure=false
@@ -219,6 +221,8 @@ spec:
           volumeMounts:
             - name: snapshot-tmp
               mountPath: /var/lib/kubebrain-snapshot
+            - name: range-stream-spill
+              mountPath: /var/lib/kubebrain-range-stream-spill
             - name: client-tls
               mountPath: /etc/kubebrain/client-tls
               readOnly: true
@@ -229,6 +233,24 @@ spec:
               mountPath: /etc/kubebrain/info-tls
               readOnly: true
       volumes:
+        - name: range-stream-spill
+          # Isolate exceptional RangeStream ordering I/O from snapshot creation;
+          # the process hard-caps peak run files at 64Gi inside this 128Gi claim.
+          ephemeral:
+            volumeClaimTemplate:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: kubebrain
+                  app.kubernetes.io/instance: kubebrain
+                  app.kubernetes.io/component: range-stream-spill
+              spec:
+                accessModes: [ReadWriteOnce]
+                volumeMode: Filesystem
+                # Provision this independently from snapshot and TiKV volumes.
+                storageClassName: kubebrain-range-stream-spill
+                resources:
+                  requests:
+                    storage: 128Gi
         - name: snapshot-tmp
           # The streamed bbolt artifact can approach the logical quota. Use a
           # Pod-scoped dynamically provisioned volume so its bulk writes do not

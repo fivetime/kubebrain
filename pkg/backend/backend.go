@@ -635,6 +635,15 @@ type Config struct {
 	// counts fall back to a scan (avoids OOM). 0 means no cap.
 	CountIndexMaxKeys int
 
+	// RangeStreamSpillDir is the parent directory for bounded-memory external
+	// ordering runs. Empty uses the process temporary directory. Production
+	// should point this at a dedicated per-Pod volume.
+	RangeStreamSpillDir string
+	// RangeStreamSpillMaxBytes bounds peak run-file bytes for one spill,
+	// including the merge output while its input runs still exist. Zero keeps
+	// the backward-compatible unlimited behavior.
+	RangeStreamSpillMaxBytes int64
+
 	// WatchProgressNotifyInterval is how often a watch progress notification is
 	// advanced/emitted (the in-band published-watermark marker cadence and the
 	// per-watch progress-notify emission). Smaller = faster kube-apiserver

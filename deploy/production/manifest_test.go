@@ -129,6 +129,8 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			require.Contains(t, args, "--max-requests-inflight=1024")
 			require.Contains(t, args, "--max-request-rate=2000")
 			require.Contains(t, args, "--request-rate-burst=4000")
+			require.Contains(t, args, "--range-stream-spill-dir=/var/lib/kubebrain-range-stream-spill")
+			require.Contains(t, args, "--range-stream-spill-max-bytes=68719476736")
 			require.Contains(t, args, "--max-delete-range-keys=1024")
 			require.Contains(t, args, "--max-watches=10000")
 			require.Equal(t, "/ready", nestedString(t, containerObject, "readinessProbe", "httpGet", "path"))
@@ -185,6 +187,7 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 				mountByName[mount["name"].(string)] = mount
 			}
 			require.Equal(t, "/var/lib/kubebrain-snapshot", mountByName["snapshot-tmp"]["mountPath"])
+			require.Equal(t, "/var/lib/kubebrain-range-stream-spill", mountByName["range-stream-spill"]["mountPath"])
 			volumes, found, err := unstructured.NestedSlice(workload.Object, "spec", "template", "spec", "volumes")
 			require.NoError(t, err)
 			require.True(t, found)
@@ -207,6 +210,21 @@ func TestProductionManifestsProvideStableCompleteMembership(t *testing.T) {
 			_, hasEmptyDir, err := unstructured.NestedMap(snapshotVolume.Object, "emptyDir")
 			require.NoError(t, err)
 			require.False(t, hasEmptyDir, "snapshot workspace must not use shared node-root ephemeral storage")
+
+			spillVolume := &unstructured.Unstructured{Object: volumeByName["range-stream-spill"]}
+			require.Equal(t, "Filesystem", nestedString(t, spillVolume,
+				"ephemeral", "volumeClaimTemplate", "spec", "volumeMode"))
+			require.Equal(t, []string{"ReadWriteOnce"}, nestedStringSlice(t, spillVolume,
+				"ephemeral", "volumeClaimTemplate", "spec", "accessModes"))
+			require.Equal(t, "kubebrain-range-stream-spill", nestedString(t, spillVolume,
+				"ephemeral", "volumeClaimTemplate", "spec", "storageClassName"))
+			require.Equal(t, "128Gi", nestedString(t, spillVolume,
+				"ephemeral", "volumeClaimTemplate", "spec", "resources", "requests", "storage"))
+			require.Equal(t, "range-stream-spill", nestedString(t, spillVolume,
+				"ephemeral", "volumeClaimTemplate", "metadata", "labels", "app.kubernetes.io/component"))
+			_, hasEmptyDir, err = unstructured.NestedMap(spillVolume.Object, "emptyDir")
+			require.NoError(t, err)
+			require.False(t, hasEmptyDir, "range stream spill must not use shared node-root ephemeral storage")
 
 			serviceAccount := objectByKindAndName(t, objects, "ServiceAccount", "kubebrain")
 			require.False(t, nestedBool(t, serviceAccount, "automountServiceAccountToken"))
@@ -249,6 +267,8 @@ func expectedProductionKubeBrainArgs(scheme string) []string {
 		"--compatible-with-etcd=true",
 		"--enable-count-index=true",
 		"--count-index-max-keys=5000000",
+		"--range-stream-spill-dir=/var/lib/kubebrain-range-stream-spill",
+		"--range-stream-spill-max-bytes=68719476736",
 		"--enable-storage-metrics=true",
 		"--enable-grpc-gateway=true",
 		"--allow-insecure=false",

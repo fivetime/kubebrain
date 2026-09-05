@@ -49671,7 +49671,7 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
 
   本项关闭的是进程内 O(result KVs) 内存风险，不把 overflow 伪装成快路径：spill 仍需 O(匹配 key bytes) 的
   `TMPDIR` 空间、一次完整 keys-only scan，并在首个响应前完成外排；临时盘耗尽会以请求错误安全失败。生产清单
-  已把 `TMPDIR=/var/lib/kubebrain-snapshot` 指向 512Gi 限额 emptyDir，但持续 spill 仍应通过上述指标告警并调整
+  当时把 `TMPDIR=/var/lib/kubebrain-snapshot` 指向 512Gi snapshot workspace（后续 A5736 已拆出专属卷），但持续 spill 仍应通过上述指标告警并调整
   内存 tier/count-index cap。若要消除该磁盘与首包延迟，后续仍需带混合版本发布协议的 durable order index；
   不能仅在新 binary 写路径旁挂目录而忽略旧 writer 和回填发布水位。
 
@@ -71451,6 +71451,30 @@ readiness 暂时为 0。只读定位确认 `/root/.cache/go-build` 为 64 GiB �
 BuildKit cache 未删除。Kind local-path 非 CSI、单节点承载全部 Pod，以及候选导入可令节点瞬时耗尽的容量风险仍是明确
 生产阻塞项；规模门禁还需给 spill 配置受配额 emptyDir/PVC，并在百万 key、多 Region、慢客户端和取消场景量化临时盘、
 内存、TiKV scan latency 与 backpressure。
+
+### A5736：RangeStream 外排工作区隔离、峰值硬限额与启动期 fail-closed
+
+A5735 的外排正确性路径仍默认继承进程 `TMPDIR`，生产清单因而让在线 Snapshot 与 RangeStream 排序共用同一
+512Gi workspace；容器虽启用 `readOnlyRootFilesystem`，但 binary 直到首次异常 RangeStream 才会发现 PVC 不可写，
+并且 merge input/output 同时存在时没有应用级容量边界。本提交新增
+`--range-stream-spill-dir` 与 `--range-stream-spill-max-bytes`，把配置沿 CLI/backend 传到两条外排路径。sorter 在写
+每个初始 run 前按去重后的 length-prefix + payload + SHA-256 精确估算文件大小，在每个 16 路 merge 前按全部现存
+run 加本轮最大可能输出核算峰值；超过预算会在创建输出前返回可跨 legacy stream error envelope 保真的
+`ResourceExhausted`，不会以部分有序前缀冒充成功。零值继续兼容旧部署的 process temp/unlimited 语义。
+
+进程在连接 PD/TiKV 和打开服务端口前会对显式目录创建 `0600` 私有文件、写入、`fsync`、关闭并清理；专属目录中
+匹配 KubeBrain 私有前缀的崩溃遗留 run 也在启动时清除，其他 operator 文件保持不动。两份 production StatefulSet
+把 spill 拆到独立 `kubebrain-range-stream-spill` StorageClass 的 per-Pod 128Gi generic ephemeral PVC，应用峰值固定
+64Gi；snapshot 的 512Gi PVC 与 `TMPDIR` 保持不变。release gate 可选择精确钉住两个新参数，并校验绝对路径及正
+int64 上限，清单测试则强制参数、mount、RWO/Filesystem、StorageClass、容量和非 emptyDir 合同。
+
+TDD RED 先证明 sorter 不接受显式目录/预算且 CLI 不认识新参数；实现后聚焦普通 `count=3` 与 race `count=3`
+均通过。跨 backend 测试进一步证明显式目录优先于错误方向的 `TMPDIR`、1-byte 预算只产生一个带
+`ResourceExhausted` 的终止帧、没有数据前缀或残留；600-key 双 run fixture 证明预算覆盖 merge 的 input/output
+重叠而不是只限制最终文件。完整 backend `50.189s`、CLI、production manifest、`go vet` 和两个关键 production
+shell runner 均 GREEN。提交前 inventory 为 703=`170/193/180/160`，四片分别在
+`255.103/448.670/300.129/576.675s` 通过。百万 key/多 Region 的实际容量曲线和独立 CSI StorageClass 仍需在
+生产等价环境验证；本项先关闭共享卷、只读根文件系统晚失败和无限制磁盘增长三项确定性风险。
 
 ## 提交规则
 

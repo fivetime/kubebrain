@@ -26,7 +26,10 @@ import (
 	"github.com/golang/mock/gomock"
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
+	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -594,9 +597,13 @@ func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T
 	store := &rangeSnapshotTraceStorage{KvStorage: rawStore}
 	t.Cleanup(func() { require.NoError(t, rawStore.Close()) })
 	metricRecorder := &compactMetricRecorder{}
+	spillDir := t.TempDir()
+	processTemp := t.TempDir()
+	t.Setenv("TMPDIR", processTemp)
 	b := NewBackend(store, Config{
 		Prefix: "/kubebrain/range-stream-spill", Identity: getStorageIdentity(),
 		EnableEtcdCompatibility: true, EnableCountIndex: true, CountIndexMaxKeys: 2,
+		RangeStreamSpillDir: spillDir, RangeStreamSpillMaxBytes: 1 << 20,
 	}, metricRecorder).(*backend)
 	ctx := context.Background()
 	keys := make([][]byte, 303)
@@ -628,8 +635,6 @@ func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T
 	})
 	require.True(t, b.countIndex.Overflowed())
 
-	spillDir := t.TempDir()
-	t.Setenv("TMPDIR", spillDir)
 	tracked := &checkpointCountScanner{Scanner: b.scanner}
 	b.scanner = tracked
 	store.resetTrace()
@@ -665,9 +670,27 @@ func TestDecodedRangeStreamSpillsOrderedKeysWhenCountIndexOverflows(t *testing.T
 		}
 	}
 	store.mu.Unlock()
+
+	// The same backend path must preserve the typed capacity error through the
+	// legacy StreamRangeResponse string envelope and remove all partial runs.
+	b.config.RangeStreamSpillMaxBytes = 1
+	limited, err := b.RangeStream(ctx, []byte("a"), []byte("b"), 304)
+	require.NoError(t, err)
+	var limitedResponses int
+	for response := range limited {
+		limitedResponses++
+		require.NotEmpty(t, response.Err)
+		decoded, ok := streamerror.Decode(response.Err)
+		require.True(t, ok)
+		require.Equal(t, codes.ResourceExhausted, status.Code(decoded))
+	}
+	require.Equal(t, 1, limitedResponses)
 	entries, err := os.ReadDir(spillDir)
 	require.NoError(t, err)
 	require.Empty(t, entries, "the per-stream spill file must be removed after terminal delivery")
+	processEntries, err := os.ReadDir(processTemp)
+	require.NoError(t, err)
+	require.Empty(t, processEntries, "an explicit spill workspace must not use TMPDIR")
 	metricRecorder.mu.Lock()
 	defer metricRecorder.mu.Unlock()
 	var observedMetric []interface{}
