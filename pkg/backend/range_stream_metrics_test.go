@@ -92,6 +92,34 @@ func TestRangeStreamSpillAttemptMetricsUseBoundedOutcomes(t *testing.T) {
 	}
 }
 
+func TestRangeStreamSpillCleanupFailureWinsOverCallerCancellation(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	b := &backend{decodedRangeSpillSem: make(chan struct{}, 1), metricCli: recorder}
+	attempt, admitted := b.acquireRangeStreamSpill(context.Background(), rangeStreamSpillPathLatestMetadata)
+	require.True(t, admitted)
+
+	attempt.recordSorterCleanup(&externalKeySorter{dir: "invalid\x00workspace"}, "remove spill workspace")
+	require.True(t, attempt.errorRecorded)
+	require.Equal(t, rangeStreamSpillOutcomeFailed, attempt.outcome)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	attempt.finish(ctx)
+
+	var positive []compactMetricRecord
+	for _, record := range recorder.records {
+		if record.kind == "counter" && record.name == "backend.range_stream.spill_outcome" {
+			positive = append(positive, record)
+		}
+	}
+	require.Equal(t, []compactMetricRecord{{
+		kind: "counter", name: "backend.range_stream.spill_outcome", value: int64(1),
+		tags: []metrics.T{
+			metrics.Tag("path", rangeStreamSpillPathLatestMetadata),
+			metrics.Tag("outcome", rangeStreamSpillOutcomeFailed),
+		},
+	}}, positive, "a failed workspace removal must not be hidden as routine cancellation")
+}
+
 func TestRangeStreamSpillCanceledContextNeverAcquiresSlot(t *testing.T) {
 	recorder := &compactMetricRecorder{}
 	b := &backend{decodedRangeSpillSem: make(chan struct{}, 1), metricCli: recorder}

@@ -92,9 +92,10 @@ func initRangeStreamSpillMetrics(metricCli metrics.Metrics) {
 // storage faults and caller cancellation without introducing unbounded metric
 // labels. finish must be deferred immediately after a successful acquisition.
 type rangeStreamSpillAttempt struct {
-	backend *backend
-	path    string
-	outcome string
+	backend       *backend
+	path          string
+	outcome       string
+	errorRecorded bool
 }
 
 func (b *backend) acquireRangeStreamSpill(ctx context.Context, path string) (*rangeStreamSpillAttempt, bool) {
@@ -133,6 +134,7 @@ func emitRangeStreamSpillOutcome(metricCli metrics.Metrics, path, outcome string
 }
 
 func (a *rangeStreamSpillAttempt) recordError(err error) {
+	a.errorRecorded = true
 	switch {
 	case status.Code(err) == codes.ResourceExhausted:
 		a.outcome = rangeStreamSpillOutcomeQuotaExhausted
@@ -145,8 +147,14 @@ func (a *rangeStreamSpillAttempt) recordError(err error) {
 
 func (a *rangeStreamSpillAttempt) complete() { a.outcome = rangeStreamSpillOutcomeCompleted }
 
+func (a *rangeStreamSpillAttempt) recordSorterCleanup(sorter *externalKeySorter, operation string) {
+	if err := sorter.Close(); err != nil {
+		a.recordError(fmt.Errorf("%s: %w", operation, err))
+	}
+}
+
 func (a *rangeStreamSpillAttempt) finish(ctx context.Context) {
-	if ctx.Err() != nil && a.outcome == rangeStreamSpillOutcomeFailed {
+	if ctx.Err() != nil && a.outcome == rangeStreamSpillOutcomeFailed && !a.errorRecorded {
 		a.outcome = rangeStreamSpillOutcomeCanceled
 	}
 	if a.backend.metricCli != nil {
@@ -215,7 +223,7 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 		sorterClosed := false
 		defer func() {
 			if !sorterClosed {
-				_ = sorter.Close()
+				attempt.recordSorterCleanup(sorter, "remove decoded range ordering spill")
 			}
 		}()
 
@@ -429,7 +437,7 @@ func (b *backend) latestMetadataRangeStreamFromKeyScan(
 		sorterClosed := false
 		defer func() {
 			if !sorterClosed {
-				_ = sorter.Close()
+				attempt.recordSorterCleanup(sorter, "remove latest metadata key ordering spill")
 			}
 		}()
 
