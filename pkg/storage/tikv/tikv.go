@@ -71,6 +71,7 @@ type clientBalancer struct {
 }
 
 var _ storage.SnapshotGetter = (*store)(nil)
+var _ storage.KeyIterator = (*store)(nil)
 var _ storage.SnapshotProtector = (*store)(nil)
 var _ storage.SnapshotRegionWarmer = (*store)(nil)
 var _ storage.SnapshotReadinessValidator = (*store)(nil)
@@ -431,6 +432,17 @@ func configureProtectedSnapshotReplica(snapshot *txnsnapshot.KVSnapshot, replica
 }
 
 func (s *store) Iter(ctx context.Context, start []byte, end []byte, timestamp uint64, limit uint64) (storage.Iter, error) {
+	return s.iter(ctx, start, end, timestamp, limit, false)
+}
+
+// IterKeys asks TiKV to omit values from Scan responses. The returned iterator
+// preserves the ordinary snapshot, ordering, bounds, and limit contract; Val
+// is empty and callers must fetch any selected values explicitly.
+func (s *store) IterKeys(ctx context.Context, start []byte, end []byte, timestamp uint64, limit uint64) (storage.Iter, error) {
+	return s.iter(ctx, start, end, timestamp, limit, true)
+}
+
+func (s *store) iter(ctx context.Context, start []byte, end []byte, timestamp uint64, limit uint64, keysOnly bool) (storage.Iter, error) {
 	var err error
 	reverse := bytes.Compare(start, end) > 0
 	pinned := timestamp != 0
@@ -441,6 +453,7 @@ func (s *store) Iter(ctx context.Context, start []byte, end []byte, timestamp ui
 		}
 	}
 	snapshot := s.getSnapshotClient(ctx, timestamp).GetSnapshot(timestamp)
+	snapshot.SetKeyOnly(keysOnly)
 	if pinned && storage.ProtectedSnapshotFromContext(ctx) {
 		// Protected checkpoints are immutable historical snapshots. Mixed replica
 		// reads preserve their value semantics and let a warmed Region cache route

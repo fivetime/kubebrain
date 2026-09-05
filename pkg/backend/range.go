@@ -625,55 +625,210 @@ const (
 	latestMetadataFallbackBatchSize = 16
 )
 
-// latestMetadataRange resolves a latest FastKeysOnly range from two bounded
-// directories instead of scanning object versions. The versioned count index
-// supplies the exact live user-key order at revision; each state is then joined
-// with the authoritative revision index and optional latest-metadata row at one
-// TiKV snapshot. Old writers and rows changed after revision fall back per key
-// to the ordinary object path, preserving mixed-version rollout and a pinned
-// latest request that races a newer commit.
+// latestMetadataRange resolves a latest FastKeysOnly range without transferring
+// every object value. The in-memory count index is the cheapest ordering
+// directory. While it is rebuilding or overflowed, a storage key-only scan
+// discovers the complete user-key set at one snapshot; revision/latest-metadata
+// rows are then fetched in bounded batches. Old writers and exceptional rows
+// fall back per key to the ordinary object path.
 func (b *backend) latestMetadataRange(
 	ctx context.Context, start, end []byte, revision uint64, limit int64,
 ) (context.Context, []*proto.KeyValue, bool, error) {
-	if b.countIndex == nil {
-		return ctx, nil, false, nil
-	}
 	if _, supported := storage.FindCapability[storage.SnapshotGetter](b.kv); !supported {
 		return ctx, nil, false, nil
 	}
-	if isFromKeyEnd(end) {
-		end = nil
+	if b.countIndex != nil {
+		indexEnd := end
+		if isFromKeyEnd(indexEnd) {
+			indexEnd = nil
+		}
+		stateLimit := math.MaxInt
+		if limit > 0 {
+			stateLimit = int(min(limit, int64(math.MaxInt)))
+		}
+		states, _, more, ready := b.countIndex.StatesPageIfReady(start, indexEnd, nil, revision, stateLimit, 0)
+		if ready {
+			pinnedCtx, err := b.withRangeSnapshotTimestamp(ctx)
+			if err != nil {
+				return ctx, nil, true, err
+			}
+			if more && limit <= 0 {
+				return ctx, nil, false, fmt.Errorf("latest metadata range exceeds process addressable key count")
+			}
+			kvs, err := b.readLatestMetadataStates(pinnedCtx, states, revision)
+			if err != nil {
+				if errors.Is(err, ErrInvalidMVCCMetadata) {
+					err = b.persistWitnessedRevisionIndexCorruption(pinnedCtx, err)
+				}
+				return pinnedCtx, nil, true, err
+			}
+			if err = b.validateLatestRangeIndexes(pinnedCtx, kvs, latestRangeExpectation{
+				states: states, readyRevision: revision, more: more, ready: true,
+			}); err != nil {
+				return pinnedCtx, nil, true, err
+			}
+			b.metricCli.EmitCounter("backend.range.latest_metadata_index_hit", 1)
+			return pinnedCtx, kvs, true, nil
+		}
 	}
-	stateLimit := math.MaxInt
-	if limit > 0 {
-		stateLimit = int(min(limit, int64(math.MaxInt)))
-	}
-	states, _, more, ready := b.countIndex.StatesPageIfReady(start, end, nil, revision, stateLimit, 0)
-	if !ready {
-		b.metricCli.EmitCounter("backend.range.latest_metadata_index_miss", 1)
+	b.metricCli.EmitCounter("backend.range.latest_metadata_index_miss", 1)
+	return b.latestMetadataRangeFromKeyScan(ctx, start, end, revision, limit)
+}
+
+// latestMetadataRangeFromKeyScan is the complete fallback when the process-local
+// ordering index cannot serve. It scans physical KEYS, including old-writer
+// object versions and orphan rows, so completeness never depends on the
+// rollout-safe latest-metadata directory. Values are fetched only for the two
+// small directories, with bounded exact-object fallback for exceptional keys.
+func (b *backend) latestMetadataRangeFromKeyScan(
+	ctx context.Context, start, end []byte, revision uint64, limit int64,
+) (context.Context, []*proto.KeyValue, bool, error) {
+	keyReader, supported := storage.FindCapability[storage.KeyIterator](b.kv)
+	if !supported {
 		return ctx, nil, false, nil
 	}
 	pinnedCtx, err := b.withRangeSnapshotTimestamp(ctx)
 	if err != nil {
 		return ctx, nil, true, err
 	}
-	if more && limit <= 0 {
-		return ctx, nil, false, fmt.Errorf("latest metadata range exceeds process addressable key count")
+	timestamp, pinned := storage.SnapshotTimestampFromContext(pinnedCtx)
+	if !pinned {
+		return pinnedCtx, nil, true, ErrSerializableCheckpointUnavailable
 	}
-	kvs, err := b.readLatestMetadataStates(pinnedCtx, states, revision)
+	userEnd := end
+	if isFromKeyEnd(userEnd) {
+		userEnd = nil
+	}
+	scanStart, scanEnd, exactKeys := b.decodedUserRangeScanPlan(start, end)
+	it, err := keyReader.IterKeys(pinnedCtx, scanStart, scanEnd, timestamp, 0)
 	if err != nil {
-		if errors.Is(err, ErrInvalidMVCCMetadata) {
-			err = b.persistWitnessedRevisionIndexCorruption(pinnedCtx, err)
+		return pinnedCtx, nil, true, err
+	}
+	keys := make(map[string][]byte)
+	for _, key := range exactKeys {
+		keys[string(key)] = append([]byte(nil), key...)
+	}
+	for {
+		err = it.Next(pinnedCtx)
+		if err != nil {
+			break
 		}
+		rawKey := it.Key()
+		if b.ks.IsInternalStorageKey(rawKey) {
+			continue
+		}
+		userKey, _, decodeErr := b.coder.Decode(rawKey)
+		if decodeErr != nil {
+			_ = it.Close()
+			return ctx, nil, false, nil
+		}
+		if bytes.Compare(userKey, start) < 0 || (len(userEnd) != 0 && bytes.Compare(userKey, userEnd) >= 0) {
+			continue
+		}
+		keys[string(userKey)] = append([]byte(nil), userKey...)
+	}
+	closeErr := it.Close()
+	if err != nil && err != io.EOF {
 		return pinnedCtx, nil, true, err
 	}
-	if err = b.validateLatestRangeIndexes(pinnedCtx, kvs, latestRangeExpectation{
-		states: states, readyRevision: revision, more: more, ready: true,
-	}); err != nil {
+	if closeErr != nil {
+		return pinnedCtx, nil, true, closeErr
+	}
+	ordered := make([][]byte, 0, len(keys))
+	for _, key := range keys {
+		ordered = append(ordered, key)
+	}
+	sort.Slice(ordered, func(i, j int) bool { return bytes.Compare(ordered[i], ordered[j]) < 0 })
+	kvs, err := b.readLatestMetadataKeys(pinnedCtx, ordered, revision, limit)
+	if err != nil {
 		return pinnedCtx, nil, true, err
 	}
-	b.metricCli.EmitCounter("backend.range.latest_metadata_index_hit", 1)
+	b.metricCli.EmitCounter("backend.range.latest_metadata_key_scan_hit", 1)
 	return pinnedCtx, kvs, true, nil
+}
+
+func (b *backend) readLatestMetadataKeys(
+	ctx context.Context, keys [][]byte, revision uint64, limit int64,
+) ([]*proto.KeyValue, error) {
+	timestamp, pinned := storage.SnapshotTimestampFromContext(ctx)
+	reader, supported := storage.FindCapability[storage.SnapshotGetter](b.kv)
+	if !pinned || !supported {
+		return nil, ErrSerializableCheckpointUnavailable
+	}
+	result := make([]*proto.KeyValue, 0, min(len(keys), latestMetadataRangeBatchSize))
+	for batchStart := 0; batchStart < len(keys) && (limit <= 0 || int64(len(result)) < limit); batchStart += latestMetadataRangeBatchSize {
+		batchEnd := min(batchStart+latestMetadataRangeBatchSize, len(keys))
+		batch := keys[batchStart:batchEnd]
+		physicalKeys := make([][]byte, 0, len(batch)*2)
+		for _, key := range batch {
+			physicalKeys = append(physicalKeys, b.coder.EncodeRevisionKey(key), b.ks.EncodeLatestMetadataKey(key))
+		}
+		values, err := reader.BatchGetAt(ctx, physicalKeys, timestamp)
+		if err != nil {
+			return nil, err
+		}
+		resolved := make([]*proto.KeyValue, len(batch))
+		fallback := make([]int, 0)
+		backfill := make(map[int]latestMetadataBackfillTask)
+		for offset, key := range batch {
+			revisionValue, revisionFound := values[string(physicalKeys[offset*2])]
+			metadataValue, metadataFound := values[string(physicalKeys[offset*2+1])]
+			if revisionFound {
+				physicalRevision, tombstone, parseErr := coder.ParseRevision(revisionValue)
+				if parseErr == nil && physicalRevision <= revision && metadataFound {
+					meta, decodeErr := decodeLatestMetadata(metadataValue)
+					if decodeErr == nil && meta.ModRevision == physicalRevision && meta.Tombstone == tombstone {
+						if !tombstone {
+							resolved[offset] = &proto.KeyValue{Key: key, Revision: physicalRevision,
+								Value: encodeValueWithMeta(nil, EtcdMetadata{CreateRevision: meta.Metadata.CreateRevision, Version: meta.Metadata.Version})}
+						}
+						continue
+					}
+				}
+				if parseErr == nil && physicalRevision <= revision && !tombstone {
+					backfill[offset] = latestMetadataBackfillTask{key: key, revision: physicalRevision,
+						expectedMetadata: metadataValue, expectedMetadataFound: metadataFound}
+				}
+			}
+			fallback = append(fallback, offset)
+		}
+		for fallbackStart := 0; fallbackStart < len(fallback); fallbackStart += latestMetadataFallbackBatchSize {
+			fallbackEnd := min(fallbackStart+latestMetadataFallbackBatchSize, len(fallback))
+			indexes := fallback[fallbackStart:fallbackEnd]
+			fallbackKeys := make([][]byte, len(indexes))
+			for i, offset := range indexes {
+				fallbackKeys[i] = batch[offset]
+			}
+			kvs, readErr := b.readDecodedRangeExactKeysParallel(ctx, fallbackKeys, revision)
+			if readErr != nil {
+				return nil, readErr
+			}
+			for i, offset := range indexes {
+				kv := kvs[i]
+				if kv == nil {
+					continue
+				}
+				if task, ok := backfill[offset]; ok && kv.Revision == task.revision {
+					meta, _, inlined, decodeErr := DecodeInlineValueChecked(kv.Value)
+					if decodeErr == nil && inlined && ValidateEtcdMetadataAtRevision(meta, task.revision, "latest metadata key-scan backfill source") == nil {
+						task.metadata = meta
+						b.queueLatestMetadataBackfill(task)
+					}
+				}
+				kv.Value = projectMetadataValue(kv.Value)
+				resolved[offset] = kv
+			}
+		}
+		for _, kv := range resolved {
+			if kv != nil {
+				result = append(result, kv)
+				if limit > 0 && int64(len(result)) == limit {
+					break
+				}
+			}
+		}
+	}
+	return result, nil
 }
 
 // readLatestMetadataStates keeps auxiliary reads small and fallback object

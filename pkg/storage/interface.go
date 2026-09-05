@@ -167,6 +167,15 @@ type KvStorage interface {
 	Close() error
 }
 
+// KeyIterator is an OPTIONAL KvStorage capability for snapshot scans that
+// return physical keys without transferring values from the storage server.
+// It is intentionally separate from Iter: callers may only use the result for
+// algorithms whose correctness depends on keys alone, or fetch selected values
+// explicitly from the same timestamp afterwards.
+type KeyIterator interface {
+	IterKeys(ctx context.Context, start []byte, end []byte, timestamp uint64, limit uint64) (Iter, error)
+}
+
 // BatchGetter is an OPTIONAL KvStorage capability: fetch many keys in a single
 // round trip. Backends that implement it (TiKV, via a snapshot BatchGet that the
 // client batches by region and issues concurrently) let callers replace N

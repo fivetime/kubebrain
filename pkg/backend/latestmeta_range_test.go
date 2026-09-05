@@ -146,6 +146,75 @@ func TestLatestListKeysOnlyUsesMetadataDirectoryWithoutObjectScan(t *testing.T) 
 	}
 }
 
+func TestLatestListKeysOnlyUsesKeyOnlyFallbackWhenCountIndexUnavailable(t *testing.T) {
+	b, store := newLatestMetadataRangeBackend(t)
+	ctx := context.Background()
+	p := prefix + "/latest-metadata-key-scan/"
+	end := PrefixEnd([]byte(p))
+	keys := [][]byte{[]byte(p + "$a"), []byte(p + "a"), []byte(p + "b")}
+	for i, key := range keys {
+		_, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+			Key: key, Value: bytes.Repeat([]byte{byte('a' + i)}, 2<<20),
+		}})
+		require.NoError(t, err)
+	}
+	require.NoError(t, b.RebuildCountIndex(ctx))
+	b.countIndex.Invalidate()
+
+	store.iterReads.Store(0)
+	store.keyIterReads.Store(0)
+	store.objectReads.Store(0)
+	response, err := b.ListKeysOnly(ctx, &proto.RangeRequest{Key: []byte(p), End: end})
+	require.NoError(t, err)
+	require.Len(t, response.Kvs, len(keys))
+	for i, kv := range response.Kvs {
+		require.Equal(t, keys[i], kv.Key)
+		require.Empty(t, metadataRawValue(t, kv.Value))
+	}
+	require.Positive(t, store.keyIterReads.Load(), "index miss must scan physical keys without values")
+	require.Zero(t, store.iterReads.Load(), "key-only fallback must not use a value-carrying iterator")
+	require.Zero(t, store.objectReads.Load(), "complete metadata rows must not fetch object payloads")
+
+	// A row from an old writer is still discovered from its physical object
+	// keys. Only that key fetches its object and the ordinary bounded healer
+	// restores the auxiliary row.
+	missingMetadata := b.ks.EncodeLatestMetadataKey(keys[1])
+	remove := store.BeginBatchWrite()
+	remove.Del(missingMetadata)
+	require.NoError(t, remove.Commit(ctx))
+	store.setObjectKey(b.coder.EncodeObjectKey(keys[1], response.Kvs[1].Revision))
+	store.keyIterReads.Store(0)
+	store.objectReads.Store(0)
+	response, err = b.ListKeysOnly(ctx, &proto.RangeRequest{Key: []byte(p), End: end})
+	require.NoError(t, err)
+	require.Len(t, response.Kvs, len(keys))
+	require.Positive(t, store.keyIterReads.Load())
+	require.EqualValues(t, 1, store.objectReads.Load(), "only the old-writer key may fetch its object")
+	require.Eventually(t, func() bool {
+		raw, getErr := store.Get(ctx, missingMetadata)
+		if getErr != nil {
+			return false
+		}
+		meta, decodeErr := decodeLatestMetadata(raw)
+		return decodeErr == nil && meta.ModRevision == response.Kvs[1].Revision
+	}, 5*time.Second, 2*time.Millisecond)
+
+	deleted, err := b.Delete(ctx, &proto.DeleteRequest{Key: keys[2]})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= deleted.Header.Revision }, 5*time.Second, 2*time.Millisecond)
+	store.objectReads.Store(0)
+	response, err = b.ListKeysOnly(ctx, &proto.RangeRequest{Key: []byte(p), End: end})
+	require.NoError(t, err)
+	require.Len(t, response.Kvs, 2, "matching small tombstone directories must suppress the deleted key")
+	require.Zero(t, store.objectReads.Load())
+
+	limited, err := b.ListKeysOnly(ctx, &proto.RangeRequest{Key: []byte(p), End: end, Limit: 1})
+	require.NoError(t, err)
+	require.True(t, limited.More)
+	require.Len(t, limited.Kvs, 1)
+	require.Equal(t, keys[0], limited.Kvs[0].Key)
+}
+
 func TestLatestMetadataBackfillCannotReplaceConcurrentUpdate(t *testing.T) {
 	b, store := newLatestMetadataRangeBackend(t)
 	ctx := context.Background()

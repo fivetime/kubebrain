@@ -35,11 +35,19 @@ import (
 
 type latestMetadataReadProbeStorage struct {
 	storage.KvStorage
-	mu          sync.RWMutex
-	objectKey   []byte
-	objectReads atomic.Int64
-	batchReads  atomic.Int64
-	iterReads   atomic.Int64
+	mu           sync.RWMutex
+	objectKey    []byte
+	objectReads  atomic.Int64
+	batchReads   atomic.Int64
+	iterReads    atomic.Int64
+	keyIterReads atomic.Int64
+}
+
+func (s *latestMetadataReadProbeStorage) IterKeys(
+	ctx context.Context, start, end []byte, timestamp, limit uint64,
+) (storage.Iter, error) {
+	s.keyIterReads.Add(1)
+	return s.KvStorage.Iter(ctx, start, end, timestamp, limit)
 }
 
 func (s *latestMetadataReadProbeStorage) Iter(
