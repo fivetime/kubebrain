@@ -71596,6 +71596,69 @@ listener、候选 Kind/Docker 引用、候选路径和候选 cache ID 均为 0�
 服务端已进入外排后的真实取消仍需在独立 CSI spill PVC 的生产等价环境量化，Kind local-path 非 CSI、单节点承载全部
 KubeBrain/PD/TiKV 也继续作为明确生产验证缺口。
 
+### A5738：外排单 run flush 的及时取消与部分文件清理
+
+对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `rangeStream`：同一个 RPC context 贯穿每次
+`txn.Range` 与 `rs.Send`，客户端取消后不应继续执行下一 chunk 的存储工作。KubeBrain 的 multi-run merge 已逐 record
+检查 context，但 `externalKeySorter.Finish(ctx)` 在 pending keys 只形成一个 run 时先调用不接收 context 的 `flushRun`；
+请求已经创建外排 workspace 后取消，仍会排序并把完整 run 写盘，只有外层最终发送时才停止。TDD 新用例先以一个 buffered
+key 稳定复现 `Finish(canceledCtx)` 返回 `nil`，证明 A5737 未覆盖服务端进入外排后的 single-run 取消。
+
+实现把 context 显式贯穿两条外排路径的 `Add`、single-run flush、容量目录遍历与 `Finish`。Add 在复制 key 前检查；
+pending sort 仍使用标准库不可中断 sort，但其输入已由 300 keys/约 1.5MiB 双上限硬约束，并在 sort 前后各设取消栅栏；
+每条 run record 写入前再次检查。文件一旦创建，任何取消、写入或 close 错误都会合并 close/remove 错误并删除部分 run，
+不会留给后续请求或启动期清理。multi-pass merge 的既有逐 record context check 保持不变。
+
+单 run RED 在修改前精确得到 `Expected error with context canceled ... got nil`；实现后 single-run 与 multi-run cancel、
+quota、multi-pass 测试均通过，聚焦 `count=10`、聚焦 race `count=10`、backend 全包 `50.136s`、vet 和 diff check 全绿。
+代码提交 `09f8b2717d2f6fc5a32bea52d1a6553b26d0faf0` 前 verifier 为
+703=`170/193/180/160`，四分片 `252.909/444.160/299.059/573.463s`；提交后 verifier 不变，四分片
+`272.602/466.655/313.282/599.087s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5738-09f8b271` 内嵌版本 `0.0.0-09f8b271`、完整 commit、build time
+`2026-09-05T09:28:08Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI archive 为 914,702,336 bytes，SHA-256
+`c0af31fd77319be0a1e37323bdbcfff305d0c1357e3dad58fc7596e5cfa2f592`；顶层 `index.json` SHA-256/runtime
+imageID、nested index、platform manifest/config 分别为
+`sha256:e5a0836488f4a9d45f6c4ce76dba8f452ae901abd8184388d7ce42682c0d1342`、
+`sha256:6685c4885b4ba647a832f30ed0e4c7aae46fd8d2fa669621074e20ea9aaefe50`、
+`sha256:4859ceeda3855603920b54ee5a23feb5c547fe7c2d806ef71b24d0dc50ad6d2e`、
+`sha256:6c24f514fe3804a2a8362af0214ac6bf4f1886a92af46dbd423548fcd05090b4`。attestation manifest/config 与
+SPDX/SLSA layer 为 `sha256:0ccc9427c5a8aa76d11d4e03a8a49d3681d40060dd6d0b2fdbc4226640af1dfa`/
+`sha256:ec886c271e653dff1855c31cae700dcf87c2737ba3b4fe9eaabba20a95ebeb68`、
+`sha256:fad94b4257596b6b471f992f0849db17967aed4243da5f6c9ab20367dd2a0ed5`/
+`sha256:a63bef913fa7f558165e9a284ceb7c29e242c30bd1eda4e56896f46fc2e642d8`。78 条真实 descriptor edge/blob、
+71 layers/diff IDs 全部匹配；SPDX 2,592 packages/381 files/8,096 relationships，SLSA 仅四项固定 build args/
+三项固定 materials，`65532:65532`、入口、labels 与镜像内 version 均精确。
+
+稳定投放前 gate GREEN：generation/observed `878/878`、RV `8541204`，revision/index/applied `67010`、
+HashKV `1183559713`、direct Hash `1099065000`、compact `66760`、term `627`。以 UID/resourceVersion/
+generation/container/current image/full 22 args 六类 JSON test 原子投放候选并追加两项 spill 参数；generation/observed
+`879/879`、RV `8548701`，三 Pod runtime 均为上述顶层 digest、3/3 Ready、restart 0。
+
+取消探针再以同类六项原子 test 把 count-index 上限降为 1，generation `880`、RV `8549490`；使用 300 个事务写入
+30,000 个专属小键，revision 从 `67010` 推进到 `67310`，保证真实 key-only TiKV snapshot scan/外排窗口足够长。探针
+在 leader info endpoint 明确观察到 `backend_range_stream_spill_active=1` 后才取消同一个 raw etcd 3.7
+`RangeStream{KeysOnly:true,Serializable:true}`；客户端得到 `Canceled`、`frames=0`，leader 的
+`latest_metadata/canceled` 从 0 精确增至 1、wait count=1、`active` 回到 0，其余 outcome 为 0，三个 Pod workspace
+均为 0。因生产 `max-delete-range-keys=1024`，清理使用每事务 100 个精确 Delete，而非绕过上限的 range delete；30,000
+键全部删除后 revision `67610`、前缀为 0。
+
+恢复 500 万上限后 generation/observed `881/881`、RV `8550596`；候选完整 gate（含 info metrics）GREEN：
+revision/index/applied `67610`、HashKV `482412433`、direct Hash `218290338`、compact `66760`、term `633`。
+三轮九次 health 服务端耗时 `41.839–57.411ms`；三个 PD 均 health=true，三个 TiKV store 均 Up、各 13 Regions，
+miss/extra/pending/down/offline/learner 全为 0；候选日志 `476/495/309` 行、critical 0，三 Pod Ready/restart/spill
+workspace 为 `true/0/0`。
+
+以同类六项原子 test 从候选 generation `881`/RV `8550596` 回滚稳定 digest；generation/observed `882/882`、
+RV `8551380`，三 Pod 恢复稳定 runtime、3/3 Ready、restart 0、22 参数不变。稳定适用 gate GREEN，revision/HashKV/
+compact 保持 `67610/482412433/66760`、term `635`，direct/gateway Hash 在稳定进程内一致为 `1032718466`。最终关闭
+六个 port-forward，精确删除候选 Docker/Kind tag、digest/import/config aliases、1.8GiB OCI/审计目录和临时 probe；
+按精确 ID 回收 71 条独占装配记录 `2.891GB` 及源码/编译根 `4.182GB`。listener、候选引用、候选路径和候选 cache ID
+均为 0；只保留七条可跨构建复用的 module、kubectl 与基础 COPY cache，根盘可用约 58GiB。
+
+本项补齐了服务端进入外排后取消的代码与真实 TiKV/PD 证据；尚未覆盖的是百万 key、多 Region、慢客户端并发取消下的
+延迟分位、PVC 吞吐与 backpressure，以及独立 CSI spill PVC 的生产等价容量曲线。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
