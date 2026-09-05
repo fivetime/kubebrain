@@ -71913,6 +71913,31 @@ direct/gateway Hash 均 `3949744664`；三轮九次 health `37.155–55.483ms`�
 本项关闭了成功 bounded LIST 被误报成客户端断连的告警缺口；百万 key、多客户端慢消费、跨 Region 时 cancel 生效延迟与指标
 基数/告警阈值仍需在生产等价多节点、独立 CSI 环境继续量化。
 
+### A5743：纠正 RangeStream revision filter 的公开契约审计
+
+最初只对照固定 upstream `/root/etcd@5cd9f4ee13801e18825d661e5005ae599460bc3a` 的内部
+`EtcdServer.rangeStream`，因其机械上可把 revision filter 传给 Range，错误地把该能力判断为公开兼容性缺口，并产生代码提交
+`0cd69865b6ca8ee243c0076a930bcc5d48e62e5a` 和文档提交 `dff44e6a`。随后回到公开入口审计发现，权威的
+`server/etcdserver/api/v3rpc/key.go::checkRangeStreamRequest` 明确以 `Unimplemented` 拒绝所有 revision filter，也拒绝
+非默认排序；`tests/integration/v3_grpc_test.go` 同样把两类请求固定为不支持。内部执行函数能处理某字段，不等于公开 RPC 接受
+该字段；此前 A5627 已记录这一边界，本次扩展因此属于协议越界而非兼容性修复。
+
+提交 `45d1623b825ea78be83802cddbfcb69f7b9e7f06` 非破坏性撤回上述代码和错误文档，恢复公开 validator 与原有负例，未保留
+revision-filter 扩展。聚焦普通/race 各 `count=10` 为 `2.255/2.116s`，完整 `pkg/server/etcd` 为 `138.597s`，vet 与 diff
+check 全绿。纠正提交前 verifier 为 703=`170/193/180/160`，四分片为
+`258.334/461.398/312.520/590.978s`；提交后 verifier 不变，四分片为
+`256.426/461.185/307.946/595.107s`，全部 GREEN。
+
+错误候选曾用官方 client/v3 对九种 filter/limit/KeysOnly/historical 组合完成黑盒试验，但这只能证明扩展自洽，不能推翻公开
+validator。候选已在纠正前用 UID/resourceVersion/generation/container/image/full args 六类 JSON test 回滚到稳定 digest；
+最终 StatefulSet generation/observed 为 `898/898`，三 Pod 为稳定 runtime imageID、3/3 Ready、restart 0、22 参数，稳定完整
+gate GREEN（revision/HashKV/compact `74638/816093835/66760`、term `667`）。候选镜像引用、OCI/审计临时路径、六个
+port-forward listener 与该构建窗口的独占 cache 均已清零。纠正后的源码与已运行的稳定镜像语义相同，因此不再制造和投放一个
+无行为差异候选。
+
+本项没有新增能力；它纠正了审计方法：RangeStream 兼容性判断必须先以公开 gRPC validator 和 integration contract 定界，再
+审计内部执行路径。custom sort 与 revision filter 均继续保持 upstream `Unimplemented`，不得作为待补产品能力。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
