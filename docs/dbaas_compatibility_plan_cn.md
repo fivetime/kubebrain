@@ -71659,6 +71659,71 @@ compact 保持 `67610/482412433/66760`、term `635`，direct/gateway Hash 在稳
 本项补齐了服务端进入外排后取消的代码与真实 TiKV/PD 证据；尚未覆盖的是百万 key、多 Region、慢客户端并发取消下的
 延迟分位、PVC 吞吐与 backpressure，以及独立 CSI spill PVC 的生产等价容量曲线。
 
+### A5739：multi-pass merge 取消优先级与部分输出原子清理
+
+继续对照 upstream `EtcdServer.RangeStream` 把同一个 RPC context 贯穿每次 Range 与 Send 的合同，审计发现
+`mergeKeyRuns` 虽逐 record 检查取消，但初始化时仍会先打开并读取最多 16 个输入 run；写出中途取消或读写错误后，defer
+还会给截断输出补校验和并将文件留在 workspace，直到更外层 sorter cleanup 才整体删除。这样既会短时占用 spill 配额，
+又使底层留下一个校验和有效但语义不完整的 run；已取消请求若同时遇到坏输入，还会错误优先返回磁盘格式错误。
+
+两个确定性 TDD 用例分别先得到 `Expected error with "file does not exist" in chain but got nil`，以及已取消 context 却返回
+`range ordering spill is too short for checksum`。实现现在于每个输入 open 前、首条 record 读取后、输出 create 前检查 context；
+输出只有在完整 close 且最终取消栅栏通过后才转移所有权，任何取消、读取、写入、flush、checksum 或 close 错误都会合并
+cleanup 错误并删除部分文件。测试 context 由真实 `context.WithCancel` 驱动，保持 `Done`/`Err` 合同。
+
+聚焦取消/配额/multi-pass 测试 `count=10` 与聚焦 race `count=10` 通过，backend 全包 `50.153s`、vet、diff check 全绿。
+代码提交 `2bff7d066fdbb7159b70180e20efae738dc27431` 前 verifier 为 703=`170/193/180/160`，四分片
+`264.616/459.936/307.996/589.936s`；提交后 verifier 不变，四分片
+`258.443/452.609/309.891/583.640s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain:a5739-2bff7d06` 内嵌版本 `0.0.0-2bff7d06`、完整 commit、build time
+`2026-09-05T10:46:14Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI archive 914,703,872 bytes，SHA-256
+`757b20e890851bad93456ed3a54529b33d69392e2f7d84bd81a4deeba6bcd8ee`；顶层 `index.json` SHA-256/runtime
+imageID、nested/spec index、platform manifest/config 分别为
+`sha256:d8482ba58aeb79c03ef75b622fff796e438772021ea3b5d6733beebe553ec416`、
+`sha256:f237f67d0b2844e777eaa40f5370d008759c8ed5e68d5334e6cc6d8750ef5b7f`、
+`sha256:89224164ec45e3a79d9d4ee9b09ec40f7ae614b0c9350489fdf5e2d3343acf74`、
+`sha256:3346856302657df39e4ab36db654a1dac8e6669682907348e43be338691b956a`。attestation manifest/config 与
+SPDX/SLSA layer 为 `sha256:3525dca16015492b69132f9109f950d95f0a0bf24de3d84871f258d41286a832`/
+`sha256:09077bb7ba0cd9f763d73ca1fa94b094b470291cf1ab47a35d1ff951ac908754`、
+`sha256:e40d2218435003ce7aa4692449406ab198c2b1fbda3e3487134def73a3b07ea5`/
+`sha256:d37a0a83debd808ac188ce11ab98f6941a8f2ad33aaab1865bf43c5cec5de552`。78 个 blob 与 78 条真实 descriptor
+edge、71 layers/diff IDs 全匹配；SPDX 2,592 packages/381 files/8,096 relationships，SLSA 仅四项固定 build args/
+三项固定 materials，`65532:65532`、入口与 labels 精确。
+
+稳定基线 generation/observed `882/882`、RV `8551380`，revision/index/applied `67610`、HashKV
+`482412433`、direct/gateway Hash `1032718466`、compact `66760`、term `635`。HEAD 完整 info gate 按预期拒绝稳定
+镜像缺少的 `watch_range_prefilter_dropped`，稳定版本适用 gate GREEN。用 UID/resourceVersion/generation/container/current
+image/full 22 args 六类 JSON test 原子投放候选并追加两项 spill 参数；generation/observed `883/883`、RV `8558432`，
+三 Pod 顶层 runtime imageID 精确、3/3 Ready、restart 0。候选完整 gate GREEN，数据水位不变、term `637`。
+
+再以同类六项 test 把 count-index 上限降为 1，generation/observed `884/884`、RV `8559290`。300,000 个独立小键由
+3,000 个、每个 100 Put 的事务写入，revision `70910`、精确 Count `300000`，产生 1,000 个初始 run 和三层
+fan-in merge；PD 权威 store API 显示三个 TiKV 的 Region 数由 13 增至 21。早期诊断先暴露两项真实分支事实：latest
+serializable 的 2 秒 live-read budget 会取消慢扫描并回退 checkpoint；固定 historical revision 又可由有序扫描直接服务。
+最终使用 leader 上线性一致 latest RangeStream，并在 Pod 内先启动一次性 inotify watcher；只有精确捕获
+`run-00000000000000001001` 首个 merge 输出创建事件后才取消同一个 RPC。严格复跑客户端得到 `Canceled`、`frames=0`，
+`latest_metadata/canceled` 从 5 精确增至 6，`active=0`、failed/quota=0，workspace 文件为 0。
+
+清理不用 range delete：前 1,926 个精确 Delete 事务在单一 10 分钟 context 到期前提交，revision `72836`、剩余
+107,400；从权威首个未删索引续跑 1,074 个事务后 revision `73910`、Count 0。恢复 500 万上限后 generation/observed
+`885/885`、RV `8565200`。候选最终完整 gate 在 60 秒单命令预算内 GREEN：revision/index/applied `73910`、HashKV
+`1089793526`、direct/gateway Hash `2166367984`、compact `66760`、term `640`。三轮九次 health 服务端
+`33.865–57.479ms`；三个 PD 全健康，三个 TiKV store 均 Up、各 21 Regions，六类异常 Region 均为 0；候选日志
+`840/907/376` 行、critical 0，三 Pod Ready/restart/workspace 为 `true/0/0`。
+
+以同类六项 test 从候选 generation `885`/RV `8565200` 回滚稳定 digest；generation/observed `886/886`、RV
+`8566725`，三 Pod 恢复稳定 runtime imageID、3/3 Ready、restart 0、22 参数。大量写删历史使稳定旧镜像的完整门禁在
+60 秒预算下返回 124，但 2 分钟预算下明确 GREEN：revision/HashKV/compact 保持
+`73910/1089793526/66760`、term `642`，direct/gateway Hash 在稳定进程内一致为 `3497178210`；PD/TiKV 继续
+Normal/3/3、store 全 Up、异常 Region 全 0。最终关闭六个 port-forward，删除 Pod/宿主临时探针、候选 Docker/Kind
+四类引用及 1.829GB OCI/审计目录；按精确 ID 回收 71 条独占装配记录 `2.891GB` 和源码/编译根 `4.182GB`，只保留
+七条跨构建依赖 cache。
+
+本项以 300k key、21 Regions 的真实 TiKV/PD 负载补齐了 multi-pass merge 中途取消和部分输出即时清理证据，也暴露稳定
+旧镜像在大量历史版本下 60 秒 Hash 门禁超时的容量敏感性。百万 key、并发慢客户端取消、独立 CSI spill PVC 的吞吐/
+backpressure、节点隔离与延迟分位仍需在生产等价多节点环境继续验证。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
