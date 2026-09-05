@@ -71248,6 +71248,74 @@ GREEN，revision/HashKV/compact 保持 `66994/1959592162/66760`，term `586`；�
 继续保留。A5731 消除了 mixed-version rollout 后 old-writer point/range KeysOnly 对大 object 的永久重复读取；仍需后续评估百万 key
 迁移期间 dropped/deduplicated 比例和 TiKV Region 写放大，并继续推进 count-index 不可用时的通用 payload-free 路径。
 
+### A5732：latest metadata 回填拒绝路径不再拷贝负载
+
+A5731 的回填队列已限制为 1,024 项/8 MiB，但旧实现在去重和字节预算判定之前就拷贝 key 与
+expected metadata；因此重复任务或绝对超限行虽然最终被丢弃，仍能先造成大额短命分配。A5732 在锁内先预留
+pending ID 与逻辑字节，只有通过去重/预算的任务才建立自有副本；channel send 失败时同步回滚预留。测试注入
+per-queue `cloneBytes` 计数器，确认接受任务精确拷贝两次，重复任务不再拷贝，绝对超限任务为零拷贝且不留队列/
+pending/字节计数。
+
+聚焦测试 `0.137s`、race `1.409s`、backend 全包 `50.031s`、server 全包 `137.926s`，vet/diff check GREEN。
+代码提交 `31d070bebc6053292d57a2ba6970d69e576ee562` 前 verifier 精确覆盖 703 项并分为 `170/193/180/160`，
+四分片 `258.399/450.948/302.656/576.887s` 全绿；提交后 verifier 不变，四分片
+`256.812/451.996/305.917/576.900s` 再次全绿。已完成供应链审计的 A5732 OCI 在未部署前遇到稳定基线
+`Maintenance.Hash` 不确定性，因而没有用新镜像掩盖问题；其 tag/digest/config/import 精确引用与
+`/dev/shm/kubebrain-a5732.eeSlbv` 最终全部删除。
+
+### A5733：保留实时 backend Hash 的唯一身份
+
+稳定镜像的 readonly gate 在用户 revision 始终为 `66994` 时两次重现 direct/gateway Hash 交换：
+`4042831452/37466396` 与 `37466396/4042831452`。Pod 内直连 PD/TiKV 的只读探针连续 50 轮扫描同一
+tenant keyspace：每轮 3,466 行，key/value hash 不变、顺序严格单调，实时 backend Hash 始终为
+`37466396`，排除了存储变更与 iterator 乱序。根因是 `RPCServer.Hash` 在 2 秒实时读超时后回退到
+serializable checkpoint；backend Hash 包含不消耗用户 revision 的内部状态，而 checkpoint 只由用户 revision 标识，
+所以旧 checkpoint 可以用相同 response-header revision 返回另一个 checksum。对照
+`/root/etcd/server/storage/mvcc/hash.go` 后，A5733 令无 revision 的 `Hash` 只读当前 backend，实时后端不可读时
+如实失败；显式历史 `HashKV` 的 checkpoint 语义保持不变。
+
+修改前两个 RED 测试会错误返回 checkpoint Hash `73`；修改后聚焦测试 `0.095s`、race `1.407s`、server
+全包最终 `135.940s`，vet/diff check GREEN。代码提交
+`e56460ad272940662a276a1075b337c761de0524` 前 verifier 为 703 项 `170/193/180/160`，四分片
+`262.118/462.653/317.072/589.707s` 全绿。提交后首轮 shard 0 因主机并发负载使一个既有“5 秒内报错”
+时序测试耗时 `7.43s` 而失败；该用例低负载连续三次全绿后，仍从 verifier 开始重跑完整门禁，最终四片
+`297.539/479.609/353.938/604.927s` 全绿，没有将单测重跑当作门禁通过。
+
+最终候选 `docker.io/library/kubebrain:a5733-e56460ad` 内嵌版本 `0.0.0-e56460ad`、完整提交、build time
+`2026-09-04T23:44:19Z`、Go `1.26.5`、`linux/amd64` 与 TiKV。OCI archive 为 914,629,120 bytes，SHA-256
+`18cc054aa6fbcca8ef634ad1db6c5cc4e0020f18f4863837a9dc901e8bfe6a25`；顶层 `index.json` SHA-256 为
+`caf1efc002aa25fd16ab6144238e20fe2f7585978bbf6093d0e0afaf4eddcb65`。nested index/platform/config/attestation
+manifest/attestation config 分别为 `sha256:c33d09e2a2d995110ab8bd6a026be3768fa25a0f03ef7a41e2a9f8d1687da2f9`、
+`sha256:17b04e40a142f1a74b5deb66b27dc553634061362f72bceab307109983f69428`、
+`sha256:7baa8c61274ec6396d71080dd591614d9ef27d453cda4549e4f6615255b8623d`、
+`sha256:596fb5be065ec2530945c4d2879bcf63a9ac79606b9db64c00bc3f7926e3ed2c`、
+`sha256:c10f42491fc9c530d74fb6de9c018504408764d3c21f7b5c05bee8b340f2f16d`；SPDX/SLSA layer 为
+`sha256:865d12a54873ef432841091f4078d68e20289db280e23e8f6d045a7066ad47e6`/
+`sha256:3f61395832902e11047659a1f600e3563589ec91f089ba3d0407a41de2e9679d`。78/78 blobs 与 78 条 descriptor edge
+的 hash/size 全部匹配；71 layers/diff IDs、SPDX 2,592 packages/381 files/8,096 relationships、SLSA 精确 subject、
+4 项 build args/3 项固定 materials、`65532:65532` 非 root、入口与 labels 全部通过。首次未部署导出因额外显式
+`TARGETARCH` 使 SLSA 出现第 5 个 build arg，审计阶段即拒绝并精确删除，以上数据来自四参数重建。
+
+稳定基线在没有候选代际 info-metrics 合同时完整 readonly gate GREEN。Kind 建立候选 tag/nested
+digest/config 引用，以 UID/resourceVersion/generation/container/current image/full 22 args 六类原子 test，从
+generation `858` 滚动至 `859/859`。三 Pod spec 为 nested digest，runtime imageID 为 config digest，3/3 Ready、
+restart 0、参数未漂移。候选完整 readonly gate（包含 info metrics、named health、headers、debug vars 和 pprof 禁用合同）
+GREEN；revision/index/applied `66994`、HashKV `1959592162`、compact `66760`、term `588`。随后 12 轮 direct gRPC/
+HTTP gateway Hash 全部为 `37466396`且 revision 全部为 `66994`。三轮九次 proposal health 全成功（`33.393–
+42.322ms`）；三个 TiKV store 均 Up、各 14 Regions，无 panic/fatal/corruption/checksum mismatch。
+
+以同类六类原子 test 回滚稳定 digest，generation/observed `860/860`、RV `8477942`；三 Pod runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`、3/3 Ready、restart 0、22 参数不变。
+稳定适用的终态 gate GREEN，revision/HashKV/compact 保持 `66994/1959592162/66760`、term `590`；三轮九次
+health `34.996–48.603ms`，TiKV 仍为 Up/14 Regions/pending 0/down 0，日志 critical 0。
+
+两次不同 build time 的编译层使已知 99% 满载宿主从约 13 GiB 可用下降到 0，TiKV 与所有 KubeBrain 实例
+短暂存储超时；候选尚未投放，故与代码无关。精确删除本轮两个 4.143 GB BuildKit 编译记录后实际恢复约
+4.5 GiB，稳定集群自愈并在投放前重新通过基线。最终关闭六个 port-forward，确认候选 Pod 引用为 0 后精确删除
+Kind tag/nested digest/config/raw-config 四个名称、A5732/A5733 OCI/审计目录与临时探针；稳定镜像、源码、
+数据卷与共享 cache 未删除。Kind local-path 非 CSI 隔离、宿主 100% 显示口径与仅约 4.5 GiB 余量仍是明确生产
+阻塞风险，不用本轮 Hash 修复结论掩盖。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
