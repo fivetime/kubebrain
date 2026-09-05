@@ -51,15 +51,15 @@ func TestDockerfilePinsEveryExplicitRuntimePackage(t *testing.T) {
 	}
 
 	require.Equal(t, [][]string{
-		{"bash=5.3.3-r1", "ca-certificates=20260611-r0", "coreutils=9.8-r1", "gcompat=1.1.0-r4", "jq=1.8.1-r0"},
-		{"bash=5.3.3-r1", "ca-certificates=20260611-r0", "coreutils=9.8-r1", "gcompat=1.1.0-r4", "jq=1.8.1-r0"},
+		{"bash=5.3.3-r1", "ca-certificates=20260611-r0", "coreutils=9.8-r1", "gcompat=1.1.0-r4", "jq=1.8.2-r0"},
+		{"bash=5.3.3-r1", "ca-certificates=20260611-r0", "coreutils=9.8-r1", "gcompat=1.1.0-r4", "jq=1.8.2-r0"},
 		{
 			"bash=5.3.3-r1",
 			"ca-certificates=20260611-r0",
 			"coreutils=9.8-r1",
-			"curl=8.20.0-r0",
+			"curl=8.22.0-r0",
 			"etcd-ctl=3.6.10-r1",
-			"jq=1.8.1-r0",
+			"jq=1.8.2-r0",
 			"openssl=3.5.8-r0",
 		},
 	}, installs,
