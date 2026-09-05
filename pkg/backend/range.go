@@ -1792,6 +1792,14 @@ func (b *backend) rangeStream(ctx context.Context, userStart, userEnd []byte, re
 		if served {
 			return b.validatedRangeStream(scanCtx, cancel, stream, rev, nil), nil
 		}
+		stream, served, streamErr = b.latestMetadataRangeStreamFromKeyScan(scanCtx, userStart, userEnd, rev)
+		if streamErr != nil {
+			cancel()
+			return nil, streamErr
+		}
+		if served {
+			return b.validatedRangeStream(scanCtx, cancel, stream, rev, nil), nil
+		}
 	}
 	decodedRange, err := b.requiresDecodedUserRange(scanCtx, userStart, userEnd, rev)
 	if err != nil {

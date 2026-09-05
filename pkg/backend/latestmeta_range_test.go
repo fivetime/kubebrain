@@ -18,6 +18,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"sort"
 	"testing"
 	"time"
 
@@ -295,6 +297,86 @@ func TestLatestRangeStreamKeysOnlyPaginatesMetadataDirectory(t *testing.T) {
 		require.Equal(t, []byte(fmt.Sprintf("%s%03d", p, i)), key)
 	}
 	require.Zero(t, store.iterReads.Load())
+}
+
+func TestLatestRangeStreamKeysOnlyUsesKeyOnlySpillWhenCountIndexUnavailable(t *testing.T) {
+	b, store := newLatestMetadataRangeBackend(t)
+	ctx := context.Background()
+	p := prefix + "/latest-metadata-key-spill/"
+	end := PrefixEnd([]byte(p))
+	keys := make([][]byte, 0, latestRangeStreamIndexPage+2)
+	keys = append(keys, []byte(p+"$a"), []byte(p+"a"), []byte(p+"b"))
+	for i := 0; len(keys) < latestRangeStreamIndexPage+2; i++ {
+		keys = append(keys, []byte(fmt.Sprintf("%sk%03d", p, i)))
+	}
+	var missingMetadataRevision uint64
+	for i, key := range keys {
+		value := []byte("v")
+		if i < 3 {
+			value = bytes.Repeat([]byte{byte('a' + i)}, 2<<20)
+		}
+		response, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{Key: key, Value: value}})
+		require.NoError(t, err)
+		if i == 1 {
+			missingMetadataRevision = response.Header.Revision
+		}
+	}
+	require.NoError(t, b.RebuildCountIndex(ctx))
+
+	remove := store.BeginBatchWrite()
+	remove.Del(b.ks.EncodeLatestMetadataKey(keys[1]))
+	require.NoError(t, remove.Commit(ctx))
+	store.setObjectKey(b.coder.EncodeObjectKey(keys[1], missingMetadataRevision))
+	deleted, err := b.Delete(ctx, &proto.DeleteRequest{Key: keys[len(keys)-1]})
+	require.NoError(t, err)
+	require.Eventually(t, func() bool { return b.GetCurrentRevision() >= deleted.Header.Revision }, 5*time.Second, 2*time.Millisecond)
+	b.countIndex.Invalidate()
+	spillDir := t.TempDir()
+	t.Setenv("TMPDIR", spillDir)
+
+	store.iterReads.Store(0)
+	store.keyIterReads.Store(0)
+	store.objectReads.Store(0)
+	store.batchReads.Store(0)
+	stream, err := b.RangeStreamKeysOnly(ctx, []byte(p), end, 0)
+	require.NoError(t, err)
+	var actual [][]byte
+	var dataChunks, terminalChunks int
+	for chunk := range stream {
+		require.Empty(t, chunk.Err)
+		require.NotNil(t, chunk.RangeResponse)
+		if len(chunk.RangeResponse.Kvs) == 0 {
+			terminalChunks++
+			require.False(t, chunk.RangeResponse.More)
+			continue
+		}
+		dataChunks++
+		require.True(t, chunk.RangeResponse.More)
+		for _, kv := range chunk.RangeResponse.Kvs {
+			actual = append(actual, kv.Key)
+			require.Empty(t, metadataRawValue(t, kv.Value))
+		}
+	}
+	expected := append([][]byte(nil), keys[:len(keys)-1]...)
+	sort.Slice(expected, func(i, j int) bool { return bytes.Compare(expected[i], expected[j]) < 0 })
+	require.Equal(t, expected, actual)
+	require.GreaterOrEqual(t, dataChunks, 2, "the spill join must emit bounded pages")
+	require.Equal(t, 1, terminalChunks)
+	require.Positive(t, store.keyIterReads.Load(), "index miss must scan TiKV physical keys without values")
+	require.Zero(t, store.iterReads.Load(), "streaming key-only fallback must not use a value-carrying iterator")
+	require.EqualValues(t, 1, store.objectReads.Load(), "only the old-writer key may fetch its object")
+	require.Positive(t, store.batchReads.Load())
+	entries, err := os.ReadDir(spillDir)
+	require.NoError(t, err)
+	require.Empty(t, entries, "the key-only stream spill must be removed after terminal delivery")
+	require.Eventually(t, func() bool {
+		raw, getErr := store.Get(ctx, b.ks.EncodeLatestMetadataKey(keys[1]))
+		if getErr != nil {
+			return false
+		}
+		meta, decodeErr := decodeLatestMetadata(raw)
+		return decodeErr == nil && meta.ModRevision == missingMetadataRevision
+	}, 5*time.Second, 2*time.Millisecond)
 }
 
 func TestLatestRangeStreamKeysOnlyFallsBackAtPinnedOlderRevision(t *testing.T) {

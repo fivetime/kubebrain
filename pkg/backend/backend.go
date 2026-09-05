@@ -429,9 +429,11 @@ type backend struct {
 	// cold follower can receive many decoded RangeStreams at once; without this
 	// gate every request would launch the same whole-keyspace bootstrap scan.
 	countIndexSyncMu sync.Mutex
-	// decodedRangeSpillSem admits one disk-backed ordering spill per replica.
-	// Overflow is an exceptional safety path; serializing it prevents concurrent
-	// full-keyspace requests from multiplying temporary-disk and TiKV pressure.
+	// decodedRangeSpillSem admits one disk-backed range-ordering spill per
+	// replica. Both decoded-boundary streams and latest metadata key-only
+	// fallbacks can require a full physical scan; serializing them prevents
+	// concurrent exceptional requests from multiplying temporary-disk and TiKV
+	// pressure.
 	decodedRangeSpillSem chan struct{}
 	// boundaryProbeCache memoizes whether a user boundary has a low-byte key
 	// extension at an immutable MVCC revision. Without it, repeated Range calls

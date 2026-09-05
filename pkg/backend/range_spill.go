@@ -33,6 +33,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/streamerror"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
 const (
@@ -243,6 +244,211 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 	return stream
 }
 
+// latestMetadataRangeStreamFromKeyScan is the bounded-memory fallback for a
+// latest FastKeysOnly stream when the process-local count index is unavailable.
+// A key-only engine snapshot scan discovers every physical object version,
+// including rows from an older writer that has no latest-metadata entry. The
+// external sorter deduplicates and restores user-key order without retaining
+// the complete key set in memory; bounded pages are then joined with the small
+// revision/latest-metadata directories at the exact same snapshot timestamp.
+func (b *backend) latestMetadataRangeStreamFromKeyScan(
+	ctx context.Context,
+	userStart, userEnd []byte,
+	revision uint64,
+) (<-chan *proto.StreamRangeResponse, bool, error) {
+	keyReader, supported := storage.FindCapability[storage.KeyIterator](b.kv)
+	if !supported {
+		return nil, false, nil
+	}
+	if _, supported = storage.FindCapability[storage.SnapshotGetter](b.kv); !supported {
+		return nil, false, nil
+	}
+	pinnedCtx, err := b.withRangeSnapshotTimestamp(ctx)
+	if err != nil {
+		return nil, true, err
+	}
+	timestamp, pinned := storage.SnapshotTimestampFromContext(pinnedCtx)
+	if !pinned {
+		return nil, true, ErrSerializableCheckpointUnavailable
+	}
+
+	stream := make(chan *proto.StreamRangeResponse)
+	go func() {
+		defer close(stream)
+		send := func(response *proto.StreamRangeResponse) bool {
+			select {
+			case stream <- response:
+				return true
+			case <-ctx.Done():
+				return false
+			}
+		}
+		fail := func(streamErr error) {
+			if streamErr != nil && ctx.Err() == nil {
+				send(rangeStreamErrorEnd(revision, streamErr))
+			}
+		}
+
+		select {
+		case b.decodedRangeSpillSem <- struct{}{}:
+			defer func() { <-b.decodedRangeSpillSem }()
+		case <-ctx.Done():
+			return
+		}
+
+		started := time.Now()
+		sorter, createErr := newExternalKeySorter()
+		if createErr != nil {
+			fail(fmt.Errorf("create latest metadata key ordering spill: %w", createErr))
+			return
+		}
+		sorterClosed := false
+		defer func() {
+			if !sorterClosed {
+				_ = sorter.Close()
+			}
+		}()
+
+		end := userEnd
+		if isFromKeyEnd(end) {
+			end = nil
+		}
+		scanStart, scanEnd, exactKeys := b.decodedUserRangeScanPlan(userStart, userEnd)
+		var observed int64
+		add := func(key []byte) error {
+			if bytes.Compare(key, userStart) < 0 || (len(end) != 0 && bytes.Compare(key, end) >= 0) {
+				return nil
+			}
+			observed++
+			return sorter.Add(key)
+		}
+		for _, key := range exactKeys {
+			if addErr := sorter.Add(key); addErr != nil {
+				fail(fmt.Errorf("write latest metadata exact-key spill: %w", addErr))
+				return
+			}
+		}
+
+		iterator, iterErr := keyReader.IterKeys(pinnedCtx, scanStart, scanEnd, timestamp, 0)
+		if iterErr != nil {
+			fail(fmt.Errorf("create latest metadata key-only iterator: %w", iterErr))
+			return
+		}
+		iteratorClosed := false
+		defer func() {
+			if !iteratorClosed {
+				_ = iterator.Close()
+			}
+		}()
+		for {
+			iterErr = iterator.Next(pinnedCtx)
+			if iterErr != nil {
+				break
+			}
+			rawKey := iterator.Key()
+			if b.ks.IsInternalStorageKey(rawKey) {
+				continue
+			}
+			userKey, _, decodeErr := b.coder.Decode(rawKey)
+			if decodeErr != nil {
+				fail(fmt.Errorf("decode latest metadata key-only iterator key: %w", decodeErr))
+				return
+			}
+			if addErr := add(userKey); addErr != nil {
+				fail(fmt.Errorf("write latest metadata key ordering spill: %w", addErr))
+				return
+			}
+		}
+		if iterErr != nil && !errors.Is(iterErr, io.EOF) {
+			fail(iterErr)
+			return
+		}
+		if closeErr := iterator.Close(); closeErr != nil {
+			fail(fmt.Errorf("close latest metadata key-only iterator: %w", closeErr))
+			return
+		}
+		iteratorClosed = true
+
+		finalRun, finishErr := sorter.Finish(pinnedCtx)
+		if finishErr != nil {
+			fail(fmt.Errorf("merge latest metadata key ordering spill: %w", finishErr))
+			return
+		}
+		var spillBytes int64
+		if finalRun != "" {
+			if stat, statErr := os.Stat(finalRun); statErr == nil {
+				spillBytes = stat.Size()
+			}
+			reader, openErr := openKeyRun(finalRun)
+			if openErr != nil {
+				fail(openErr)
+				return
+			}
+			readerClosed := false
+			defer func() {
+				if !readerClosed {
+					_ = reader.Close()
+				}
+			}()
+			var carry []byte
+			for {
+				keys := make([][]byte, 0, latestRangeStreamIndexPage)
+				pageBytes := 0
+				if carry != nil {
+					keys = append(keys, carry)
+					pageBytes = len(carry)
+					carry = nil
+				}
+				for len(keys) < latestRangeStreamIndexPage {
+					key, readErr := reader.Next()
+					if errors.Is(readErr, io.EOF) {
+						break
+					}
+					if readErr != nil {
+						fail(readErr)
+						return
+					}
+					if len(keys) != 0 && pageBytes+len(key) > decodedRangeSpillRunBytes {
+						carry = key
+						break
+					}
+					keys = append(keys, key)
+					pageBytes += len(key)
+				}
+				if len(keys) == 0 {
+					break
+				}
+				kvs, readErr := b.readLatestMetadataKeys(pinnedCtx, keys, revision, 0)
+				if readErr != nil {
+					fail(readErr)
+					return
+				}
+				if len(kvs) != 0 && !send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{
+					Header: responseHeader(revision), Kvs: kvs, More: true,
+				}}) {
+					return
+				}
+			}
+			if closeErr := reader.Close(); closeErr != nil {
+				fail(fmt.Errorf("close latest metadata key ordering spill: %w", closeErr))
+				return
+			}
+			readerClosed = true
+		}
+		if closeErr := sorter.Close(); closeErr != nil {
+			fail(fmt.Errorf("remove latest metadata key ordering spill: %w", closeErr))
+			return
+		}
+		sorterClosed = true
+		b.metricCli.EmitCounter("backend.range_stream.latest_metadata_key_scan_hit", 1)
+		b.metricCli.EmitGauge("backend.range_stream.latest_metadata_key_spill_bytes", spillBytes)
+		b.metricCli.EmitGauge("backend.range_stream.latest_metadata_key_spill_keys", observed)
+		b.metricCli.EmitHistogram("backend.range_stream.latest_metadata_key_spill_latency_seconds", time.Since(started).Seconds())
+		send(&proto.StreamRangeResponse{RangeResponse: &proto.RangeResponse{Header: responseHeader(revision)}})
+	}()
+	return stream, true, nil
+}
+
 // externalKeySorter performs a multi-pass merge with fixed memory and file
 // descriptor bounds. Run records are uvarint-length-prefixed raw keys, so it
 // supports etcd keys larger than bbolt's ~32KiB key limit.
@@ -398,7 +604,7 @@ func openKeyRun(path string) (*keyRunReader, error) {
 		return nil, errors.Join(err, file.Close())
 	}
 	if info.Size() < sha256.Size {
-		return nil, errors.Join(errors.New("decoded range spill is too short for checksum"), file.Close())
+		return nil, errors.Join(errors.New("range ordering spill is too short for checksum"), file.Close())
 	}
 	dataBytes := info.Size() - sha256.Size
 	wantHash := make([]byte, sha256.Size)
@@ -417,7 +623,7 @@ func (r *keyRunReader) Next() ([]byte, error) {
 	if r.remaining == 0 {
 		if !r.verified {
 			if !bytes.Equal(r.checksum.Sum(nil), r.wantHash) {
-				return nil, errors.New("decoded range spill checksum mismatch")
+				return nil, errors.New("range ordering spill checksum mismatch")
 			}
 			r.verified = true
 		}
@@ -429,17 +635,17 @@ func (r *keyRunReader) Next() ([]byte, error) {
 		return nil, err
 	}
 	if counted.read > r.remaining {
-		return nil, errors.New("decoded range spill length prefix exceeds remaining run bytes")
+		return nil, errors.New("range ordering spill length prefix exceeds remaining run bytes")
 	}
 	r.remaining -= counted.read
 	if size > r.remaining {
-		return nil, fmt.Errorf("decoded range spill key length %d exceeds remaining run bytes %d", size, r.remaining)
+		return nil, fmt.Errorf("range ordering spill key length %d exceeds remaining run bytes %d", size, r.remaining)
 	}
 	if size > uint64(maxInt()) {
-		return nil, fmt.Errorf("decoded range spill key length %d overflows int", size)
+		return nil, fmt.Errorf("range ordering spill key length %d overflows int", size)
 	}
 	if size == 0 {
-		return nil, errors.New("decoded range spill contains an empty key")
+		return nil, errors.New("range ordering spill contains an empty key")
 	}
 	key := make([]byte, int(size))
 	if _, err = io.ReadFull(r.buffer, key); err != nil {
@@ -447,7 +653,7 @@ func (r *keyRunReader) Next() ([]byte, error) {
 	}
 	r.remaining -= size
 	if r.previous != nil && bytes.Compare(r.previous, key) >= 0 {
-		return nil, errors.New("decoded range spill keys are not strictly increasing")
+		return nil, errors.New("range ordering spill keys are not strictly increasing")
 	}
 	r.previous = append(r.previous[:0], key...)
 	return key, nil
