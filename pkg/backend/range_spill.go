@@ -237,7 +237,7 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 				return nil
 			}
 			observed++
-			return sorter.Add(key)
+			return sorter.Add(ctx, key)
 		}
 
 		raw := b.scanner.RangeStream(ctx, scanStart, scanEnd, revision, true)
@@ -258,7 +258,7 @@ func (b *backend) decodedUserRangeStreamFromSpill(
 				if kv == nil {
 					continue
 				}
-				if addErr := sorter.Add(chunkKeys[index]); addErr != nil {
+				if addErr := sorter.Add(ctx, chunkKeys[index]); addErr != nil {
 					return fmt.Errorf("write decoded range exact-key spill: %w", addErr)
 				}
 			}
@@ -444,10 +444,10 @@ func (b *backend) latestMetadataRangeStreamFromKeyScan(
 				return nil
 			}
 			observed++
-			return sorter.Add(key)
+			return sorter.Add(pinnedCtx, key)
 		}
 		for _, key := range exactKeys {
-			if addErr := sorter.Add(key); addErr != nil {
+			if addErr := sorter.Add(pinnedCtx, key); addErr != nil {
 				fail(fmt.Errorf("write latest metadata exact-key spill: %w", addErr))
 				return
 			}
@@ -643,11 +643,14 @@ func newExternalKeySorter(config externalKeySorterConfig) (*externalKeySorter, e
 
 func (s *externalKeySorter) Close() error { return os.RemoveAll(s.dir) }
 
-func (s *externalKeySorter) Add(key []byte) error {
+func (s *externalKeySorter) Add(ctx context.Context, key []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.pending = append(s.pending, append([]byte(nil), key...))
 	s.pendingBytes += len(key)
 	if len(s.pending) >= decodedRangeSpillRunKeys || s.pendingBytes >= decodedRangeSpillRunBytes {
-		return s.flushRun()
+		return s.flushRun(ctx)
 	}
 	return nil
 }
@@ -657,12 +660,22 @@ func (s *externalKeySorter) nextPath() string {
 	return filepath.Join(s.dir, fmt.Sprintf("run-%020d", s.sequence))
 }
 
-func (s *externalKeySorter) flushRun() error {
+func (s *externalKeySorter) flushRun(ctx context.Context) (retErr error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(s.pending) == 0 {
 		return nil
 	}
+	// The in-memory sort itself has no cancellable API, but pending is already
+	// hard-bounded by decodedRangeSpillRunKeys/decodedRangeSpillRunBytes. Fence
+	// it on both sides so cancellation cannot continue into capacity scans or
+	// disk writes.
 	sort.Slice(s.pending, func(i, j int) bool { return bytes.Compare(s.pending[i], s.pending[j]) < 0 })
-	if err := s.requireCapacity(encodedKeyRunSize(s.pending)); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := s.requireCapacity(ctx, encodedKeyRunSize(s.pending)); err != nil {
 		return err
 	}
 	path := s.nextPath()
@@ -670,19 +683,38 @@ func (s *externalKeySorter) flushRun() error {
 	if err != nil {
 		return err
 	}
+	writerClosed := false
+	keepRun := false
+	defer func() {
+		if !writerClosed {
+			retErr = errors.Join(retErr, writer.Close())
+		}
+		if !keepRun {
+			retErr = errors.Join(retErr, os.Remove(path))
+		}
+	}()
 	var previous []byte
 	for _, key := range s.pending {
+		if err = ctx.Err(); err != nil {
+			return err
+		}
 		if previous != nil && bytes.Equal(previous, key) {
 			continue
 		}
 		if err = writer.Write(key); err != nil {
-			return errors.Join(err, writer.Close())
+			return err
 		}
 		previous = key
 	}
 	if err = writer.Close(); err != nil {
+		writerClosed = true
 		return err
 	}
+	writerClosed = true
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	keepRun = true
 	s.runs = append(s.runs, path)
 	s.pending = s.pending[:0]
 	s.pendingBytes = 0
@@ -690,7 +722,7 @@ func (s *externalKeySorter) flushRun() error {
 }
 
 func (s *externalKeySorter) Finish(ctx context.Context) (string, error) {
-	if err := s.flushRun(); err != nil {
+	if err := s.flushRun(ctx); err != nil {
 		return "", err
 	}
 	for len(s.runs) > 1 {
@@ -706,7 +738,7 @@ func (s *externalKeySorter) Finish(ctx context.Context) (string, error) {
 				}
 				maximumOutputBytes += info.Size()
 			}
-			if err := s.requireCapacity(maximumOutputBytes); err != nil {
+			if err := s.requireCapacity(ctx, maximumOutputBytes); err != nil {
 				return "", err
 			}
 			output := s.nextPath()
@@ -742,7 +774,10 @@ func encodedKeyRunSize(sortedKeys [][]byte) int64 {
 	return size
 }
 
-func (s *externalKeySorter) requireCapacity(additional int64) error {
+func (s *externalKeySorter) requireCapacity(ctx context.Context, additional int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.maxBytes == 0 {
 		return nil
 	}
@@ -752,6 +787,9 @@ func (s *externalKeySorter) requireCapacity(additional int64) error {
 		return err
 	}
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		info, err := entry.Info()
 		if err != nil {
 			return err

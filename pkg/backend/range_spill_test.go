@@ -62,7 +62,7 @@ func TestExternalKeySorterEnforcesPeakDiskQuotaBeforeMerge(t *testing.T) {
 	// The merge would need an output run alongside them and must be rejected
 	// before it can consume more than the configured workspace budget.
 	for index := 599; index >= 0; index-- {
-		require.NoError(t, sorter.Add([]byte(fmt.Sprintf("quota-key/%06d", index))))
+		require.NoError(t, sorter.Add(context.Background(), []byte(fmt.Sprintf("quota-key/%06d", index))))
 	}
 	_, err = sorter.Finish(context.Background())
 	require.Equal(t, codes.ResourceExhausted, status.Code(err))
@@ -72,6 +72,25 @@ func TestExternalKeySorterEnforcesPeakDiskQuotaBeforeMerge(t *testing.T) {
 	for _, entry := range entries {
 		require.NotContains(t, entry.Name(), ".partial")
 	}
+}
+
+func TestExternalKeySorterCancellationBeforeSingleRunFlush(t *testing.T) {
+	spillRoot := t.TempDir()
+	sorter, err := newExternalKeySorter(externalKeySorterConfig{Root: spillRoot})
+	require.NoError(t, err)
+	directory := sorter.dir
+	require.NoError(t, sorter.Add(context.Background(), []byte("buffered-key")))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = sorter.Finish(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	entries, readErr := os.ReadDir(directory)
+	require.NoError(t, readErr)
+	require.Empty(t, entries, "a canceled single-run flush must not write a spill file")
+	require.NoError(t, sorter.Close())
+	_, err = os.Stat(directory)
+	require.ErrorIs(t, err, os.ErrNotExist)
 }
 
 func TestValidateRangeStreamSpillDirProbesAndCleansWorkspace(t *testing.T) {
@@ -112,9 +131,9 @@ func TestExternalKeySorterMultiPassOrdersDeduplicatesAndSupportsLongKeys(t *test
 	want[len(want)-1] = append([]byte("key/zzzz/"), bytes.Repeat([]byte{'x'}, 40<<10)...)
 	sort.Slice(want, func(i, j int) bool { return bytes.Compare(want[i], want[j]) < 0 })
 	for index := len(want) - 1; index >= 0; index-- {
-		require.NoError(t, sorter.Add(want[index]))
+		require.NoError(t, sorter.Add(context.Background(), want[index]))
 		if index%97 == 0 {
-			require.NoError(t, sorter.Add(want[index]))
+			require.NoError(t, sorter.Add(context.Background(), want[index]))
 		}
 	}
 	finalRun, err := sorter.Finish(context.Background())
@@ -146,7 +165,7 @@ func TestExternalKeySorterBoundsRunRecordsWithoutCappingConfiguredKeySize(t *tes
 	t.Cleanup(func() { require.NoError(t, sorter.Close()) })
 
 	largeKey := bytes.Repeat([]byte{'x'}, decodedRangeSpillRunBytes+1)
-	require.NoError(t, sorter.Add(largeKey))
+	require.NoError(t, sorter.Add(context.Background(), largeKey))
 	largeRun, err := sorter.Finish(context.Background())
 	require.NoError(t, err)
 	largeReader, err := openKeyRun(largeRun)
@@ -235,7 +254,7 @@ func TestExternalKeySorterCancellationCleansPartialMerge(t *testing.T) {
 	require.NoError(t, err)
 	directory := sorter.dir
 	for index := decodedRangeSpillRunKeys * 2; index >= 0; index-- {
-		require.NoError(t, sorter.Add([]byte(fmt.Sprintf("key/%06d", index))))
+		require.NoError(t, sorter.Add(context.Background(), []byte(fmt.Sprintf("key/%06d", index))))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
