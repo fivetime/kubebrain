@@ -1741,6 +1741,28 @@ func (b *backend) ListByStream(ctx context.Context, startKey, endKey []byte, rev
 
 type latestRangeStreamContextKey struct{}
 
+var errRangeStreamLimitSatisfied = stderrors.New("range stream limit satisfied")
+
+// WithRangeStreamLimitCancellation gives the etcd serving layer two distinct
+// ways to stop backend work. stop tears a stream down after an ordinary error
+// or handler return; limitSatisfied marks the cancellation as a successful
+// public Limit completion so spill outcome metrics do not report it as a
+// caller cancellation. The first cancellation cause wins.
+func WithRangeStreamLimitCancellation(ctx context.Context) (
+	streamCtx context.Context,
+	stop context.CancelFunc,
+	limitSatisfied context.CancelFunc,
+) {
+	streamCtx, cancel := context.WithCancelCause(ctx)
+	return streamCtx,
+		func() { cancel(context.Canceled) },
+		func() { cancel(errRangeStreamLimitSatisfied) }
+}
+
+func rangeStreamLimitSatisfied(ctx context.Context) bool {
+	return stderrors.Is(context.Cause(ctx), errRangeStreamLimitSatisfied)
+}
+
 // WithLatestRangeStream records that a server pinned an original revision=0
 // request to an explicit start revision before crossing the Backend interface.
 // Without this marker the backend cannot distinguish that safe pin from a true

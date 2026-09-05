@@ -120,6 +120,57 @@ func TestRangeStreamSpillCleanupFailureWinsOverCallerCancellation(t *testing.T) 
 	}}, positive, "a failed workspace removal must not be hidden as routine cancellation")
 }
 
+func TestRangeStreamSpillLimitCompletionHasAccurateOutcome(t *testing.T) {
+	tests := []struct {
+		name    string
+		finish  func(*rangeStreamSpillAttempt)
+		outcome string
+	}{
+		{
+			name: "pure internal cancellation is successful completion",
+			finish: func(attempt *rangeStreamSpillAttempt) {
+				attempt.recordError(context.Canceled)
+			},
+			outcome: rangeStreamSpillOutcomeCompleted,
+		},
+		{
+			name: "cleanup failure still wins",
+			finish: func(attempt *rangeStreamSpillAttempt) {
+				attempt.recordError(context.Canceled)
+				attempt.recordSorterCleanup(&externalKeySorter{dir: "invalid\x00workspace"}, "remove spill workspace")
+			},
+			outcome: rangeStreamSpillOutcomeFailed,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recorder := &compactMetricRecorder{}
+			b := &backend{decodedRangeSpillSem: make(chan struct{}, 1), metricCli: recorder}
+			ctx, stop, limitSatisfied := WithRangeStreamLimitCancellation(context.Background())
+			defer stop()
+			attempt, admitted := b.acquireRangeStreamSpill(ctx, rangeStreamSpillPathLatestMetadata)
+			require.True(t, admitted)
+			test.finish(attempt)
+			limitSatisfied()
+			attempt.finish(ctx)
+
+			var positive []compactMetricRecord
+			for _, record := range recorder.records {
+				if record.kind == "counter" && record.name == "backend.range_stream.spill_outcome" {
+					positive = append(positive, record)
+				}
+			}
+			require.Equal(t, []compactMetricRecord{{
+				kind: "counter", name: "backend.range_stream.spill_outcome", value: int64(1),
+				tags: []metrics.T{
+					metrics.Tag("path", rangeStreamSpillPathLatestMetadata),
+					metrics.Tag("outcome", test.outcome),
+				},
+			}}, positive)
+		})
+	}
+}
+
 func TestRangeStreamSpillCanceledContextNeverAcquiresSlot(t *testing.T) {
 	recorder := &compactMetricRecorder{}
 	b := &backend{decodedRangeSpillSem: make(chan struct{}, 1), metricCli: recorder}

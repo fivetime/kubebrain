@@ -82,6 +82,62 @@ type listCountingBackendShim struct {
 	listCalls int
 }
 
+type limitedRangeStreamCountProbeShim struct {
+	BackendShim
+	total        int
+	produced     int
+	stopped      bool
+	done         chan struct{}
+	countCalls   int
+	countRequest *etcdserverpb.RangeRequest
+}
+
+func (b *limitedRangeStreamCountProbeShim) RangeStreamChan(
+	ctx context.Context, _, _ []byte, revision uint64,
+) (<-chan rangeStreamChunk, error) {
+	ch := make(chan rangeStreamChunk)
+	go func() {
+		defer close(ch)
+		defer close(b.done)
+		for index := 0; index < b.total; index++ {
+			chunk := rangeStreamChunk{resp: &etcdserverpb.RangeResponse{
+				Header: txnHeader(int64(revision)),
+				Kvs: []*mvccpb.KeyValue{{
+					Key:            []byte(fmt.Sprintf("/limit-stop/%03d", index)),
+					Value:          []byte("value"),
+					CreateRevision: int64(revision),
+					ModRevision:    int64(revision),
+					Version:        1,
+				}},
+			}}
+			select {
+			case ch <- chunk:
+				b.produced++
+			case <-ctx.Done():
+				b.stopped = true
+				return
+			}
+		}
+		select {
+		case ch <- rangeStreamChunk{resp: &etcdserverpb.RangeResponse{Header: txnHeader(int64(revision))}}:
+		case <-ctx.Done():
+			b.stopped = true
+		}
+	}()
+	return ch, nil
+}
+
+func (b *limitedRangeStreamCountProbeShim) Count(
+	_ context.Context, request *etcdserverpb.RangeRequest,
+) (*etcdserverpb.RangeResponse, error) {
+	b.countCalls++
+	b.countRequest = proto.Clone(request).(*etcdserverpb.RangeRequest)
+	return &etcdserverpb.RangeResponse{
+		Header: txnHeader(request.Revision),
+		Count:  int64(b.total),
+	}, nil
+}
+
 type keysOnlyRangeStreamProbeShim struct {
 	BackendShim
 	ordinaryCalls int
@@ -1512,6 +1568,46 @@ func TestRangeStreamChunksRespectConfiguredMessageTarget(t *testing.T) {
 	require.Equal(t, 5, limitedKeys)
 	require.Zero(t, tracked.listCalls,
 		"bounded RangeStream must not materialize a unary List response")
+}
+
+func TestRangeStreamLimitStopsBackendAndCountsAtPinnedRevision(t *testing.T) {
+	server, cleanup := newRangeStreamTestServer(t)
+	defer cleanup()
+	probe := &limitedRangeStreamCountProbeShim{
+		BackendShim: server.backend,
+		total:       100,
+		done:        make(chan struct{}),
+	}
+	server.backend = probe
+
+	request := &etcdserverpb.RangeRequest{
+		Key:          []byte("/limit-stop/"),
+		RangeEnd:     []byte("/limit-stop0"),
+		Limit:        1,
+		Serializable: true,
+	}
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	require.NoError(t, server.RangeStream(request, stream))
+	select {
+	case <-probe.done:
+	case <-time.After(time.Second):
+		t.Fatal("backend stream did not stop")
+	}
+
+	require.True(t, probe.stopped, "Limit must cancel the backend stream before it scans the complete range")
+	require.Less(t, probe.produced, probe.total)
+	require.Equal(t, 1, probe.countCalls)
+	require.NotNil(t, probe.countRequest)
+	require.Equal(t, request.Key, probe.countRequest.Key)
+	require.Equal(t, request.RangeEnd, probe.countRequest.RangeEnd)
+	require.Positive(t, probe.countRequest.Revision)
+	require.True(t, probe.countRequest.CountOnly)
+	require.Len(t, stream.sent, 1)
+	response := stream.sent[0].RangeResponse
+	require.Len(t, response.Kvs, 1)
+	require.NotNil(t, response.Header)
+	require.EqualValues(t, probe.total, response.Count)
+	require.True(t, response.More)
 }
 
 func TestSplitRangeStreamResponsePreservesAllFields(t *testing.T) {

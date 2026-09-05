@@ -154,7 +154,11 @@ func (a *rangeStreamSpillAttempt) recordSorterCleanup(sorter *externalKeySorter,
 }
 
 func (a *rangeStreamSpillAttempt) finish(ctx context.Context) {
-	if ctx.Err() != nil && a.outcome == rangeStreamSpillOutcomeFailed && !a.errorRecorded {
+	if rangeStreamLimitSatisfied(ctx) &&
+		(a.outcome == rangeStreamSpillOutcomeCanceled ||
+			a.outcome == rangeStreamSpillOutcomeFailed && !a.errorRecorded) {
+		a.outcome = rangeStreamSpillOutcomeCompleted
+	} else if ctx.Err() != nil && a.outcome == rangeStreamSpillOutcomeFailed && !a.errorRecorded {
 		a.outcome = rangeStreamSpillOutcomeCanceled
 	}
 	if a.backend.metricCli != nil {

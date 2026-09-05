@@ -599,17 +599,19 @@ func (s *RPCServer) rangeStreamOnce(
 		backendRevision = streamHeaderRevision
 		ctx = backend.WithLatestRangeStream(ctx)
 	}
+	backendStreamCtx, stopBackendStream, stopBackendStreamAtLimit := backend.WithRangeStreamLimitCancellation(ctx)
+	defer stopBackendStream()
 	var ch <-chan rangeStreamChunk
 	if r.KeysOnly {
 		if streamer, ok := s.backend.(interface {
 			RangeStreamKeysOnlyChan(context.Context, []byte, []byte, uint64) (<-chan rangeStreamChunk, error)
 		}); ok {
-			ch, err = streamer.RangeStreamKeysOnlyChan(ctx, r.Key, r.RangeEnd, backendRevision)
+			ch, err = streamer.RangeStreamKeysOnlyChan(backendStreamCtx, r.Key, r.RangeEnd, backendRevision)
 		} else {
-			ch, err = s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, backendRevision)
+			ch, err = s.backend.RangeStreamChan(backendStreamCtx, r.Key, r.RangeEnd, backendRevision)
 		}
 	} else {
-		ch, err = s.backend.RangeStreamChan(ctx, r.Key, r.RangeEnd, backendRevision)
+		ch, err = s.backend.RangeStreamChan(backendStreamCtx, r.Key, r.RangeEnd, backendRevision)
 	}
 	if err != nil {
 		s.metricCli.EmitCounter("read.range_stream.err", 1)
@@ -660,6 +662,7 @@ func (s *RPCServer) rangeStreamOnce(
 		chunks++
 		return nil
 	}
+backendChunks:
 	for chunk := range ch {
 		if chunk.err != nil {
 			s.metricCli.EmitCounter("read.range_stream.err", 1)
@@ -749,6 +752,49 @@ func (s *RPCServer) rangeStreamOnce(
 				}
 			}
 			pending = response
+		}
+		if r.Limit > 0 && sentCount >= r.Limit {
+			// Upstream stops fetching values as soon as Limit is satisfied and
+			// runs Count over the fixed-revision remainder. Counting the complete
+			// original interval is equivalent and lets our count index answer in
+			// bounded memory without draining the value stream.
+			stopBackendStreamAtLimit()
+			countResponse, countErr := s.backend.Count(ctx, &etcdserverpb.RangeRequest{
+				Key:          append([]byte(nil), r.Key...),
+				RangeEnd:     append([]byte(nil), r.RangeEnd...),
+				Revision:     int64(backendRevision),
+				Serializable: r.Serializable,
+				CountOnly:    true,
+			})
+			if countErr != nil {
+				s.metricCli.EmitCounter("read.range_stream.err", 1)
+				emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
+				return rangeStreamStatusErr(countErr)
+			}
+			if countResponse == nil || countResponse.Count < sentCount {
+				s.metricCli.EmitCounter("read.range_stream.err", 1)
+				emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+				return status.Errorf(codes.DataLoss,
+					"range stream count %d is smaller than %d emitted keys", countResponse.GetCount(), sentCount)
+			}
+			if pending == nil {
+				s.metricCli.EmitCounter("read.range_stream.err", 1)
+				emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
+				return status.Error(codes.DataLoss, "range stream limit reached without a pending response")
+			}
+			pending.RangeResponse.Header = txnHeader(int64(streamHeaderRevision))
+			pending.RangeResponse.Count = countResponse.Count
+			pending.RangeResponse.More = countResponse.Count > sentCount
+			for _, response := range splitRangeStreamResponse(
+				pending.RangeResponse, int(s.maxRequestBytes), true,
+			) {
+				if err := sendResponse(response); err != nil {
+					return err
+				}
+			}
+			pending = nil
+			terminalSeen = true
+			break backendChunks
 		}
 	}
 	if !terminalSeen {
