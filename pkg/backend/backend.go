@@ -496,6 +496,11 @@ type backend struct {
 	// an existing alarm and return just before a concurrent disarm deletes it.
 	corruptAlarmMu         sync.Mutex
 	corruptAlarmFenceShard atomic.Uint64
+	// hashKVFlights collapses overlapping whole-keyspace hashes of the exact same
+	// logical snapshot. The executor publishes/removes its flight while it still
+	// owns logicalWriteMu, so a request arriving after a completed write or
+	// compaction cannot join a pre-mutation result.
+	hashKVFlights hashKVFlightGroup
 	// revisionWriteMu serializes transaction planning, atomic revision allocation,
 	// and ordered event publication without changing the broader predicate lock.
 	revisionWriteMu sync.Mutex

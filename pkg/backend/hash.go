@@ -102,11 +102,42 @@ func (b *backend) Hash(ctx context.Context) (result BackendHashResult, retErr er
 // retired by logical compaction are excluded before physical GC catches up.
 // Internal service metadata is excluded, matching etcd HashKV's user-KV scope.
 func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, error) {
-	_, pinned := storage.SnapshotTimestampFromContext(ctx)
-	if !pinned {
-		b.logicalWriteMu.Lock()
-		defer b.logicalWriteMu.Unlock()
+	for {
+		if err := ctx.Err(); err != nil {
+			return HashKVResult{}, err
+		}
+		key := b.newHashKVFlightKey(ctx, revision)
+		call, executor := b.hashKVFlights.join(key)
+		if !executor {
+			result, err := call.wait(ctx)
+			// A caller must not inherit the executor's cancellation. If our own
+			// context is still usable, retry as a fresh flight under this context.
+			if err != nil && isCtxErr(err) && ctx.Err() == nil {
+				continue
+			}
+			return result, err
+		}
+
+		result, err := HashKVResult{}, errHashKVFlightAborted
+		func() {
+			if !key.snapshotPinned {
+				b.logicalWriteMu.Lock()
+			}
+			defer func() {
+				// Complete before releasing the write fence. A writer/compactor that
+				// finishes after this scan therefore cannot overlap its reusable call.
+				b.hashKVFlights.complete(key, call, result, err)
+				if !key.snapshotPinned {
+					b.logicalWriteMu.Unlock()
+				}
+			}()
+			result, err = b.hashKVOnce(ctx, revision, key.snapshotPinned)
+		}()
+		return result, err
 	}
+}
+
+func (b *backend) hashKVOnce(ctx context.Context, revision int64, pinned bool) (HashKVResult, error) {
 	if err := ctx.Err(); err != nil {
 		return HashKVResult{}, err
 	}
