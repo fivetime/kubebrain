@@ -875,7 +875,7 @@ expect_hashkv_cache_counter() {
 expect_hash_metrics_boundary() {
 	local client_url="$1"
 	local client_metrics
-	local hashkv_cache_activity="0"
+	local hashkv_cache_activity
 	local hashkv_cache_hit
 	local hashkv_cache_miss
 	local pod
@@ -908,14 +908,14 @@ expect_hash_metrics_boundary() {
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
 		hashkv_cache_hit="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"
 		hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"
-		hashkv_cache_activity="$(awk -v total="$hashkv_cache_activity" -v hit="$hashkv_cache_hit" -v miss="$hashkv_cache_miss" \
-			'BEGIN { printf "%.17g", total + hit + miss }')"
+		hashkv_cache_activity="$(awk -v hit="$hashkv_cache_hit" -v miss="$hashkv_cache_miss" \
+			'BEGIN { printf "%.17g", hit + miss }')"
+		if ! awk -v activity="$hashkv_cache_activity" 'BEGIN { exit !(activity > 0) }'; then
+			echo "info metrics mismatch: HashKV completed cache counters for pod ${pod} must record activity after hashkv probes" >&2
+			exit 1
+		fi
 		combined_metrics+=$'\n'"$pod_metrics"
 	done <<<"$pod_names"
-	if ! awk -v activity="$hashkv_cache_activity" 'BEGIN { exit !(activity > 0) }'; then
-		echo "info metrics mismatch: HashKV completed cache counters must record activity after hashkv probes" >&2
-		exit 1
-	fi
 
 	if [[ "$combined_metrics" != *"etcd_mvcc_hash_duration_seconds_count{"* && "$combined_metrics" != *"etcd_mvcc_hash_duration_seconds_count "* ]]; then
 		echo "info metrics mismatch: expected etcd_mvcc_hash_duration_seconds_count after gateway hash" >&2

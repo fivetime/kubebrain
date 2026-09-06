@@ -40,6 +40,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		versionJSON       string
 		infoVersionJSON   string
 		infoMetrics       string
+		infoMetricsPod1   string
 		clientMetrics     string
 		infoDebugVars     string
 		clientDebugVars   string
@@ -3821,7 +3822,32 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_INFO_METRICS_CHECKS=1",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
-			wantOutput: "info metrics mismatch: HashKV completed cache counters must record activity after hashkv probes",
+			wantOutput: "info metrics mismatch: HashKV completed cache counters for pod kubebrain-0 must record activity after hashkv probes",
+		},
+		{
+			name: "rejects inactive post hashkv completed cache metrics on one ready pod",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetricsPod1: strings.NewReplacer(
+				"backend_hashkv_completed_cache_hit{cluster=\"default\"} 1\n",
+				"backend_hashkv_completed_cache_hit{cluster=\"default\"} 0\n",
+				"backend_hashkv_completed_cache_miss{cluster=\"default\"} 1\n",
+				"backend_hashkv_completed_cache_miss{cluster=\"default\"} 0\n",
+			).Replace(defaultInfoMetrics("")),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: HashKV completed cache counters for pod kubebrain-1 must record activity after hashkv probes",
 		},
 		{
 			name: "rejects missing post hash mvcc metric",
@@ -5991,6 +6017,10 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "kubectl"), `#!/usr/bin/env bash
 set -euo pipefail
 if [[ " $* " == *" exec "* ]]; then
+	if [[ " $* " == *" kubebrain-1 "* && -n "${FAKE_INFO_METRICS_POD_1:-}" ]]; then
+		printf '%s' "$FAKE_INFO_METRICS_POD_1"
+		exit 0
+	fi
   printf '%s' "$FAKE_INFO_METRICS"
   exit 0
 fi
@@ -6280,6 +6310,7 @@ exec "$@"
 				"FAKE_VERSION_JSON=" + defaultVersionJSON(tc.versionJSON),
 				"FAKE_INFO_VERSION_JSON=" + defaultVersionJSON(tc.infoVersionJSON),
 				"FAKE_INFO_METRICS=" + defaultInfoMetrics(tc.infoMetrics),
+				"FAKE_INFO_METRICS_POD_1=" + tc.infoMetricsPod1,
 				"FAKE_CLIENT_METRICS_RESPONSE=" + defaultClientMetricsResponse(tc.clientMetrics),
 				"FAKE_INFO_DEBUG_VARS=" + defaultInfoDebugVars(tc.infoDebugVars),
 				"FAKE_CLIENT_DEBUG_VARS_RESPONSE=" + defaultClientDebugVarsResponse(tc.clientDebugVars),
