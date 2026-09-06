@@ -838,9 +838,46 @@ expect_info_metrics_boundary() {
   done
 }
 
+expect_hashkv_cache_counter() {
+	local metrics_text="$1"
+	local metric="$2"
+	local type_values
+	local sample_values
+
+	type_values="$(awk -v metric="$metric" '
+    $1 == "#" && $2 == "TYPE" && $3 == metric { print $4 }
+  ' <<<"$metrics_text")"
+	if [[ "$type_values" != "counter" ]]; then
+		echo "info metrics mismatch: expected ${metric} counter" >&2
+		return 1
+	fi
+	sample_values="$(awk -v metric="$metric" '
+    {
+      token = $1
+      name = token
+      sub(/\{.*/, "", name)
+      if (name != metric) next
+      pattern = "^" metric "\\{cluster=\"[^\"]+\"\\}$"
+      if (token !~ pattern || $2 !~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ || $2 < 0) {
+        print "invalid"
+      } else {
+        print $2
+      }
+    }
+  ' <<<"$metrics_text")"
+	if [[ ! "$sample_values" =~ ^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$ ]]; then
+		echo "info metrics mismatch: ${metric} must contain exactly one cluster-labeled non-negative sample" >&2
+		return 1
+	fi
+	printf '%s' "$sample_values"
+}
+
 expect_hash_metrics_boundary() {
 	local client_url="$1"
 	local client_metrics
+	local hashkv_cache_activity="0"
+	local hashkv_cache_hit
+	local hashkv_cache_miss
 	local pod
 	local pod_metrics
 	local pod_names
@@ -869,8 +906,16 @@ expect_hash_metrics_boundary() {
 		fi
 		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
+		hashkv_cache_hit="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"
+		hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"
+		hashkv_cache_activity="$(awk -v total="$hashkv_cache_activity" -v hit="$hashkv_cache_hit" -v miss="$hashkv_cache_miss" \
+			'BEGIN { printf "%.17g", total + hit + miss }')"
 		combined_metrics+=$'\n'"$pod_metrics"
 	done <<<"$pod_names"
+	if ! awk -v activity="$hashkv_cache_activity" 'BEGIN { exit !(activity > 0) }'; then
+		echo "info metrics mismatch: HashKV completed cache counters must record activity after hashkv probes" >&2
+		exit 1
+	fi
 
 	if [[ "$combined_metrics" != *"etcd_mvcc_hash_duration_seconds_count{"* && "$combined_metrics" != *"etcd_mvcc_hash_duration_seconds_count "* ]]; then
 		echo "info metrics mismatch: expected etcd_mvcc_hash_duration_seconds_count after gateway hash" >&2
@@ -3199,7 +3244,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_hash_metrics_boundary "${ENDPOINT%/}/metrics"
-    status_summary+=", mvcc_hash_metrics=ok"
+    status_summary+=", mvcc_hash_metrics=ok, hashkv_cache_metrics=ok"
   fi
   fi
 fi

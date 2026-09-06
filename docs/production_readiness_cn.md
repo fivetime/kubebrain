@@ -1757,7 +1757,10 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 `direct_hash=<n>` 与 `gateway_hash_match=true`；若同时启用 metrics
 检查，Hash/HashKV 后的 info listener `/metrics` 还必须出现 upstream 兼容的
 `etcd_mvcc_hash_duration_seconds_count` 与
-`etcd_mvcc_hash_rev_duration_seconds_count`。
+`etcd_mvcc_hash_rev_duration_seconds_count`。每个 Ready Pod 还必须分别暴露唯一的
+`backend_hashkv_completed_cache_hit` 与 `backend_hashkv_completed_cache_miss` counter；
+两者都必须只有一个非空 `cluster` 标签和非负样本，并且本轮 HashKV 探针后全实例合计必须大于零，避免已完成结果缓存或其
+埋点在候选镜像中静默失效。
 通过摘要会显式输出 `readyz_verbose=ok`、`readyz_data_corruption=ok`、
 `readyz_serializable_read=ok`、`readyz_linearizable_read=ok`、`readyz_non_learner=ok`、
 `readyz_named_checks=ok`、`health_exclude_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、
@@ -1773,7 +1776,7 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 `backend_bbolt_commit_phase_metrics=ok`、`backend_snapshot_metrics=ok`、
 `backend_defrag_metrics=ok`、`health_metrics=ok`、`auth_metrics=ok`、
 `quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
-`mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`mvcc_put_size_metrics=ok`、
+`mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`hashkv_cache_metrics=ok`、`mvcc_put_size_metrics=ok`、
 `mvcc_pending_event_metrics=ok`、`mvcc_revision_metrics=ok`、
 `mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、
 `lease_metrics=ok`、`promhttp_metrics=ok`、

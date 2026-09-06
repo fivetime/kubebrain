@@ -3724,7 +3724,104 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
 			wantOK:     true,
-			wantOutput: "mvcc_hash_metrics=ok",
+			wantOutput: "mvcc_hash_metrics=ok, hashkv_cache_metrics=ok",
+		},
+		{
+			name: "rejects missing post hashkv completed cache hit metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.ReplaceAll(
+				defaultInfoMetrics(""),
+				"# TYPE backend_hashkv_completed_cache_hit counter\nbackend_hashkv_completed_cache_hit{cluster=\"default\"} 1\n",
+				"",
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: expected backend_hashkv_completed_cache_hit counter",
+		},
+		{
+			name: "rejects non counter post hashkv completed cache metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.ReplaceAll(
+				defaultInfoMetrics(""),
+				"# TYPE backend_hashkv_completed_cache_hit counter\n",
+				"# TYPE backend_hashkv_completed_cache_hit gauge\n",
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: expected backend_hashkv_completed_cache_hit counter",
+		},
+		{
+			name: "rejects negative post hashkv completed cache metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.ReplaceAll(
+				defaultInfoMetrics(""),
+				"backend_hashkv_completed_cache_miss{cluster=\"default\"} 1\n",
+				"backend_hashkv_completed_cache_miss{cluster=\"default\"} -1\n",
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: backend_hashkv_completed_cache_miss must contain exactly one cluster-labeled non-negative sample",
+		},
+		{
+			name: "rejects inactive post hashkv completed cache metrics",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.NewReplacer(
+				"backend_hashkv_completed_cache_hit{cluster=\"default\"} 1\n",
+				"backend_hashkv_completed_cache_hit{cluster=\"default\"} 0\n",
+				"backend_hashkv_completed_cache_miss{cluster=\"default\"} 1\n",
+				"backend_hashkv_completed_cache_miss{cluster=\"default\"} 0\n",
+			).Replace(defaultInfoMetrics("")),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: HashKV completed cache counters must record activity after hashkv probes",
 		},
 		{
 			name: "rejects missing post hash mvcc metric",
@@ -6463,6 +6560,10 @@ func defaultInfoMetrics(value string) string {
 		`etcd_debugging_lease_renewed_total{cluster="default"} 0`,
 		`etcd_mvcc_hash_duration_seconds_count{cluster="default"} 1`,
 		`etcd_mvcc_hash_rev_duration_seconds_count{cluster="default"} 1`,
+		`# TYPE backend_hashkv_completed_cache_hit counter`,
+		`backend_hashkv_completed_cache_hit{cluster="default"} 1`,
+		`# TYPE backend_hashkv_completed_cache_miss counter`,
+		`backend_hashkv_completed_cache_miss{cluster="default"} 1`,
 		`promhttp_metric_handler_requests_in_flight 1`,
 		`promhttp_metric_handler_requests_total{code="200"} 1`,
 	}, "\n") + "\n"
@@ -6574,6 +6675,7 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 		"quota_metrics=ok",
 		"mvcc_db_size_metrics=ok",
 		"mvcc_hash_metrics=ok",
+		"hashkv_cache_metrics=ok",
 		"mvcc_put_size_metrics=ok",
 		"mvcc_pending_event_metrics=ok",
 		"mvcc_revision_metrics=ok",
