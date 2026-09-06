@@ -39,10 +39,11 @@ import (
 // (0x57...) by first byte, so a legacy cluster's whole-keyspace GC scan can
 // never reach a named tenant and vice versa.
 type Keyspace struct {
-	name        string
-	magic       []byte
-	elogMagic   []byte
-	elogMetaKey []byte
+	name           string
+	magic          []byte
+	elogMagic      []byte
+	elogMetaKey    []byte
+	internalPrefix []byte
 }
 
 // KeyRange is one ascending half-open physical key interval.
@@ -124,10 +125,11 @@ func DefaultKeyspace() *Keyspace {
 
 func newKeyspaceFromMagic(name string, magic []byte) *Keyspace {
 	return &Keyspace{
-		name:        name,
-		magic:       append([]byte(nil), magic...),
-		elogMagic:   append(append([]byte(nil), magic...), eventLogInfix...),
-		elogMetaKey: append(append([]byte(nil), magic...), elogMetaInfix...),
+		name:           name,
+		magic:          append([]byte(nil), magic...),
+		elogMagic:      append(append([]byte(nil), magic...), eventLogInfix...),
+		elogMetaKey:    append(append([]byte(nil), magic...), elogMetaInfix...),
+		internalPrefix: append(append([]byte(nil), magic...), internalKVInfix...),
 	}
 }
 
@@ -172,8 +174,7 @@ func (k *Keyspace) ObjectKeyspaceEnd() []byte {
 // unlike the families below, its classifier also checks a revision-zero
 // trailer so a real user key beginning with the same infix remains visible.
 func (k *Keyspace) HashKVScanRanges() []KeyRange {
-	internalPrefix := append(append([]byte(nil), k.magic...), internalKVInfix...)
-	excluded := [][]byte{k.elogMagic, k.elogMetaKey, internalPrefix}
+	excluded := [][]byte{k.elogMagic, k.elogMetaKey, k.internalPrefix}
 	// These constants are currently ordered, but sorting here keeps the range
 	// contract correct if a future internal family is renamed or inserted.
 	sort.Slice(excluded, func(i, j int) bool { return bytes.Compare(excluded[i], excluded[j]) < 0 })
@@ -228,10 +229,9 @@ func (k *Keyspace) ElogMetaStartKey() []byte {
 // IsInternalStorageKey reports whether key belongs to a raw, non-object family
 // that shares this tenant's broad physical keyspace bounds.
 func (k *Keyspace) IsInternalStorageKey(key []byte) bool {
-	internalPrefix := append(append([]byte(nil), k.magic...), internalKVInfix...)
 	return bytes.HasPrefix(key, k.elogMagic) ||
 		bytes.HasPrefix(key, k.elogMetaKey) ||
-		bytes.HasPrefix(key, internalPrefix) ||
+		bytes.HasPrefix(key, k.internalPrefix) ||
 		k.isLatestMetadataKey(key)
 }
 

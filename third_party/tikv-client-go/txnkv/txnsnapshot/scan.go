@@ -132,15 +132,22 @@ func (s *Scanner) NextWithContext(ctx context.Context) error {
 		s.Close()
 		return err
 	}
-	bo := retry.NewBackofferWithVars(context.WithValue(ctx, retry.TxnStartKey, s.snapshot.version), scannerNextMaxBackoff, s.snapshot.vars)
-	s.snapshot.mu.RLock()
-	if s.snapshot.mu.interceptor != nil {
-		// User has called snapshot.SetRPCInterceptor() to explicitly set an interceptor, we
-		// need to bind it to ctx so that the internal client can perceive and execute
-		// it before initiating an RPC request.
-		bo.SetCtx(interceptor.WithRPCInterceptor(bo.GetCtx(), s.snapshot.mu.interceptor))
+	var bo *retry.Backoffer
+	ensureBackoffer := func() *retry.Backoffer {
+		if bo != nil {
+			return bo
+		}
+		bo = retry.NewBackofferWithVars(context.WithValue(ctx, retry.TxnStartKey, s.snapshot.version), scannerNextMaxBackoff, s.snapshot.vars)
+		s.snapshot.mu.RLock()
+		if s.snapshot.mu.interceptor != nil {
+			// User has called snapshot.SetRPCInterceptor() to explicitly set an interceptor, we
+			// need to bind it to ctx so that the internal client can perceive and execute
+			// it before initiating an RPC request.
+			bo.SetCtx(interceptor.WithRPCInterceptor(bo.GetCtx(), s.snapshot.mu.interceptor))
+		}
+		s.snapshot.mu.RUnlock()
+		return bo
 	}
-	s.snapshot.mu.RUnlock()
 	var err error
 	for {
 		s.idx++
@@ -149,7 +156,7 @@ func (s *Scanner) NextWithContext(ctx context.Context) error {
 				s.Close()
 				return nil
 			}
-			err = s.getData(bo)
+			err = s.getData(ensureBackoffer())
 			if err != nil {
 				s.Close()
 				return err
@@ -169,7 +176,7 @@ func (s *Scanner) NextWithContext(ctx context.Context) error {
 		// Try to resolve the lock
 		if current.GetError() != nil {
 			// 'current' would be modified if the lock being resolved
-			if err := s.resolveCurrentLock(bo, current); err != nil {
+			if err := s.resolveCurrentLock(ensureBackoffer(), current); err != nil {
 				s.Close()
 				return err
 			}

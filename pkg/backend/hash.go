@@ -6,7 +6,7 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
-	"sort"
+	"slices"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -188,17 +188,47 @@ func (b *backend) hashKVOnce(ctx context.Context, revision int64, pinned bool) (
 		revision uint64
 		value    []byte
 	}
-	var familyBoundary []byte
-	compactedLatest := make(map[string]hashRow)
+	var familyPrefix []byte
+	familySet := false
+	var compactedLatest hashRow
+	compactedLatestSet := false
+	var compactedLatestByUserKey map[string]hashRow
 	retained := make([]hashRow, 0)
+	retainCompactedLatest := func(row hashRow) {
+		if compactedLatestByUserKey != nil {
+			compactedLatestByUserKey[string(row.userKey)] = row
+			return
+		}
+		if !compactedLatestSet || bytes.Equal(compactedLatest.userKey, row.userKey) {
+			compactedLatest = row
+			compactedLatestSet = true
+			return
+		}
+		// The legacy object-key encoding does not escape '$'. Distinct user keys
+		// that share the conservative prefix before their first '$' can therefore
+		// interleave. Pay for a map only for that exceptional ambiguous family.
+		compactedLatestByUserKey = map[string]hashRow{
+			string(compactedLatest.userKey): compactedLatest,
+			string(row.userKey):             row,
+		}
+		compactedLatest = hashRow{}
+		compactedLatestSet = false
+	}
 	flushFamily := func() error {
 		rows := retained
-		for _, row := range compactedLatest {
+		if compactedLatestSet && !bytes.Equal(compactedLatest.value, tombStoneBytes) {
+			rows = append(rows, compactedLatest)
+		}
+		for _, row := range compactedLatestByUserKey {
 			if !bytes.Equal(row.value, tombStoneBytes) {
 				rows = append(rows, row)
 			}
 		}
-		sort.Slice(rows, func(i, j int) bool { return bytes.Compare(rows[i].key, rows[j].key) < 0 })
+		if len(rows) > 1 {
+			slices.SortFunc(rows, func(left, right hashRow) int {
+				return bytes.Compare(left.key, right.key)
+			})
+		}
 		for _, row := range rows {
 			if b.config.EnableEtcdCompatibility && !bytes.Equal(row.value, tombStoneBytes) {
 				validationErr := b.validateEventObjectValue(ctx, row.userKey, row.revision, row.value)
@@ -214,8 +244,11 @@ func (b *backend) hashKVOnce(ctx context.Context, revision int64, pinned bool) (
 			_, _ = h.Write(row.key)
 			_, _ = h.Write(row.value)
 		}
-		clear(compactedLatest)
-		retained = retained[:0]
+		clear(rows)
+		retained = rows[:0]
+		compactedLatest = hashRow{}
+		compactedLatestSet = false
+		compactedLatestByUserKey = nil
 		return nil
 	}
 	timestamp, pinned := storage.SnapshotTimestampFromContext(ctx)
@@ -231,16 +264,23 @@ func (b *backend) hashKVOnce(ctx context.Context, revision int64, pinned bool) (
 			if decodeErr != nil {
 				return invalidMVCCMetadataError(decodeErr, "decode hash object key")
 			}
-			boundary, ok := b.coder.RevisionBoundaryForBorder(key)
-			if !ok {
-				return errors.New("object key has no revision family boundary")
+			// RevisionBoundaryForBorder must allocate a new encoded rev=0 key. For
+			// grouping, equality of the conservative user-key prefix is equivalent:
+			// the legacy encoding's first '$' defines that prefix, while Decode has
+			// already validated the actual delimiter and revision suffix.
+			family := userKey
+			if split := bytes.IndexByte(userKey, '$'); split >= 0 {
+				family = userKey[:split]
 			}
-			if familyBoundary != nil && !bytes.Equal(boundary, familyBoundary) {
+			if !familySet {
+				familyPrefix = append(familyPrefix[:0], family...)
+				familySet = true
+			} else if !bytes.Equal(family, familyPrefix) {
 				if err := flushFamily(); err != nil {
 					return err
 				}
+				familyPrefix = append(familyPrefix[:0], family...)
 			}
-			familyBoundary = append(familyBoundary[:0], boundary...)
 			// Revision-zero entries are per-key indexes, not MVCC values.
 			if revision >= 0 && objectRevision > 0 && objectRevision <= uint64(revision) {
 				row := hashRow{
@@ -250,7 +290,7 @@ func (b *backend) hashKVOnce(ctx context.Context, revision int64, pinned bool) (
 					value:    value,
 				}
 				if hasCompactRevision && objectRevision <= compactRevision {
-					compactedLatest[string(userKey)] = row
+					retainCompactedLatest(row)
 					return nil
 				}
 				retained = append(retained, row)
