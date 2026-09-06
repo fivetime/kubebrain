@@ -72425,6 +72425,73 @@ info-metrics 合同后稳定适用 gate GREEN，revision/HashKV/compact/term 为
 和全部 A5751 profile/final Kind refs 均为 0；两份 OCI archive、两份展开审计目录和 descriptor 清单移入可恢复目录
 `/root/.local/share/Trash/files/kubebrain-a5751-20260906T1244Z`。
 
+### A5752：削减 HashKV iterator 热路径分配
+
+A5751 已把同一进程内重叠的完整 HashKV 合并，但真实 1,519,078 行数据集在默认 5 秒预算下仍有 2/30 次并发尾延迟。
+继续对照 `/root/etcd/server/storage/mvcc/kvstore.go` 的 `hashByRev`、`server/storage/mvcc/hash.go` 的
+`unsafeHashByRev` 与 `server/etcdserver/api/v3rpc/maintenance.go` 的 `HashKV`：upstream 直接遍历成员本地
+bbolt，KubeBrain 则必须通过 TiKV scanner、Region retry/backoff 和远端 value decode。曾评估延迟 follower local hedge，
+但要抑制通常约 4.4 秒的本地扫描就必须把延迟设到接近整个 5 秒预算，使 leader 或 TiKV 单侧隔离后的本地 fallback 只剩约
+0.6 秒，明显缩窄既有可用性，因此未采用该折中，改为继续消除每行 iterator 分配。
+
+提交 `2ad5b0513259fdb0133bef2bb413a63b0edf98e8` 首先在 `Keyspace` 初始化时缓存 internal storage prefix，
+避免 `IsInternalStorageKey` 对每行重新拼接。TiKV fork 的 `Scanner.NextWithContext` 只在 cache 用尽、需要 RPC，或当前行带
+lock error 时才建立 backoffer；缓存中的正常行仍先检查调用 context，但不再逐行建立 `context.WithValue`、retry budget 和
+snapshot interceptor。专门测试以 nil snapshot 和两条缓存行固定该 fast path，未来一旦重新触碰 snapshot 会立即失败。
+
+HashKV 自身不再为每行调用会分配新 rev=0 key 的 `RevisionBoundaryForBorder`，而是使用 Decode 已验证的 user key 在首个
+`$` 前的保守 family prefix 分组。常见的单 user-key family 用一个 scalar 保存 compacted latest row；只有旧编码中含 `$`、
+导致不同 user key 共享保守前缀的歧义 family 才惰性分配 map，保持原有语义。family flush 清除 row 引用并复用容量，排序从
+reflect `sort.Slice` 改为 generic `slices.SortFunc`，单行 family 不进入排序。profile 证明第一版单次 leader HashKV 为
+4.552 秒、TotalAlloc 1,608,808,456 bytes、9,103,534 mallocs；缓存 prefix 与惰性 backoffer 后为 3.993 秒、
+1,177,931,976 bytes、1,511,002 mallocs，另一次 CPU/alloc profile 为 3.591 秒。此时剩余 backend object hotspot 正是
+reflect sort，最终 generic sort 直接消除了该类分配。
+
+聚焦 HashKV 普通测试连续 `count=30`、race `count=10`，cached-backoffer/Snapshot 测试 `count=50`，完整 vendored
+`txnkv/txnsnapshot`、`pkg/backend`（50.662 秒）、`pkg/server/etcd`（143.300 秒）和相关 `go vet`/diff check 全部
+GREEN。代码提交前 verifier 为 703=`170/193/180/160`，四分片为
+`266.786/461.988/306.648/594.207s`；提交后 verifier 不变，四分片为
+`248.147/443.775/298.744/576.555s`，再次全部 GREEN。
+
+最终提交镜像上的三次单端点默认 5 秒 HashKV 为 `4.383/3.455/3.508s`，3/3 通过。十轮三端点并发为 28/30；第 1、
+9 轮 pod2 各有一次真实 `DeadlineExceeded`，没有重试或放宽预算。首轮三个进程观察到 TotalAlloc 增量约
+`1.134/1.143/1.482 GB`、mallocs `337,118/318,126/493,242`、GC `4/4/3`、pause
+`1.811/1.805/1.396ms`；相对 generic sort 前的 1,511,002 mallocs，正常成功进程的对象分配再明显下降。结果说明本项关闭
+HashKV iterator 的逐行 internal-prefix/backoffer/reflect-sort 分配缺口，但 28/30 与 A5751 相同，不能宣称关闭共享 TiKV、
+PD/Region 调度下的 5 秒尾延迟。
+
+最终不可变镜像 `docker.io/library/kubebrain@sha256:f0ede141f5422a3ebcba0b2ad63d7a17ce8852fd82560a27c98ca3d09158b058`
+内嵌版本 `0.0.0-2ad5b051`、完整 commit、build time `2026-09-06T14:02:51Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,844,672 bytes，SHA-256
+`5399bbd4d99f8b87fa59b3b6810572c6ac679b99207472939dde40e4fcb201e3`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`556a34e81271af4e3e50475f607e8e0c55c5dff87505a1ed60270ebee34a49e8`、
+`sha256:f0ede141f5422a3ebcba0b2ad63d7a17ce8852fd82560a27c98ca3d09158b058`、
+`sha256:1fd9dece1e7732c1360758fe6364842837a3e3ed8d8349aeea5bee9281c2bf49`、
+`sha256:318ec42eaa74499bc70b96b313d25463871dc3c07550e54dda2abfe7ae7f8e43`、
+`sha256:d64944ecb604d486e35a051d4c436072fdeedc3c8f0f098f11021dd9e20e1ea6`。78/78 blobs 与 78/78
+OCI descriptor edges 的 size/hash 全匹配；镜像为 `65532:65532`、正确入口、71 个 diff IDs，SPDX 为 2,592
+packages/381 files/8,096 relationships，SLSA subject 精确绑定 platform manifest、四项 build args 与三项固定
+materials。
+
+profile2 曾以 generation/observed `932/932`、3/3 Ready、restart 0 运行，并临时增加第 23 项
+`--enable-pprof=true`。最终投放用 UID/resourceVersion/generation/container/current image/full 23 args 六类 JSON test，
+在同一原子 patch 中切换最终 digest 并恢复完整 22 参数；generation/observed `933/933`、RV `8761576`、3/3 Ready、
+restart 0，三个 runtime imageID 都精确为上述 nested digest。候选完整 readonly gate（含 info metrics、named health、
+headers、debug vars 和 pprof disabled）GREEN：revision/HashKV/compact/term 为
+`75044/1984703050/66760/735`，三副本及 direct/gateway 结果一致，Auth disabled。
+
+随后用新鲜六类 JSON test 同时替换稳定 digest 与精确 22 参数。Parallel StatefulSet 回滚输出一度显示等待 3 个 Pod
+Ready，未就绪数短暂扩大到 3 后恢复，继续如实保留该 rollout 可用性窗口；终态 generation/observed `934/934`、RV
+`8762583`、3/3 Ready、restart 0，三个 runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。排除旧稳定镜像尚不存在的未来完整
+info-metrics 合同后稳定适用 gate GREEN，revision/HashKV/compact/term 为 `75044/1984703050/66760/737`；三 Pod
+近期日志 `517/564/389` 行，critical 均为 0，PD 3/3 与 TiKV 3/3 Ready。
+
+最终关闭六个 listener，精确删除 A5752 profile/profile2/final 的 9 个 Kind tag/digest/config 引用；候选引用、候选
+`/dev/shm` 路径和 listener 均为 0。三份约 873 MiB OCI archive、三份展开审计、descriptor 清单与六份 CPU/alloc profile
+已移入可恢复目录 `/root/.local/share/Trash/files/kubebrain-a5752-20260906T1428Z`；稳定镜像与数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
