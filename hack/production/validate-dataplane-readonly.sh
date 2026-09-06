@@ -872,6 +872,34 @@ expect_hashkv_cache_counter() {
 	printf '%s' "$sample_values"
 }
 
+expect_process_start_time_seconds() {
+	local metrics_text="$1"
+	local sample_values
+	local type_values
+
+	type_values="$(awk '
+    $1 == "#" && $2 == "TYPE" && $3 == "process_start_time_seconds" { print $4 }
+  ' <<<"$metrics_text")"
+	if [[ "$type_values" != "gauge" ]]; then
+		echo "info metrics mismatch: expected process_start_time_seconds gauge" >&2
+		return 1
+	fi
+	sample_values="$(awk '
+    $1 == "process_start_time_seconds" {
+      if (NF != 2 || $2 !~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ || $2 <= 0) {
+        print "invalid"
+      } else {
+        print $2
+      }
+    }
+  ' <<<"$metrics_text")"
+	if [[ ! "$sample_values" =~ ^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$ ]]; then
+		echo "info metrics mismatch: process_start_time_seconds must contain exactly one positive unlabeled sample" >&2
+		return 1
+	fi
+	printf '%s' "$sample_values"
+}
+
 ready_pod_runtime_identities() {
 	local source_pods_json="$1"
 
@@ -912,6 +940,7 @@ snapshot_hashkv_cache_counters() {
 	local pod_identity_rows
 	local pod_metrics
 	local pod_uid
+	local process_start_time
 
 	pod_identity_rows="$(ready_pod_runtime_identities "$pods_json")"
 	while IFS=$'\t' read -r pod pod_uid pod_container_identity; do
@@ -931,7 +960,10 @@ snapshot_hashkv_cache_counters() {
 		if ! hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"; then
 			return 1
 		fi
-		printf '%s\t%s\t%s\t%s\t%s\n' "$pod" "$pod_uid" "$pod_container_identity" "$hashkv_cache_hit" "$hashkv_cache_miss"
+		if ! process_start_time="$(expect_process_start_time_seconds "$pod_metrics")"; then
+			return 1
+		fi
+		printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$pod" "$pod_uid" "$pod_container_identity" "$process_start_time" "$hashkv_cache_hit" "$hashkv_cache_miss"
 	done <<<"$pod_identity_rows"
 }
 
@@ -944,9 +976,11 @@ expect_hash_metrics_boundary() {
 	local baseline_pod
 	local baseline_pod_container_identity
 	local baseline_pod_uid
+	local baseline_process_start_time
 	local -A baseline_container_identities=()
 	local -A baseline_hits=()
 	local -A baseline_misses=()
+	local -A baseline_process_start_times=()
 	local -A baseline_uids=()
 	local client_metrics
 	local hashkv_cache_hit
@@ -962,6 +996,7 @@ expect_hash_metrics_boundary() {
 	local post_pods_json
 	local pod_metrics
 	local pod_uid
+	local process_start_time
 	local combined_metrics
 
 	client_metrics="$(run_with_probe_timeout "$CURL" -sS -i "$client_url")"
@@ -973,12 +1008,13 @@ expect_hash_metrics_boundary() {
     echo "client metrics mismatch after hash checks: expected 404 page not found body" >&2
 		exit 1
 	fi
-	while IFS=$'\t' read -r baseline_pod baseline_pod_uid baseline_pod_container_identity baseline_hit baseline_miss; do
+	while IFS=$'\t' read -r baseline_pod baseline_pod_uid baseline_pod_container_identity baseline_process_start_time baseline_hit baseline_miss; do
 		if [[ -z "$baseline_pod" ]]; then
 			continue
 		fi
 		baseline_uids["$baseline_pod"]="$baseline_pod_uid"
 		baseline_container_identities["$baseline_pod"]="$baseline_pod_container_identity"
+		baseline_process_start_times["$baseline_pod"]="$baseline_process_start_time"
 		baseline_hits["$baseline_pod"]="$baseline_hit"
 		baseline_misses["$baseline_pod"]="$baseline_miss"
 		baseline_count=$((baseline_count + 1))
@@ -1009,8 +1045,15 @@ expect_hash_metrics_boundary() {
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
 		hashkv_cache_hit="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"
 		hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"
+		if ! process_start_time="$(expect_process_start_time_seconds "$pod_metrics")"; then
+			exit 1
+		fi
 		if [[ -z "${baseline_hits[$pod]+x}" || -z "${baseline_misses[$pod]+x}" ]]; then
 			echo "info metrics mismatch: missing HashKV completed cache baseline for pod ${pod}" >&2
+			exit 1
+		fi
+		if [[ -z "${baseline_process_start_times[$pod]+x}" || "$process_start_time" != "${baseline_process_start_times[$pod]}" ]]; then
+			echo "info metrics mismatch: process start time changed during HashKV probes for pod ${pod}" >&2
 			exit 1
 		fi
 		if ! awk -v before="${baseline_hits[$pod]}" -v after="$hashkv_cache_hit" 'BEGIN { exit !(after >= before) }'; then
@@ -3382,6 +3425,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     expect_hash_metrics_boundary "${ENDPOINT%/}/metrics" "$hashkv_cache_counter_baseline"
     status_summary+=", mvcc_hash_metrics=ok, hashkv_cache_metrics=ok"
     status_summary+=", hashkv_cache_hit_delta=${hashkv_cache_hit_delta_summary}, hashkv_cache_miss_delta=${hashkv_cache_miss_delta_summary}"
+		status_summary+=", hashkv_cache_process_identity=stable"
   fi
   fi
 fi
