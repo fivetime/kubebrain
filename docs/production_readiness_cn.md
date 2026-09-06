@@ -1759,8 +1759,8 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 `etcd_mvcc_hash_duration_seconds_count` 与
 `etcd_mvcc_hash_rev_duration_seconds_count`。每个 Ready Pod 还必须分别暴露唯一的
 `backend_hashkv_completed_cache_hit` 与 `backend_hashkv_completed_cache_miss` counter；
-两者都必须只有一个非空 `cluster` 标签和非负样本，并且本轮 HashKV 探针后每个 Ready Pod 的 hit+miss 都必须大于零，避免单个副本的已完成结果缓存或其
-埋点在候选镜像中静默失效。
+两者都必须只有一个非空 `cluster` 标签和非负样本。本轮多个 HashKV 探针后，全实例聚合 hit 与 miss 必须分别大于零，既证明至少一次物理扫描，
+也证明未变化逻辑状态的结果被真实复用；follower 若被 leader 的快速缓存命中抢先取消，允许本地计数保持零。
 通过摘要会显式输出 `readyz_verbose=ok`、`readyz_data_corruption=ok`、
 `readyz_serializable_read=ok`、`readyz_linearizable_read=ok`、`readyz_non_learner=ok`、
 `readyz_named_checks=ok`、`health_exclude_checks=ok`、`livez=ok`、`livez_serializable_read=ok`、
