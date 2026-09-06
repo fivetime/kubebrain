@@ -833,6 +833,90 @@ func TestMaintenanceSnapshotFollowerStopsWaitingForProxyCloseOnCallerCancellatio
 	require.Len(t, stream.responses, 2, "the checksum frame may precede the final stream status")
 }
 
+func TestMaintenanceSnapshotFollowerBoundsTrailingStatusDrain(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
+	server.proxyStreamTrailingStatusTimeout = 20 * time.Millisecond
+
+	digest := sha256.Sum256([]byte("abc"))
+	results := make(chan etcdproxy.SnapshotResult, 2)
+	results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+		RemainingBytes: 0, Blob: []byte("abc"), Version: Version,
+	}}
+	results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+		RemainingBytes: 0, Blob: digest[:], Version: Version,
+	}}
+	proxyContexts := make(chan context.Context, 1)
+	server.peers = testPeerService{
+		snapshotFn: func(ctx context.Context, _ *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			proxyContexts <- ctx
+			return results, nil
+		},
+	}
+
+	done := make(chan error, 1)
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+	go func() {
+		done <- server.forwardSnapshot(stream.ctx, &etcdserverpb.SnapshotRequest{}, stream)
+	}()
+
+	select {
+	case err := <-done:
+		require.Equal(t, codes.Unavailable, status.Code(err))
+		require.ErrorContains(t, err, "timed out waiting for trailing status")
+	case <-time.After(250 * time.Millisecond):
+		require.FailNow(t, "follower Snapshot retained admission after its checksum")
+	}
+	require.Len(t, stream.responses, 2)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, snapshotFailureProxy))
+	var proxyCtx context.Context
+	select {
+	case proxyCtx = <-proxyContexts:
+	case <-time.After(100 * time.Millisecond):
+		require.FailNow(t, "leader Snapshot did not receive a proxy context")
+	}
+	select {
+	case <-proxyCtx.Done():
+	case <-time.After(100 * time.Millisecond):
+		require.FailNow(t, "trailing-status timeout did not cancel the leader Snapshot")
+	}
+}
+
+func TestMaintenanceSnapshotFollowerPreservesTrailingStatusAfterChecksum(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	rec := &recordingMetrics{}
+	server.metricCli = rec
+	initSnapshotFailureMetrics(rec)
+
+	digest := sha256.Sum256([]byte("abc"))
+	results := make(chan etcdproxy.SnapshotResult, 3)
+	results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+		RemainingBytes: 0, Blob: []byte("abc"), Version: Version,
+	}}
+	results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+		RemainingBytes: 0, Blob: digest[:], Version: Version,
+	}}
+	results <- etcdproxy.SnapshotResult{Err: status.Error(codes.ResourceExhausted, "leader trailing status")}
+	close(results)
+	server.peers = testPeerService{
+		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			return results, nil
+		},
+	}
+
+	stream := &maintenanceSnapshotServer{ctx: context.Background()}
+	err := server.forwardSnapshot(stream.ctx, &etcdserverpb.SnapshotRequest{}, stream)
+
+	require.Equal(t, codes.ResourceExhausted, status.Code(err))
+	require.ErrorContains(t, err, "leader trailing status")
+	require.Len(t, stream.responses, 2)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedSnapshotFailureValues(rec, snapshotFailureProxy))
+}
+
 func TestMaintenanceSnapshotFollowerMapsInternalProxyCancellationToLeaderChanged(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

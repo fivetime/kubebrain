@@ -922,6 +922,84 @@ func TestFollowerRangeStreamStopsWaitingForProxyCloseOnCallerCancellation(t *tes
 	require.Len(t, stream.sent, 1, "the validated terminal frame may precede the final stream status")
 }
 
+func TestFollowerRangeStreamBoundsTrailingStatusDrain(t *testing.T) {
+	rec := &recordingMetrics{}
+	server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+	defer cleanup()
+	server.proxyStreamTrailingStatusTimeout = 20 * time.Millisecond
+
+	results := make(chan etcdproxy.RangeStreamResult, 1)
+	results <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
+		RangeResponse: &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 42)},
+	}}
+	proxyContexts := make(chan context.Context, 1)
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		rangeStreamFn: func(ctx context.Context, _ *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			proxyContexts <- ctx
+			return results, nil
+		},
+	}
+
+	done := make(chan error, 1)
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	go func() {
+		done <- server.RangeStream(&etcdserverpb.RangeRequest{
+			Key: []byte("/forward-trailing-timeout/"), RangeEnd: []byte("/forward-trailing-timeout0"),
+		}, stream)
+	}()
+
+	select {
+	case err := <-done:
+		requireRangeStreamStatusError(t, err, codes.Unavailable, "forwarded stream timed out waiting for trailing status")
+	case <-time.After(250 * time.Millisecond):
+		require.FailNow(t, "follower RangeStream retained admission after terminal metadata")
+	}
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureBackend))
+	var proxyCtx context.Context
+	select {
+	case proxyCtx = <-proxyContexts:
+	case <-time.After(100 * time.Millisecond):
+		require.FailNow(t, "leader RangeStream did not receive a proxy context")
+	}
+	select {
+	case <-proxyCtx.Done():
+	case <-time.After(100 * time.Millisecond):
+		require.FailNow(t, "trailing-status timeout did not cancel the leader RangeStream")
+	}
+}
+
+func TestFollowerRangeStreamPreservesTrailingStatusAfterTerminal(t *testing.T) {
+	rec := &recordingMetrics{}
+	server, cleanup := newRangeStreamTestServerWithMetrics(t, rec)
+	defer cleanup()
+
+	results := make(chan etcdproxy.RangeStreamResult, 2)
+	results <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
+		RangeResponse: &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 42)},
+	}}
+	results <- etcdproxy.RangeStreamResult{Err: status.Error(codes.ResourceExhausted, "leader trailing status")}
+	close(results)
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			return results, nil
+		},
+	}
+
+	stream := &fakeRangeStreamServer{ctx: context.Background()}
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/forward-trailing-error/"), RangeEnd: []byte("/forward-trailing-error0"),
+	}, stream)
+
+	requireRangeStreamStatusError(t, err, codes.ResourceExhausted, "leader trailing status")
+	require.Len(t, stream.sent, 1)
+	require.Equal(t, []interface{}{int64(0), 1}, recordedRangeStreamFailureValues(rec, rangeStreamFailureBackend))
+}
+
 func TestFollowerRangeStreamRejectsInvalidProxyPayload(t *testing.T) {
 	validKV := func(key string) *mvccpb.KeyValue {
 		return &mvccpb.KeyValue{Key: []byte(key), Value: []byte("value"), CreateRevision: 1, ModRevision: 1, Version: 1}

@@ -56,7 +56,15 @@ const (
 	// lookups (same or subsequent requests) fail over locally at once instead
 	// of re-burning the timeout during an election gap or leader outage.
 	countProxyFailureQuiet = 3 * time.Second
+	// A leader that has delivered terminal RangeStream metadata or a Snapshot
+	// checksum has no application payload left to produce. Its next Recv must
+	// promptly carry EOF or the authoritative trailing gRPC status. Bound that
+	// drain independently so a broken peer cannot retain public admission
+	// forever when the caller supplied no deadline.
+	defaultProxyStreamTrailingStatusTimeout = unaryRpcTimeout
 )
+
+var errProxyStreamTrailingStatusTimeout = status.Error(codes.Unavailable, "forwarded stream timed out waiting for trailing status")
 
 // RPCServer only support limited method of etcd grpc server.
 //
@@ -83,6 +91,9 @@ type RPCServer struct {
 
 	metricCli metrics.Metrics
 	peers     service.PeerService
+	// Tests shorten this internal reliability boundary; zero uses the production
+	// default. It is immutable after the RPC server starts serving.
+	proxyStreamTrailingStatusTimeout time.Duration
 
 	alarmMetricMu     sync.Mutex
 	knownAlarmMetrics map[alarmMetricKey]struct{}
@@ -260,16 +271,45 @@ func withUnaryRequestTimeout(ctx context.Context) (context.Context, context.Canc
 	return context.WithTimeout(ctx, unaryRpcTimeout)
 }
 
-func receiveProxyStreamResult[T any](ctx context.Context, results <-chan T) (T, bool, error) {
+func receiveProxyStreamResult[T any](
+	ctx context.Context,
+	results <-chan T,
+	terminalSeen bool,
+	trailingStatusTimeout time.Duration,
+) (T, bool, error) {
 	// The peer adapters normally close their result channels when the forwarded
 	// gRPC context ends. Keep the public handler independently cancellation-aware:
 	// a broken adapter must not retain stream admission after its caller left.
 	// Reading until close is still intentional because the receive after a final
 	// response carries the authoritative trailing gRPC status.
+	if err := ctx.Err(); err != nil {
+		var zero T
+		return zero, false, err
+	}
+	if !terminalSeen {
+		select {
+		case <-ctx.Done():
+			var zero T
+			return zero, false, ctx.Err()
+		case result, ok := <-results:
+			return result, ok, nil
+		}
+	}
+	if trailingStatusTimeout <= 0 {
+		trailingStatusTimeout = defaultProxyStreamTrailingStatusTimeout
+	}
+	timer := time.NewTimer(trailingStatusTimeout)
+	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		var zero T
 		return zero, false, ctx.Err()
+	case <-timer.C:
+		var zero T
+		if err := ctx.Err(); err != nil {
+			return zero, false, err
+		}
+		return zero, false, errProxyStreamTrailingStatusTimeout
 	case result, ok := <-results:
 		return result, ok, nil
 	}

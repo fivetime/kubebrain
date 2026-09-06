@@ -1049,8 +1049,13 @@ func (s *RPCServer) forwardSnapshot(
 		var snapshotVersion string
 		haveData := false
 		for {
-			result, ok, receiveErr := receiveProxyStreamResult(ctx, responses)
+			result, ok, receiveErr := receiveProxyStreamResult(
+				ctx, responses, complete, s.proxyStreamTrailingStatusTimeout,
+			)
 			if receiveErr != nil {
+				if receiveErr == errProxyStreamTrailingStatusTimeout {
+					emitSnapshotFailure(s.metricCli, snapshotFailureProxy)
+				}
 				return receiveErr
 			}
 			if !ok {

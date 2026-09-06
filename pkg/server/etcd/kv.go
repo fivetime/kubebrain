@@ -418,6 +418,8 @@ func (s *RPCServer) rangeStreamOnce(
 			if err != nil {
 				return err
 			}
+			proxyCtx, cancelProxy := context.WithCancel(proxyCtx)
+			defer cancelProxy()
 			sentAny := false
 			for attempt := 0; attempt < preResponseStreamProxyAttempts; attempt++ {
 				results, callErr := s.peers.RangeStream(proxyCtx, r)
@@ -440,8 +442,13 @@ func (s *RPCServer) rangeStreamOnce(
 				retry := false
 				payloadValidator := newRangeStreamProxyPayloadValidator(r)
 				for {
-					result, ok, receiveErr := receiveProxyStreamResult(ctx, results)
+					result, ok, receiveErr := receiveProxyStreamResult(
+						ctx, results, terminalSeen, s.proxyStreamTrailingStatusTimeout,
+					)
 					if receiveErr != nil {
+						if receiveErr == errProxyStreamTrailingStatusTimeout {
+							emitRangeStreamFailure(s.metricCli, rangeStreamFailureBackend)
+						}
 						return receiveErr
 					}
 					if !ok {
