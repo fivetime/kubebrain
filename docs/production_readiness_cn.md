@@ -1764,7 +1764,8 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 带安全上界的聚合，要求 counter 不倒退且聚合不得溢出，
 并把每个 Pod 名绑定到不可变 UID 及按容器名排序的完整 `containerID/restartCount` 集合；探针结束后重新读取 Kubernetes Pod
 对象，任一同名 Pod 重建、容器重启、Ready Pod 集合变化或运行身份字段缺失都会 fail closed，不能把新进程计数减去旧进程基线。
-每次 counter 抓取还必须同时包含唯一、正数、无标签的标准 `process_start_time_seconds` gauge，且同一 Pod 前后值精确相等；因此
+每次 counter 抓取还必须同时包含唯一、有限、正数、无标签的标准 `process_start_time_seconds` gauge，同 metric family 的任何带标签或
+重复样本都会 fail closed，数值上界为 `2^53-1` 秒，且同一 Pod 前后值精确相等；因此
 即使容器恰在 post Kubernetes 查询与 metrics 抓取之间重启，也不能跨进程拼接 counter。只有运行身份保持不变时才要求全实例聚合
 hit 与 miss 增量分别大于零，既证明本轮至少一次物理扫描，
 也证明未变化逻辑状态的结果被真实复用；follower 若被 leader 的快速缓存命中抢先取消，允许本地计数保持零。

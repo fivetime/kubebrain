@@ -36,6 +36,7 @@ INFO_ENDPOINTS="${INFO_ENDPOINTS:-}"
 ETCDCTL_USER="${ETCDCTL_USER:-}"
 ETCDCTL_PASSWORD="${ETCDCTL_PASSWORD:-}"
 HASHKV_CACHE_MAX_SAFE_INTEGER=9007199254740991
+PROCESS_START_TIME_MAX_SECONDS=9007199254740991
 
 if ! operation_is_positive_int64 "$EXPECTED_READY_PODS" || (( EXPECTED_READY_PODS > 2147483647 )); then
   echo "EXPECTED_READY_PODS must be a canonical positive int32" >&2
@@ -889,17 +890,21 @@ expect_process_start_time_seconds() {
 		echo "info metrics mismatch: expected process_start_time_seconds gauge" >&2
 		return 1
 	fi
-	sample_values="$(awk '
-    $1 == "process_start_time_seconds" {
-      if (NF != 2 || $2 !~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ || $2 <= 0) {
+	sample_values="$(awk -v max="$PROCESS_START_TIME_MAX_SECONDS" '
+    {
+      token = $1
+      name = token
+      sub(/\{.*/, "", name)
+      if (name != "process_start_time_seconds") next
+      if (token != "process_start_time_seconds" || NF != 2 || $2 !~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ || $2 <= 0 || $2 > max) {
         print "invalid"
       } else {
         print $2
       }
     }
-  ' <<<"$metrics_text")"
+	' <<<"$metrics_text")"
 	if [[ ! "$sample_values" =~ ^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$ ]]; then
-		echo "info metrics mismatch: process_start_time_seconds must contain exactly one positive unlabeled sample" >&2
+		echo "info metrics mismatch: process_start_time_seconds must contain exactly one finite positive unlabeled sample" >&2
 		return 1
 	fi
 	printf '%s' "$sample_values"
