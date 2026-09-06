@@ -72244,6 +72244,67 @@ gate GREEN，PD/TiKV 3+3 Ready，日志中只有刻意执行默认 5 秒失败�
 候选 Pod 引用、Kind/containerd ref、探针 Pod、PD 转发和六个 etcd listener 均为 0；两份 OCI archive 与最终审计目录已移动到
 用户回收站，可恢复。
 
+### A5749：为共享 TiKV HashKV 提供有界批量扫描与稳定行生命周期
+
+A5748 把公共哈希域裁到真正参与 CRC 的物理范围后，继续在同一 1,519,078 行数据集上分析剩余耗时。单次候选 HashKV 为
+`8.044s`，19 个 iterator 的累计存活时间约 `47.35s`；TiKV client-go `Scanner` 默认每个 Scan RPC 只取 256 行，而 TiKV
+`future_scan` 的 limit 是行数而非响应字节上限。为避免用任意大 row limit 把巨型 value 打进单个 RPC，本轮在
+`pkg/storage/interface.go` 增加上限为 4096 的可选 scan-batch context hint，TiKV adapter 只对普通 snapshot 应用该 hint；
+HashKV live scan 固定使用 2048，protected serializable checkpoint 继续保留 client 默认值及既有可用性边界。
+
+`pkg/backend/hash.go` 同时把 live partition worker 从 8 提到 16，并给每个 worker 16 个按 256 行或 512 KiB 封顶的有序
+prefetch slot，应用层最坏预取窗口约 128 MiB；protected checkpoint 仍只给一个 slot。协调器继续严格按 partition 和物理编码
+key 顺序消费，CRC 输入顺序、revision、compact revision 与 corruption witness 均未改变。逐轮候选显示：1024-row/8 worker
+约 `5.65s`；2048-row/8 worker 约 `4.917–5.18s`；16 worker 与不同 prefetch 组合把单端点压到约
+`4.61–4.84s`，但三端点并发仍有尾延迟。
+
+profile 还显示一次 HashKV 约分配 2.42 GiB、消耗 10.27 CPU 秒，热点主要是 protobuf/gRPC 接收与 GC，而不是 CRC。为删除
+backend 对 TiKV protobuf-owned key/value 的第二次复制，storage 新增可选 `StableIteratorRows` marker 和可递归但最多 32 层的
+`IteratorUnwrapper`；TiKV scanner 明确声明旧 `KvPair` backing bytes 在 cache 替换、Next 和 Close 后不会被修改，metrics
+decorator 只透传 unwrap 能力而不为其他 storage 伪造稳定性。HashKV 仅在能力可证明时保留原 slice，其他 adapter 继续保守复制。
+该版本单次为 `4.417s`，分配约 1.94 GiB、下降约 20%；10 秒 CPU profile 的 6.51 秒样本中 runtime GC 约 30%、gRPC
+recv/unmarshal 约 20%，`ScanResponse.Unmarshal` 约 `0.77s`，证明剩余并发尾延迟主要位于 protobuf 分配/GC 路径。
+
+新增测试覆盖 scan hint 的正反边界、protected snapshot 忽略 hint、live/protected HashKV context、装饰器循环/空 unwrap 的
+fail-closed、metrics wrapper 能力透传，以及原有 partition 并行/有序语义。聚焦普通 `count=3` 与完整
+`pkg/storage`、`pkg/storage/metrics`、`pkg/storage/tikv`、`pkg/backend` 均 GREEN；此前同组聚焦 race `count=3` 也全部
+通过。代码提交 `d0088bbbb705dc8e569de57544dea9e654cda102` 前 verifier 为
+703=`170/193/180/160`，四分片为 `253.846/443.923/303.940/575.327s`；提交后 verifier 不变，四分片为
+`255.264/443.683/300.811/573.628s`，全部 GREEN。
+
+调参期间两份约 873 MiB OCI 临时 tar 曾同时落到 Kind `/var/tmp`，在宿主和 node 已接近满盘时触发 startup range spill probe
+`ENOSPC`。只删除这两个精确临时副本并删除唯一失败的 `kubebrain-2` Pod 以清除 backoff；随后审计到 Docker build cache
+667.5 GB 可回收，执行仅限 72 小时以前 cache 的 prune，回收 223.6 GB，宿主恢复约 202 GB 可用。该事件没有归因给产品逻辑，
+也没有用最终恢复态覆盖中间失败。
+
+最终候选 `docker.io/library/kubebrain@sha256:658988047a6aeb2e15fde32d68bfb66e2a8b2722ed9117aae752a9020333f5ac`
+内嵌版本 `0.0.0-d0088bbb`、完整 commit、build time `2026-09-06T08:36:12Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,738,688 bytes，SHA-256
+`7f80caa4be966ae7c9d0fafee740fa3d1781c72650c9000d68e6285c7b7f088a`；顶层 `index.json` SHA-256/runtime imageID、nested
+index、platform manifest/config、attestation manifest 分别为
+`sha256:efedc2868181e97f9c3d943d0eff3d8909dadb1bf1c2f190077328425ebeb1cb`、
+`sha256:658988047a6aeb2e15fde32d68bfb66e2a8b2722ed9117aae752a9020333f5ac`、
+`sha256:34f547ead18e22ad773da993f7bc968faaee3952047f454b16f1a9d1a460275b`、
+`sha256:b894221898a5abfd079e6d7151cdbfa92f08944186f846ce063b23034ae9cbd1`、
+`sha256:301f4e663e6dbc422e7e1327210845217000acb9949240d40ad14f680e8a07ec`。镜像使用 `65532:65532`、正确入口、
+71 个 diff IDs，并带 buildx SBOM/SLSA attestation。
+
+候选以 UID/resourceVersion/generation/container/current image/full 23 args 六类 JSON test 从 profiling generation 919
+原子投放，同时删除临时 `--enable-pprof`；generation/observed `920/920`、3/3 Ready、restart 0、22 参数，三个 runtime
+imageID 均为上述顶层 digest。单端点默认 5 秒 HashKV 三次全部通过，分别为 `4.548/4.314/4.466s`，返回一致的
+hash/revision `1984703050/75044`。三端点并发默认 5 秒仍只有 pod 0、2 通过，pod 1 明确返回 `DeadlineExceeded`，没有把
+2/3 写成全绿。60 秒完整 readonly gate GREEN，HashKV compact revision/term 为 `66760/711`，direct/gateway Hash 一致；
+PD/TiKV 3+3 Ready，三个 store 均 Up，15 Regions 的 pending/down/miss/extra/learner/offline peer 均为 0，候选日志无
+panic/fatal/corruption/ENOSPC。
+
+最后以新鲜六类 JSON test 回滚稳定 digest；rollout 中 Ready 等待计数曾从 1 Pod 扩大到 3 Pod 后恢复，该可用性窗口继续如实
+保留。最终 generation/observed `921/921`、RV `8722131`、3/3 Ready/restart 0、22 参数，runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。排除旧稳定镜像尚不存在的未来完整
+info-metrics 合同后稳定适用 gate GREEN：revision/hash/compact/term 为 `75044/1984703050/66760/712`。六个 listener、
+候选 Kind/containerd refs、Pod/主机 pprof 与 spill 临时文件最终均为 0；九份本轮/恢复 A5748 OCI archive 移入系统回收站，
+可恢复。本项使串行默认 5 秒 HashKV 稳定进入预算，但三副本并发尾延迟仍未完全关闭；下一步应优先减少 TiKV Scan protobuf
+分配与 GC，而不是继续无界增大 row batch、worker 或内存窗口。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
