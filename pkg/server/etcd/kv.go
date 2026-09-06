@@ -439,7 +439,14 @@ func (s *RPCServer) rangeStreamOnce(
 				terminalSeen := false
 				retry := false
 				payloadValidator := newRangeStreamProxyPayloadValidator(r)
-				for result := range results {
+				for {
+					result, ok, receiveErr := receiveProxyStreamResult(ctx, results)
+					if receiveErr != nil {
+						return receiveErr
+					}
+					if !ok {
+						break
+					}
 					if result.Err != nil && result.Response != nil {
 						emitRangeStreamFailure(s.metricCli, rangeStreamFailureProtocol)
 						return status.Error(codes.Unavailable, "forwarded range stream result mixed response and error")

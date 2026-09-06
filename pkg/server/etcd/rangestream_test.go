@@ -889,6 +889,39 @@ func TestFollowerRangeStreamRejectsInvalidProxyTermination(t *testing.T) {
 	}
 }
 
+func TestFollowerRangeStreamStopsWaitingForProxyCloseOnCallerCancellation(t *testing.T) {
+	server, cleanup := newRangeStreamTestServerWithMetrics(t, &recordingMetrics{})
+	defer cleanup()
+
+	results := make(chan etcdproxy.RangeStreamResult, 1)
+	results <- etcdproxy.RangeStreamResult{Response: &etcdserverpb.RangeStreamResponse{
+		RangeResponse: &etcdserverpb.RangeResponse{Header: proxiedResponseHeader(server, 42)},
+	}}
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		close(results)
+	}()
+	server.peers = testPeerService{
+		proxyEnabled: true,
+		epochFn:      func() (uint64, bool) { return 7, false },
+		rangeStreamFn: func(context.Context, *etcdserverpb.RangeRequest) (<-chan etcdproxy.RangeStreamResult, error) {
+			return results, nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	stream := &fakeRangeStreamServer{ctx: ctx}
+	started := time.Now()
+	err := server.RangeStream(&etcdserverpb.RangeRequest{
+		Key: []byte("/forward-cancel/"), RangeEnd: []byte("/forward-cancel0"),
+	}, stream)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(started), 200*time.Millisecond)
+	require.Len(t, stream.sent, 1, "the validated terminal frame may precede the final stream status")
+}
+
 func TestFollowerRangeStreamRejectsInvalidProxyPayload(t *testing.T) {
 	validKV := func(key string) *mvccpb.KeyValue {
 		return &mvccpb.KeyValue{Key: []byte(key), Value: []byte("value"), CreateRevision: 1, ModRevision: 1, Version: 1}

@@ -260,6 +260,21 @@ func withUnaryRequestTimeout(ctx context.Context) (context.Context, context.Canc
 	return context.WithTimeout(ctx, unaryRpcTimeout)
 }
 
+func receiveProxyStreamResult[T any](ctx context.Context, results <-chan T) (T, bool, error) {
+	// The peer adapters normally close their result channels when the forwarded
+	// gRPC context ends. Keep the public handler independently cancellation-aware:
+	// a broken adapter must not retain stream admission after its caller left.
+	// Reading until close is still intentional because the receive after a final
+	// response carries the authoritative trailing gRPC status.
+	select {
+	case <-ctx.Done():
+		var zero T
+		return zero, false, ctx.Err()
+	case result, ok := <-results:
+		return result, ok, nil
+	}
+}
+
 // SetMaxWatches sets the process-wide logical watch limit. It is configured
 // before serving starts, so the limit itself is immutable on request paths.
 func (s *RPCServer) SetMaxWatches(limit uint32) {

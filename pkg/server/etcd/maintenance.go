@@ -1048,7 +1048,14 @@ func (s *RPCServer) forwardSnapshot(
 		var remaining uint64
 		var snapshotVersion string
 		haveData := false
-		for result := range responses {
+		for {
+			result, ok, receiveErr := receiveProxyStreamResult(ctx, responses)
+			if receiveErr != nil {
+				return receiveErr
+			}
+			if !ok {
+				break
+			}
 			if result.Err != nil && result.Response != nil {
 				emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)
 				return status.Error(codes.DataLoss, "leader snapshot proxy returned a mixed response and error")

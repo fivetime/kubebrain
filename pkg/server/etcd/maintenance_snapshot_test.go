@@ -801,6 +801,38 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 	require.Equal(t, want, stream.responses)
 }
 
+func TestMaintenanceSnapshotFollowerStopsWaitingForProxyCloseOnCallerCancellation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	digest := sha256.Sum256([]byte("abc"))
+	results := make(chan etcdproxy.SnapshotResult, 2)
+	results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+		RemainingBytes: 0, Blob: []byte("abc"), Version: Version,
+	}}
+	results <- etcdproxy.SnapshotResult{Response: &etcdserverpb.SnapshotResponse{
+		RemainingBytes: 0, Blob: digest[:], Version: Version,
+	}}
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		close(results)
+	}()
+	server.peers = testPeerService{
+		snapshotFn: func(context.Context, *etcdserverpb.SnapshotRequest) (<-chan etcdproxy.SnapshotResult, error) {
+			return results, nil
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	stream := &maintenanceSnapshotServer{ctx: ctx}
+	started := time.Now()
+	err := server.forwardSnapshot(ctx, &etcdserverpb.SnapshotRequest{}, stream)
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(started), 200*time.Millisecond)
+	require.Len(t, stream.responses, 2, "the checksum frame may precede the final stream status")
+}
+
 func TestMaintenanceSnapshotFollowerMapsInternalProxyCancellationToLeaderChanged(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
