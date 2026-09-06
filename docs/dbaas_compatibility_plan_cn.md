@@ -72305,6 +72305,66 @@ info-metrics 合同后稳定适用 gate GREEN：revision/hash/compact/term 为 `
 可恢复。本项使串行默认 5 秒 HashKV 稳定进入预算，但三副本并发尾延迟仍未完全关闭；下一步应优先减少 TiKV Scan protobuf
 分配与 GC，而不是继续无界增大 row batch、worker 或内存窗口。
 
+### A5750：为 TiKV Scan 响应提供所有权明确的低分配 protobuf 解码
+
+继续沿 A5749 的 profile 证据处理 TiKV Scan 解码与 GC。对照
+`/root/etcd/server/storage/mvcc/kvstore.go` 的 `hashByRev`、`server/storage/mvcc/hash.go` 的
+`unsafeHashByRev` 以及 `server/etcdserver/api/v3rpc/maintenance.go` 的 `HashKV`：upstream 在成员本地 bbolt
+`ReadTx` 上直接遍历 key bucket，并不承担跨网络 protobuf 的逐行对象与 key/value 复制；KubeBrain 的共享 TiKV 实现必须支付该
+传输成本，但没有理由继续接受 pinned kvproto generated decoder 对每个 `KvPair`、key 和 value 分别分配。此项只改变 TiKV RPC
+接收对象的内存布局，不改变扫描 timestamp、范围、行序、CRC 输入、revision 或 compact revision。
+
+提交 `aef490df90526fa58af86e2b9b0e4f800dd442ae` 在根模块增加 gRPC `encoding.CodecV2`。快速路径仅接受无
+region/key error 的 `kvrpcpb.ScanResponse`，或只含成功 Scan command 的 `tikvpb.BatchCommandsResponse`；先用
+`protowire` 完整预检 wire shape 和精确计数，再持有一份完整 frame 副本，以连续的 response/scan/pair 数组构造对象，row 的
+key/value slice 指向该不可变 owned frame。碎片化 `mem.BufferSlice` 只 materialize 一次；error-bearing、mixed-command、
+malformed、未知字段或未知消息类型均交回标准 protobuf decoder，且复用已 materialize 的 buffer，避免 fallback 再复制整帧。
+快速路径与标准 decoder 一样先 reset 复用消息，专门的旧字段回归用例固定该 codec 合同。第一版曾试图在 vendored
+TiKV client-go 的 gRPC 1.54 模块实现 legacy `encoding.Codec`，但根模块 gRPC 1.83 会通过兼容桥再复制整帧；最终没有保留该
+折中，而是在 client fork 只增加可累加的 `WithGRPCDialOptions`，由根模块把真正的 CodecV2 精确注入 TiKV RPC client，PD 与
+safepoint-etcd 连接不受影响。
+
+直接/Batch fixture、碎片化输入所有权、error/mixed/malformed fallback、复用对象 reset 和分配上限测试全部通过；聚焦普通与
+race 各 `count=10`、完整 `pkg/storage/tikv`、`pkg/storage`、`pkg/storage/metrics`、`pkg/backend`、vendored
+`tikv/txnkv/internal/client` 以及相关 `go vet` 均 GREEN。带陈旧字段初始对象的差分 fuzz 分别运行 30 秒：直接 Scan
+177,764 次、Batch 394,146 次，没有发现与标准 decoder 的成功/失败或 `proto.Equal` 差异。2048 行 benchmark 三轮中，标准
+decoder 为 `556.367-568.789us`、392,409-392,415 B、6159 allocs/op；owned-frame 为
+`318.434-329.432us`、354,384 B、4 allocs/op，约减少 42% 时间并消除 99.9% 以上的分配次数。代码提交前 verifier 为
+703=`170/193/180/160`，四分片为 `259.570/457.644/309.844/589.201s`；提交后 verifier 不变，四分片为
+`265.837/455.760/314.851/584.626s`，全部 GREEN。
+
+真实 1,519,078 行 HashKV 在最终提交镜像上单次为 `4.320s`，hash/revision/compact revision 为
+`1984703050/75044/66760`，该进程的 TotalAlloc 增量约 1.646 GB、7 次 GC、GC pause 约 2.72ms；相对 A5749
+profile 的约 1.94 GB/13 次 GC，分配量再降约 15%，GC 次数近乎减半。相同代码的三次单端点默认 5 秒均通过，为
+`4.418/4.418/4.319s`；但五轮三端点并发仅 7/15 通过，失败均为真实 `DeadlineExceeded`，其中一次明确卡在 PD
+`loadRegion`。因此此项关闭“成功 TiKV Scan 每行多次分配并放大 GC”的缺口，但不宣称关闭三副本并发短预算尾延迟；follower
+本地扫描与 leader hedge 在共享 TiKV 上放大同一全量诊断请求仍是下一项调查重点。
+
+最终不可变镜像 `docker.io/library/kubebrain@sha256:d707757810633e9a930cebc91d664c4e4e7007a20d6bdc76b0f1eb144e4c4be9`
+内嵌版本 `0.0.0-aef490df`、完整 commit、build time `2026-09-06T10:49:37Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,814,976 bytes，SHA-256
+`4aff5444911f6a38accc9d0bd6c2ee35310c6899cfc7acd3a37d1f0b1dfee441`；顶层 `index.json` SHA-256、nested
+index/runtime imageID、platform manifest、config、attestation manifest 分别为
+`02821d7ff987ca7ded800f9e48fd48cb142762750e4b45c7bcc6e6d6826d5010`、
+`sha256:d707757810633e9a930cebc91d664c4e4e7007a20d6bdc76b0f1eb144e4c4be9`、
+`sha256:a493f5a1abd5a10b4d55a6a7aa35c6474559a97a7071e233b8bdc3301679aac9`、
+`sha256:c51626d6223a54dbbf94820b447c9807d3c96c1641def1c91595f0a5e74034c8`、
+`sha256:a1582cc0321f1a23bbe011979b7b85384598614c7645980996934160bca9f5c8`。78 个 blob 全部 digest
+自校验一致；镜像为 `65532:65532`、正确入口、71 个 diff IDs，并同时带 SPDX 与 SLSA attestation。
+
+一次临时最终候选投放后因只导入 tag、未在 containerd 注册 StatefulSet 使用的 digest ref，使第一个更新 Pod 短暂
+`ErrImagePull`；其余两个 Pod 保持健康。确认 OCI content 已完整存在后只补建精确本地 ref，原 rollout 随即完成，没有重建
+镜像或把该窗口写成成功。正式提交镜像随后以 UID/resourceVersion/generation/container/current image/full 22 args 六类
+JSON test 从 generation 924 原子投放到 generation/observed `925/925`，3/3 Ready、restart 0，三个 runtime imageID 均为
+上述 nested digest；完整 readonly gate GREEN，term `720`，PD/TiKV 3+3 Ready，所有 direct/gateway HashKV 结果一致。
+
+最后以新鲜六类 JSON test 回滚稳定 digest。等待过程中未就绪 Pod 数曾扩大到 3 后恢复，继续保留现有 Parallel StatefulSet
+rollout 可用性窗口；终态 generation/observed `926/926`、RV `8738051`、3/3 Ready/restart 0、22 参数，runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。排除旧稳定镜像尚不存在的未来完整
+info-metrics 合同后稳定适用 gate GREEN，term `723`。六个 listener 和全部 A5750 candidate/profile Kind refs 均为 0；四份
+OCI archive 与两份展开审计目录移入
+`/root/.local/share/Trash/files/kubebrain-a5750-20260906T1110Z`，可恢复。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
