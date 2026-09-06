@@ -72365,6 +72365,66 @@ info-metrics 合同后稳定适用 gate GREEN，term `723`。六个 listener 和
 OCI archive 与两份展开审计目录移入
 `/root/.local/share/Trash/files/kubebrain-a5750-20260906T1110Z`，可恢复。
 
+### A5751：合并同一逻辑快照上重叠的 HashKV 全量扫描
+
+A5750 消除了成功 TiKV Scan 的逐行 protobuf 分配后，三副本同时执行 `HashKV` 仍会在共享 TiKV 上放大为 leader
+自己的公共请求、两个 follower 转发到 leader 的公共请求以及两个 follower 的本地 hedge，默认 5 秒预算仅 7/15 成功。继续对照
+`/root/etcd/server/storage/mvcc/kvstore.go` 的 `hashByRev`、`server/storage/mvcc/hash.go` 的
+`unsafeHashByRev` 和 `server/etcdserver/api/v3rpc/maintenance.go` 的 `HashKV`：upstream 成员各自遍历本地
+bbolt，不存在多个 KubeBrain 进程把同一诊断请求汇聚到共享远端 TiKV 的放大路径。这里没有延迟或取消原有 follower
+local/leader 同时 hedge，避免缩窄 leader 或 TiKV 单侧隔离时的可用性；而是在每个 backend 进程内只合并完全相同逻辑快照的
+重叠扫描，使 leader 上的三个相同公共请求共享一次扫描、每个 follower 仍各保留一次本地扫描，理论共享 TiKV 扫描数从 5 降为
+3。
+
+提交 `936e824fd32cdd2a66b6d35bc26f4b952bccee50` 新增 backend-local `hashKVFlightGroup`。flight key 同时固定
+requested revision、调用到达时观察到的 current revision、TiKV snapshot timestamp、完整 checkpoint revision/compact
+revision、protected/pinned/fallback 状态和 scan batch 配置；写入确认后到达的调用因此不能加入写前 flight，不同 snapshot
+执行合同也不能共享。普通 live scan 的 executor 继续独占 `logicalWriteMu`，并在释放写/压缩 fence 前发布结果并删除 flight，
+所以成功返回的并发压缩或写入之后不存在复用旧 hash 的窗口；protected snapshot 只按其不可变 timestamp 合并，不排队等待 live
+mutation。scalar `HashKVResult` 可安全共享。waiter 使用自己的 context 等待；executor 被取消时，仍有预算的 waiter 会以自己的
+context 建立新 flight，不能继承别人的取消结果。panic 路径也由 defer 关闭 flight，初始错误为悲观的 aborted，不会把遗弃调用
+误当成成功的空 hash。
+
+新增测试覆盖 12 个并发调用只触发一次物理扫描、观察到 revision 推进后必须分离 flight、snapshot/checkpoint/扫描策略合同全部
+分离、waiter 在 executor 取消后重新执行，以及并发 logical compaction 在旧 flight 删除前不能成功返回且之后的新 HashKV
+必须观察新 compact watermark。聚焦测试连续 `count=30`、HashKV race `count=5`、完整 `pkg/backend`、完整
+`pkg/server/etcd`、相关 `go vet` 和 `git diff --check` 均 GREEN。代码提交前 verifier 为
+703=`170/193/180/160`，四分片为 `276.730/466.476/324.608/597.044s`；提交后 verifier 不变，四分片为
+`256.966/463.359/311.323/597.557s`，全部 GREEN。
+
+dirty profile 在真实 1,519,078 行数据集上三次单端点默认 5 秒均通过，为 `4.219/4.218/4.218s`。第一轮三端点并发时三个
+进程的 TotalAlloc 增量约为 `1.628/1.602/1.612 GB`、GC 次数 `5/7/5`，证明 leader 不再顺序承担三个完整公共扫描；五轮加
+十轮并发合计 42/45 成功，相对 A5750 的 7/15 明显改善。最终提交镜像三次单端点为
+`4.416/4.411/4.377s`，十轮三端点并发 28/30 成功；两次失败均保留为真实 5 秒 `DeadlineExceeded`，没有通过重试或放宽预算
+写成全绿。因此本项关闭“相同重叠请求重复扫描共享 TiKV”的放大缺口，但不宣称完全关闭 5 秒尾延迟，PD/Region 调度及共享
+TiKV 扫描尾部仍是开放调查项。
+
+最终不可变镜像 `docker.io/library/kubebrain@sha256:db5019286e7b6974322038f1b874a66aee9ff59ca4fa4d4590e8daff93997c99`
+内嵌版本 `0.0.0-936e824f`、完整 commit、build time `2026-09-06T12:17:47Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,821,120 bytes，SHA-256
+`06d645a66cf1776dc2b5bfc4514b2a59f9e7787cc19bf7b4f26de6da7859df73`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`66302bc50cdc01a0274ad340e18e2c1008ee3166783ae161a6719d8f0b1b3840`、
+`sha256:db5019286e7b6974322038f1b874a66aee9ff59ca4fa4d4590e8daff93997c99`、
+`sha256:bc66d72677877706d2d00669aff0ed3753a162523d12a05da0bddc04bdbd843a`、
+`sha256:6b5bc3f16e34bed122d4331ae993f467c48c914f851927298904e8708808e0b7`、
+`sha256:d9a58d9e7ef86c8905b4d43aacc23a4f9679cad45603875c74d100f2a3fcf5d0`。78 个 blob 的 digest 和 78 条
+OCI descriptor edge 的 size/hash 全部自校验一致；镜像为 `65532:65532`、正确入口、71 个 diff IDs，并带 SPDX 与 SLSA
+attestation。Kind 的离线 `ctr import --digests` 使 CRI Pod 状态显示导入器顶层索引
+`docker.io/library/import-2026-09-06@sha256:66302bc...`；StatefulSet 使用上述精确 nested digest，`crictl inspecti` 的
+repoDigests 同时列出二者并由已审计 OCI index 唯一连接，未把该本地显示差异误写为 runtime nested digest。
+
+profile candidate generation/observed `927/927` 和最终提交镜像 `928/928` 均达到 3/3 Ready、restart 0、22 参数不变；两次
+完整 HEAD readonly gate 均 GREEN，最终 revision/HashKV/compact/term 为 `75044/1984703050/66760/727`，三副本及
+direct/gateway 结果一致、Auth disabled。最终 gate 的第一次尝试命中仍监听已删除 Pod sandbox 的旧 port-forward，立即以
+`curl: Empty reply` 失败；重建三个前台转发后同一门禁成功，该 harness 生命周期问题没有伪装成数据面成功。随后用新鲜
+UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test 回滚稳定 digest；Parallel StatefulSet
+回滚期间未就绪 Pod 数短暂扩大到 3 后恢复。终态 generation/observed `929/929`、RV `8749775`、3/3 Ready、restart 0，
+runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。排除旧稳定镜像尚不存在的未来
+info-metrics 合同后稳定适用 gate GREEN，revision/HashKV/compact/term 为 `75044/1984703050/66760/728`。六个 listener
+和全部 A5751 profile/final Kind refs 均为 0；两份 OCI archive、两份展开审计目录和 descriptor 清单移入可恢复目录
+`/root/.local/share/Trash/files/kubebrain-a5751-20260906T1244Z`。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
