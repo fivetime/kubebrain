@@ -136,3 +136,35 @@ func TestIsInternalStorageKey(t *testing.T) {
 		append(append([]byte(nil), latestMetadataInfix...), []byte("user")...), 42,
 	)))
 }
+
+func TestHashKVScanRangesExcludePrefixClassifiedInternalFamilies(t *testing.T) {
+	ks, err := NewKeyspace("hash-scan-ranges")
+	require.NoError(t, err)
+	ranges := ks.HashKVScanRanges()
+	require.NotEmpty(t, ranges)
+	for index, keyRange := range ranges {
+		require.Less(t, bytes.Compare(keyRange.Start, keyRange.End), 0)
+		if index != 0 {
+			require.Less(t, bytes.Compare(ranges[index-1].End, keyRange.Start), 0,
+				"excluded internal prefixes must leave an ordered gap")
+		}
+	}
+	contains := func(key []byte) bool {
+		for _, keyRange := range ranges {
+			if bytes.Compare(keyRange.Start, key) <= 0 && bytes.Compare(key, keyRange.End) < 0 {
+				return true
+			}
+		}
+		return false
+	}
+
+	require.False(t, contains(ks.EncodeEventLogKey(42, []byte("/key"))))
+	require.False(t, contains(ks.ElogMetaStartKey()))
+	require.False(t, contains(ks.EncodeInternalKey([]byte("lease/meta"))))
+	require.True(t, contains(ks.NewCoder().EncodeObjectKey([]byte("/key"), 42)))
+	require.True(t, contains(ks.EncodeLatestMetadataKey([]byte("/key"))),
+		"latest metadata needs its trailer-aware classifier")
+	require.True(t, contains(ks.NewCoder().EncodeObjectKey(
+		append(append([]byte(nil), latestMetadataInfix...), []byte("user")...), 42,
+	)))
+}

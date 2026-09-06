@@ -242,26 +242,32 @@ type hashKVPartitionResult struct {
 
 // forEachHashKVRow visits the physical object keyspace in strict ascending
 // order. Healthy reads discover TiKV Region partitions and prefetch a bounded
-// window in parallel. A protected checkpoint deliberately remains a single
-// iterator: its raison d'etre is operation without PD, and partition discovery
-// would reintroduce a topology-service dependency into that degraded path.
+// window in parallel. A protected checkpoint uses the same internal-prefix
+// exclusions but deliberately skips partition discovery: its raison d'etre is
+// operation without PD, so each disjoint interval uses one cached-route
+// iterator instead of reintroducing a topology-service dependency.
 func (b *backend) forEachHashKVRow(
 	ctx context.Context,
 	timestamp uint64,
 	pinned bool,
 	visit func(key, value []byte) error,
 ) error {
-	start, end := b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd()
-	partitions := []storage.Partition{{Start: start, End: end}}
-	if !pinned {
-		discovered, err := b.kv.GetPartitions(ctx, start, end)
-		if err == nil && validHashKVPartitions(discovered, start, end) {
-			partitions = discovered
-		} else if ctx.Err() != nil {
-			return ctx.Err()
+	partitions := make([]storage.Partition, 0, hashKVPartitionConcurrency)
+	for _, scanRange := range b.ks.HashKVScanRanges() {
+		rangePartitions := []storage.Partition{{Start: scanRange.Start, End: scanRange.End}}
+		if !pinned {
+			discovered, err := b.kv.GetPartitions(ctx, scanRange.Start, scanRange.End)
+			if err == nil && validHashKVPartitions(discovered, scanRange.Start, scanRange.End) {
+				rangePartitions = discovered
+			} else if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			// Partition discovery is an optimization. If PD races an outage after
+			// the snapshot timestamp was obtained, retain one iterator for this
+			// interval instead of failing a diagnostic that can still use TiKV's
+			// cached Region directory.
 		}
-		// Partition discovery is an optimization. If PD races an outage after the
-		// snapshot timestamp was obtained, retain the old single-iterator path.
+		partitions = append(partitions, rangePartitions...)
 	}
 
 	workerCtx, cancel := context.WithCancel(ctx)

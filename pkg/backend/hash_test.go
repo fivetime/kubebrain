@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"hash/crc32"
@@ -21,6 +22,8 @@ type hashKVPartitionTestStorage struct {
 	storage.KvStorage
 	mu             sync.Mutex
 	partitions     []storage.Partition
+	partitionStart []byte
+	partitionEnd   []byte
 	gatedStarts    map[string]struct{}
 	started        chan struct{}
 	release        chan struct{}
@@ -34,8 +37,9 @@ func (s *hashKVPartitionTestStorage) GetPartitions(
 	s.mu.Lock()
 	s.partitionCalls++
 	partitions := append([]storage.Partition(nil), s.partitions...)
+	configured := bytes.Equal(start, s.partitionStart) && bytes.Equal(end, s.partitionEnd)
 	s.mu.Unlock()
-	if len(partitions) != 0 {
+	if configured && len(partitions) != 0 {
 		return partitions, nil
 	}
 	return s.KvStorage.GetPartitions(ctx, start, end)
@@ -205,9 +209,16 @@ func TestHashKVPrefetchesPartitionsAndPreservesEncodedOrder(t *testing.T) {
 	want, err := b.HashKV(ctx, 0)
 	require.NoError(t, err)
 
-	start, end := b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd()
 	split1 := b.coder.EncodeObjectKey(keys[1], revisions[1])
 	split2 := b.coder.EncodeObjectKey(keys[2], revisions[2])
+	var start, end []byte
+	for _, scanRange := range b.ks.HashKVScanRanges() {
+		if bytes.Compare(scanRange.Start, split1) <= 0 && bytes.Compare(split2, scanRange.End) < 0 {
+			start, end = scanRange.Start, scanRange.End
+			break
+		}
+	}
+	require.NotEmpty(t, start)
 	partitions := []storage.Partition{
 		{Start: start, End: split1},
 		{Start: split1, End: split2},
@@ -217,6 +228,8 @@ func TestHashKVPrefetchesPartitionsAndPreservesEncodedOrder(t *testing.T) {
 	release := make(chan struct{})
 	store.mu.Lock()
 	store.partitions = partitions
+	store.partitionStart = start
+	store.partitionEnd = end
 	store.gatedStarts = make(map[string]struct{}, len(partitions))
 	for _, partition := range partitions {
 		store.gatedStarts[string(partition.Start)] = struct{}{}
@@ -249,7 +262,7 @@ func TestHashKVPrefetchesPartitionsAndPreservesEncodedOrder(t *testing.T) {
 	store.mu.Lock()
 	timestamps := append([]uint64(nil), store.iterTimestamps...)
 	store.mu.Unlock()
-	require.Len(t, timestamps, len(partitions))
+	require.Len(t, timestamps, len(b.ks.HashKVScanRanges())-1+len(partitions))
 	require.NotZero(t, timestamps[0])
 	for _, timestamp := range timestamps[1:] {
 		require.Equal(t, timestamps[0], timestamp, "every partition must use one engine snapshot")
@@ -285,7 +298,10 @@ func TestHashKVPinnedSnapshotSkipsPartitionDiscovery(t *testing.T) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	require.Zero(t, store.partitionCalls, "protected HashKV must not require PD partition discovery")
-	require.Equal(t, []uint64{timestamp}, store.iterTimestamps)
+	require.Len(t, store.iterTimestamps, len(b.ks.HashKVScanRanges()))
+	for _, gotTimestamp := range store.iterTimestamps {
+		require.Equal(t, timestamp, gotTimestamp)
+	}
 }
 
 func TestHashKVUsesPinnedSnapshotTimestampForObjectScan(t *testing.T) {
@@ -311,8 +327,11 @@ func TestHashKVUsesPinnedSnapshotTimestampForObjectScan(t *testing.T) {
 	_, err = b.HashKV(pinned, int64(created.Header.Revision))
 	b.logicalWriteMu.Unlock()
 	require.NoError(t, err)
-	require.Equal(t, []uint64{timestamp}, store.iterTimestamps,
-		"the complete object scan must use the protected engine snapshot")
+	require.Len(t, store.iterTimestamps, len(b.ks.HashKVScanRanges()))
+	for _, gotTimestamp := range store.iterTimestamps {
+		require.Equal(t, timestamp, gotTimestamp,
+			"every disjoint object interval must use the protected engine snapshot")
+	}
 }
 
 func TestHashKVArmsCorruptForWitnessedInvalidObjectValue(t *testing.T) {

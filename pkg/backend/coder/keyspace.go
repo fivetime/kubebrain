@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 )
 
 // A Keyspace derives every magic-prefixed key family — object keys, the event
@@ -42,6 +43,12 @@ type Keyspace struct {
 	magic       []byte
 	elogMagic   []byte
 	elogMetaKey []byte
+}
+
+// KeyRange is one ascending half-open physical key interval.
+type KeyRange struct {
+	Start []byte
+	End   []byte
 }
 
 var internalKVInfix = []byte("\x00internal\x00")
@@ -154,6 +161,42 @@ func (k *Keyspace) ObjectKeyspaceEnd() []byte {
 		}
 	}
 	return []byte{0xff}
+}
+
+// HashKVScanRanges returns the physical intervals that can contain rows in
+// etcd's user-MVCC HashKV domain. Event-log and service-metadata prefixes are
+// classified as internal by IsInternalStorageKey, so transferring their values
+// merely to discard them makes HashKV cost grow with unrelated watch history.
+//
+// The latest-metadata family is intentionally not removed as one prefix range:
+// unlike the families below, its classifier also checks a revision-zero
+// trailer so a real user key beginning with the same infix remains visible.
+func (k *Keyspace) HashKVScanRanges() []KeyRange {
+	internalPrefix := append(append([]byte(nil), k.magic...), internalKVInfix...)
+	excluded := [][]byte{k.elogMagic, k.elogMetaKey, internalPrefix}
+	// These constants are currently ordered, but sorting here keeps the range
+	// contract correct if a future internal family is renamed or inserted.
+	sort.Slice(excluded, func(i, j int) bool { return bytes.Compare(excluded[i], excluded[j]) < 0 })
+
+	cursor := k.ObjectKeyspaceStart()
+	end := k.ObjectKeyspaceEnd()
+	ranges := make([]KeyRange, 0, len(excluded)+1)
+	for _, prefix := range excluded {
+		prefixEnd := keyPrefixEnd(prefix)
+		if bytes.Compare(cursor, prefix) < 0 {
+			ranges = append(ranges, KeyRange{
+				Start: append([]byte(nil), cursor...),
+				End:   append([]byte(nil), prefix...),
+			})
+		}
+		if bytes.Compare(cursor, prefixEnd) < 0 {
+			cursor = prefixEnd
+		}
+	}
+	if bytes.Compare(cursor, end) < 0 {
+		ranges = append(ranges, KeyRange{Start: append([]byte(nil), cursor...), End: end})
+	}
+	return ranges
 }
 
 // EncodeEventLogKey builds the event-log key for one (revision, userKey) entry.
