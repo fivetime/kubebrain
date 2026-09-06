@@ -27,6 +27,7 @@ import (
 	"github.com/tikv/client-go/v2/txnkv/transaction"
 	"github.com/tikv/client-go/v2/util"
 	"go.uber.org/multierr"
+	"google.golang.org/grpc"
 )
 
 // Client is a txn client.
@@ -35,8 +36,9 @@ type Client struct {
 }
 
 type option struct {
-	apiVersion   kvrpcpb.APIVersion
-	keyspaceName string
+	apiVersion     kvrpcpb.APIVersion
+	keyspaceName   string
+	grpcDialOption []grpc.DialOption
 }
 
 // ClientOpt is factory to set the client options.
@@ -53,6 +55,14 @@ func WithKeyspace(keyspaceName string) ClientOpt {
 func WithAPIVersion(apiVersion kvrpcpb.APIVersion) ClientOpt {
 	return func(opt *option) {
 		opt.apiVersion = apiVersion
+	}
+}
+
+// WithGRPCDialOptions appends options to every TiKV gRPC connection while
+// leaving PD and safepoint-etcd connections unchanged.
+func WithGRPCDialOptions(options ...grpc.DialOption) ClientOpt {
+	return func(opt *option) {
+		opt.grpcDialOption = append(opt.grpcDialOption, options...)
 	}
 }
 
@@ -118,7 +128,11 @@ func NewClientWithContext(ctx context.Context, pdAddrs []string, opts ...ClientO
 		}
 	}()
 
-	rpcClient := tikv.NewRPCClient(tikv.WithSecurity(cfg.Security), tikv.WithCodec(codecCli.GetCodec()))
+	rpcClient := tikv.NewRPCClient(
+		tikv.WithSecurity(cfg.Security),
+		tikv.WithCodec(codecCli.GetCodec()),
+		tikv.WithGRPCDialOptions(opt.grpcDialOption...),
+	)
 	rpcClientOwned := true
 	defer func() {
 		if rpcClientOwned {

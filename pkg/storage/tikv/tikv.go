@@ -38,6 +38,7 @@ import (
 	"github.com/tikv/client-go/v2/txnkv/txnsnapshot"
 	pd "github.com/tikv/pd/client"
 	"go.uber.org/multierr"
+	"google.golang.org/grpc"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -124,7 +125,13 @@ func NewKvStorageWithContext(ctx context.Context, pdAddrs []string, clientNum in
 	startupCtx, cancelStartup, stopStartupCancellation := newDetachableStartupContext(ctx)
 	clients, err := createTxnClients(clientNum, func(index int) (*txnkv.Client, error) {
 		return createTxnClientWithEndpointRotation(pdAddrs, index, func(addrs []string) (*txnkv.Client, error) {
-			return txnkv.NewClientWithContext(startupCtx, addrs)
+			return txnkv.NewClientWithContext(
+				startupCtx,
+				addrs,
+				txnkv.WithGRPCDialOptions(
+					grpc.WithDefaultCallOptions(grpc.ForceCodecV2(defaultTiKVProtoCodec)),
+				),
+			)
 		})
 	})
 	if err != nil {
