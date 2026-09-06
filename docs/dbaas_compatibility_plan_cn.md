@@ -72559,6 +72559,54 @@ info-metrics 合同后稳定适用 gate GREEN，revision/HashKV/compact/term 为
 最终关闭六个 listener，精确删除候选 tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive 与展开
 审计目录已移入可恢复目录 `/root/.local/share/Trash/files/kubebrain-a5753-20260906T1553Z`；稳定镜像和数据卷未删除。
 
+### A5754：把 HashKV 已完成结果缓存指标纳入只读发布门禁
+
+A5753 已暴露 `backend_hashkv_completed_cache_hit` 与 `backend_hashkv_completed_cache_miss`，但当时完整
+`hack/production/validate-dataplane-readonly.sh` 只检查既有 HashKV 指标族。指标即使在后续重构中消失、类型错误、标签漂移或从未
+被真实请求触发，发布门禁仍会错误放行。继续对照 upstream etcd：其成员直接扫描本地 bbolt，不存在 KubeBrain 面向共享远端
+TiKV 增加的短时 completed-result cache，因此也不存在可机械照搬的同名指标；这是共享 TiKV 数据面的新增可运维合同，而不是
+伪装成 upstream 已有能力。
+
+提交 `ffef0394d6959eb17c1331f2c195902dd3231d10` 在每个 Ready Pod 完成真实 HashKV 探测后读取其 info metrics，分别要求
+两个指标都只有一条精确 `# TYPE ... counter`，sample 必须且只能带非空 `cluster` 标签，值必须为非负数；再跨全部 Ready Pod
+汇总 hit+miss 并要求大于 0，避免只有启动时零值注册造成 false green。成功摘要新增稳定 token
+`hashkv_cache_metrics=ok`。修复前 RED 用例删除 hit 指标后脚本仍返回成功；实现后新增缺失 hit、错误 TYPE、负 miss 以及全部零值
+未激活四类拒绝测试，并同步固定生产文档合同。
+
+五个聚焦用例 `count=10`、文档合同 `count=10`、完整 `TestValidateDataplaneReadonlyProbe`、`bash -n`、diff check 与
+`go vet ./hack/production` 均 GREEN。代码提交前 verifier 为 703=`170/193/180/160`，四分片为
+`270.313/469.614/325.670/607.029s`。首次提交后 shard 0 的既有 rollout timing 用例测得 `5.294826905s`，超过其
+`<5s` 断言而失败；该用例独立 `count=20` 全绿，随后没有修改代码地重新执行完整 verifier 与精确四分片，结果为
+`252.897/446.125/306.895/583.348s`，全部 GREEN。该偶发失败没有从证据中删去。
+
+最终候选 `docker.io/library/kubebrain@sha256:20e62b3df4c6ad6e1ec7c5249126c16a7673ee8503dfcbf9a563673055cd0a39`
+内嵌版本 `0.0.0-ffef0394`、完整 commit、build time `2026-09-06T16:46:41Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,842,112 bytes，SHA-256
+`cae080d0bde7d0582dc73768fd3757d1f55172bac914508512cc12b0fbccc91d`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`9567ae026185d205b18018d2a1e416db36e6e9a4db750a4b126dc3a6b73f174a`、
+`sha256:20e62b3df4c6ad6e1ec7c5249126c16a7673ee8503dfcbf9a563673055cd0a39`、
+`sha256:3f97866cd7777a5b54024083fdb4afb5a991161ea8bf1ad99771d5938361f1de`、
+`sha256:2f3117042616e5735d1b0557ddfe38f9991871b4051b89c4f2ad892bb0bb65c0`、
+`sha256:49cf84785dc8b30f23ef0d6f5dddd59d7a52add51428370e97409c0918e718e1`。78/78 blobs 可达且全部 descriptor
+size/hash 自校验一致，无 orphan；镜像为 `65532:65532`、正确入口、71 个 diff IDs。SPDX layer
+`sha256:6cb67a3bc81f0d3eab885ffa26505f62b4cffef3e0853b6f5eb26299896f06b6` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:c86e567f307b96b018f893b47e06260a758e3fd7cf8b85dd84eb40f353b216cd`
+含 3 项 materials，两份 statement 都精确绑定 platform manifest。
+
+候选使用 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test，从 generation 936 原子投放到
+generation/observed `937/937`、RV `8781739`；3/3 Ready、restart 0，三个 runtime imageID 均精确为候选 nested digest。
+完整 readonly gate GREEN，明确输出 `hashkv_cache_metrics=ok`，revision/HashKV/compact/term 为
+`75044/1984703050/66760/742`，三副本及 direct/gateway 结果一致，Auth disabled。门禁后的三个 Pod hit/miss 分别为
+`0/1、0/1、4/1`，证明类型、标签和值合同来自真实请求而非静态 fixture。
+
+随后用新鲜六类 JSON test 回滚稳定 digest。终态 generation/observed `938/938`、RV `8782461`、3/3 Ready、restart 0、
+22 参数，三个 runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+排除旧稳定镜像尚不存在的未来完整 info-metrics 合同后稳定适用 gate GREEN，revision/HashKV/compact/term 为
+`75044/1984703050/66760/744`，Auth disabled。最终关闭六个 listener，精确删除 A5754 tag/digest/config 三个 Kind image
+引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
+`/root/.local/share/Trash/files/kubebrain-a5754-20260906T1710Z`；稳定镜像和数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
