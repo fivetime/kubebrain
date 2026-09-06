@@ -29,6 +29,7 @@ type hashKVPartitionTestStorage struct {
 	release        chan struct{}
 	partitionCalls int
 	iterTimestamps []uint64
+	iterBatchSizes []int
 }
 
 func (s *hashKVPartitionTestStorage) GetPartitions(
@@ -54,6 +55,8 @@ func (s *hashKVPartitionTestStorage) Iter(
 	}
 	s.mu.Lock()
 	s.iterTimestamps = append(s.iterTimestamps, timestamp)
+	batchSize, _ := storage.ScanBatchSizeFromContext(ctx)
+	s.iterBatchSizes = append(s.iterBatchSizes, batchSize)
 	_, gated := s.gatedStarts[string(start)]
 	started, release := s.started, s.release
 	s.mu.Unlock()
@@ -237,6 +240,7 @@ func TestHashKVPrefetchesPartitionsAndPreservesEncodedOrder(t *testing.T) {
 	store.started = started
 	store.release = release
 	store.iterTimestamps = nil
+	store.iterBatchSizes = nil
 	store.mu.Unlock()
 
 	type hashResult struct {
@@ -267,6 +271,14 @@ func TestHashKVPrefetchesPartitionsAndPreservesEncodedOrder(t *testing.T) {
 	for _, timestamp := range timestamps[1:] {
 		require.Equal(t, timestamps[0], timestamp, "every partition must use one engine snapshot")
 	}
+	store.mu.Lock()
+	batchSizes := append([]int(nil), store.iterBatchSizes...)
+	store.mu.Unlock()
+	require.Len(t, batchSizes, len(timestamps))
+	for _, batchSize := range batchSizes {
+		require.Equal(t, hashKVScanBatchSize, batchSize,
+			"live HashKV partitions must carry the bounded bulk-scan hint")
+	}
 }
 
 func TestHashKVPinnedSnapshotSkipsPartitionDiscovery(t *testing.T) {
@@ -289,6 +301,7 @@ func TestHashKVPinnedSnapshotSkipsPartitionDiscovery(t *testing.T) {
 	store.mu.Lock()
 	store.partitionCalls = 0
 	store.iterTimestamps = nil
+	store.iterBatchSizes = nil
 	store.mu.Unlock()
 	pinned := WithSerializableCheckpoint(ctx, SerializableCheckpoint{
 		Revision: created.Header.Revision, Timestamp: timestamp,
@@ -302,6 +315,8 @@ func TestHashKVPinnedSnapshotSkipsPartitionDiscovery(t *testing.T) {
 	for _, gotTimestamp := range store.iterTimestamps {
 		require.Equal(t, timestamp, gotTimestamp)
 	}
+	require.Equal(t, make([]int, len(b.ks.HashKVScanRanges())), store.iterBatchSizes,
+		"protected HashKV must retain TiKV's conservative default scan batch")
 }
 
 func TestHashKVUsesPinnedSnapshotTimestampForObjectScan(t *testing.T) {

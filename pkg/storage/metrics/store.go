@@ -221,6 +221,10 @@ type iterWrapper struct {
 	tags    []metrics.T
 }
 
+func (i *iterWrapper) UnwrapIterator() storage.Iter {
+	return i.Iter
+}
+
 func newIterWrapper(it storage.Iter, m metrics.Metrics, limit uint64) *iterWrapper {
 	iw := &iterWrapper{
 		Iter:  it,

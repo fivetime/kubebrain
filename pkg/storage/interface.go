@@ -23,6 +23,12 @@ import (
 type snapshotTimestampContextKey struct{}
 type protectedSnapshotContextKey struct{}
 type snapshotIteratorFallbackContextKey struct{}
+type scanBatchSizeContextKey struct{}
+
+// MaxScanBatchSize bounds caller-provided scan hints. TiKV Scan limits rows,
+// not response bytes, so allowing an arbitrary value could turn a range that
+// contains large values into an oversized RPC response.
+const MaxScanBatchSize = 4096
 
 // WithSnapshotTimestamp pins storage reads in ctx to an engine snapshot.
 // This alone does not assert that the snapshot is GC-protected or that all of
@@ -62,6 +68,22 @@ func WithSnapshotIteratorFallback(ctx context.Context) context.Context {
 func SnapshotIteratorFallbackFromContext(ctx context.Context) bool {
 	enabled, _ := ctx.Value(snapshotIteratorFallbackContextKey{}).(bool)
 	return enabled
+}
+
+// WithScanBatchSize asks storage adapters to fetch up to size rows per remote
+// scan request. It is a performance hint only: unsupported adapters may ignore
+// it, and invalid or excessive values leave ctx unchanged. Keep the hint scoped
+// to known bulk scans; ordinary point/range reads should retain engine defaults.
+func WithScanBatchSize(ctx context.Context, size int) context.Context {
+	if size <= 1 || size > MaxScanBatchSize {
+		return ctx
+	}
+	return context.WithValue(ctx, scanBatchSizeContextKey{}, size)
+}
+
+func ScanBatchSizeFromContext(ctx context.Context) (int, bool) {
+	size, ok := ctx.Value(scanBatchSizeContextKey{}).(int)
+	return size, ok && size > 1 && size <= MaxScanBatchSize
 }
 
 // ExclusiveKvStorage defines the context individual KvStorage for the background job.
@@ -340,6 +362,39 @@ type Iter interface {
 
 	// Close the iter
 	Close() error
+}
+
+// StableIteratorRows is an OPTIONAL iterator capability. Implementations may
+// mark an iterator when the byte slices returned by Key and Val remain valid
+// and immutable after subsequent Next calls and Close. Bulk consumers can then
+// retain those slices without making a second copy. This is deliberately a
+// marker instead of changing Iter's conservative buffer-lifetime contract.
+type StableIteratorRows interface {
+	StableIteratorRows()
+}
+
+// IteratorUnwrapper lets iterator decorators preserve optional capabilities
+// without falsely claiming them for every wrapped storage implementation.
+type IteratorUnwrapper interface {
+	UnwrapIterator() Iter
+}
+
+func IteratorRowsAreStable(iter Iter) bool {
+	for depth := 0; iter != nil && depth < 32; depth++ {
+		if _, ok := iter.(StableIteratorRows); ok {
+			return true
+		}
+		unwrapper, ok := iter.(IteratorUnwrapper)
+		if !ok {
+			return false
+		}
+		next := unwrapper.UnwrapIterator()
+		if next == nil || next == iter {
+			return false
+		}
+		iter = next
+	}
+	return false
 }
 
 var (

@@ -20,7 +20,33 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+type recordingScanBatchSetter struct {
+	sizes []int
+}
+
+func (r *recordingScanBatchSetter) SetScanBatchSize(size int) {
+	r.sizes = append(r.sizes, size)
+}
+
+func TestConfigureSnapshotScanBatch(t *testing.T) {
+	setter := &recordingScanBatchSetter{}
+	configureSnapshotScanBatch(context.Background(), setter)
+	require.Empty(t, setter.sizes, "no hint must preserve the client default")
+
+	configureSnapshotScanBatch(storage.WithScanBatchSize(context.Background(), 2048), setter)
+	require.Equal(t, []int{2048}, setter.sizes)
+
+	protected := storage.WithProtectedSnapshotTimestamp(
+		storage.WithScanBatchSize(context.Background(), 4096), 42,
+	)
+	configureSnapshotScanBatch(protected, setter)
+	require.Equal(t, []int{2048}, setter.sizes,
+		"protected snapshots must ignore larger scan hints")
+}
 
 // mockTiKvIter is a minimal in-memory tiKvIterator for exercising iter border logic.
 type mockTiKvIter struct {

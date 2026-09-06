@@ -141,6 +141,16 @@ func TestIterWrapperCountsFetchedRows(t *testing.T) {
 		"fetch.success must equal the number of rows fetched, not the EOF")
 }
 
+type stableMetricsTestIter struct{ storage.Iter }
+
+func (*stableMetricsTestIter) StableIteratorRows() {}
+
+func TestIterWrapperPreservesStableRowsCapability(t *testing.T) {
+	stable := &stableMetricsTestIter{}
+	require.True(t, storage.IteratorRowsAreStable(&iterWrapper{Iter: stable}))
+	require.False(t, storage.IteratorRowsAreStable(&iterWrapper{}))
+}
+
 // gcKV is a KvStorage that also implements storage.GarbageCollector.
 type gcKV struct {
 	storage.KvStorage

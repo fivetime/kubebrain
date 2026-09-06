@@ -19,9 +19,20 @@ const (
 	// longer than etcdctl's default five-second command timeout. Prefetch a small
 	// ordered window of Regions concurrently, while the caller still consumes
 	// rows in exact encoded-key order (CRC input order is part of the API).
-	hashKVPartitionConcurrency = 8
+	hashKVPartitionConcurrency = 16
 	hashKVPartitionBatchRows   = 256
-	hashKVPartitionBatchBytes  = 1 << 20
+	hashKVPartitionBatchBytes  = 1 << 19
+	// A live partition needs enough application-side room to drain one 2048-row
+	// TiKV response and issue the next Scan while earlier ordered partitions are
+	// still being consumed. Sixteen byte-bounded slots per worker cap this prefetch
+	// window at roughly 128 MiB across the 16 workers. Protected checkpoints keep
+	// one slot because their availability path favors a smaller memory footprint.
+	hashKVPartitionPrefetchBatches = 16
+	// Production profiling on a 1.52-million-row tenant showed that TiKV's
+	// default 256-row Scan limit required roughly 5,900 sequential Scan RPCs.
+	// A bounded eightfold hint reduces round trips without allowing an
+	// unbounded row-count response. Protected snapshots retain the default.
+	hashKVScanBatchSize = 2048
 )
 
 var (
@@ -252,6 +263,9 @@ func (b *backend) forEachHashKVRow(
 	pinned bool,
 	visit func(key, value []byte) error,
 ) error {
+	if !pinned {
+		ctx = storage.WithScanBatchSize(ctx, hashKVScanBatchSize)
+	}
 	partitions := make([]storage.Partition, 0, hashKVPartitionConcurrency)
 	for _, scanRange := range b.ks.HashKVScanRanges() {
 		rangePartitions := []storage.Partition{{Start: scanRange.Start, End: scanRange.End}}
@@ -273,9 +287,13 @@ func (b *backend) forEachHashKVRow(
 	workerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	results := make([]hashKVPartitionResult, len(partitions))
+	prefetchBatches := 1
+	if !pinned {
+		prefetchBatches = hashKVPartitionPrefetchBatches
+	}
 	startPartition := func(index int) {
 		result := hashKVPartitionResult{
-			rows: make(chan []hashKVPhysicalRow, 1),
+			rows: make(chan []hashKVPhysicalRow, prefetchBatches),
 			done: make(chan error, 1),
 		}
 		results[index] = result
@@ -340,6 +358,7 @@ func (b *backend) readHashKVPartition(
 		return err
 	}
 	defer func() { retErr = errors.Join(retErr, it.Close()) }()
+	stableRows := storage.IteratorRowsAreStable(it)
 
 	rows := make([]hashKVPhysicalRow, 0, hashKVPartitionBatchRows)
 	bytesBuffered := 0
@@ -363,8 +382,11 @@ func (b *backend) readHashKVPartition(
 			}
 			return err
 		}
-		key := append([]byte(nil), it.Key()...)
-		value := append([]byte(nil), it.Val()...)
+		key, value := it.Key(), it.Val()
+		if !stableRows {
+			key = append([]byte(nil), key...)
+			value = append([]byte(nil), value...)
+		}
 		rows = append(rows, hashKVPhysicalRow{key: key, value: value})
 		bytesBuffered += len(key) + len(value)
 		if len(rows) >= hashKVPartitionBatchRows || bytesBuffered >= hashKVPartitionBatchBytes {

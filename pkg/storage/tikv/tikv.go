@@ -431,6 +431,22 @@ func configureProtectedSnapshotReplica(snapshot *txnsnapshot.KVSnapshot, replica
 	snapshot.SetCacheOnlyRegionRead(true)
 }
 
+type scanBatchSizeSetter interface {
+	SetScanBatchSize(int)
+}
+
+func configureSnapshotScanBatch(ctx context.Context, snapshot scanBatchSizeSetter) {
+	// Protected checkpoints keep the client default. Their two-second per-peer
+	// timeout is a failover bound, and a larger row-count limit can package large
+	// values into a single response that consumes most of that budget.
+	if storage.ProtectedSnapshotFromContext(ctx) {
+		return
+	}
+	if size, ok := storage.ScanBatchSizeFromContext(ctx); ok {
+		snapshot.SetScanBatchSize(size)
+	}
+}
+
 func (s *store) Iter(ctx context.Context, start []byte, end []byte, timestamp uint64, limit uint64) (storage.Iter, error) {
 	return s.iter(ctx, start, end, timestamp, limit, false)
 }
@@ -454,6 +470,7 @@ func (s *store) iter(ctx context.Context, start []byte, end []byte, timestamp ui
 	}
 	snapshot := s.getSnapshotClient(ctx, timestamp).GetSnapshot(timestamp)
 	snapshot.SetKeyOnly(keysOnly)
+	configureSnapshotScanBatch(ctx, snapshot)
 	if pinned && storage.ProtectedSnapshotFromContext(ctx) {
 		// Protected checkpoints are immutable historical snapshots. Mixed replica
 		// reads preserve their value semantics and let a warmed Region cache route

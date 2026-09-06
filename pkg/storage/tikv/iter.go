@@ -29,6 +29,11 @@ type iter struct {
 	moved   bool
 }
 
+// StableIteratorRows marks client-go Scan results as retainable. Key and Value
+// are protobuf-owned byte slices; replacing Scanner.cache on the next RPC drops
+// the old KvPair references but never mutates their backing bytes.
+func (*iter) StableIteratorRows() {}
+
 func (i *iter) Key() []byte {
 	return i.iter.Key()
 }
