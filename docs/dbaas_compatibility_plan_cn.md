@@ -72607,6 +72607,59 @@ generation/observed `937/937`、RV `8781739`；3/3 Ready、restart 0，三个 ru
 引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
 `/root/.local/share/Trash/files/kubebrain-a5754-20260906T1710Z`；稳定镜像和数据卷未删除。
 
+### A5755：门禁同时证明 HashKV 物理扫描与缓存复用
+
+A5754 只要求全实例 `completed_cache_hit + completed_cache_miss > 0`，只能证明至少有一个缓存代码路径被调用；如果实现永久
+miss、从不复用结果，发布仍会 false green。最初曾假设三端点 HashKV 后每个 Ready Pod 都必须有活动，并以修复前可复现的
+单 Pod 零计数用例建立提交 `14a0e587e4c5e0be8ffaa5a5238d7a5e88bef697`。该提交前 verifier 为
+703=`170/193/180/160`、四分片为 `246.420/438.565/296.689/577.349s`；提交后 verifier 不变，四分片为
+`270.087/458.762/320.745/596.523s`，全部 GREEN。但这只是测试夹具支持的假设，未把测试成功误当成最终产品证据。
+
+第一次镜像构建还因把 `KUBEBRAIN_GIT_SHA` 错传为短 SHA 而在 build metadata 校验处失败，没有产生 archive；改用完整 SHA 后
+得到候选 `sha256:ed0bb6efbedb0a459ca2de278dcfe0960d3fa7fda08a9bbaf2dc62af09a3da5e`。它从稳定 generation 938 以新鲜
+UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test 投放到 generation/observed `939/939`、
+RV `8788695`，3/3 Ready、restart 0。但真实完整门禁明确 FAIL：pod2 的 hit/miss 为 `0/0`；同期 pod0、leader pod1 为
+`0/1、4/1`。原因是 follower 会竞争本地路径和 leader，leader 的缓存快速命中可在 follower 进入 backend 计数前取消本地
+hedge。这是既有故障可用性设计的合法结果，不是缓存失效。候选立即以新鲜六类 JSON test 回滚；稳定终态
+generation/observed `940/940`、RV `8789482`。该失败没有通过重复请求碰运气或放宽断言写成成功。
+
+真实反证后保留“每个 Ready Pod 必须暴露唯一 counter、精确非空 cluster 标签和非负值”的形状合同，但允许单个 follower
+保持零。新的 RED 用例把所有 Pod 都设为 hit=0、miss=1，确认旧逻辑仍错误通过；最终提交
+`1bf3184d8116587078420d3a0479772ff86d4e84` 改为分别聚合 hit 与 miss，并要求两者各自大于零：miss 证明至少发生一次物理
+扫描，hit 证明同一未变化逻辑状态被真实复用。新增独立的无 hit、无 miss 拒绝用例，同时把单 follower 零计数固定为允许；四类
+聚焦普通测试 `count=10` 为 50.983 秒、race `count=10` 为 54.688 秒，完整 probe 165.817 秒，文档合同、shell 语法、vet 与
+diff check 全部 GREEN。修正提交前 verifier 为 703=`170/193/180/160`、四分片为
+`253.025/450.916/305.895/592.912s`；提交后 verifier 不变，四分片为
+`270.160/460.149/319.745/595.161s`，再次全部 GREEN。
+
+最终修正版候选 `docker.io/library/kubebrain@sha256:7cdd610140de115f0081e30ca1f3dd7b223bfa9d200daf891219b4c10b7eab8c`
+内嵌版本 `0.0.0-1bf3184d`、完整 commit、build time `2026-09-06T18:31:40Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,842,112 bytes，SHA-256
+`2244266e4ac44108e7d55626710e0b7770384411c43da1eb0d9339ffb3e3da29`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`d90b991188b78ec55c3d0f5c55f4be27d9e2978b0736b89180934370e66ba028`、
+`sha256:7cdd610140de115f0081e30ca1f3dd7b223bfa9d200daf891219b4c10b7eab8c`、
+`sha256:1259e7af339481f09d571adc3b082b0b00359d46d2f01ecf65a85d4adf8aa7cb`、
+`sha256:3e1ba9d8d34fce839763fe74b6ea2bb2c15b42cbad80fba72a4e20643919f61f`、
+`sha256:bd2d6c7b880ced798e33800b434ffaf3d537229399d8039f8060b7d36c39b683`。78/78 blobs 可达，78/78 descriptor
+edges 的 size/hash 全匹配且无 orphan；镜像为 `65532:65532`、正确入口、71 个 diff IDs。SPDX layer
+`sha256:4da31e3610ad0fe9fda4f1908911743d0ddf0b10d298b214f740678009895a6f` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:6deaba703394ec43d1d97b5448281591bcd67d04db4e304588f47617b1d055ce`
+含 3 项 materials，两份 statement 都精确绑定 platform manifest。
+
+修正版候选用新鲜六类 JSON test 从 generation 940 投放到 generation/observed `941/941`、RV `8794396`；3/3 Ready、
+restart 0，三个 runtime imageID 均精确为候选 nested digest。完整 readonly gate GREEN 并输出
+`hashkv_cache_metrics=ok`，revision/HashKV/compact/term 为 `75044/1984703050/66760/751`，三副本及
+direct/gateway 结果一致，Auth disabled。最终 hit/miss 为 `0/2、4/1、0/0`，聚合 `4/3`，同时真实证明新合同与 follower
+取消语义。随后以新鲜六类 JSON test 回滚稳定 digest；终态 generation/observed `942/942`、RV `8795048`、3/3 Ready、
+restart 0、22 参数，runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+排除旧稳定镜像尚不存在的未来完整 info-metrics 合同后稳定适用 gate GREEN，term `753`。
+
+最终关闭六个 listener，精确删除初版与修正版候选的 tag/digest/config 共六个 Kind image 引用；候选引用和 listener 均为 0。
+两份 OCI archive 与两份展开审计目录移入可恢复目录
+`/root/.local/share/Trash/files/kubebrain-a5755-20260906T1850Z`；稳定镜像和数据卷未删除。初版 archive 同样保留其
+78/78 OCI 闭包证据，便于复核真实失败，而不是只保存最终成功产物。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
