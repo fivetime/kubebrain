@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"hash/crc32"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,8 +13,79 @@ import (
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	metricsmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 )
+
+type hashKVPartitionTestStorage struct {
+	storage.KvStorage
+	mu             sync.Mutex
+	partitions     []storage.Partition
+	gatedStarts    map[string]struct{}
+	started        chan struct{}
+	release        chan struct{}
+	partitionCalls int
+	iterTimestamps []uint64
+}
+
+func (s *hashKVPartitionTestStorage) GetPartitions(
+	ctx context.Context, start, end []byte,
+) ([]storage.Partition, error) {
+	s.mu.Lock()
+	s.partitionCalls++
+	partitions := append([]storage.Partition(nil), s.partitions...)
+	s.mu.Unlock()
+	if len(partitions) != 0 {
+		return partitions, nil
+	}
+	return s.KvStorage.GetPartitions(ctx, start, end)
+}
+
+func (s *hashKVPartitionTestStorage) Iter(
+	ctx context.Context, start, end []byte, timestamp, limit uint64,
+) (storage.Iter, error) {
+	it, err := s.KvStorage.Iter(ctx, start, end, timestamp, limit)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.iterTimestamps = append(s.iterTimestamps, timestamp)
+	_, gated := s.gatedStarts[string(start)]
+	started, release := s.started, s.release
+	s.mu.Unlock()
+	if !gated {
+		return it, nil
+	}
+	return &hashKVGatedIter{Iter: it, started: started, release: release}, nil
+}
+
+type hashKVGatedIter struct {
+	storage.Iter
+	started chan<- struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func (i *hashKVGatedIter) Next(ctx context.Context) error {
+	var waitErr error
+	i.once.Do(func() {
+		select {
+		case i.started <- struct{}{}:
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+			return
+		}
+		select {
+		case <-i.release:
+		case <-ctx.Done():
+			waitErr = ctx.Err()
+		}
+	})
+	if waitErr != nil {
+		return waitErr
+	}
+	return i.Iter.Next(ctx)
+}
 
 func TestHashKVTracksDataAndPreservesHistoricalRevision(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
@@ -106,6 +178,114 @@ func TestHashKVHonorsCancellation(t *testing.T) {
 
 	_, err := b.HashKV(ctx, 0)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestHashKVPrefetchesPartitionsAndPreservesEncodedOrder(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	rawStore := memkv.NewKvStorage()
+	store := &hashKVPartitionTestStorage{KvStorage: rawStore}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metricsmock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	keys := [][]byte{
+		[]byte(prefix + "/hash/partition/a"),
+		[]byte(prefix + "/hash/partition/b"),
+		[]byte(prefix + "/hash/partition/c"),
+	}
+	var revisions []uint64
+	for index, key := range keys {
+		created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte{byte('a' + index)}})
+		require.NoError(t, err)
+		revisions = append(revisions, created.Header.Revision)
+	}
+	waitCommitted(t, b, revisions[len(revisions)-1])
+	want, err := b.HashKV(ctx, 0)
+	require.NoError(t, err)
+
+	start, end := b.ks.ObjectKeyspaceStart(), b.ks.ObjectKeyspaceEnd()
+	split1 := b.coder.EncodeObjectKey(keys[1], revisions[1])
+	split2 := b.coder.EncodeObjectKey(keys[2], revisions[2])
+	partitions := []storage.Partition{
+		{Start: start, End: split1},
+		{Start: split1, End: split2},
+		{Start: split2, End: end},
+	}
+	started := make(chan struct{}, len(partitions))
+	release := make(chan struct{})
+	store.mu.Lock()
+	store.partitions = partitions
+	store.gatedStarts = make(map[string]struct{}, len(partitions))
+	for _, partition := range partitions {
+		store.gatedStarts[string(partition.Start)] = struct{}{}
+	}
+	store.started = started
+	store.release = release
+	store.iterTimestamps = nil
+	store.mu.Unlock()
+
+	type hashResult struct {
+		result HashKVResult
+		err    error
+	}
+	done := make(chan hashResult, 1)
+	go func() {
+		result, hashErr := b.HashKV(ctx, 0)
+		done <- hashResult{result: result, err: hashErr}
+	}()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("HashKV did not start two partition iterators concurrently")
+		}
+	}
+	close(release)
+	got := <-done
+	require.NoError(t, got.err)
+	require.Equal(t, want, got.result, "partition prefetch must not change CRC input order")
+	store.mu.Lock()
+	timestamps := append([]uint64(nil), store.iterTimestamps...)
+	store.mu.Unlock()
+	require.Len(t, timestamps, len(partitions))
+	require.NotZero(t, timestamps[0])
+	for _, timestamp := range timestamps[1:] {
+		require.Equal(t, timestamps[0], timestamp, "every partition must use one engine snapshot")
+	}
+}
+
+func TestHashKVPinnedSnapshotSkipsPartitionDiscovery(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	rawStore := memkv.NewKvStorage()
+	store := &hashKVPartitionTestStorage{KvStorage: rawStore}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metricsmock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	created, err := b.Create(ctx, &proto.CreateRequest{
+		Key: []byte(prefix + "/hash/pinned-partition"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	const timestamp = uint64(987654321)
+	store.mu.Lock()
+	store.partitionCalls = 0
+	store.iterTimestamps = nil
+	store.mu.Unlock()
+	pinned := WithSerializableCheckpoint(ctx, SerializableCheckpoint{
+		Revision: created.Header.Revision, Timestamp: timestamp,
+	})
+	_, err = b.HashKV(pinned, int64(created.Header.Revision))
+	require.NoError(t, err)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	require.Zero(t, store.partitionCalls, "protected HashKV must not require PD partition discovery")
+	require.Equal(t, []uint64{timestamp}, store.iterTimestamps)
 }
 
 func TestHashKVUsesPinnedSnapshotTimestampForObjectScan(t *testing.T) {
