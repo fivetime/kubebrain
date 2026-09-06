@@ -72061,6 +72061,67 @@ probe Pod 与 listener 最终均为 0。
 本项使常见的无限量默认 RangeStream 在 follower 上真正保持 O(1) 校验状态；custom sort 仍按兼容性要求使用 O(N) 去重集合，
 恶意 peer 的连接级总流量/并发限额和多节点独立 CSI、跨 Region 故障仍需在生产等价环境继续量化。
 
+### A5746：代理有限流在等待 trailing status 时尊重调用方取消
+
+继续审计 follower `RangeStream` 与 `Snapshot` 代理时发现，两条路径都会在终端 metadata/checksum frame 已发送后继续读取内部
+result channel，目的是保留 gRPC “最后一条 response 后下一次 `Recv` 才返回 authoritative status”的语义；但旧实现直接
+`range` channel，没有由公开 handler 自己监听调用方 context。正常 `etcdProxy` 会随 context 关闭 channel，但 PeerService 合同中的
+异常 adapter 或卡住的连接可以让已取消 RPC 一直占用 handler/admission。`pkg/server/etcd/server.go` 新增泛型
+`receiveProxyStreamResult`，以 context-aware select 等待 channel；RangeStream 和 Snapshot 都经该入口接收，仍然会在正常 context 下
+读到 close 或 post-terminal error，因此没有把 terminal frame 错当作最终成功，也没有吞掉 auth revision fence/trailing status。
+
+两个确定性 TDD 用例先让代理发送合法 RangeStream terminal 或 Snapshot checksum，再延迟 250ms 关闭 channel，而公开 context 在
+20ms 截止。修复前二者都约 260ms 后错误返回 `nil`；修复后均在 deadline 返回 `context.DeadlineExceeded`，且保留已发送终端帧。
+聚焦 GREEN 为 `0.107s`，全部 follower RangeStream/Snapshot 用例为 `0.682s`，相关 race `count=10` 为 `2.572s`，vet 通过，完整
+`pkg/server/etcd` 为 `141.631s`。代码提交 `ac454c277c833238f63d113731918f4d5d409287` 前 verifier 为
+703=`170/193/180/160`，四分片为 `265.254/470.039/317.162/604.541s`；提交后 inventory 不变，四分片为
+`273.369/478.722/323.905/609.095s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain@sha256:3d0f394e6fbbb860b5bac4a307bff54583758c048dfb7d353c1bcaf13169d833`
+内嵌版本 `0.0.0-ac454c27`、完整 commit、build time `2026-09-06T00:47:55Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive `/root/kubebrain-a5746-ac454c27.oci.tar` 为 914,710,016 bytes，SHA-256
+`e7080e30e5b0ca4d83da243d3ce73b70e844d26c5cb1ff52b27a3efc8c24d124`；顶层 `index.json` SHA-256、nested
+index、platform manifest/config、attestation manifest/config 分别为
+`sha256:909d0bcb9b7631e57222228b95a3fd6ff34d55ca370c6bd83007d6d0640ed10e`、
+`sha256:3d0f394e6fbbb860b5bac4a307bff54583758c048dfb7d353c1bcaf13169d833`、
+`sha256:303be980cff1037e4b2c18f0fb3841b25cf82774c9c483577a2c00df5e2710b1`、
+`sha256:b0bb48fba137a9c9716f6f391e07ce017b85795a0309ba92fee9ea2735807a85`、
+`sha256:acdd4129349059171695029165b11a15ee3a90b0e5358559232385de0a10ea7b`、
+`sha256:affe320a1a003ccf2cb3ed12061fbd4e246ea578b282dede9a76ef40782b97c5`。SPDX/SLSA layer 为
+`sha256:04efb44acf402f35864747e17e7efa6a60f2db62339254816a81fe18fd808a56`/
+`sha256:cd1cc48462daecb6deb7d3a88332bfd775b54216d75aa5662a3c1f7bb397f5f2`；78 blobs/78 descriptor edge
+全部可达且 digest/size 一致、无 missing/orphan，71 个 layer 的解压摘要与 diff ID 逐项一致。SPDX 2.3 为 2,592 packages、
+381 files、8,096 relationships；SLSA 唯一 subject 精确绑定 platform manifest、3 materials 与四项固定 build args，运行用户
+`65532:65532`、入口、labels 均正确。Kind 三 Pod 实际 runtime digest 均为顶层
+`sha256:909d0bcb9b7631e57222228b95a3fd6ff34d55ca370c6bd83007d6d0640ed10e`。
+
+稳定基线 generation/observed `902/902`、3/3 Ready、restart 0、22 参数；旧稳定镜像按预期缺少后来新增的
+`watch_range_prefilter_dropped` 指标，排除不适用的未来 info-metrics 合同后完整适用 gate GREEN：
+revision/HashKV/compact/term `74754/1880008183/66760/675`。以 UID/resourceVersion/generation/container/current
+image/full args 六类 JSON test 原子投放候选；候选 generation/observed `903/903`、RV `8663244`、3/3 Ready/restart 0、
+22 参数，初始完整 HEAD gate GREEN 为 `74754/1880008183/66760/677`。
+
+官方 client/v3 黑盒探针的尝试和结果均如实保留：R1 因人为设置的 64Mi `emptyDir` 小于完整 Snapshot restore workspace，
+被 kubelet Evict，补偿 Pod 恢复清理 529 keys、6 users、4 roles、3 leases；R2 在 16Gi workspace、1Gi memory 下形成一次应用
+RED，三成员 official restored-etcd 的 union 用户 Watch 偶发返回 `Unauthenticated: invalid auth token`，程序随后自清理；R3 恢复
+默认 25s Snapshot 时序但仍受 1Gi cgroup 上限 OOMKill，补偿再次恢复相同 529/6/4/3。R4 只把探针资源合同修正为
+16Gi `emptyDir`、4Gi memory，业务阈值和数据规模不变，明确 exit 0：`ok=10 fail=0`、公开 Watch 10、三个 direct Watch 各 10、
+Lease response `51/147`、公开/direct restart 0、RangeStream 480、完整 Snapshot 1、stream retry/partial retry 均 0；最大总/Put/
+Watch-after-Put/direct/TSO/Region 为 `71/48/40/71/1/8ms`。独立补偿 Pod 返回
+`FIXTURE_CLEANUP_OK status=absent, keys/users/roles/leases=0`，所有 probe Pod 都以 UID/resourceVersion 前置条件删除。R2 未在
+独立 R4 重现，不能归因于本次 handler 变更，也不能从记录中抹除；official restored-etcd simple-token 多 endpoint 偶发仍作为探针
+可靠性调查项保留。
+
+黑盒清理后的候选完整 gate 再次 GREEN：revision/HashKV/compact/term `74986/4116626517/66760/677`。候选三轮九次
+health 为 `57.538-75.917ms`，三个 KubeBrain Pod 关键错误日志和 `/tmp` spill 均为 0；PD/TiKV 3/3 Ready，累计 restart
+`2/1` 的最后终止时间均为 `2026-09-05T14:41:42Z`，早于本轮候选。以新鲜六类 JSON test 从 candidate RV `8663244`
+回滚稳定 digest；最终 generation/observed `904/904`、RV `8667737`、3/3 Ready/restart 0、22 参数，runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。稳定适用 gate GREEN 为
+`74986/4116626517/66760/679`，三轮九次 health `55.353-83.908ms`，critical/spill 继续为 0；A5746 fixture/Pod 与
+六个本地 listener 最终为 0。候选 Kind/Docker image ref 已精确清零；OCI archive 与展开审计目录移入系统回收站、可恢复。
+本项关闭“异常 peer result channel 使已取消公开流永久占用 handler”的边界；恶意 peer 在调用方不取消时
+终端后永久不关闭的独立 server-side drain deadline、R2 official-etcd simple-token 偶发，以及跨 Region 长稳仍是开放项。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
