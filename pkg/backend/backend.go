@@ -501,6 +501,11 @@ type backend struct {
 	// owns logicalWriteMu, so a request arriving after a completed write or
 	// compaction cannot join a pre-mutation result.
 	hashKVFlights hashKVFlightGroup
+	// hashKVCompleted retains one recently completed live result. Access is
+	// serialized by logicalWriteMu's exclusive side; its identity includes both
+	// public revision and logical-compaction state, while a short lifetime keeps
+	// HashKV useful as a recurring storage-integrity diagnostic.
+	hashKVCompleted hashKVCompletedResult
 	// revisionWriteMu serializes transaction planning, atomic revision allocation,
 	// and ordered event publication without changing the broader predicate lock.
 	revisionWriteMu sync.Mutex
@@ -674,6 +679,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	initReadIntegrityFenceMetrics(metricCli)
 	initCommitWaitFailureMetrics(metricCli)
 	initRangeStreamFailureMetrics(metricCli)
+	initHashKVCompletedCacheMetrics(metricCli)
 	initRangeStreamSpillMetrics(metricCli)
 	initStorageGCMetrics(metricCli)
 	initUncertainTxnMetrics(metricCli)
@@ -786,6 +792,14 @@ func initRangeStreamFailureMetrics(metricCli metrics.Metrics) {
 	_ = metricCli.EmitCounter("backend.list.by.stream.failed", 0)
 	_ = metricCli.EmitCounter("backend.list.by.stream.canceled", 0)
 	_ = metricCli.EmitCounter("backend.list.by.stream.limit_satisfied", 0)
+}
+
+func initHashKVCompletedCacheMetrics(metricCli metrics.Metrics) {
+	if metricCli == nil {
+		return
+	}
+	_ = metricCli.EmitCounter("backend.hashkv.completed_cache_hit", 0)
+	_ = metricCli.EmitCounter("backend.hashkv.completed_cache_miss", 0)
 }
 
 func (b *backend) startWorker(run func(context.Context)) bool {

@@ -211,6 +211,7 @@ func TestHashKVPrefetchesPartitionsAndPreservesEncodedOrder(t *testing.T) {
 	waitCommitted(t, b, revisions[len(revisions)-1])
 	want, err := b.HashKV(ctx, 0)
 	require.NoError(t, err)
+	b.hashKVCompleted = hashKVCompletedResult{}
 
 	split1 := b.coder.EncodeObjectKey(keys[1], revisions[1])
 	split2 := b.coder.EncodeObjectKey(keys[2], revisions[2])
@@ -308,14 +309,17 @@ func TestHashKVPinnedSnapshotSkipsPartitionDiscovery(t *testing.T) {
 	})
 	_, err = b.HashKV(pinned, int64(created.Header.Revision))
 	require.NoError(t, err)
+	_, err = b.HashKV(pinned, int64(created.Header.Revision))
+	require.NoError(t, err)
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	require.Zero(t, store.partitionCalls, "protected HashKV must not require PD partition discovery")
-	require.Len(t, store.iterTimestamps, len(b.ks.HashKVScanRanges()))
+	require.Len(t, store.iterTimestamps, 2*len(b.ks.HashKVScanRanges()),
+		"protected snapshots must not use the live completed-result cache")
 	for _, gotTimestamp := range store.iterTimestamps {
 		require.Equal(t, timestamp, gotTimestamp)
 	}
-	require.Equal(t, make([]int, len(b.ks.HashKVScanRanges())), store.iterBatchSizes,
+	require.Equal(t, make([]int, 2*len(b.ks.HashKVScanRanges())), store.iterBatchSizes,
 		"protected HashKV must retain TiKV's conservative default scan batch")
 }
 
@@ -544,6 +548,9 @@ func TestHashKVIsStableAcrossPhysicalCompaction(t *testing.T) {
 		"logical compaction must exclude versions scheduled for physical GC")
 
 	require.NoError(t, b.physicalCompact(ctx, last))
+	// Force a fresh physical scan: the production cache may correctly reuse the
+	// unchanged logical result, but this test specifically verifies post-GC bytes.
+	b.hashKVCompleted = hashKVCompletedResult{}
 	afterPhysicalCompact, err := b.HashKV(ctx, 0)
 	require.NoError(t, err)
 	require.Equal(t, afterLogicalCompact, afterPhysicalCompact,

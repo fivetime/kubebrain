@@ -54,6 +54,7 @@ func newGatedHashKVFlightBackend(
 	waitCommitted(t, b, created.Header.Revision)
 	want, err := b.HashKV(ctx, 0)
 	require.NoError(t, err)
+	b.hashKVCompleted = hashKVCompletedResult{}
 
 	store.mu.Lock()
 	baselinePartitionCalls := store.partitionCalls
@@ -81,6 +82,139 @@ func hashKVFlightCount(b *backend) int {
 	b.hashKVFlights.mu.Lock()
 	defer b.hashKVFlights.mu.Unlock()
 	return len(b.hashKVFlights.calls)
+}
+
+func TestHashKVReusesCompletedSameLogicalState(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := &hashKVPartitionTestStorage{KvStorage: memkv.NewKvStorage()}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metricsmock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	created, err := b.Create(ctx, &proto.CreateRequest{
+		Key: []byte(prefix + "/hash/completed-cache"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	store.mu.Lock()
+	store.partitionCalls = 0
+	store.mu.Unlock()
+	first, err := b.HashKV(ctx, 0)
+	require.NoError(t, err)
+	store.mu.Lock()
+	firstPartitionCalls := store.partitionCalls
+	store.mu.Unlock()
+	require.Positive(t, firstPartitionCalls)
+
+	second, err := b.HashKV(ctx, 0)
+	require.NoError(t, err)
+	require.Equal(t, first, second)
+	store.mu.Lock()
+	secondPartitionCalls := store.partitionCalls
+	store.mu.Unlock()
+	require.Equal(t, firstPartitionCalls, secondPartitionCalls,
+		"an unchanged logical revision must reuse its completed HashKV result")
+}
+
+func TestHashKVCompletedResultMetrics(t *testing.T) {
+	recorder := &compactMetricRecorder{}
+	store := &hashKVPartitionTestStorage{KvStorage: memkv.NewKvStorage()}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, recorder).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	created, err := b.Create(ctx, &proto.CreateRequest{
+		Key: []byte(prefix + "/hash/completed-cache-metrics"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	_, err = b.HashKV(ctx, 0)
+	require.NoError(t, err)
+	_, err = b.HashKV(ctx, 0)
+	require.NoError(t, err)
+
+	var got []compactMetricRecord
+	for _, record := range recorder.snapshot() {
+		if record.name == "backend.hashkv.completed_cache_hit" ||
+			record.name == "backend.hashkv.completed_cache_miss" {
+			got = append(got, record)
+		}
+	}
+	require.Equal(t, []compactMetricRecord{
+		{kind: "counter", name: "backend.hashkv.completed_cache_hit", value: 0},
+		{kind: "counter", name: "backend.hashkv.completed_cache_miss", value: 0},
+		{kind: "counter", name: "backend.hashkv.completed_cache_miss", value: 1},
+		{kind: "counter", name: "backend.hashkv.completed_cache_hit", value: 1},
+	}, got)
+}
+
+func TestHashKVCompletedResultExpiresAndSeparatesLogicalState(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := &hashKVPartitionTestStorage{KvStorage: memkv.NewKvStorage()}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metricsmock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+	ctx := context.Background()
+	key := []byte(prefix + "/hash/completed-cache-state")
+	created, err := b.Create(ctx, &proto.CreateRequest{Key: key, Value: []byte("v1")})
+	require.NoError(t, err)
+	waitCommitted(t, b, created.Header.Revision)
+
+	first, err := b.HashKV(ctx, 0)
+	require.NoError(t, err)
+	store.mu.Lock()
+	perScanPartitionCalls := store.partitionCalls
+	store.mu.Unlock()
+	require.Positive(t, perScanPartitionCalls)
+
+	b.hashKVCompleted.expiresAt = time.Now().Add(-time.Nanosecond)
+	expired, err := b.HashKV(ctx, 0)
+	require.NoError(t, err)
+	require.Equal(t, first, expired)
+	store.mu.Lock()
+	require.Equal(t, perScanPartitionCalls*2, store.partitionCalls,
+		"an expired result must revalidate physical storage")
+	store.mu.Unlock()
+
+	updated, err := b.Update(ctx, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: []byte("v2"), Revision: created.Header.Revision,
+	}})
+	require.NoError(t, err)
+	waitCommitted(t, b, updated.Header.Revision)
+	afterWrite, err := b.HashKV(ctx, 0)
+	require.NoError(t, err)
+	require.NotEqual(t, first.Hash, afterWrite.Hash)
+	store.mu.Lock()
+	require.Equal(t, perScanPartitionCalls*3, store.partitionCalls,
+		"a newer current revision must not reuse the prior result")
+	store.mu.Unlock()
+
+	historical, err := b.HashKV(ctx, int64(created.Header.Revision))
+	require.NoError(t, err)
+	require.Equal(t, first.Hash, historical.Hash)
+	store.mu.Lock()
+	require.Equal(t, perScanPartitionCalls*4, store.partitionCalls,
+		"a different effective revision must not reuse the latest result")
+	store.mu.Unlock()
+
+	advanced, err := b.setCompactRecord(ctx, updated.Header.Revision)
+	require.NoError(t, err)
+	require.True(t, advanced)
+	afterCompact, err := b.HashKV(ctx, 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(updated.Header.Revision), afterCompact.CompactRevision)
+	store.mu.Lock()
+	require.Equal(t, perScanPartitionCalls*5, store.partitionCalls,
+		"a new compact watermark must not reuse the pre-compaction result")
+	store.mu.Unlock()
 }
 
 func TestHashKVFlightKeySeparatesSnapshotExecutionContracts(t *testing.T) {
@@ -284,4 +418,28 @@ func TestHashKVWaiterRetriesAfterExecutorCancellation(t *testing.T) {
 	require.NoError(t, waiter.err)
 	require.Equal(t, want, waiter.result)
 	require.Zero(t, hashKVFlightCount(b))
+}
+
+func TestHashKVDoesNotCacheCanceledScan(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	b, _, ctx, _, _ := newGatedHashKVFlightBackend(t, started, release)
+	canceledCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := b.HashKV(canceledCtx, 0)
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("HashKV did not reach its first iterator")
+	}
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	require.False(t, b.hashKVCompleted.valid,
+		"a failed physical scan must not populate the completed-result cache")
 }

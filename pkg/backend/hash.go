@@ -7,6 +7,7 @@ import (
 	"hash/crc32"
 	"io"
 	"slices"
+	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -33,12 +34,34 @@ const (
 	// A bounded eightfold hint reduces round trips without allowing an
 	// unbounded row-count response. Protected snapshots retain the default.
 	hashKVScanBatchSize = 2048
+	// Adjacent monitoring requests for an unchanged logical state must not each
+	// rescan a shared remote TiKV cluster. Keep only one scalar result and bound
+	// its lifetime so periodic HashKV still revalidates physical storage.
+	hashKVCompletedResultTTL = 30 * time.Second
 )
 
 var (
 	ErrHashKVCompacted = errors.New("hash revision has been compacted")
 	ErrHashKVFuture    = errors.New("hash revision is in the future")
 )
+
+type hashKVCompletedResult struct {
+	result          HashKVResult
+	revision        int64
+	current         uint64
+	compactRevision uint64
+	hasCompact      bool
+	expiresAt       time.Time
+	valid           bool
+}
+
+func (c hashKVCompletedResult) matches(
+	now time.Time, revision int64, current, compactRevision uint64, hasCompact bool,
+) bool {
+	return c.valid && now.Before(c.expiresAt) && c.revision == revision &&
+		c.current == current && c.compactRevision == compactRevision &&
+		c.hasCompact == hasCompact
+}
 
 type BackendHashResult struct {
 	Hash            uint32
@@ -175,6 +198,15 @@ func (b *backend) hashKVOnce(ctx context.Context, revision int64, pinned bool) (
 	if revision > int64(current) {
 		return HashKVResult{}, ErrHashKVFuture
 	}
+	if !pinned && b.hashKVCompleted.matches(
+		time.Now(), revision, current, compactRevision, hasCompactRevision,
+	) {
+		_ = b.metricCli.EmitCounter("backend.hashkv.completed_cache_hit", 1)
+		return b.hashKVCompleted.result, nil
+	}
+	if !pinned {
+		_ = b.metricCli.EmitCounter("backend.hashkv.completed_cache_miss", 1)
+	}
 	responseCompactRevision := int64(-1)
 	if hasCompactRevision {
 		responseCompactRevision = int64(compactRevision)
@@ -304,12 +336,24 @@ func (b *backend) hashKVOnce(ctx context.Context, revision int64, pinned bool) (
 	if err := flushFamily(); err != nil {
 		return HashKVResult{}, err
 	}
-	return HashKVResult{
+	result := HashKVResult{
 		Hash:            h.Sum32(),
 		HashRevision:    revision,
 		CurrentRevision: int64(current),
 		CompactRevision: responseCompactRevision,
-	}, nil
+	}
+	if !pinned {
+		b.hashKVCompleted = hashKVCompletedResult{
+			result:          result,
+			revision:        revision,
+			current:         current,
+			compactRevision: compactRevision,
+			hasCompact:      hasCompactRevision,
+			expiresAt:       time.Now().Add(hashKVCompletedResultTTL),
+			valid:           true,
+		}
+	}
+	return result, nil
 }
 
 type hashKVPhysicalRow struct {
