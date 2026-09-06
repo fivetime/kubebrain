@@ -72492,6 +72492,73 @@ info-metrics 合同后稳定适用 gate GREEN，revision/HashKV/compact/term 为
 `/dev/shm` 路径和 listener 均为 0。三份约 873 MiB OCI archive、三份展开审计、descriptor 清单与六份 CPU/alloc profile
 已移入可恢复目录 `/root/.local/share/Trash/files/kubebrain-a5752-20260906T1428Z`；稳定镜像与数据卷未删除。
 
+### A5753：短时复用未变化逻辑状态的已完成 HashKV
+
+A5751 只合并时间上重叠的相同扫描，A5752 则继续降低每次物理扫描的分配；两项都不能避免监控系统在逻辑状态完全不变时串行
+重复读取 1,519,078 行共享 TiKV 数据。继续对照 `/root/etcd/server/storage/mvcc/kvstore.go` 的 `hashByRev`、
+`server/storage/mvcc/hash.go` 的 `unsafeHashByRev` 和 `server/etcdserver/api/v3rpc/maintenance.go` 的 `HashKV`：upstream
+每个成员直接遍历自己的本地 bbolt，而 KubeBrain 的三个进程会把周期性完整性诊断集中到同一远端 TiKV。这里没有继续无界增加
+Scan batch、worker 或预取内存，也没有取消 follower 的可用性 hedge；而是为已经成功完成、且逻辑身份未变化的 live HashKV
+保留一个有界 scalar 结果。
+
+提交 `65c8267e247dfb63512bb0e9c8b8c847e985277f` 增加单项 `hashKVCompletedResult`，TTL 固定 30 秒。cache identity
+同时包含规范化后的有效 requested revision、每次重新读取的 current revision、compact revision 及 compact 状态是否存在；
+任意写入、不同历史 revision 或压缩水位推进都会使 identity 不匹配。查询仍会先读取 current/compact 元数据，只有成功完成全部
+物理扫描后才写入缓存，取消、超时、损坏或其他失败都不能留下可复用结果。live 路径在 `logicalWriteMu` 独占侧串行访问该单项
+状态，保持与写入和压缩的既有 fence；protected/pinned snapshot 始终绕过缓存并继续真实扫描。缓存不保存 KV 行、不随请求数
+增长；过期时间从成功完成时起算，因 out-of-band 同 revision 物理变化而可能延迟暴露的窗口被明确限制在 30 秒。新增
+`backend.hashkv.completed_cache_hit` 与 `backend.hashkv.completed_cache_miss` counter，并在启动时显式注册零值。
+
+修复前的 RED 用例在相同逻辑状态连续调用两次，期望 partition discovery 保持 4 次但实际达到 8 次。新增回归覆盖相同状态复用、
+TTL 到期强制重扫、current revision/历史 revision/compact watermark 隔离、pinned snapshot 不复用、取消扫描不缓存及 hit/miss
+指标序列；既有 flight、并发压缩、partition 顺序和物理 GC 测试也显式保留其原始物理扫描意图。聚焦用例普通模式
+`count=30` 为 3.410 秒，race `count=10` 为 3.944 秒；完整 `pkg/backend` 50.237 秒、`pkg/server/etcd`
+144.199 秒及相关 `go vet`、gofmt、diff check 全部 GREEN。代码提交前 verifier 为
+703=`170/193/180/160`，四分片为 `253.379/445.408/301.498/576.600s`；提交后 verifier 不变，四分片为
+`251.926/444.873/305.640/578.605s`，再次全部 GREEN。
+
+最终候选 `docker.io/library/kubebrain@sha256:68f096d41de07cd952056d312bd948b6de4c1957fdf5772e128aed8af9088da6`
+内嵌版本 `0.0.0-65c8267e`、完整 commit、build time `2026-09-06T15:21:39Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,841,600 bytes，SHA-256
+`cd8cebd881357adee60a45378c5349dadf6292c6b4723005fb57b1afea5834c5`；顶层 `index.json` SHA-256、nested
+index/runtime imageID、platform manifest、config、attestation manifest 分别为
+`8a75b788a19fa7e6aba265749e91935c2b139052d14943fcfda5887634a06db1`、
+`sha256:68f096d41de07cd952056d312bd948b6de4c1957fdf5772e128aed8af9088da6`、
+`sha256:a3c189d04fcb9a5a4736a6bb7c037257ae2eb8c782b205c2e3e23f8dbbdee617`、
+`sha256:ce960cd663c27d5afe55d0ba2fd951517b772c5bfbd58d136f41807d1d46ff2c`、
+`sha256:99c210ce9de67594d682cba1e2a8ceb01e59a0e2f5e2f02ad6a57be18aacbba6`。78/78 blobs 可达，
+78/78 descriptor edges 的 size/hash 全匹配且无 orphan；镜像为 `65532:65532`、正确入口、71 个 diff IDs。SPDX layer
+`sha256:f238b9cfc290af0b18be53f98c918f0f47cba612ed1c1ea2735b96546a014505` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:7c74fc15c0d0ca499a42060a4c418adcd4ae3b0cf6fec19b9e73b9fa2e0623bd`
+含 3 项固定 materials，两份 statement 都精确绑定 platform manifest。
+
+候选使用 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test，从 generation 934 原子投放到
+generation/observed `935/935`、RV `8771024`；3/3 Ready、restart 0，三个 runtime imageID 均精确为候选 nested digest。
+Parallel rollout 中等待计数一度扩大到 3 个 Pod 未 Ready 后恢复，该可用性窗口没有被隐去。完整 readonly gate 的第一次调用
+错误启用了只适用于 TLS/mTLS 部署的 gateway client-certificate rejection，可预期得到 HTTP 200 而非 400；去掉这一个与当前
+plaintext、Auth disabled 合同冲突的可选断言后，其余三端点、info metrics、named health、headers、debug vars 和 pprof
+disabled 门禁全部 GREEN，revision/HashKV/compact/term 为 `75044/1984703050/66760/739`。
+
+真实三端点缓存测试的首轮 3/3 物理扫描均在默认 5 秒内完成，为 `4.119–4.219s`；随后九轮 27/27 均为
+`113–114ms`，hash/revision/compact 完全一致。等待 31 秒后下一轮 3/3 重新扫描为 `3.818–3.819s`，紧接着又恢复为
+`113–114ms`。初始三个进程的 hit/miss 为 `0/2、0/0、4/2`，上述测试及 revision 隔离结束后为
+`0/4、0/2、22/6`；公共请求集中到当时 leader pod2，因此 follower 主要记录 local hedge miss，leader 记录复用命中。
+显式历史 revision 75043 在默认 5 秒下有一次真实 `DeadlineExceeded`，证明没有误复用 latest 结果；该失败没有被缓存。仅为取得
+诊断结果而使用 60 秒预算时，历史扫描 6.622 秒得到不同 hash `3481190444`，切回 latest 又物理扫描 3.818 秒得到
+`1984703050`，再一次 latest 为 114ms。放宽预算的历史调用不计作默认 5 秒性能成功。
+
+独立 Region/storage 生产脚本如实 FAIL：Kind 的 local-path PVC 实际共享约 2 TiB 根文件系统，不满足独立 CSI volume identity
+和 PVC capacity isolation；节点使用率 92% 也超过 90% 阈值。只尝试清理 72 小时以前的 Docker build cache，实际回收 0B，
+没有扩大删除范围，也没有把该开发环境限制写成门禁成功。PD API 的数据面健康检查独立通过：3 个 TiKV store 全部 Up，14 个
+Region，pending/down/miss/extra/learner/offline peer 均为 0；候选三 Pod 近期日志的 panic/fatal/corrupt/ENOSPC 均为 0。
+
+最后用新鲜六类 JSON test 回滚稳定 digest；Parallel 回滚同样一度等待 3 个 Pod Ready 后恢复。终态 generation/observed
+`936/936`、RV `8772885`、3/3 Ready、restart 0、22 参数，三个 runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。排除旧稳定镜像尚不存在的未来完整
+info-metrics 合同后稳定适用 gate GREEN，revision/HashKV/compact/term 为 `75044/1984703050/66760/741`，Auth disabled。
+最终关闭六个 listener，精确删除候选 tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive 与展开
+审计目录已移入可恢复目录 `/root/.local/share/Trash/files/kubebrain-a5753-20260906T1553Z`；稳定镜像和数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
