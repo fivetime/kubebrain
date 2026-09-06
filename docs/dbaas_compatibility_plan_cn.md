@@ -72122,6 +72122,71 @@ health 为 `57.538-75.917ms`，三个 KubeBrain Pod 关键错误日志和 `/tmp`
 本项关闭“异常 peer result channel 使已取消公开流永久占用 handler”的边界；恶意 peer 在调用方不取消时
 终端后永久不关闭的独立 server-side drain deadline、R2 official-etcd simple-token 偶发，以及跨 Region 长稳仍是开放项。
 
+### A5747：限制代理流终端后的 trailing-status drain
+
+继续对照 `/root/etcd/server/etcdserver/v3_server.go` 的 `RangeStream` 与
+`/root/etcd/server/etcdserver/api/v3rpc/maintenance.go` 的 `Snapshot`：upstream handler 发送最终 metadata/checksum 后即返回，
+下一次 client `Recv` 只用于取得 EOF 或最终 gRPC status。A5746 已使公开 handler 尊重调用方取消，但若调用方没有 deadline、异常
+`PeerService` 已交付合法终端帧后永久不关闭 result channel，公开 RPC/admission 仍会永久滞留。`RPCServer` 现在只在已经验证并发送
+RangeStream terminal 或 Snapshot checksum 后启动 10 秒 drain deadline；业务 payload 阶段不加总时限。时限内仍读取 close 或
+post-terminal error，后者原样返回；超时则以 `Unavailable: forwarded stream timed out waiting for trailing status` 结束，并主动取消
+内部 leader context。RangeStream 归类为 `read.range_stream.failure{stage="backend"}`，Snapshot 归类为
+`maintenance.snapshot.failure{stage="proxy"}`，没有把 transport 卡死误报成 payload corruption。
+
+四个 TDD 用例覆盖两条路径的永久不关闭 channel、timeout 后 peer context 取消、已经公开的终端帧，以及及时
+`ResourceExhausted` trailing status 的原样传播；最初 RED 因该时限字段/合同尚不存在而编译失败。最终六个相关用例为 `0.200s`，
+最终四个聚焦用例为 `0.123s`，race `count=10` 为 `4.762s`，vet 通过，完整 `pkg/server/etcd` 为 `139.478s`。代码提交
+`53886e13ac723b6148406291ec4634b45475a5cc` 前 verifier 为 703=`170/193/180/160`，最终四分片为
+`256.518/452.032/302.947/583.947s`；提交后 verifier 不变，四分片为
+`257.953/458.316/308.819/587.792s`，全部 GREEN。
+
+候选 `docker.io/library/kubebrain@sha256:c57490dd93ed2e45dfd8ef0a5355baf6c1144243be444575c678d3fd3fadbf4a`
+内嵌版本 `0.0.0-53886e13`、完整 commit、build time `2026-09-06T02:47:59Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive `/root/kubebrain-a5747-53886e13.oci.tar` 为 914,715,648 bytes，SHA-256
+`e06e36b873b756e7b8d792b91925b8b03711786d469d0c5daad9844965ca2fab`；顶层 `index.json` SHA-256/runtime imageID、nested
+index、platform manifest/config、attestation manifest/config 分别为
+`sha256:3a77167786d52d8271be71ae23a584db02386f46646431c5b1273d25213b6dd7`、
+`sha256:c57490dd93ed2e45dfd8ef0a5355baf6c1144243be444575c678d3fd3fadbf4a`、
+`sha256:b231a5d19cd84a9ca1b192d93d7700935728191d8da627418e904c6eedc764ce`、
+`sha256:7f046739376914eccf44afe6c890efdc72f5eb50c08a60597c38ed7f49235b20`、
+`sha256:acbcae1af493fc63a02dcd76d62115bd6e038cd7e73ae82075c06ce7e6f938bb`、
+`sha256:f8605d41bce053f6010120d95722984d2ae90c5ac5b09b629069d4f2f5017fb2`。SPDX/SLSA layer 为
+`sha256:6d1dca2ef3bbca9addeb7928478357afa1f2ac7bdfda9bc0e795584b5721668e`/
+`sha256:b5f3ce58f503042b4328b88ac6ae382053100d18b388d6742e87e3bbf9956666`；78 blobs/78 descriptor edge
+全部可达且 digest/size 一致、无 missing/orphan，71 个压缩 layer 与解压 diff ID 逐项匹配。SPDX 2.3 为 2,592 packages、
+381 files、8,096 relationships；SLSA 唯一 subject 精确绑定 platform manifest，包含 syft/alpine/golang 三项材料与
+`STORAGE/TARGETARCH/version/git SHA/build date` 五项显式 build args。运行用户 `65532:65532`、入口和四项 OCI label 均正确。
+
+稳定基线 generation/observed `904/904`、RV `8667737`、3/3 Ready/restart 0、22 参数；排除旧稳定镜像尚不存在的未来
+info-metrics 合同后适用 gate GREEN，revision/term `74986/679`。以 UID/resourceVersion/generation/container/current
+image/full args 六类 JSON test 投放候选；候选 generation/observed `905/905`、RV `8676949`、3/3 Ready/restart 0、22 参数，
+三个 runtime imageID 均为顶层 `sha256:3a77167786d52d8271be71ae23a584db02386f46646431c5b1273d25213b6dd7`，
+初始完整 HEAD gate GREEN 为 revision/term `74986/681`。
+
+通用 rollout-availability 脚本先在任何写入前因当前开发 StatefulSet 仍使用既有 `/ready`、不同 preStop 时序且没有 Pod 级
+non-root 默认值而 fail closed；未为通过脚本而修改部署合同。独立 R1 探针随后沿用了该脚本默认的不存在 Service
+`kubebrain-client`，DNS NXDOMAIN 后 exit 1，且在 ownership claim/fixture 写入前失败；失败 Pod 以 UID/RV 前置条件删除。
+R2 改用集群实际 `kubebrain` Service，其他业务参数不变，Pod 使用 digest pin、Downward API UID、三个固定 lease ID、source
+capability、non-root/read-only-rootfs、4Gi memory 与 16Gi emptyDir，明确 exit 0：`ok=10 fail=0`、公开 Watch 10、三个 direct
+Watch 各 10、Lease response `46/135` 且 restart 0、RangeStream 79、完整 Snapshot 1、stream retry/partial retry 均 0；最大总/
+Put/Watch-after-Put/direct/TSO/Region 为 `56/56/21/56/0/9ms`。独立 cleanup Pod 返回
+`FIXTURE_CLEANUP_OK status=absent owner_uid= keys=0 users=0 roles=0 leases=0`，两个成功 Pod 均按 UID/RV 前置条件删除；
+A5746 的 restored-etcd simple-token 偶发未重现。
+
+探针后完整候选 gate GREEN，revision `75044`。同一时刻并发的独立三端点 HashKV 使用 etcdctl 默认 5 秒预算全部 timeout，gate
+内部也记录一次 PD `loadRegion` deadline 后自行恢复；改为逐端点串行和 60 秒预算后三端点一致返回
+revision/hash/compact/term `75044/1984703050/66760/681`。该瞬态没有伪装成全绿，作为 PD/HashKV 短预算并发抖动调查项保留。
+候选九次 health 为 `53.701-79.325ms`，三 Pod RangeStream/Snapshot failure 指标、关键错误日志和 `/tmp` spill 均为 0；
+PD/TiKV 3/3 Ready，累计 restart 的最后终止时间 `2026-09-05T14:41:42Z` 早于本轮候选。
+
+以新鲜六类 JSON test 从 candidate RV `8676949` 回滚稳定 digest；轮询过程中 Ready 计数曾短暂落到 0/1，随后最终恢复，不能以
+最终态覆盖该窗口，作为现有开发部署 rollout readiness 合同调查项保留。最终 generation/observed `906/906`、RV `8680046`、
+3/3 Ready/restart 0、22 参数，runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；稳定适用 gate GREEN 为 revision/term
+`75044/683`，九次 health `50.320-79.542ms`，critical/spill 为 0。最终候选 Kind/Docker ref、probe Pod 与六个 listener 均为 0；
+OCI archive 与展开审计目录移入系统回收站、可恢复。本项关闭“调用方不取消时，终端后异常 peer 永久占用公开 handler”的缺口；
+业务 payload 阶段的恶意 peer idle、HashKV/PD 短预算抖动、rollout readiness 窗口与跨 Region 长稳仍是开放项。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
