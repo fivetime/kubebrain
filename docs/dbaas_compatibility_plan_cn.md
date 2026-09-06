@@ -72187,6 +72187,63 @@ PD/TiKV 3/3 Ready，累计 restart 的最后终止时间 `2026-09-05T14:41:42Z` 
 OCI archive 与展开审计目录移入系统回收站、可恢复。本项关闭“调用方不取消时，终端后异常 peer 永久占用公开 handler”的缺口；
 业务 payload 阶段的恶意 peer idle、HashKV/PD 短预算抖动、rollout readiness 窗口与跨 Region 长稳仍是开放项。
 
+### A5748：缩短共享 TiKV 上的 HashKV 全量诊断扫描
+
+继续调查 A5747 保留的三端点 `HashKV` 短预算失败。对照
+`/root/etcd/server/storage/mvcc/kvstore.go` 的 `hashByRev`：upstream 在单成员本地 bbolt 快照上按编码顺序计算
+CRC；KubeBrain 必须在共享 TiKV 的同一时间戳快照上保持相同的严格顺序，但旧实现只有一个跨 Region 顺序 iterator。稳定镜像的
+三个端点串行实测分别为 `12.328/12.094/12.460s`，因此默认 5 秒失败不只是 follower hedge 造成的并发放大。
+
+提交 `663226824e3037963f238867ee4522876ba1610a` 为普通 HashKV 先取得唯一 TiKV snapshot timestamp，再以至多
+8 个 Region partition 并行预取，每个 partition 以 256 行或 1 MiB 的有界 batch 交付；协调器仍按 partition 和编码 key
+严格升序消费，CRC 输入顺序、revision/compact revision 与 corruption witness 语义不变。调用方取消会取消全部 worker；PD
+partition discovery 失败会退回单 iterator，而 protected serializable checkpoint 完全跳过 discovery，不重新引入 PD 依赖。
+单元测试用阻塞 iterator 证明至少两个 partition 确实并行启动，并证明结果与单 iterator 完全相同、所有 partition 使用同一
+timestamp；另有 protected-checkpoint 测试固定无 discovery。第一版候选 leader 实测降至 `10.811s`，说明分区预取有效但不是
+主要瓶颈。
+
+PD 的权威 Region 清单显示该 tenant 覆盖 8 个 Region，其中 event-log 所在最大 Region 约 120 万 keys。旧 HashKV 虽在
+解码后用 `IsInternalStorageKey` 丢弃 event-log/internal metadata，却已经从 TiKV 拉取全部 key/value。提交
+`ce2b67b90a059920fbe3693c7760c640ea8fb730` 新增 `Keyspace.HashKVScanRanges`，从物理扫描区间直接裁掉 event-log、
+elog watermark 与通用 internal prefix；这些前缀本来就被同一分类器排除，故不改变公共哈希域。`latestmeta` 没有按整个 prefix
+裁掉，因为其内部身份还依赖 revision-zero trailer，真实用户 key 可以合法拥有同一前缀。新增 coder 范围测试固定内部 family
+不可达、普通对象与 `latestmeta` 前缀碰撞用户对象仍可达；protected checkpoint 使用相同的离散范围，但每段保持一个
+cached-route iterator。
+
+聚焦 HashKV/coder 用例 `count=10`、聚焦 race、完整 `pkg/backend` 和最终完整 `pkg/server/etcd` 均 GREEN。两次代码提交前后
+均执行精确 verifier 与四分片：703=`170/193/180/160`。`66322682` 提交前为
+`254.402/453.420/305.630/585.236s`，提交后为 `258.963/463.101/307.319/594.173s`。`ce2b67b9`
+提交前为 `269.261/456.437/314.315/593.140s`；首次提交后 shard 0 的既有 rollout harness 时限断言要求 `<5s`
+却测得 `5.604s`，其余 shard 为 `462.567/322.033/580.594s`，没有把该轮伪装为 GREEN；完整重跑最终为
+`266.037/467.564/321.708/596.213s`，全部通过。
+
+最终候选 `docker.io/library/kubebrain@sha256:3e59e3c7375b31d8a5800f1be511d65e0bb4e31eba213302812f9e16fce007f0`
+内嵌版本 `0.0.0-ce2b67b9`、完整 commit、Go `1.26.5`、TiKV 与 `linux/amd64`。OCI archive 为
+914,730,496 bytes，SHA-256 `28947d9c96863308d19a801f5d54d1757ba7f666ed913c8a49d15361b035616c`；顶层
+`index.json` SHA-256/runtime imageID、nested index、platform manifest、config 与 attestation manifest 分别为
+`sha256:119faad1f691bebf80ffcef02a0c4d1072935ab5f3c4d019d1d5200ee5a8c603`、
+`sha256:91807df3f94dc7f5a866e41e8820973e70d55683514d826540bf2d4a2ce91c5b`、
+`sha256:3e59e3c7375b31d8a5800f1be511d65e0bb4e31eba213302812f9e16fce007f0`、
+`sha256:a1246a7187bb5813dc0294413701cc5968e47c7efdb5ed3a8b6956844d823263`、
+`sha256:89b5c491b6542bda7561373db0a4c494792d2f99dc3fe95ceacb0893b2f7c857`。78 个 blob 全部 digest
+自校验一致，attestation 同时包含 SPDX 与 SLSA；运行用户 `65532:65532`、entrypoint 与四项 OCI label 均正确。一次先行构建因
+误传短 Git SHA 被镜像元数据合同拒绝，随后仅以完整 SHA 重建，没有弱化校验。
+
+候选以 UID/resourceVersion/generation/container/current image/full args 六类 JSON test 从稳定 generation 908 投放至
+generation/observed `909/909`，3/3 Ready、restart 0，三个 runtime imageID 均为上述顶层 digest。最终三端点串行
+HashKV 为 `7.669/7.661/7.645s`，三端点并发为 `7.834/7.652/7.713s`，revision/hash/compact/term 一致为
+`75044/1984703050/66760/689`；相对稳定 leader 的 `12.460s` 降低约 39%，并发不再把耗时继续放大。候选完整 readonly
+gate GREEN，PD/TiKV 3+3 Ready，日志中只有刻意执行默认 5 秒失败探针产生的 DeadlineExceeded、rollout/count-index warmup
+与 hedge loser cancellation，无 panic/fatal/data-loss/corruption，三个 Pod 无 spill。
+
+默认 5 秒的三端点并发仍精确在 `5.025/5.025/5.028s` 超时，因此本项只关闭“扫描无条件传输内部历史且跨 Region 串行”的
+放大，不宣称关闭短预算缺口；后续需在不放大巨型 value batch、且不改变任意 byte-key/历史 revision CRC 的前提下继续优化
+剩余约 7.6 秒的用户 MVCC payload 扫描。最后以新鲜六类 JSON test 回滚稳定 digest，终态 generation/observed
+`910/910`、RV `8698268`、3/3 Ready/restart 0，runtime 恢复
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；稳定完整 readonly gate GREEN，term `691`。
+候选 Pod 引用、Kind/containerd ref、探针 Pod、PD 转发和六个 etcd listener 均为 0；两份 OCI archive 与最终审计目录已移动到
+用户回收站，可恢复。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
