@@ -35,6 +35,7 @@ STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 INFO_ENDPOINTS="${INFO_ENDPOINTS:-}"
 ETCDCTL_USER="${ETCDCTL_USER:-}"
 ETCDCTL_PASSWORD="${ETCDCTL_PASSWORD:-}"
+HASHKV_CACHE_MAX_SAFE_INTEGER=9007199254740991
 
 if ! operation_is_positive_int64 "$EXPECTED_READY_PODS" || (( EXPECTED_READY_PODS > 2147483647 )); then
   echo "EXPECTED_READY_PODS must be a canonical positive int32" >&2
@@ -858,15 +859,19 @@ expect_hashkv_cache_counter() {
       sub(/\{.*/, "", name)
       if (name != metric) next
       pattern = "^" metric "\\{cluster=\"[^\"]+\"\\}$"
-      if (token !~ pattern || $2 !~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ || $2 < 0) {
+      if (token !~ pattern || NF != 2) {
         print "invalid"
       } else {
         print $2
       }
     }
-  ' <<<"$metrics_text")"
-	if [[ ! "$sample_values" =~ ^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$ ]]; then
-		echo "info metrics mismatch: ${metric} must contain exactly one cluster-labeled non-negative sample" >&2
+	' <<<"$metrics_text")"
+	if [[ ! "$sample_values" =~ ^(0|[1-9][0-9]{0,15})$ ]]; then
+		echo "info metrics mismatch: ${metric} must contain exactly one cluster-labeled canonical non-negative safe integer sample" >&2
+		return 1
+	fi
+	if (( ${#sample_values} == 16 )) && [[ "$sample_values" > "$HASHKV_CACHE_MAX_SAFE_INTEGER" ]]; then
+		echo "info metrics mismatch: ${metric} must contain exactly one cluster-labeled canonical non-negative safe integer sample" >&2
 		return 1
 	fi
 	printf '%s' "$sample_values"
@@ -1043,8 +1048,12 @@ expect_hash_metrics_boundary() {
 		fi
 		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
-		hashkv_cache_hit="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"
-		hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"
+		if ! hashkv_cache_hit="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"; then
+			exit 1
+		fi
+		if ! hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"; then
+			exit 1
+		fi
 		if ! process_start_time="$(expect_process_start_time_seconds "$pod_metrics")"; then
 			exit 1
 		fi
@@ -1056,22 +1065,26 @@ expect_hash_metrics_boundary() {
 			echo "info metrics mismatch: process start time changed during HashKV probes for pod ${pod}" >&2
 			exit 1
 		fi
-		if ! awk -v before="${baseline_hits[$pod]}" -v after="$hashkv_cache_hit" 'BEGIN { exit !(after >= before) }'; then
+		if (( hashkv_cache_hit < baseline_hits[$pod] )); then
 			echo "info metrics mismatch: HashKV completed cache hit counter decreased for pod ${pod}" >&2
 			exit 1
 		fi
-		if ! awk -v before="${baseline_misses[$pod]}" -v after="$hashkv_cache_miss" 'BEGIN { exit !(after >= before) }'; then
+		if (( hashkv_cache_miss < baseline_misses[$pod] )); then
 			echo "info metrics mismatch: HashKV completed cache miss counter decreased for pod ${pod}" >&2
 			exit 1
 		fi
-		hashkv_cache_hit_delta="$(awk -v before="${baseline_hits[$pod]}" -v after="$hashkv_cache_hit" \
-			'BEGIN { printf "%.17g", after - before }')"
-		hashkv_cache_miss_delta="$(awk -v before="${baseline_misses[$pod]}" -v after="$hashkv_cache_miss" \
-			'BEGIN { printf "%.17g", after - before }')"
-		hashkv_cache_hit_delta_total="$(awk -v total="$hashkv_cache_hit_delta_total" -v value="$hashkv_cache_hit_delta" \
-			'BEGIN { printf "%.17g", total + value }')"
-		hashkv_cache_miss_delta_total="$(awk -v total="$hashkv_cache_miss_delta_total" -v value="$hashkv_cache_miss_delta" \
-			'BEGIN { printf "%.17g", total + value }')"
+		hashkv_cache_hit_delta=$((hashkv_cache_hit - baseline_hits[$pod]))
+		hashkv_cache_miss_delta=$((hashkv_cache_miss - baseline_misses[$pod]))
+		if (( hashkv_cache_hit_delta_total > HASHKV_CACHE_MAX_SAFE_INTEGER - hashkv_cache_hit_delta )); then
+			echo "info metrics mismatch: aggregate HashKV completed cache hit delta exceeds safe integer range" >&2
+			exit 1
+		fi
+		if (( hashkv_cache_miss_delta_total > HASHKV_CACHE_MAX_SAFE_INTEGER - hashkv_cache_miss_delta )); then
+			echo "info metrics mismatch: aggregate HashKV completed cache miss delta exceeds safe integer range" >&2
+			exit 1
+		fi
+		hashkv_cache_hit_delta_total=$((hashkv_cache_hit_delta_total + hashkv_cache_hit_delta))
+		hashkv_cache_miss_delta_total=$((hashkv_cache_miss_delta_total + hashkv_cache_miss_delta))
 		post_count=$((post_count + 1))
 		combined_metrics+=$'\n'"$pod_metrics"
 	done <<<"$pod_identity_rows"
@@ -1079,11 +1092,11 @@ expect_hash_metrics_boundary() {
 		echo "info metrics mismatch: HashKV completed cache baseline pod count changed: before=${baseline_count}, after=${post_count}" >&2
 		exit 1
 	fi
-	if ! awk -v total="$hashkv_cache_hit_delta_total" 'BEGIN { exit !(total > 0) }'; then
+	if (( hashkv_cache_hit_delta_total <= 0 )); then
 		echo "info metrics mismatch: HashKV completed cache hit counter must increase during hashkv probes" >&2
 		exit 1
 	fi
-	if ! awk -v total="$hashkv_cache_miss_delta_total" 'BEGIN { exit !(total > 0) }'; then
+	if (( hashkv_cache_miss_delta_total <= 0 )); then
 		echo "info metrics mismatch: HashKV completed cache miss counter must increase during hashkv probes" >&2
 		exit 1
 	fi
