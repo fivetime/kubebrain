@@ -1759,7 +1759,8 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 `etcd_mvcc_hash_duration_seconds_count` 与
 `etcd_mvcc_hash_rev_duration_seconds_count`。每个 Ready Pod 还必须分别暴露唯一的
 `backend_hashkv_completed_cache_hit` 与 `backend_hashkv_completed_cache_miss` counter；
-两者都必须只有一个非空 `cluster` 标签和非负样本。本轮多个 HashKV 探针后，全实例聚合 hit 与 miss 必须分别大于零，既证明至少一次物理扫描，
+两者都必须只有一个非空 `cluster` 标签和非负样本。门禁在 HashKV 探针前后分别抓取同一组 Pod 的基线和终值，要求 counter 不倒退，
+并要求全实例聚合 hit 与 miss 增量分别大于零，既证明本轮至少一次物理扫描，
 也证明未变化逻辑状态的结果被真实复用；follower 若被 leader 的快速缓存命中抢先取消，允许本地计数保持零。
 通过摘要会显式输出 `readyz_verbose=ok`、`readyz_data_corruption=ok`、
 `readyz_serializable_read=ok`、`readyz_linearizable_read=ok`、`readyz_non_learner=ok`、
@@ -1776,7 +1777,8 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 `backend_bbolt_commit_phase_metrics=ok`、`backend_snapshot_metrics=ok`、
 `backend_defrag_metrics=ok`、`health_metrics=ok`、`auth_metrics=ok`、
 `quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
-`mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`hashkv_cache_metrics=ok`、`mvcc_put_size_metrics=ok`、
+`mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`hashkv_cache_metrics=ok`、
+`hashkv_cache_hit_delta=<n>`、`hashkv_cache_miss_delta=<n>`、`mvcc_put_size_metrics=ok`、
 `mvcc_pending_event_metrics=ok`、`mvcc_revision_metrics=ok`、
 `mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、
 `lease_metrics=ok`、`promhttp_metrics=ok`、

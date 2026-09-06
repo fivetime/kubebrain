@@ -872,14 +872,53 @@ expect_hashkv_cache_counter() {
 	printf '%s' "$sample_values"
 }
 
+snapshot_hashkv_cache_counters() {
+	local hashkv_cache_hit
+	local hashkv_cache_miss
+	local pod
+	local pod_metrics
+	local pod_names
+
+	pod_names="$(printf '%s' "$pods_json" | "$JQ" -r '
+    .items[]
+    | select(.metadata.deletionTimestamp == null)
+    | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+    | .metadata.name
+  ')"
+	while IFS= read -r pod; do
+		if [[ -z "$pod" ]]; then
+			continue
+		fi
+		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
+		if ! hashkv_cache_hit="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"; then
+			return 1
+		fi
+		if ! hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"; then
+			return 1
+		fi
+		printf '%s\t%s\t%s\n' "$pod" "$hashkv_cache_hit" "$hashkv_cache_miss"
+	done <<<"$pod_names"
+}
+
 expect_hash_metrics_boundary() {
 	local client_url="$1"
+	local baseline="$2"
+	local baseline_count="0"
+	local baseline_hit
+	local baseline_miss
+	local baseline_pod
+	local -A baseline_hits=()
+	local -A baseline_misses=()
 	local client_metrics
 	local hashkv_cache_hit
-	local hashkv_cache_hit_total="0"
+	local hashkv_cache_hit_delta
+	local hashkv_cache_hit_delta_total="0"
 	local hashkv_cache_miss
-	local hashkv_cache_miss_total="0"
+	local hashkv_cache_miss_delta
+	local hashkv_cache_miss_delta_total="0"
 	local pod
+	local post_count="0"
 	local pod_metrics
 	local pod_names
 	local combined_metrics
@@ -893,6 +932,14 @@ expect_hash_metrics_boundary() {
     echo "client metrics mismatch after hash checks: expected 404 page not found body" >&2
 		exit 1
 	fi
+	while IFS=$'\t' read -r baseline_pod baseline_hit baseline_miss; do
+		if [[ -z "$baseline_pod" ]]; then
+			continue
+		fi
+		baseline_hits["$baseline_pod"]="$baseline_hit"
+		baseline_misses["$baseline_pod"]="$baseline_miss"
+		baseline_count=$((baseline_count + 1))
+	done <<<"$baseline"
 
 	pod_names="$(printf '%s' "$pods_json" | "$JQ" -r '
     .items[]
@@ -909,20 +956,43 @@ expect_hash_metrics_boundary() {
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
 		hashkv_cache_hit="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"
 		hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"
-		hashkv_cache_hit_total="$(awk -v total="$hashkv_cache_hit_total" -v value="$hashkv_cache_hit" \
+		if [[ -z "${baseline_hits[$pod]+x}" || -z "${baseline_misses[$pod]+x}" ]]; then
+			echo "info metrics mismatch: missing HashKV completed cache baseline for pod ${pod}" >&2
+			exit 1
+		fi
+		if ! awk -v before="${baseline_hits[$pod]}" -v after="$hashkv_cache_hit" 'BEGIN { exit !(after >= before) }'; then
+			echo "info metrics mismatch: HashKV completed cache hit counter decreased for pod ${pod}" >&2
+			exit 1
+		fi
+		if ! awk -v before="${baseline_misses[$pod]}" -v after="$hashkv_cache_miss" 'BEGIN { exit !(after >= before) }'; then
+			echo "info metrics mismatch: HashKV completed cache miss counter decreased for pod ${pod}" >&2
+			exit 1
+		fi
+		hashkv_cache_hit_delta="$(awk -v before="${baseline_hits[$pod]}" -v after="$hashkv_cache_hit" \
+			'BEGIN { printf "%.17g", after - before }')"
+		hashkv_cache_miss_delta="$(awk -v before="${baseline_misses[$pod]}" -v after="$hashkv_cache_miss" \
+			'BEGIN { printf "%.17g", after - before }')"
+		hashkv_cache_hit_delta_total="$(awk -v total="$hashkv_cache_hit_delta_total" -v value="$hashkv_cache_hit_delta" \
 			'BEGIN { printf "%.17g", total + value }')"
-		hashkv_cache_miss_total="$(awk -v total="$hashkv_cache_miss_total" -v value="$hashkv_cache_miss" \
+		hashkv_cache_miss_delta_total="$(awk -v total="$hashkv_cache_miss_delta_total" -v value="$hashkv_cache_miss_delta" \
 			'BEGIN { printf "%.17g", total + value }')"
+		post_count=$((post_count + 1))
 		combined_metrics+=$'\n'"$pod_metrics"
 	done <<<"$pod_names"
-	if ! awk -v total="$hashkv_cache_hit_total" 'BEGIN { exit !(total > 0) }'; then
-		echo "info metrics mismatch: HashKV completed cache hit counter must record reuse after hashkv probes" >&2
+	if [[ "$post_count" != "$baseline_count" ]]; then
+		echo "info metrics mismatch: HashKV completed cache baseline pod count changed: before=${baseline_count}, after=${post_count}" >&2
 		exit 1
 	fi
-	if ! awk -v total="$hashkv_cache_miss_total" 'BEGIN { exit !(total > 0) }'; then
-		echo "info metrics mismatch: HashKV completed cache miss counter must record a physical scan after hashkv probes" >&2
+	if ! awk -v total="$hashkv_cache_hit_delta_total" 'BEGIN { exit !(total > 0) }'; then
+		echo "info metrics mismatch: HashKV completed cache hit counter must increase during hashkv probes" >&2
 		exit 1
 	fi
+	if ! awk -v total="$hashkv_cache_miss_delta_total" 'BEGIN { exit !(total > 0) }'; then
+		echo "info metrics mismatch: HashKV completed cache miss counter must increase during hashkv probes" >&2
+		exit 1
+	fi
+	hashkv_cache_hit_delta_summary="$hashkv_cache_hit_delta_total"
+	hashkv_cache_miss_delta_summary="$hashkv_cache_miss_delta_total"
 
 	if [[ "$combined_metrics" != *"etcd_mvcc_hash_duration_seconds_count{"* && "$combined_metrics" != *"etcd_mvcc_hash_duration_seconds_count "* ]]; then
 		echo "info metrics mismatch: expected etcd_mvcc_hash_duration_seconds_count after gateway hash" >&2
@@ -2579,8 +2649,14 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
   fi
 fi
 
+hashkv_cache_counter_baseline=""
+hashkv_cache_hit_delta_summary=""
+hashkv_cache_miss_delta_summary=""
 hashkv_summary=""
 if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
+  if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
+    hashkv_cache_counter_baseline="$(snapshot_hashkv_cache_counters)"
+  fi
   hashkv_json="$(run_etcdctl_with_probe_timeout --endpoints="$STATUS_ENDPOINTS" endpoint hashkv -w json)"
   expected_hashkv_endpoints="${#status_endpoint_array[@]}"
   hashkv_count="$(printf '%s' "$hashkv_json" | "$JQ" -r 'if type == "array" then length else 0 end')"
@@ -3250,8 +3326,9 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     hashkv_summary+=", direct_hashkv_hash_revision=${direct_hashkv_hash_revision}, direct_hashkv_hash_revision_match=true"
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
-    expect_hash_metrics_boundary "${ENDPOINT%/}/metrics"
+    expect_hash_metrics_boundary "${ENDPOINT%/}/metrics" "$hashkv_cache_counter_baseline"
     status_summary+=", mvcc_hash_metrics=ok, hashkv_cache_metrics=ok"
+    status_summary+=", hashkv_cache_hit_delta=${hashkv_cache_hit_delta_summary}, hashkv_cache_miss_delta=${hashkv_cache_miss_delta_summary}"
   fi
   fi
 fi
