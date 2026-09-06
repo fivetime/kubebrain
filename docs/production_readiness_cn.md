@@ -1760,7 +1760,9 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 `etcd_mvcc_hash_rev_duration_seconds_count`。每个 Ready Pod 还必须分别暴露唯一的
 `backend_hashkv_completed_cache_hit` 与 `backend_hashkv_completed_cache_miss` counter；
 两者都必须只有一个非空 `cluster` 标签和非负样本。门禁在 HashKV 探针前后分别抓取同一组 Pod 的基线和终值，要求 counter 不倒退，
-并要求全实例聚合 hit 与 miss 增量分别大于零，既证明本轮至少一次物理扫描，
+并把每个 Pod 名绑定到不可变 UID 及按容器名排序的完整 `containerID/restartCount` 集合；探针结束后重新读取 Kubernetes Pod
+对象，任一同名 Pod 重建、容器重启、Ready Pod 集合变化或运行身份字段缺失都会 fail closed，不能把新进程计数减去旧进程基线。
+只有运行身份保持不变时才要求全实例聚合 hit 与 miss 增量分别大于零，既证明本轮至少一次物理扫描，
 也证明未变化逻辑状态的结果被真实复用；follower 若被 leader 的快速缓存命中抢先取消，允许本地计数保持零。
 通过摘要会显式输出 `readyz_verbose=ok`、`readyz_data_corruption=ok`、
 `readyz_serializable_read=ok`、`readyz_linearizable_read=ok`、`readyz_non_learner=ok`、

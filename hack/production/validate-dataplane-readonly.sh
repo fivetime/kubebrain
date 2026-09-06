@@ -872,22 +872,56 @@ expect_hashkv_cache_counter() {
 	printf '%s' "$sample_values"
 }
 
+ready_pod_runtime_identities() {
+	local source_pods_json="$1"
+
+	printf '%s' "$source_pods_json" | "$JQ" -r '
+    .items[]
+    | select(.metadata.deletionTimestamp == null)
+    | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+		| [
+			(.metadata.name // ""),
+			(.metadata.uid // ""),
+			(if (
+				(.status.containerStatuses | type) == "array"
+				and (.status.containerStatuses | length) > 0
+				and all(.status.containerStatuses[];
+					(.name | type) == "string" and .name != ""
+					and (.containerID | type) == "string" and .containerID != ""
+					and (.restartCount | type) == "number"
+					and .restartCount == (.restartCount | floor)
+					and .restartCount >= 0
+				)
+			)
+			then (.status.containerStatuses
+				| sort_by(.name)
+				| map({name: .name, containerID: .containerID, restartCount: .restartCount})
+				| tojson
+				| @base64)
+			else ""
+			end)
+		] | @tsv
+	'
+}
+
 snapshot_hashkv_cache_counters() {
 	local hashkv_cache_hit
 	local hashkv_cache_miss
 	local pod
+	local pod_container_identity
+	local pod_identity_rows
 	local pod_metrics
-	local pod_names
+	local pod_uid
 
-	pod_names="$(printf '%s' "$pods_json" | "$JQ" -r '
-    .items[]
-    | select(.metadata.deletionTimestamp == null)
-    | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
-    | .metadata.name
-  ')"
-	while IFS= read -r pod; do
+	pod_identity_rows="$(ready_pod_runtime_identities "$pods_json")"
+	while IFS=$'\t' read -r pod pod_uid pod_container_identity; do
 		if [[ -z "$pod" ]]; then
-			continue
+			echo "info metrics mismatch: Ready Pod name is required for HashKV cache baseline" >&2
+			return 1
+		fi
+		if [[ -z "$pod_uid" || -z "$pod_container_identity" ]]; then
+			echo "info metrics mismatch: complete Pod runtime identity is required for HashKV cache baseline pod ${pod}" >&2
+			return 1
 		fi
 		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
@@ -897,8 +931,8 @@ snapshot_hashkv_cache_counters() {
 		if ! hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"; then
 			return 1
 		fi
-		printf '%s\t%s\t%s\n' "$pod" "$hashkv_cache_hit" "$hashkv_cache_miss"
-	done <<<"$pod_names"
+		printf '%s\t%s\t%s\t%s\t%s\n' "$pod" "$pod_uid" "$pod_container_identity" "$hashkv_cache_hit" "$hashkv_cache_miss"
+	done <<<"$pod_identity_rows"
 }
 
 expect_hash_metrics_boundary() {
@@ -908,8 +942,12 @@ expect_hash_metrics_boundary() {
 	local baseline_hit
 	local baseline_miss
 	local baseline_pod
+	local baseline_pod_container_identity
+	local baseline_pod_uid
+	local -A baseline_container_identities=()
 	local -A baseline_hits=()
 	local -A baseline_misses=()
+	local -A baseline_uids=()
 	local client_metrics
 	local hashkv_cache_hit
 	local hashkv_cache_hit_delta
@@ -918,9 +956,12 @@ expect_hash_metrics_boundary() {
 	local hashkv_cache_miss_delta
 	local hashkv_cache_miss_delta_total="0"
 	local pod
+	local pod_container_identity
+	local pod_identity_rows
 	local post_count="0"
+	local post_pods_json
 	local pod_metrics
-	local pod_names
+	local pod_uid
 	local combined_metrics
 
 	client_metrics="$(run_with_probe_timeout "$CURL" -sS -i "$client_url")"
@@ -932,25 +973,37 @@ expect_hash_metrics_boundary() {
     echo "client metrics mismatch after hash checks: expected 404 page not found body" >&2
 		exit 1
 	fi
-	while IFS=$'\t' read -r baseline_pod baseline_hit baseline_miss; do
+	while IFS=$'\t' read -r baseline_pod baseline_pod_uid baseline_pod_container_identity baseline_hit baseline_miss; do
 		if [[ -z "$baseline_pod" ]]; then
 			continue
 		fi
+		baseline_uids["$baseline_pod"]="$baseline_pod_uid"
+		baseline_container_identities["$baseline_pod"]="$baseline_pod_container_identity"
 		baseline_hits["$baseline_pod"]="$baseline_hit"
 		baseline_misses["$baseline_pod"]="$baseline_miss"
 		baseline_count=$((baseline_count + 1))
 	done <<<"$baseline"
 
-	pod_names="$(printf '%s' "$pods_json" | "$JQ" -r '
-    .items[]
-    | select(.metadata.deletionTimestamp == null)
-    | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
-    | .metadata.name
-  ')"
+	post_pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+		get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
+	pod_identity_rows="$(ready_pod_runtime_identities "$post_pods_json")"
 	combined_metrics=""
-	while IFS= read -r pod; do
+	while IFS=$'\t' read -r pod pod_uid pod_container_identity; do
 		if [[ -z "$pod" ]]; then
-			continue
+			echo "info metrics mismatch: Ready Pod name is required after HashKV cache probes" >&2
+			exit 1
+		fi
+		if [[ -z "$pod_uid" || -z "$pod_container_identity" ]]; then
+			echo "info metrics mismatch: complete Pod runtime identity is required after HashKV cache probes for pod ${pod}" >&2
+			exit 1
+		fi
+		if [[ -z "${baseline_uids[$pod]+x}" || -z "${baseline_container_identities[$pod]+x}" ]]; then
+			echo "info metrics mismatch: missing Pod runtime identity baseline for pod ${pod}" >&2
+			exit 1
+		fi
+		if [[ "$pod_uid" != "${baseline_uids[$pod]}" || "$pod_container_identity" != "${baseline_container_identities[$pod]}" ]]; then
+			echo "info metrics mismatch: Pod runtime identity changed during HashKV probes for pod ${pod}" >&2
+			exit 1
 		fi
 		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
@@ -978,7 +1031,7 @@ expect_hash_metrics_boundary() {
 			'BEGIN { printf "%.17g", total + value }')"
 		post_count=$((post_count + 1))
 		combined_metrics+=$'\n'"$pod_metrics"
-	done <<<"$pod_names"
+	done <<<"$pod_identity_rows"
 	if [[ "$post_count" != "$baseline_count" ]]; then
 		echo "info metrics mismatch: HashKV completed cache baseline pod count changed: before=${baseline_count}, after=${post_count}" >&2
 		exit 1
