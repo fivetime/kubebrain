@@ -1777,6 +1777,12 @@ Status 十进制 member ID 按 upstream `types.ID.String()` 语义编码为 cano
 必须等于外部 Status 集群，member 转为 canonical 小写十六进制后必须等于同 Pod metrics 的 `server_id`。因此即使两个 Pod
 交换了同一合法成员集合内的 ID 也会 fail closed；通过时摘要额外输出
 `hashkv_server_identity_local_status_match=true`。
+完整枚举还要求同 Pod 的 `etcd_server_has_leader`、`etcd_server_is_leader`、`etcd_server_is_learner`
+各自只有一个带相同 cluster 标签的 gauge 0/1 样本。loopback Status leader 必须是 canonical positive uint64
+字符串并等于完整外部 Status 的唯一 leader；缺省 `isLearner` 按 protojson false 处理，显式值必须是 JSON boolean。
+metrics 的 has-leader 必须为 1，is-leader 必须精确等于 `member==leader`，is-learner 必须等于同 Pod Status。
+这会拒绝实例身份正确但 leader/learner 角色指标错误的部署；通过时输出
+`hashkv_server_role_local_status_match=true`。
 门禁在 HashKV 探针前后分别抓取同一组 Pod 的基线和终值，使用 64 位整数做精确差值与
 带安全上界的聚合，要求 counter 不倒退且聚合不得溢出，
 并把每个 Pod 名绑定到不可变 UID 及按容器名排序的完整 `containerID/restartCount` 集合；探针结束后重新读取 Kubernetes Pod
@@ -1803,7 +1809,8 @@ hit 与 miss 增量分别大于零，既证明本轮至少一次物理扫描，
 `quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
 `mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`hashkv_cache_metrics=ok`、
 `hashkv_cache_hit_delta=<n>`、`hashkv_cache_miss_delta=<n>`、`hashkv_cache_process_identity=stable`、
-`hashkv_server_identity_members_match=true`、`hashkv_server_identity_local_status_match=true`（两者仅完整枚举 Status 时）、
+`hashkv_server_identity_members_match=true`、`hashkv_server_identity_local_status_match=true`、
+`hashkv_server_role_local_status_match=true`（三者仅完整枚举 Status 时）、
 `mvcc_put_size_metrics=ok`、
 `mvcc_pending_event_metrics=ok`、`mvcc_revision_metrics=ok`、
 `mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、
