@@ -1216,6 +1216,69 @@ pod_local_status_identity() {
 	printf '%s\t%s\t%s\t%s' "$local_status_cluster_id" "$local_status_member_id" "$local_status_leader_id" "$local_status_is_learner"
 }
 
+validate_pod_server_role_status_binding() {
+	local pod="$1"
+	local pod_metrics="$2"
+	local server_identity_cluster="$3"
+	local server_identity_server_id="$4"
+	local expected_is_leader
+	local expected_is_learner
+	local local_status_cluster_id
+	local local_status_identity
+	local local_status_is_learner
+	local local_status_leader_id
+	local local_status_member_id
+	local local_status_member_id_hex
+	local server_role_cluster_has_leader
+	local server_role_cluster_is_leader
+	local server_role_cluster_is_learner
+	local server_role_has_leader
+	local server_role_is_leader
+	local server_role_is_learner
+	local server_role_row
+
+	if ! server_role_row="$(expect_server_role_samples "$pod_metrics")"; then
+		return 1
+	fi
+	IFS=$'\t' read -r server_role_cluster_has_leader server_role_has_leader server_role_cluster_is_leader server_role_is_leader server_role_cluster_is_learner server_role_is_learner <<<"$server_role_row"
+	if [[ "$server_role_cluster_has_leader" != "$server_identity_cluster" || "$server_role_cluster_is_leader" != "$server_identity_cluster" || "$server_role_cluster_is_learner" != "$server_identity_cluster" ]]; then
+		echo "info metrics mismatch: Ready Pod server role metric clusters disagree with server identity for pod ${pod}" >&2
+		return 1
+	fi
+	if ! local_status_identity="$(pod_local_status_identity "$pod")"; then
+		return 1
+	fi
+	IFS=$'\t' read -r local_status_cluster_id local_status_member_id local_status_leader_id local_status_is_learner <<<"$local_status_identity"
+	if [[ "$local_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+		echo "info metrics mismatch: local Status cluster ID differs from Status endpoint cluster for pod ${pod}: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${local_status_cluster_id}" >&2
+		return 1
+	fi
+	if ! printf -v local_status_member_id_hex '%x' "$local_status_member_id" 2>/dev/null; then
+		echo "info metrics mismatch: could not encode local Status member ID ${local_status_member_id} as uint64 hexadecimal for pod ${pod}" >&2
+		return 1
+	fi
+	if [[ "$server_identity_server_id" != "$local_status_member_id_hex" ]]; then
+		echo "info metrics mismatch: Ready Pod server identity does not match local Status member for pod ${pod}: metrics=${server_identity_server_id}, status=${local_status_member_id_hex}" >&2
+		return 1
+	fi
+	if [[ "$local_status_leader_id" != "$status_leader_ids" ]]; then
+		echo "info metrics mismatch: local Status leader differs from fully enumerated Status leader for pod ${pod}: expected ${status_leader_ids}, got ${local_status_leader_id}" >&2
+		return 1
+	fi
+	expected_is_leader="0"
+	if [[ "$local_status_member_id" == "$local_status_leader_id" ]]; then
+		expected_is_leader="1"
+	fi
+	expected_is_learner="0"
+	if [[ "$local_status_is_learner" == "true" ]]; then
+		expected_is_learner="1"
+	fi
+	if [[ "$server_role_has_leader" != "1" || "$server_role_is_leader" != "$expected_is_leader" || "$server_role_is_learner" != "$expected_is_learner" ]]; then
+		echo "info metrics mismatch: Ready Pod server roles do not match local Status for pod ${pod}: metrics=has_leader:${server_role_has_leader},is_leader:${server_role_is_leader},is_learner:${server_role_is_learner}, status=leader:${local_status_leader_id},is_learner:${local_status_is_learner}" >&2
+		return 1
+	fi
+}
+
 snapshot_hashkv_cache_counters() {
 	local hashkv_cache_hit
 	local hashkv_cache_hit_cluster
@@ -1235,21 +1298,6 @@ snapshot_hashkv_cache_counters() {
 	local pod_metrics
 	local pod_uid
 	local process_start_time
-	local local_status_cluster_id
-	local local_status_identity
-	local local_status_member_id
-	local local_status_member_id_hex
-	local local_status_leader_id
-	local local_status_is_learner
-	local expected_is_leader
-	local expected_is_learner
-	local server_role_cluster_has_leader
-	local server_role_cluster_is_leader
-	local server_role_cluster_is_learner
-	local server_role_has_leader
-	local server_role_is_leader
-	local server_role_is_learner
-	local server_role_row
 	local server_identity_cluster
 	local server_identity_full_enumeration="0"
 	local server_identity_row
@@ -1282,44 +1330,7 @@ snapshot_hashkv_cache_counters() {
 		fi
 		IFS=$'\t' read -r server_identity_cluster server_identity_server_id <<<"$server_identity_row"
 		if [[ "$server_identity_full_enumeration" == "1" ]]; then
-			if ! server_role_row="$(expect_server_role_samples "$pod_metrics")"; then
-				return 1
-			fi
-			IFS=$'\t' read -r server_role_cluster_has_leader server_role_has_leader server_role_cluster_is_leader server_role_is_leader server_role_cluster_is_learner server_role_is_learner <<<"$server_role_row"
-			if [[ "$server_role_cluster_has_leader" != "$server_identity_cluster" || "$server_role_cluster_is_leader" != "$server_identity_cluster" || "$server_role_cluster_is_learner" != "$server_identity_cluster" ]]; then
-				echo "info metrics mismatch: Ready Pod server role metric clusters disagree with server identity for pod ${pod}" >&2
-				return 1
-			fi
-			if ! local_status_identity="$(pod_local_status_identity "$pod")"; then
-				return 1
-			fi
-			IFS=$'\t' read -r local_status_cluster_id local_status_member_id local_status_leader_id local_status_is_learner <<<"$local_status_identity"
-			if [[ "$local_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
-				echo "info metrics mismatch: local Status cluster ID differs from Status endpoint cluster for pod ${pod}: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${local_status_cluster_id}" >&2
-				return 1
-			fi
-			if ! printf -v local_status_member_id_hex '%x' "$local_status_member_id" 2>/dev/null; then
-				echo "info metrics mismatch: could not encode local Status member ID ${local_status_member_id} as uint64 hexadecimal for pod ${pod}" >&2
-				return 1
-			fi
-			if [[ "$server_identity_server_id" != "$local_status_member_id_hex" ]]; then
-				echo "info metrics mismatch: Ready Pod server identity does not match local Status member for pod ${pod}: metrics=${server_identity_server_id}, status=${local_status_member_id_hex}" >&2
-				return 1
-			fi
-			if [[ "$local_status_leader_id" != "$status_leader_ids" ]]; then
-				echo "info metrics mismatch: local Status leader differs from fully enumerated Status leader for pod ${pod}: expected ${status_leader_ids}, got ${local_status_leader_id}" >&2
-				return 1
-			fi
-			expected_is_leader="0"
-			if [[ "$local_status_member_id" == "$local_status_leader_id" ]]; then
-				expected_is_leader="1"
-			fi
-			expected_is_learner="0"
-			if [[ "$local_status_is_learner" == "true" ]]; then
-				expected_is_learner="1"
-			fi
-			if [[ "$server_role_has_leader" != "1" || "$server_role_is_leader" != "$expected_is_leader" || "$server_role_is_learner" != "$expected_is_learner" ]]; then
-				echo "info metrics mismatch: Ready Pod server roles do not match local Status for pod ${pod}: metrics=has_leader:${server_role_has_leader},is_leader:${server_role_is_leader},is_learner:${server_role_is_learner}, status=leader:${local_status_leader_id},is_learner:${local_status_is_learner}" >&2
+			if ! validate_pod_server_role_status_binding "$pod" "$pod_metrics" "$server_identity_cluster" "$server_identity_server_id"; then
 				return 1
 			fi
 			if [[ -n "${server_identity_pods_by_id[$server_identity_server_id]+x}" ]]; then
@@ -1519,6 +1530,11 @@ expect_hash_metrics_boundary() {
 		if [[ "$server_identity_server_id" != "${baseline_server_ids[$pod]}" ]]; then
 			echo "info metrics mismatch: server identity changed during HashKV probes for pod ${pod}" >&2
 			exit 1
+		fi
+		if [[ "$expected_status_endpoints" == "$EXPECTED_READY_PODS" ]]; then
+			if ! validate_pod_server_role_status_binding "$pod" "$pod_metrics" "$server_identity_cluster" "$server_identity_server_id"; then
+				exit 1
+			fi
 		fi
 		if [[ -z "${baseline_process_start_times[$pod]+x}" || "$process_start_time" != "${baseline_process_start_times[$pod]}" ]]; then
 			echo "info metrics mismatch: process start time changed during HashKV probes for pod ${pod}" >&2
@@ -3248,7 +3264,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     hashkv_cache_counter_baseline="$(snapshot_hashkv_cache_counters)"
     if [[ "$expected_status_endpoints" == "$EXPECTED_READY_PODS" ]]; then
-      hashkv_server_identity_summary=", hashkv_server_identity_members_match=true, hashkv_server_identity_local_status_match=true, hashkv_server_role_local_status_match=true"
+		hashkv_server_identity_summary=", hashkv_server_identity_members_match=true, hashkv_server_identity_local_status_match=true, hashkv_server_role_local_status_match=true, hashkv_server_role_process_identity=stable"
     fi
   fi
   hashkv_json="$(run_etcdctl_with_probe_timeout --endpoints="$STATUS_ENDPOINTS" endpoint hashkv -w json)"
