@@ -1187,6 +1187,18 @@ ready_pod_runtime_identities() {
 	local source_pods_json="$1"
 
 	printf '%s' "$source_pods_json" | "$JQ" -r '
+	def canonical:
+		if type == "object" then
+			to_entries | sort_by(.key) | map(.value |= canonical) | from_entries
+		elif type == "array" then
+			map(canonical)
+		else .
+		end;
+	def valid_container_state($allow_empty):
+		(type == "object")
+		and ((keys | length) >= (if $allow_empty then 0 else 1 end))
+		and ((keys | length) <= 1)
+		and all(to_entries[]; (.key == "running" or .key == "waiting" or .key == "terminated") and (.value | type) == "object");
     .items[]
     | select(.metadata.deletionTimestamp == null)
     | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
@@ -1215,10 +1227,23 @@ ready_pod_runtime_identities() {
 						and (.status.restartCount | type) == "number"
 						and .status.restartCount == (.status.restartCount | floor)
 						and .status.restartCount >= 0
+						and (.status.state | valid_container_state(false))
+						and (.status.lastState | valid_container_state(true))
+						and ((.status | has("started") | not) or .status.started == null or (.status.started | type) == "boolean")
 					end
 				) then ($runtime_statuses
 					| sort_by(.scope, .status.name)
-					| map({scope: .scope, name: .status.name, containerID: .status.containerID, imageID: .status.imageID, ready: .status.ready, restartCount: .status.restartCount})
+					| map({
+						scope: .scope,
+						name: .status.name,
+						containerID: .status.containerID,
+						imageID: .status.imageID,
+						ready: .status.ready,
+						restartCount: .status.restartCount,
+						started: (if (.status | has("started")) then .status.started else null end),
+						state: (.status.state | canonical),
+						lastState: (.status.lastState | canonical)
+					})
 					| tojson
 					| @base64)
 				else ""
