@@ -84,6 +84,16 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput:     "KUBEBRAIN_CONTAINER_NAME must be a lowercase DNS label of at most 63 characters",
 		},
 		{
+			name:           "rejects invalid expected KubeBrain image digest before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[]`,
+			extraEnv:       []string{"EXPECTED_KUBEBRAIN_IMAGE_DIGEST=sha256:ABC"},
+			wantNoCommands: true,
+			wantOutput:     "EXPECTED_KUBEBRAIN_IMAGE_DIGEST must be empty or a canonical sha256 digest",
+		},
+		{
 			name:           "rejects prefix count overflow before commands",
 			podsJSON:       `{"items":[]}`,
 			readyz:         "ok",
@@ -139,7 +149,70 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"10s go",
 			},
 			wantOK:     true,
-			wantOutput: "dataplane readonly gate passed",
+			wantOutput: "kubebrain_image_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		{
+			name: "rejects target container runtime image digest mismatch",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"EXPECTED_KUBEBRAIN_IMAGE_DIGEST=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			},
+			wantOutput: "KubeBrain target container image digest mismatch: expected sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, got sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		{
+			name: "rejects mixed target container runtime image digests",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","imageID":"docker.io/library/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-1","imageID":"docker.io/library/kubebrain@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-2","imageID":"docker.io/library/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","restartCount":0,"ready":true}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain target container image digest mismatch: mixed-digests=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+		{
+			name: "rejects missing target container runtime image identity",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"sidecar","containerID":"containerd://sidecar-0","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain target container image digest mismatch: kubebrain-0:target-count=0",
+		},
+		{
+			name: "rejects target container that is not ready",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":false}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain target container image digest mismatch: kubebrain-0:target-not-ready",
+		},
+		{
+			name: "rejects target container image ID without canonical digest",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","imageID":"docker.io/library/kubebrain:latest","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain target container image digest mismatch: kubebrain-0:imageID-without-canonical-digest",
 		},
 		{
 			name: "passes probe timeout to etcdctl internal timeouts",
@@ -7491,9 +7564,20 @@ func podJSONWithDefaultRuntimeIdentities(t *testing.T, value string) string {
 			status["containerStatuses"] = []any{map[string]any{
 				"name":         "kubebrain",
 				"containerID":  "containerd://" + name,
+				"imageID":      "docker.io/library/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 				"restartCount": 0,
 				"ready":        true,
 			}}
+		} else {
+			containerStatuses, ok := status["containerStatuses"].([]any)
+			require.True(t, ok)
+			for _, containerStatusValue := range containerStatuses {
+				containerStatus, ok := containerStatusValue.(map[string]any)
+				require.True(t, ok)
+				if _, exists := containerStatus["imageID"]; !exists {
+					containerStatus["imageID"] = "docker.io/library/kubebrain@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+				}
+			}
 		}
 	}
 	encoded, err := json.Marshal(document)

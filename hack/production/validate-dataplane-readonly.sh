@@ -7,6 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_LABEL_SELECTOR="${KUBEBRAIN_LABEL_SELECTOR:-app.kubernetes.io/name=kubebrain}"
 KUBEBRAIN_CONTAINER_NAME="${KUBEBRAIN_CONTAINER_NAME:-kubebrain}"
+EXPECTED_KUBEBRAIN_IMAGE_DIGEST="${EXPECTED_KUBEBRAIN_IMAGE_DIGEST:-}"
 EXPECTED_READY_PODS="${EXPECTED_READY_PODS:-3}"
 ENDPOINT="${ENDPOINT:-}"
 READYZ_URL="${READYZ_URL:-}"
@@ -45,6 +46,10 @@ if ! operation_is_positive_int64 "$EXPECTED_READY_PODS" || (( EXPECTED_READY_POD
 fi
 if [[ ! "$KUBEBRAIN_CONTAINER_NAME" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
   echo "KUBEBRAIN_CONTAINER_NAME must be a lowercase DNS label of at most 63 characters" >&2
+  exit 2
+fi
+if [[ -n "$EXPECTED_KUBEBRAIN_IMAGE_DIGEST" && ! "$EXPECTED_KUBEBRAIN_IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "EXPECTED_KUBEBRAIN_IMAGE_DIGEST must be empty or a canonical sha256 digest" >&2
   exit 2
 fi
 if [[ -n "$EXPECTED_PREFIX_COUNT" ]] && ! operation_is_nonnegative_int64 "$EXPECTED_PREFIX_COUNT"; then
@@ -1135,6 +1140,7 @@ ready_pod_runtime_identities() {
 				and all(.status.containerStatuses[];
 					(.name | type) == "string" and .name != ""
 					and (.containerID | type) == "string" and .containerID != ""
+					and (.imageID | type) == "string" and (.imageID | test("sha256:[0-9a-f]{64}$"))
 					and (.restartCount | type) == "number"
 					and .restartCount == (.restartCount | floor)
 					and .restartCount >= 0
@@ -1142,13 +1148,63 @@ ready_pod_runtime_identities() {
 			)
 			then (.status.containerStatuses
 				| sort_by(.name)
-				| map({name: .name, containerID: .containerID, restartCount: .restartCount})
+				| map({name: .name, containerID: .containerID, imageID: .imageID, restartCount: .restartCount})
 				| tojson
 				| @base64)
 			else ""
 			end)
 		] | @tsv
 	'
+}
+
+ready_pod_target_image_digest() {
+	local source_pods_json="$1"
+	local result
+	local result_status
+	local result_value
+
+	result="$(printf '%s' "$source_pods_json" | "$JQ" -r --arg target "$KUBEBRAIN_CONTAINER_NAME" '
+		[
+			.items[]
+			| select(.metadata.deletionTimestamp == null)
+			| select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+			| . as $pod
+			| ($pod.metadata.name // "<missing>") as $pod_name
+			| [.status.containerStatuses[]? | select(.name == $target)] as $matches
+			| if ($matches | length) != 1 then
+				{error: "\($pod_name):target-count=\($matches | length)"}
+			  elif $matches[0].ready != true then
+				{error: "\($pod_name):target-not-ready"}
+			  elif (($matches[0].imageID | type) != "string") then
+				{error: "\($pod_name):imageID-not-string"}
+			  elif ($matches[0].imageID | test("sha256:[0-9a-f]{64}$") | not) then
+				{error: "\($pod_name):imageID-without-canonical-digest"}
+			  else
+				{digest: ($matches[0].imageID | capture("(?<digest>sha256:[0-9a-f]{64})$").digest)}
+			  end
+		] as $rows
+		| [$rows[] | select(has("error")) | .error] as $errors
+		| if ($errors | length) > 0 then
+			["invalid", ($errors | join(","))] | @tsv
+		  else
+			([$rows[].digest] | unique) as $digests
+			| if ($digests | length) != 1 then
+				["invalid", ("mixed-digests=" + ($digests | join(",")))] | @tsv
+			  else
+				["ok", $digests[0]] | @tsv
+			  end
+		  end
+	')"
+	IFS=$'\t' read -r result_status result_value <<<"$result"
+	if [[ "$result_status" != "ok" ]]; then
+		echo "KubeBrain target container image digest mismatch: ${result_value}" >&2
+		return 1
+	fi
+	if [[ -n "$EXPECTED_KUBEBRAIN_IMAGE_DIGEST" && "$result_value" != "$EXPECTED_KUBEBRAIN_IMAGE_DIGEST" ]]; then
+		echo "KubeBrain target container image digest mismatch: expected ${EXPECTED_KUBEBRAIN_IMAGE_DIGEST}, got ${result_value}" >&2
+		return 1
+	fi
+	printf '%s' "$result_value"
 }
 
 pod_local_status_identity() {
@@ -1737,6 +1793,7 @@ if [[ "$ready_pods" != "$EXPECTED_READY_PODS" || "$total_pods" != "$EXPECTED_REA
   echo "KubeBrain Ready pod count mismatch: expected ${EXPECTED_READY_PODS}/${EXPECTED_READY_PODS}, got ready/total ${ready_pods}/${total_pods}" >&2
   exit 1
 fi
+kubebrain_image_digest="$(ready_pod_target_image_digest "$pods_json")"
 
 readyz="$(run_with_probe_timeout "$CURL" -fsS "$READYZ_URL")"
 if [[ "$readyz" != "ok" ]]; then
@@ -3990,4 +4047,4 @@ if [[ "$EXPECTED_PPROF_DISABLED_CHECKS" == "1" ]]; then
   status_summary+=", client_pprof=404, info_pprof=404"
 fi
 
-echo "dataplane readonly gate passed: ready_pods=${ready_pods}, readyz=ok${readyz_summary}, livez=ok, livez_serializable_read=ok${livez_summary}, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
+echo "dataplane readonly gate passed: ready_pods=${ready_pods}, kubebrain_image_digest=${kubebrain_image_digest}, readyz=ok${readyz_summary}, livez=ok, livez_serializable_read=ok${livez_summary}, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
