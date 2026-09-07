@@ -843,8 +843,10 @@ expect_info_metrics_boundary() {
 expect_hashkv_cache_counter() {
 	local metrics_text="$1"
 	local metric="$2"
+	local sample_cluster
+	local sample_rows
 	local type_values
-	local sample_values
+	local sample_value
 
 	type_values="$(awk -v metric="$metric" '
     $1 == "#" && $2 == "TYPE" && $3 == metric { print $4 }
@@ -853,7 +855,7 @@ expect_hashkv_cache_counter() {
 		echo "info metrics mismatch: expected ${metric} counter" >&2
 		return 1
 	fi
-	sample_values="$(awk -v metric="$metric" '
+	sample_rows="$(awk -v metric="$metric" '
     {
       token = $1
       name = token
@@ -863,26 +865,29 @@ expect_hashkv_cache_counter() {
       if (token !~ pattern || NF != 2) {
         print "invalid"
       } else {
-        print $2
+        prefix = metric "{cluster=\""
+        cluster = substr(token, length(prefix) + 1, length(token) - length(prefix) - 2)
+        print cluster "\t" $2
       }
     }
 	' <<<"$metrics_text")"
-	if [[ ! "$sample_values" =~ ^(0|[1-9][0-9]{0,15})$ ]]; then
+	IFS=$'\t' read -r sample_cluster sample_value <<<"$sample_rows"
+	if [[ -z "$sample_cluster" || "$sample_rows" != "${sample_cluster}"$'\t'"${sample_value}" || ! "$sample_value" =~ ^(0|[1-9][0-9]{0,15})$ ]]; then
 		echo "info metrics mismatch: ${metric} must contain exactly one cluster-labeled canonical non-negative safe integer sample" >&2
 		return 1
 	fi
-	if (( ${#sample_values} == 16 )) && [[ "$sample_values" > "$PROMETHEUS_COUNTER_MAX_SAFE_INTEGER" ]]; then
+	if (( ${#sample_value} == 16 )) && [[ "$sample_value" > "$PROMETHEUS_COUNTER_MAX_SAFE_INTEGER" ]]; then
 		echo "info metrics mismatch: ${metric} must contain exactly one cluster-labeled canonical non-negative safe integer sample" >&2
 		return 1
 	fi
-	printf '%s' "$sample_values"
+	printf '%s\t%s' "$sample_cluster" "$sample_value"
 }
 
 expect_mvcc_hash_histogram_count() {
 	local metrics_text="$1"
 	local metric="$2"
 	local count_metric="${metric}_count"
-	local family_valid
+	local family_cluster
 	local sample_values
 	local type_values
 
@@ -915,7 +920,7 @@ expect_mvcc_hash_histogram_count() {
 		echo "info metrics mismatch: ${count_metric} must contain exactly one cluster-labeled canonical non-negative safe integer sample" >&2
 		return 1
 	fi
-	family_valid="$(awk -v metric="$metric" -v max="$PROMETHEUS_COUNTER_MAX_SAFE_INTEGER" '
+	family_cluster="$(awk -v metric="$metric" -v max="$PROMETHEUS_COUNTER_MAX_SAFE_INTEGER" '
     BEGIN {
       expected_count = split("0.01 0.02 0.04 0.08 0.16 0.32 0.64 1.28 2.56 5.12 10.24 20.48 40.96 81.92 163.84 +Inf", expected, " ")
       valid = 1
@@ -987,14 +992,14 @@ expect_mvcc_hash_histogram_count() {
     }
     END {
       if (bucket_count != expected_count || sum_seen != 1 || count_seen != 1 || family_cluster == "" || last_bucket != count_value) valid = 0
-      print valid ? "valid" : "invalid"
+      print valid ? family_cluster : "invalid"
     }
 	' <<<"$metrics_text")"
-	if [[ "$family_valid" != "valid" ]]; then
+	if [[ "$family_cluster" == "invalid" || -z "$family_cluster" || "$family_cluster" =~ [[:space:]] ]]; then
 		echo "info metrics mismatch: ${metric} histogram family is incomplete or inconsistent" >&2
 		return 1
 	fi
-	printf '%s' "$sample_values"
+	printf '%s\t%s' "$family_cluster" "$sample_values"
 }
 
 expect_process_start_time_seconds() {
@@ -1063,9 +1068,17 @@ ready_pod_runtime_identities() {
 
 snapshot_hashkv_cache_counters() {
 	local hashkv_cache_hit
+	local hashkv_cache_hit_cluster
+	local hashkv_cache_hit_row
 	local hashkv_cache_miss
+	local hashkv_cache_miss_cluster
+	local hashkv_cache_miss_row
 	local mvcc_hash_count
+	local mvcc_hash_cluster
+	local mvcc_hash_row
 	local mvcc_hash_rev_count
+	local mvcc_hash_rev_cluster
+	local mvcc_hash_rev_row
 	local pod
 	local pod_container_identity
 	local pod_identity_rows
@@ -1085,22 +1098,30 @@ snapshot_hashkv_cache_counters() {
 		fi
 		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
-		if ! hashkv_cache_hit="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"; then
+		if ! hashkv_cache_hit_row="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"; then
 			return 1
 		fi
-		if ! hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"; then
+		IFS=$'\t' read -r hashkv_cache_hit_cluster hashkv_cache_hit <<<"$hashkv_cache_hit_row"
+		if ! hashkv_cache_miss_row="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"; then
 			return 1
 		fi
+		IFS=$'\t' read -r hashkv_cache_miss_cluster hashkv_cache_miss <<<"$hashkv_cache_miss_row"
 		if ! process_start_time="$(expect_process_start_time_seconds "$pod_metrics")"; then
 			return 1
 		fi
-		if ! mvcc_hash_count="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_duration_seconds")"; then
+		if ! mvcc_hash_row="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_duration_seconds")"; then
 			return 1
 		fi
-		if ! mvcc_hash_rev_count="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_rev_duration_seconds")"; then
+		IFS=$'\t' read -r mvcc_hash_cluster mvcc_hash_count <<<"$mvcc_hash_row"
+		if ! mvcc_hash_rev_row="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_rev_duration_seconds")"; then
 			return 1
 		fi
-		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pod" "$pod_uid" "$pod_container_identity" "$process_start_time" "$hashkv_cache_hit" "$hashkv_cache_miss" "$mvcc_hash_count" "$mvcc_hash_rev_count"
+		IFS=$'\t' read -r mvcc_hash_rev_cluster mvcc_hash_rev_count <<<"$mvcc_hash_rev_row"
+		if [[ "$hashkv_cache_hit_cluster" != "$hashkv_cache_miss_cluster" || "$hashkv_cache_hit_cluster" != "$mvcc_hash_cluster" || "$hashkv_cache_hit_cluster" != "$mvcc_hash_rev_cluster" ]]; then
+			echo "info metrics mismatch: Hash observability metric clusters disagree for pod ${pod}" >&2
+			return 1
+		fi
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pod" "$pod_uid" "$pod_container_identity" "$process_start_time" "$hashkv_cache_hit_cluster" "$hashkv_cache_hit" "$hashkv_cache_miss" "$mvcc_hash_count" "$mvcc_hash_rev_count"
 	done <<<"$pod_identity_rows"
 }
 
@@ -1111,6 +1132,7 @@ expect_hash_metrics_boundary() {
 	local baseline_hit
 	local baseline_hash_count
 	local baseline_hash_rev_count
+	local baseline_metric_cluster
 	local baseline_miss
 	local baseline_pod
 	local baseline_pod_container_identity
@@ -1120,22 +1142,31 @@ expect_hash_metrics_boundary() {
 	local -A baseline_hits=()
 	local -A baseline_hash_counts=()
 	local -A baseline_hash_rev_counts=()
+	local -A baseline_metric_clusters=()
 	local -A baseline_misses=()
 	local -A baseline_process_start_times=()
 	local -A baseline_uids=()
 	local client_metrics
 	local hashkv_cache_hit
+	local hashkv_cache_hit_cluster
 	local hashkv_cache_hit_delta
 	local hashkv_cache_hit_delta_total="0"
+	local hashkv_cache_hit_row
 	local hashkv_cache_miss
+	local hashkv_cache_miss_cluster
 	local hashkv_cache_miss_delta
 	local hashkv_cache_miss_delta_total="0"
+	local hashkv_cache_miss_row
 	local mvcc_hash_count
+	local mvcc_hash_cluster
 	local mvcc_hash_count_delta
 	local mvcc_hash_count_delta_total="0"
+	local mvcc_hash_row
 	local mvcc_hash_rev_count
+	local mvcc_hash_rev_cluster
 	local mvcc_hash_rev_count_delta
 	local mvcc_hash_rev_count_delta_total="0"
+	local mvcc_hash_rev_row
 	local pod
 	local pod_container_identity
 	local pod_identity_rows
@@ -1154,13 +1185,14 @@ expect_hash_metrics_boundary() {
     echo "client metrics mismatch after hash checks: expected 404 page not found body" >&2
 		exit 1
 	fi
-	while IFS=$'\t' read -r baseline_pod baseline_pod_uid baseline_pod_container_identity baseline_process_start_time baseline_hit baseline_miss baseline_hash_count baseline_hash_rev_count; do
+	while IFS=$'\t' read -r baseline_pod baseline_pod_uid baseline_pod_container_identity baseline_process_start_time baseline_metric_cluster baseline_hit baseline_miss baseline_hash_count baseline_hash_rev_count; do
 		if [[ -z "$baseline_pod" ]]; then
 			continue
 		fi
 		baseline_uids["$baseline_pod"]="$baseline_pod_uid"
 		baseline_container_identities["$baseline_pod"]="$baseline_pod_container_identity"
 		baseline_process_start_times["$baseline_pod"]="$baseline_process_start_time"
+		baseline_metric_clusters["$baseline_pod"]="$baseline_metric_cluster"
 		baseline_hits["$baseline_pod"]="$baseline_hit"
 		baseline_misses["$baseline_pod"]="$baseline_miss"
 		baseline_hash_counts["$baseline_pod"]="$baseline_hash_count"
@@ -1190,23 +1222,35 @@ expect_hash_metrics_boundary() {
 		fi
 		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
-		if ! hashkv_cache_hit="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"; then
+		if ! hashkv_cache_hit_row="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"; then
 			exit 1
 		fi
-		if ! hashkv_cache_miss="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"; then
+		IFS=$'\t' read -r hashkv_cache_hit_cluster hashkv_cache_hit <<<"$hashkv_cache_hit_row"
+		if ! hashkv_cache_miss_row="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_miss")"; then
 			exit 1
 		fi
+		IFS=$'\t' read -r hashkv_cache_miss_cluster hashkv_cache_miss <<<"$hashkv_cache_miss_row"
 		if ! process_start_time="$(expect_process_start_time_seconds "$pod_metrics")"; then
 			exit 1
 		fi
-		if ! mvcc_hash_count="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_duration_seconds")"; then
+		if ! mvcc_hash_row="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_duration_seconds")"; then
 			exit 1
 		fi
-		if ! mvcc_hash_rev_count="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_rev_duration_seconds")"; then
+		IFS=$'\t' read -r mvcc_hash_cluster mvcc_hash_count <<<"$mvcc_hash_row"
+		if ! mvcc_hash_rev_row="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_rev_duration_seconds")"; then
 			exit 1
 		fi
-		if [[ -z "${baseline_hits[$pod]+x}" || -z "${baseline_misses[$pod]+x}" || -z "${baseline_hash_counts[$pod]+x}" || -z "${baseline_hash_rev_counts[$pod]+x}" ]]; then
+		IFS=$'\t' read -r mvcc_hash_rev_cluster mvcc_hash_rev_count <<<"$mvcc_hash_rev_row"
+		if [[ "$hashkv_cache_hit_cluster" != "$hashkv_cache_miss_cluster" || "$hashkv_cache_hit_cluster" != "$mvcc_hash_cluster" || "$hashkv_cache_hit_cluster" != "$mvcc_hash_rev_cluster" ]]; then
+			echo "info metrics mismatch: Hash observability metric clusters disagree for pod ${pod}" >&2
+			exit 1
+		fi
+		if [[ -z "${baseline_metric_clusters[$pod]+x}" || -z "${baseline_hits[$pod]+x}" || -z "${baseline_misses[$pod]+x}" || -z "${baseline_hash_counts[$pod]+x}" || -z "${baseline_hash_rev_counts[$pod]+x}" ]]; then
 			echo "info metrics mismatch: missing HashKV cache or MVCC hash histogram baseline for pod ${pod}" >&2
+			exit 1
+		fi
+		if [[ "$hashkv_cache_hit_cluster" != "${baseline_metric_clusters[$pod]}" ]]; then
+			echo "info metrics mismatch: Hash observability metric cluster changed during probes for pod ${pod}" >&2
 			exit 1
 		fi
 		if [[ -z "${baseline_process_start_times[$pod]+x}" || "$process_start_time" != "${baseline_process_start_times[$pod]}" ]]; then
