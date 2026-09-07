@@ -73375,6 +73375,52 @@ revision/HashKV/compact/term 为 `75044/1984703050/66760/815`，Auth disabled。
 tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
 `/root/.local/share/Trash/files/kubebrain-a5770-20260907T111841Z`；稳定镜像和数据卷未删除。
 
+### A5771：把只读发布门禁绑定到实际 CRI runtime image digest
+
+A5770 已把逐 Pod 证据绑定到明确容器，但门禁仍只用 `Status.Version=3.7.0` 约束软件版本；旧版、候选版或混合版本都可能报告
+同一个兼容版本。修复前设置一个与 fixture runtime 不同的 `EXPECTED_KUBEBRAIN_IMAGE_DIGEST`，旧脚本仍整体 GREEN，形成
+0.219 秒的独立 RED，证明 spec image 或版本字符串不能替代运行时制品身份。
+
+提交 `d16b5d0b751ddd0ecc9ae5595f856d9a2729957c` 新增可选、严格 canonical 的
+`EXPECTED_KUBEBRAIN_IMAGE_DIGEST`。每个非删除 Ready Pod 必须恰有一个目标容器、目标 container status 自身 Ready、
+`imageID` 具有 canonical SHA-256 后缀，且三 Pod digest 唯一；配置期望时还需精确相等。baseline/post/final 的完整容器
+运行身份同时加入 `imageID`，使长 HashKV 证据窗口内镜像漂移 fail closed；成功摘要新增
+`kubebrain_image_digest=<runtime digest>`。成功、非法配置、期望不匹配、混合 digest、缺目标容器、目标未 Ready、非法 imageID
+及完整三成员显式容器共 8 类用例连续 `count=10` 为 29.327 秒。完整 production probe 普通/race 为
+241.214/243.263 秒，`go vet`、`bash -n`、gofmt 与 diff check 全部 GREEN。代码提交前 verifier 为
+703=`170/193/180/160`，四分片为 `249.273/445.445/300.367/656.009s`；提交后 verifier 不变，四分片为
+`248.984/445.869/303.211/658.167s`，再次全部 GREEN。
+
+最终候选 `docker.io/library/kubebrain@sha256:1635355e427ce08d0c6cd72e8716ddce1d87026e89277f83f5af3ad105a28899`
+内嵌版本 `0.0.0-d16b5d0b`、完整 commit、build time `2026-09-07T12:22:09Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`；镜像内 kubectl 为 v1.36.2。OCI archive 为 914,847,744 bytes，SHA-256
+`256d6a3fabc268ec14c9dacad64ddafe96eeccaa979a72a25a53008145db2a81`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`9bc1caddd03f05838583f86f9ca167114b3cb9140613318be8f94d4fdf6dcf65`、
+`sha256:1635355e427ce08d0c6cd72e8716ddce1d87026e89277f83f5af3ad105a28899`、
+`sha256:7d926e5f0ca8dff9c6182325b3118e09d3a74016162b70d70e4f82e87659bfaf`、
+`sha256:7f1a98072374e0d1a94bd42b234229c9528196171ae72621c63969097ac1403e`、
+`sha256:6605f9237db1300cbadd79cc02353403ffbc6ca613bfe03f35efff22be88378e`。78/78 blobs 与 78/78 descriptor
+edges 的 size/hash 全匹配且 0 orphan；镜像为 `65532:65532`、正确入口、71/71 diff IDs。SPDX layer
+`sha256:12a2661608bd8519e4460735b6cd48227a9b46fa267f7744ee4bb3ef82695fda` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:41422947620f6f91ca825a4bedee1cca5dd94c710e021d4aa5fe4a830fc1d9e6`
+含 3 项固定 materials，两份 statement 都只有一个 subject 并精确绑定 platform manifest。
+
+候选使用 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test，从 generation 972 原子投放到
+generation/observed `973/973`、RV `8926036`；3/3 Ready、restart 0。spec 固定 nested index digest `1635355e...`，
+而 Kind 离线导入后的三个 CRI `imageID` 均为顶层 `index.json` runtime digest `sha256:9bc1cadd...`，新门禁显式绑定后者，
+没有把两类 digest 混用。两个无调试 10 秒 gate 曾分别以 exit 124 结束且未误计 GREEN；两次 `bash -x` 诊断和一次逐命令
+timeout 记录均完整 GREEN，未固定到同一业务探针，最终移除诊断包装器后的普通完整 gate 明确 GREEN。正式轮 Hash/HashKV
+histogram 聚合增量 `2/5`、cache hit/miss 增量 `4/2`，revision/HashKV/compact/term 为
+`75044/1984703050/66760/817`，三副本及 direct/gateway 结果一致，Auth disabled。
+
+随后用新鲜六类 JSON test 回滚稳定 digest；终态 generation/observed `974/974`、RV `8928293`、3/3 Ready、restart 0、
+22 参数，三个 runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+省略未来 `EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS`、显式绑定稳定 runtime digest 的 60 秒适用 gate GREEN，
+revision/HashKV/compact/term 为 `75044/1984703050/66760/820`，Auth disabled；PD/TiKV 均 3/3 Normal，三个 store Up。
+最终关闭六个 listener 端口，精确删除候选 tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive
+与展开审计目录已移入可恢复目录 `/root/.local/share/Trash/files/kubebrain-a5771-20260907T125818Z`；稳定镜像和数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

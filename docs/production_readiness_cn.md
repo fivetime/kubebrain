@@ -1322,6 +1322,7 @@ CRITICAL，但本轮 canary 仍失败；当前等于唯一 candidate spec 时执
 KUBE_CONTEXT=production \
 KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
 KUBEBRAIN_CONTAINER_NAME=kubebrain \
+EXPECTED_KUBEBRAIN_IMAGE_DIGEST=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
 EXPECTED_READY_PODS=3 \
 ENDPOINT=https://instance-a.example:2379 \
 READYZ_URL=https://instance-a-readyz.example/readyz \
@@ -1361,6 +1362,15 @@ HTTP 400 和固定文本
 并跳过不可能到达内部 gRPC 的 gateway Status/AuthStatus/Alarm/Hash/HashKV payload 校验；官方
 gRPC `etcdctl endpoint status/hashkv`、client/info `/version`、健康和可选 info metrics 检查仍保留。
 auth disabled 时不应用该拒绝，gateway 继续按普通路径工作。
+
+`EXPECTED_KUBEBRAIN_IMAGE_DIGEST` 可选，但一旦配置就必须是小写 canonical `sha256:<64 hex>`。无论是否配置期望值，
+脚本都会要求每个非删除 Ready Pod 恰好有一个名为 `KUBEBRAIN_CONTAINER_NAME` 的 container status、该容器自身
+`ready=true`，且 `imageID` 以 canonical SHA-256 digest 结尾；所有 Ready Pod 提取出的 runtime digest 必须唯一。
+配置期望值时还必须与这个唯一 runtime digest 精确相等，通过摘要输出
+`kubebrain_image_digest=sha256:<digest>`。该值来自 kubelet/CRI 的 `status.containerStatuses[].imageID`，可能是离线
+导入器的顶层 OCI index digest，不应从 StatefulSet 的 spec image、发布 tag、nested index 或二进制版本字符串推导。
+HashKV 长窗口的 baseline/post/final Pod 身份快照也会记录所有容器的完整 `imageID`，因此窗口内镜像切换会与
+container ID/restartCount 漂移一样 fail closed。
 
 该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 与 `/livez` 必须返回 `ok`，
 `/livez?verbose` 必须包含 `[+]serializable_read ok` 并以 `ok` 结束；配置
