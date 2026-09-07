@@ -1199,17 +1199,25 @@ ready_pod_runtime_identities() {
 		and ((keys | length) >= (if $allow_empty then 0 else 1 end))
 		and ((keys | length) <= 1)
 		and all(to_entries[]; (.key == "running" or .key == "waiting" or .key == "terminated") and (.value | type) == "object");
-    .items[]
-    | select(.metadata.deletionTimestamp == null)
-    | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+	[.items[]
+		| select(.metadata.deletionTimestamp == null)
+		| select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+	] as $ready_pods
+	| $ready_pods[]
 		| (.status.containerStatuses // null) as $containers
 		| (.status.initContainerStatuses // []) as $init_containers
 		| (.status.ephemeralContainerStatuses // []) as $ephemeral_containers
 		| [
-			(.metadata.name // ""),
-			(.metadata.uid // ""),
+			(if (.metadata.name | type) == "string" and .metadata.name != "" then .metadata.name else "<invalid>" end),
+			(if (.metadata.uid | type) == "string" and .metadata.uid != "" then .metadata.uid else "<invalid>" end),
 			(if (
-				($containers | type) == "array"
+				(.metadata.name | type) == "string"
+				and .metadata.name != ""
+				and (.metadata.uid | type) == "string"
+				and .metadata.uid != ""
+				and (($ready_pods | map(.metadata.name) | unique | length) == ($ready_pods | length))
+				and (($ready_pods | map(.metadata.uid) | unique | length) == ($ready_pods | length))
+				and ($containers | type) == "array"
 				and ($containers | length) > 0
 				and ($init_containers | type) == "array"
 				and ($ephemeral_containers | type) == "array"
@@ -1231,7 +1239,10 @@ ready_pod_runtime_identities() {
 						and (.status.lastState | valid_container_state(true))
 						and ((.status | has("started") | not) or .status.started == null or (.status.started | type) == "boolean")
 					end
-				) then ($runtime_statuses
+				)
+				and (($runtime_statuses | map([.scope, .status.name]) | unique | length) == ($runtime_statuses | length))
+				and (($runtime_statuses | map(.status.containerID) | unique | length) == ($runtime_statuses | length))
+				then ($runtime_statuses
 					| sort_by(.scope, .status.name)
 					| map({
 						scope: .scope,
@@ -1474,11 +1485,11 @@ snapshot_hashkv_cache_counters() {
 
 	pod_identity_rows="$(ready_pod_runtime_identities "$pods_json")"
 	while IFS=$'\t' read -r pod pod_uid pod_container_identity; do
-		if [[ -z "$pod" ]]; then
+		if [[ -z "$pod" || "$pod" == "<invalid>" ]]; then
 			echo "info metrics mismatch: Ready Pod name is required for HashKV cache baseline" >&2
 			return 1
 		fi
-		if [[ -z "$pod_uid" || -z "$pod_container_identity" ]]; then
+		if [[ -z "$pod_uid" || "$pod_uid" == "<invalid>" || -z "$pod_container_identity" ]]; then
 			echo "info metrics mismatch: complete Pod runtime identity is required for HashKV cache baseline pod ${pod}" >&2
 			return 1
 		fi
@@ -1636,11 +1647,11 @@ expect_hash_metrics_boundary() {
 	validate_ready_pod_statefulset_ownership "$post_pods_json"
 	pod_identity_rows="$(ready_pod_runtime_identities "$post_pods_json")"
 	while IFS=$'\t' read -r pod pod_uid pod_container_identity; do
-		if [[ -z "$pod" ]]; then
+		if [[ -z "$pod" || "$pod" == "<invalid>" ]]; then
 			echo "info metrics mismatch: Ready Pod name is required after HashKV cache probes" >&2
 			exit 1
 		fi
-		if [[ -z "$pod_uid" || -z "$pod_container_identity" ]]; then
+		if [[ -z "$pod_uid" || "$pod_uid" == "<invalid>" || -z "$pod_container_identity" ]]; then
 			echo "info metrics mismatch: complete Pod runtime identity is required after HashKV cache probes for pod ${pod}" >&2
 			exit 1
 		fi
@@ -1753,11 +1764,11 @@ expect_hash_metrics_boundary() {
 	validate_ready_pod_statefulset_ownership "$final_pods_json"
 	final_pod_identity_rows="$(ready_pod_runtime_identities "$final_pods_json")"
 	while IFS=$'\t' read -r final_pod final_pod_uid final_pod_container_identity; do
-		if [[ -z "$final_pod" ]]; then
+		if [[ -z "$final_pod" || "$final_pod" == "<invalid>" ]]; then
 			echo "info metrics mismatch: Ready Pod name is required after post HashKV evidence collection" >&2
 			exit 1
 		fi
-		if [[ -z "$final_pod_uid" || -z "$final_pod_container_identity" ]]; then
+		if [[ -z "$final_pod_uid" || "$final_pod_uid" == "<invalid>" || -z "$final_pod_container_identity" ]]; then
 			echo "info metrics mismatch: complete Pod runtime identity is required after post HashKV evidence collection for pod ${final_pod}" >&2
 			exit 1
 		fi
