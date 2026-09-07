@@ -72945,6 +72945,54 @@ generation/observed `953/953`、RV `8840225`；3/3 Ready、restart 0，三个 ru
 引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
 `/root/.local/share/Trash/files/kubebrain-a5761-20260907T0059Z`；稳定镜像和数据卷未删除。
 
+### A5762：封闭 Hash/HashKV histogram family 结构与数值合同
+
+A5761 已要求 `etcd_mvcc_hash_duration_seconds` 与 `etcd_mvcc_hash_rev_duration_seconds` 的 TYPE 唯一且为
+histogram，并用本轮 `_count` 增量证明实际调用生效，但仍可能接受缺 bucket、累计值倒退或非有限 `_sum` 的伪造 family。
+继续对照 `/root/etcd/server/storage/mvcc/metrics.go` 中两者共同使用的
+`prometheus.ExponentialBuckets(.01, 2, 15)`，修复前三个 RED 分别删除 `le="0.01"` bucket、令
+`le="0.01"` 为 1 而 `le="0.02"` 为 0，以及把 `_sum` 改为 `1e9999`；旧 gate 三者均错误通过并报告
+Hash/HashKV histogram 增量 `3/3`。
+
+提交 `a6ad76491dacb97ddfbb2282cd825e9e886a9cba` 在原有精确 TYPE/count parser 后验证完整 family：每个 metric
+只能有同一个非空 `cluster`，bucket 必须按 `0.01、0.02、0.04、0.08、0.16、0.32、0.64、1.28、2.56、5.12、
+10.24、20.48、40.96、81.92、163.84、+Inf` 精确出现；累计值必须是 `[0,2^53-1]` 内的 canonical 十进制
+整数且单调不降，`+Inf` 必须等于 `_count`。`_sum` 与 `_count` 各唯一，前者必须是有限非负安全数，所有样本
+标签结构严格固定。测试基线与默认 fixture 同步输出完整 family，避免测试替身掩盖生产合同。
+
+七类聚焦测试单轮为 11.281 秒、`count=10` 为 113.310 秒；完整 probe 普通/race 为 204.417/206.270 秒，
+文档合同 `count=10` 为 0.078 秒，`go vet`、`bash -n`、gofmt 与 diff check 全部 GREEN。代码提交前 verifier
+为 703=`170/193/180/160`，四分片为 `248.835/448.614/302.406/625.767s`；提交后 verifier 不变，四分片为
+`251.068/440.599/299.967/615.805s`，再次全部 GREEN。
+
+最终候选 `docker.io/library/kubebrain@sha256:e3063190d4bbca8de2a7c12cca674aca21af1f903ae8fc93fc027a54b4049598`
+内嵌版本 `0.0.0-a6ad7649`、完整 commit、build time `2026-09-07T01:39:05Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,844,672 bytes，SHA-256
+`2773af74081867967012cd5dc76e950a84a7b7c001d6a8abfe2d1a1c3d301725`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`d0c6628bef72ccd100a768d97a152e3520a020068b9c16e4438f57ecaa70da5f`、
+`sha256:e3063190d4bbca8de2a7c12cca674aca21af1f903ae8fc93fc027a54b4049598`、
+`sha256:63f421c11c008262622119cd3e36e50f4a7141b1055361d5de7d1d972ecf1170`、
+`sha256:125e3da1bb801ae00c7cecd9fa38b4f99e5803ab33302468a057e72cf074bae8`、
+`sha256:272f8b1c3c56459ae146a9a8ddcc26061687a74e76bf5169a036c022d6687fc2`。78/78 blobs 与 78/78 descriptor
+edges 的 size/hash 全匹配且无 orphan；镜像为 `65532:65532`、正确入口、71/71 diff IDs。SPDX layer
+`sha256:0c96124bbbd485e4271b703bb95775b816a05661ef48c39599c9ac5cfac2473b` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:9df0feb81e8d54bbf3f20fe2fd9223169ca628929c303e8a2c83aeb59d6e718a`
+含 3 项固定 materials，两份 statement 均只有一个 subject 并精确绑定 platform manifest。
+
+候选使用 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test，从 generation 954 原子投放到
+generation/observed `955/955`、RV `8847727`；3/3 Ready、restart 0，三个 Pod 均解析到候选不可变摘要。
+完整 readonly gate GREEN，输出 Hash/HashKV histogram 聚合增量 `2/5`、cache hit/miss 增量 `3/4` 及
+`hashkv_cache_process_identity=stable`；revision/HashKV/compact/term 为
+`75044/1984703050/66760/780`，三副本及 direct/gateway 结果一致，Auth disabled。
+
+随后用新鲜六类 JSON test 回滚稳定 digest；终态 generation/observed `956/956`、RV `8848394`、3/3 Ready、restart 0、
+22 参数，三个 runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+排除旧稳定镜像尚不存在的未来完整 info-metrics 合同后稳定适用 gate GREEN，revision/HashKV/compact/term 为
+`75044/1984703050/66760/782`，Auth disabled。最终关闭六个 listener，精确删除候选 tag/digest/config 三个 Kind image
+引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
+`/root/.local/share/Trash/files/kubebrain-a5762-20260907T015934Z`；稳定镜像和数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
