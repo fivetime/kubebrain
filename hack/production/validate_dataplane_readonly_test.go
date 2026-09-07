@@ -95,6 +95,29 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput:     "EXPECTED_KUBEBRAIN_IMAGE_DIGEST must be empty or a canonical sha256 digest",
 		},
 		{
+			name:           "rejects unsafe expected KubeBrain StatefulSet UID before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[]`,
+			extraEnv:       []string{`EXPECTED_KUBEBRAIN_STATEFULSET_UID=unsafe\uid`},
+			wantNoCommands: true,
+			wantOutput:     "EXPECTED_KUBEBRAIN_STATEFULSET_UID contains unsupported characters",
+		},
+		{
+			name: "rejects Ready Pods owned by another StatefulSet UID",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","ownerReferences":[{"apiVersion":"apps/v1","kind":"StatefulSet","name":"kubebrain","uid":"other-uid","controller":true}]},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1","ownerReferences":[{"apiVersion":"apps/v1","kind":"StatefulSet","name":"kubebrain","uid":"other-uid","controller":true}]},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2","ownerReferences":[{"apiVersion":"apps/v1","kind":"StatefulSet","name":"kubebrain","uid":"other-uid","controller":true}]},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_KUBEBRAIN_STATEFULSET_UID=expected-uid"},
+			wantOutput: "KubeBrain Ready Pod StatefulSet ownership mismatch",
+		},
+		{
 			name:           "rejects prefix count overflow before commands",
 			podsJSON:       `{"items":[]}`,
 			readyz:         "ok",
@@ -144,13 +167,14 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			readyz:     "ok",
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv:   []string{"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain-statefulset"},
 			wantTimeout: []string{
 				"10s kubectl",
 				"10s curl",
 				"10s go",
 			},
 			wantOK:     true,
-			wantOutput: "kubebrain_image_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			wantOutput: "kubebrain_statefulset_uid=uid-kubebrain-statefulset, kubebrain_image_digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
 		{
 			name: "rejects target container runtime image digest mismatch",
@@ -3866,6 +3890,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_VERSION=3.7.0",
 				"EXPECTED_HASHKV_HASH=111",
 				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain-statefulset",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
 			wantOK:     true,
@@ -3995,14 +4020,14 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "hashkv_cache_metrics=ok",
 		},
 		{
-			name: "rejects same-name Pod replacement during hashkv cache probes",
+			name: "rejects StatefulSet ownership drift during hashkv cache probes",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-0","restartCount":0,"ready":true}]}},
 				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-1","restartCount":0,"ready":true}]}},
 				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-2","restartCount":0,"ready":true}]}}
 			]}`,
 			postPodsJSON: `{"items":[
-				{"metadata":{"name":"kubebrain-0","uid":"replacement-uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://new-0","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-0","uid":"replacement-uid-0","ownerReferences":[{"apiVersion":"apps/v1","kind":"StatefulSet","name":"kubebrain","uid":"replacement-statefulset-uid","controller":true}]},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://new-0","restartCount":0,"ready":true}]}},
 				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-1","restartCount":0,"ready":true}]}},
 				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-2","restartCount":0,"ready":true}]}}
 			]}`,
@@ -4014,9 +4039,10 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_VERSION=3.7.0",
 				"EXPECTED_HASHKV_HASH=111",
 				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"EXPECTED_KUBEBRAIN_STATEFULSET_UID=uid-kubebrain-statefulset",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
-			wantOutput: "info metrics mismatch: Pod runtime identity changed during HashKV probes for pod kubebrain-0",
+			wantOutput: "KubeBrain Ready Pod StatefulSet ownership mismatch: expected UID uid-kubebrain-statefulset; kubebrain-0:controller=apps/v1/StatefulSet/kubebrain/replacement-statefulset-uid",
 		},
 		{
 			name: "rejects container restart during hashkv cache probes",
@@ -7614,6 +7640,15 @@ func podJSONWithDefaultRuntimeIdentities(t *testing.T, value string) string {
 		name, _ := metadata["name"].(string)
 		if _, exists := metadata["uid"]; !exists {
 			metadata["uid"] = "uid-" + name
+		}
+		if _, exists := metadata["ownerReferences"]; !exists {
+			metadata["ownerReferences"] = []any{map[string]any{
+				"apiVersion": "apps/v1",
+				"kind":       "StatefulSet",
+				"name":       "kubebrain",
+				"uid":        "uid-kubebrain-statefulset",
+				"controller": true,
+			}}
 		}
 		status, ok := item["status"].(map[string]any)
 		require.True(t, ok)

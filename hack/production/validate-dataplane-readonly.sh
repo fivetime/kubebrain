@@ -7,6 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_LABEL_SELECTOR="${KUBEBRAIN_LABEL_SELECTOR:-app.kubernetes.io/name=kubebrain}"
 KUBEBRAIN_CONTAINER_NAME="${KUBEBRAIN_CONTAINER_NAME:-kubebrain}"
+EXPECTED_KUBEBRAIN_STATEFULSET_UID="${EXPECTED_KUBEBRAIN_STATEFULSET_UID:-}"
 EXPECTED_KUBEBRAIN_IMAGE_DIGEST="${EXPECTED_KUBEBRAIN_IMAGE_DIGEST:-}"
 EXPECTED_READY_PODS="${EXPECTED_READY_PODS:-3}"
 ENDPOINT="${ENDPOINT:-}"
@@ -140,7 +141,7 @@ contains_unsafe_probe_value() {
   local value="$1"
   [[ "$value" == *[[:cntrl:]]* || "$value" == *\"* || "$value" == *\\* ]]
 }
-for variable in ENDPOINT READYZ_URL PREFIX STATUS_ENDPOINTS INFO_ENDPOINTS; do
+for variable in ENDPOINT READYZ_URL PREFIX STATUS_ENDPOINTS INFO_ENDPOINTS EXPECTED_KUBEBRAIN_STATEFULSET_UID; do
   value="${!variable}"
   if contains_unsafe_probe_value "$value"; then
     echo "${variable} contains unsupported characters" >&2
@@ -1142,6 +1143,46 @@ expect_process_start_time_seconds() {
 	printf '%s' "$sample_values"
 }
 
+validate_ready_pod_statefulset_ownership() {
+	local source_pods_json="$1"
+	local ownership_result
+	local ownership_status
+	local ownership_value
+
+	if [[ -z "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
+		return 0
+	fi
+	ownership_result="$(printf '%s' "$source_pods_json" | "$JQ" -r --arg expected_uid "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" '
+		[
+			.items[]
+			| select(.metadata.deletionTimestamp == null)
+			| select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+			| . as $pod
+			| [($pod.metadata.ownerReferences // [])[] | select(.controller == true)] as $controllers
+			| if ($controllers | length) != 1 then
+				"\($pod.metadata.name // "<missing>"):controller-count=\($controllers | length)"
+			  elif ($controllers[0].apiVersion != "apps/v1" or
+				$controllers[0].kind != "StatefulSet" or
+				($controllers[0].name | type) != "string" or
+				$controllers[0].name == "" or
+				$controllers[0].uid != $expected_uid) then
+				"\($pod.metadata.name // "<missing>"):controller=\($controllers[0].apiVersion // "<missing>")/\($controllers[0].kind // "<missing>")/\($controllers[0].name // "<missing>")/\($controllers[0].uid // "<missing>")"
+			  else empty
+			  end
+		] as $errors
+		| if ($errors | length) == 0 then
+			["ok", $expected_uid] | @tsv
+		  else
+			["invalid", ($errors | join(","))] | @tsv
+		  end
+	')"
+	IFS=$'\t' read -r ownership_status ownership_value <<<"$ownership_result"
+	if [[ "$ownership_status" != "ok" ]]; then
+		echo "KubeBrain Ready Pod StatefulSet ownership mismatch: expected UID ${EXPECTED_KUBEBRAIN_STATEFULSET_UID}; ${ownership_value}" >&2
+		return 1
+	fi
+}
+
 ready_pod_runtime_identities() {
 	local source_pods_json="$1"
 
@@ -1553,6 +1594,7 @@ expect_hash_metrics_boundary() {
 
 	post_pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 		get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
+	validate_ready_pod_statefulset_ownership "$post_pods_json"
 	pod_identity_rows="$(ready_pod_runtime_identities "$post_pods_json")"
 	while IFS=$'\t' read -r pod pod_uid pod_container_identity; do
 		if [[ -z "$pod" ]]; then
@@ -1669,6 +1711,7 @@ expect_hash_metrics_boundary() {
 	done <<<"$pod_identity_rows"
 	final_pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 		get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
+	validate_ready_pod_statefulset_ownership "$final_pods_json"
 	final_pod_identity_rows="$(ready_pod_runtime_identities "$final_pods_json")"
 	while IFS=$'\t' read -r final_pod final_pod_uid final_pod_container_identity; do
 		if [[ -z "$final_pod" ]]; then
@@ -1799,6 +1842,7 @@ fi
 
 pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
+validate_ready_pod_statefulset_ownership "$pods_json"
 ready_pods="$(printf '%s' "$pods_json" | "$JQ" -r '
   [
     .items[]
@@ -4065,4 +4109,8 @@ if [[ "$EXPECTED_PPROF_DISABLED_CHECKS" == "1" ]]; then
   status_summary+=", client_pprof=404, info_pprof=404"
 fi
 
-echo "dataplane readonly gate passed: ready_pods=${ready_pods}, kubebrain_image_digest=${kubebrain_image_digest}, readyz=ok${readyz_summary}, livez=ok, livez_serializable_read=ok${livez_summary}, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
+statefulset_ownership_summary=""
+if [[ -n "$EXPECTED_KUBEBRAIN_STATEFULSET_UID" ]]; then
+  statefulset_ownership_summary=", kubebrain_statefulset_uid=${EXPECTED_KUBEBRAIN_STATEFULSET_UID}"
+fi
+echo "dataplane readonly gate passed: ready_pods=${ready_pods}${statefulset_ownership_summary}, kubebrain_image_digest=${kubebrain_image_digest}, readyz=ok${readyz_summary}, livez=ok, livez_serializable_read=ok${livez_summary}, health=true, serializable_health=true, prefix_count=${prefix_count}${status_summary}${hashkv_summary}"
