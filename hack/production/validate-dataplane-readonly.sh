@@ -1190,27 +1190,40 @@ ready_pod_runtime_identities() {
     .items[]
     | select(.metadata.deletionTimestamp == null)
     | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+		| (.status.containerStatuses // null) as $containers
+		| (.status.initContainerStatuses // []) as $init_containers
+		| (.status.ephemeralContainerStatuses // []) as $ephemeral_containers
 		| [
 			(.metadata.name // ""),
 			(.metadata.uid // ""),
 			(if (
-				(.status.containerStatuses | type) == "array"
-				and (.status.containerStatuses | length) > 0
-				and all(.status.containerStatuses[];
-					(.name | type) == "string" and .name != ""
-					and (.containerID | type) == "string" and .containerID != ""
-					and (.imageID | type) == "string" and (.imageID | test("sha256:[0-9a-f]{64}$"))
-					and (.ready | type) == "boolean"
-					and (.restartCount | type) == "number"
-					and .restartCount == (.restartCount | floor)
-					and .restartCount >= 0
-				)
+				($containers | type) == "array"
+				and ($containers | length) > 0
+				and ($init_containers | type) == "array"
+				and ($ephemeral_containers | type) == "array"
 			)
-			then (.status.containerStatuses
-				| sort_by(.name)
-				| map({name: .name, containerID: .containerID, imageID: .imageID, ready: .ready, restartCount: .restartCount})
-				| tojson
-				| @base64)
+			then (
+				([ $containers[] | {scope: "container", status: .} ]
+				+ [ $init_containers[] | {scope: "initContainer", status: .} ]
+				+ [ $ephemeral_containers[] | {scope: "ephemeralContainer", status: .} ]) as $runtime_statuses
+				| if all($runtime_statuses[];
+					if (.status | type) != "object" then false else
+						(.status.name | type) == "string" and .status.name != ""
+						and (.status.containerID | type) == "string" and .status.containerID != ""
+						and (.status.imageID | type) == "string" and (.status.imageID | test("sha256:[0-9a-f]{64}$"))
+						and (.status.ready | type) == "boolean"
+						and (.status.restartCount | type) == "number"
+						and .status.restartCount == (.status.restartCount | floor)
+						and .status.restartCount >= 0
+					end
+				) then ($runtime_statuses
+					| sort_by(.scope, .status.name)
+					| map({scope: .scope, name: .status.name, containerID: .status.containerID, imageID: .status.imageID, ready: .status.ready, restartCount: .status.restartCount})
+					| tojson
+					| @base64)
+				else ""
+				end
+			)
 			else ""
 			end)
 		] | @tsv

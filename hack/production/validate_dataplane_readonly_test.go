@@ -4045,6 +4045,30 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "KubeBrain Ready Pod StatefulSet ownership mismatch: expected UID uid-kubebrain-statefulset; kubebrain-0:controller=apps/v1/StatefulSet/kubebrain/replacement-statefulset-uid",
 		},
 		{
+			name: "rejects native sidecar restart during hashkv cache probes",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true}],"initContainerStatuses":[{"name":"mesh","containerID":"containerd://mesh-old","imageID":"docker.io/library/mesh@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-1","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-2","restartCount":0,"ready":true}]}}
+			]}`,
+			postPodsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true}],"initContainerStatuses":[{"name":"mesh","containerID":"containerd://mesh-new","imageID":"docker.io/library/mesh@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","restartCount":1,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-1","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-2","restartCount":0,"ready":true}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: Pod runtime identity changed during HashKV probes for pod kubebrain-0",
+		},
+		{
 			name: "rejects target container readiness loss during hashkv cache probes",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true}]}},
@@ -4124,12 +4148,12 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		{
 			name: "allows stable multi-container identity in different API order",
 			podsJSON: `{"items":[
-				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"sidecar","containerID":"containerd://sidecar-0","restartCount":2,"ready":true},{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"sidecar","containerID":"containerd://sidecar-0","restartCount":2,"ready":true},{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true}],"initContainerStatuses":[{"name":"mesh","containerID":"containerd://mesh-0","imageID":"docker.io/library/mesh@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","restartCount":0,"ready":true}],"ephemeralContainerStatuses":[{"name":"debugger","containerID":"containerd://debugger-0","imageID":"docker.io/library/debugger@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","restartCount":0,"ready":false}]}},
 				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-1","restartCount":0,"ready":true}]}},
 				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-2","restartCount":0,"ready":true}]}}
 			]}`,
 			postPodsJSON: `{"items":[
-				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true},{"name":"sidecar","containerID":"containerd://sidecar-0","restartCount":2,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true},{"name":"sidecar","containerID":"containerd://sidecar-0","restartCount":2,"ready":true}],"initContainerStatuses":[{"name":"mesh","containerID":"containerd://mesh-0","imageID":"docker.io/library/mesh@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","restartCount":0,"ready":true}],"ephemeralContainerStatuses":[{"name":"debugger","containerID":"containerd://debugger-0","imageID":"docker.io/library/debugger@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","restartCount":0,"ready":false}]}},
 				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-1","restartCount":0,"ready":true}]}},
 				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-2","restartCount":0,"ready":true}]}}
 			]}`,
