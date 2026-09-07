@@ -73041,6 +73041,53 @@ generation/observed `957/957`、RV `8856048`；3/3 Ready、restart 0，三个 ru
 引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
 `/root/.local/share/Trash/files/kubebrain-a5763-20260907T030608Z`；稳定镜像和数据卷未删除。
 
+### A5764：把 Hash 可观测链绑定到权威 server identity
+
+A5763 已要求四个 Hash/HashKV family 在同次 scrape 中 cluster 一致且 baseline/post 不漂移，但如果两次都把四者统一伪造为
+`other`，仍可与同一 scrape 中 `etcd_server_id{cluster="default",server_id="..."}` 的服务身份脱节；server ID 自身变化或
+baseline 出现重复身份样本也不会进入计数基线。修复前三个 RED 分别让四个 family 在 baseline/post 都使用 `other`、只让 post
+server ID 从 `e3f` 变为 `abc`，以及在 baseline 追加第二条 server identity；旧 gate 三者均错误通过并报告四类增量
+`3/3/3/3`。实现审阅又补充 `value=1.0` 用例，防止依赖 awk 的 strnum 分类而放宽 canonical value 合同。
+
+提交 `14f37f5edfae40bd321ce1aa5c97e2696ab42a87` 新增逐 scrape 的严格 server identity parser：必须恰有一条
+`etcd_server_id{cluster="<non-empty>",server_id="<lower-hex>"} 1`，标签顺序、数量和值都精确固定。每个 Ready Pod 的四个
+Hash family cluster 除了彼此相同，还必须等于该权威 identity cluster；baseline 第十个字段保存 server ID，post 在计算任何
+counter/histogram 差值前要求 server ID 不变。由此同时封闭跨 cluster、跨 member identity 和重复/非 canonical identity 样本
+拼接，且继续受 Pod UID、完整 container identity 与进程启动时间三重运行身份约束。
+
+十四类相关用例单轮为 19.785 秒、`count=10` 为 199.160 秒；最终完整 probe 普通/race 为 209.318/211.083 秒，文档合同
+`count=10` 为 0.078 秒，`go vet`、`bash -n`、gofmt 与 diff check 全部 GREEN。代码提交前 verifier 为
+703=`170/193/180/160`，四分片为 `255.362/446.128/298.906/633.221s`；提交后 verifier 不变，四分片为
+`260.528/453.433/312.963/636.171s`，再次全部 GREEN。
+
+最终候选 `docker.io/library/kubebrain@sha256:f4dde4a9df84e1a2653dd831b1f480018f054b35c05488875c3e45d95664ba6a`
+内嵌版本 `0.0.0-14f37f5e`、完整 commit、build time `2026-09-07T03:57:35Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,845,184 bytes，SHA-256
+`ec83ec87957e9b99fc1d24b105c11e69a9f0cbde3e62adcc145c5a2e844c744a`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`4dde623f11fb8c468b31beec4ed464f2488fc97bb3ebe8bc05cff64c92f44172`、
+`sha256:f4dde4a9df84e1a2653dd831b1f480018f054b35c05488875c3e45d95664ba6a`、
+`sha256:85b600c69f08ca4800f20bc30cf859e0e22b4c7d8c0449d9f2a1f3cf1163fa8f`、
+`sha256:b416abbc6ac8a53a9ec2f15bb6419420181c967fc3895beaa92e0f7fbec7a823`、
+`sha256:5f5a0d1b8cd88418410b4f5fcd873eba76b43c3d811c0253af2b2e9b1f29ae25`。78/78 blobs 与 78/78 descriptor
+edges 的 size/hash 全匹配且无 orphan；镜像为 `65532:65532`、正确入口、71/71 diff IDs。SPDX layer
+`sha256:7d263a2a94b2f5e105b7e9ba350f82b907ea168b215b2ab30ee938cc48eba81e` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:68f04c3d956aab8b6d5dde5c424b885a16191d5a6fef5a674afc7be4ef78dc81`
+含 3 项固定 materials，两份 statement 均只有一个 subject 并精确绑定 platform manifest。
+
+候选使用 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test，从 generation 958 原子投放到
+generation/observed `959/959`、RV `8864583`；3/3 Ready、restart 0，三个 runtime imageID 均为候选不可变摘要。
+完整 readonly gate GREEN，四个 Hash family 与唯一 server identity 同 cluster 且 server ID 前后稳定，Hash/HashKV histogram
+聚合增量 `2/5`、cache hit/miss 增量 `3/4`，进程身份稳定；revision/HashKV/compact/term 为
+`75044/1984703050/66760/788`，三副本及 direct/gateway 结果一致，Auth disabled。
+
+随后用新鲜六类 JSON test 回滚稳定 digest；终态 generation/observed `960/960`、RV `8865229`、3/3 Ready、restart 0、
+22 参数，三个 runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+排除旧稳定镜像尚不存在的未来完整 info-metrics 合同后稳定适用 gate GREEN，revision/HashKV/compact/term 为
+`75044/1984703050/66760/790`，Auth disabled。最终关闭六个 listener，精确删除候选 tag/digest/config 三个 Kind image
+引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
+`/root/.local/share/Trash/files/kubebrain-a5764-20260907T041534Z`；稳定镜像和数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
