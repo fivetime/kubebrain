@@ -4563,11 +4563,11 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:                   "4",
 			statusJSON:              threeMemberStatusJSON(),
 			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "1c8"),
-			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "315"),
-			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "abc"),
+			baselineInfoMetricsPod1: withServerRole(withServerID(defaultBaselineInfoMetrics(""), "315"), "0"),
+			baselineInfoMetricsPod2: withServerRole(withServerID(defaultBaselineInfoMetrics(""), "abc"), "0"),
 			infoMetrics:             withServerID(defaultInfoMetrics(""), "1c8"),
-			infoMetricsPod1:         withServerID(defaultInfoMetrics(""), "315"),
-			infoMetricsPod2:         withServerID(defaultInfoMetrics(""), "abc"),
+			infoMetricsPod1:         withServerRole(withServerID(defaultInfoMetrics(""), "315"), "0"),
+			infoMetricsPod2:         withServerRole(withServerID(defaultInfoMetrics(""), "abc"), "0"),
 			extraEnv: []string{
 				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
 				"EXPECTED_STATUS_CLUSTER_ID=123",
@@ -4577,7 +4577,141 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"FAKE_HASHKV_JSON=" + threeMemberHashKVJSON(),
 			},
 			wantOK:     true,
-			wantOutput: "hashkv_server_identity_members_match=true, hashkv_server_identity_local_status_match=true",
+			wantOutput: "hashkv_server_identity_members_match=true, hashkv_server_identity_local_status_match=true, hashkv_server_role_local_status_match=true",
+		},
+		{
+			name: "rejects Ready Pod server role mismatch with local Status",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:                  "ok",
+			count:                   "4",
+			statusJSON:              threeMemberStatusJSON(),
+			baselineInfoMetrics:     withServerRole(withServerID(defaultBaselineInfoMetrics(""), "1c8"), "0"),
+			baselineInfoMetricsPod1: withServerRole(withServerID(defaultBaselineInfoMetrics(""), "315"), "0"),
+			baselineInfoMetricsPod2: withServerRole(withServerID(defaultBaselineInfoMetrics(""), "abc"), "0"),
+			infoMetrics:             withServerRole(withServerID(defaultInfoMetrics(""), "1c8"), "0"),
+			infoMetricsPod1:         withServerRole(withServerID(defaultInfoMetrics(""), "315"), "0"),
+			infoMetricsPod2:         withServerRole(withServerID(defaultInfoMetrics(""), "abc"), "0"),
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"FAKE_HASHKV_JSON=" + threeMemberHashKVJSON(),
+			},
+			wantOutput: "info metrics mismatch: Ready Pod server roles do not match local Status for pod kubebrain-0",
+		},
+		{
+			name: "rejects noncanonical Ready Pod server role metric sample",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: threeMemberStatusJSON(),
+			baselineInfoMetrics: strings.ReplaceAll(
+				withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+				`etcd_server_is_leader{cluster="default"} 1`,
+				`etcd_server_is_leader{cluster="default"} 2`,
+			),
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+			},
+			wantOutput: "info metrics mismatch: etcd_server_is_leader must contain exactly one cluster-labeled canonical 0/1 sample",
+		},
+		{
+			name: "rejects numeric local Status leader identity for fully enumerated Ready Pods",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:              "ok",
+			count:               "4",
+			statusJSON:          threeMemberStatusJSON(),
+			baselineInfoMetrics: withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			localStatusPod0:     `{"header":{"cluster_id":"123","member_id":"456"},"leader":456}`,
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+			},
+			wantOutput: "info metrics mismatch: local Status leader ID must be a canonical positive uint64 JSON string for pod kubebrain-0",
+		},
+		{
+			name: "rejects local Status leader disagreement with fully enumerated Status",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:              "ok",
+			count:               "4",
+			statusJSON:          threeMemberStatusJSON(),
+			baselineInfoMetrics: withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			localStatusPod0:     `{"header":{"cluster_id":"123","member_id":"456"},"leader":"789"}`,
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+			},
+			wantOutput: "info metrics mismatch: local Status leader differs from fully enumerated Status leader for pod kubebrain-0",
+		},
+		{
+			name: "rejects nonboolean local Status learner role",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:              "ok",
+			count:               "4",
+			statusJSON:          threeMemberStatusJSON(),
+			baselineInfoMetrics: withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			localStatusPod0:     `{"header":{"cluster_id":"123","member_id":"456"},"leader":"456","isLearner":"false"}`,
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+			},
+			wantOutput: "info metrics mismatch: local Status isLearner must be a JSON boolean for pod kubebrain-0",
+		},
+		{
+			name: "rejects Ready Pod learner metric mismatch with local Status",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:              "ok",
+			count:               "4",
+			statusJSON:          threeMemberStatusJSON(),
+			baselineInfoMetrics: withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			localStatusPod0:     `{"header":{"cluster_id":"123","member_id":"456"},"leader":"456","isLearner":true}`,
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+			},
+			wantOutput: "info metrics mismatch: Ready Pod server roles do not match local Status for pod kubebrain-0",
 		},
 		{
 			name: "rejects duplicate Ready Pod server identities with fully enumerated Status members",
@@ -4590,10 +4724,10 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:                   "4",
 			statusJSON:              threeMemberStatusJSON(),
 			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "1c8"),
-			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "315"),
-			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "315"),
+			baselineInfoMetricsPod1: withServerRole(withServerID(defaultBaselineInfoMetrics(""), "315"), "0"),
+			baselineInfoMetricsPod2: withServerRole(withServerID(defaultBaselineInfoMetrics(""), "315"), "0"),
 			infoMetrics:             withServerID(defaultInfoMetrics(""), "1c8"),
-			infoMetricsPod1:         withServerID(defaultInfoMetrics(""), "315"),
+			infoMetricsPod1:         withServerRole(withServerID(defaultInfoMetrics(""), "315"), "0"),
 			infoMetricsPod2:         withServerID(defaultInfoMetrics(""), "315"),
 			localStatusPod2:         defaultLocalStatusJSON("", "789"),
 			extraEnv: []string{
@@ -4617,11 +4751,11 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:                   "4",
 			statusJSON:              threeMemberStatusJSON(),
 			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "1c8"),
-			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "315"),
-			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "def"),
+			baselineInfoMetricsPod1: withServerRole(withServerID(defaultBaselineInfoMetrics(""), "315"), "0"),
+			baselineInfoMetricsPod2: withServerRole(withServerID(defaultBaselineInfoMetrics(""), "def"), "0"),
 			infoMetrics:             withServerID(defaultInfoMetrics(""), "1c8"),
-			infoMetricsPod1:         withServerID(defaultInfoMetrics(""), "315"),
-			infoMetricsPod2:         withServerID(defaultInfoMetrics(""), "def"),
+			infoMetricsPod1:         withServerRole(withServerID(defaultInfoMetrics(""), "315"), "0"),
+			infoMetricsPod2:         withServerRole(withServerID(defaultInfoMetrics(""), "def"), "0"),
 			localStatusPod2:         defaultLocalStatusJSON("", "3567"),
 			extraEnv: []string{
 				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
@@ -4695,7 +4829,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "1c8"),
 			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "315"),
 			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "abc"),
-			localStatusPod0:         `{"header":{"cluster_id":"124","member_id":"456"}}`,
+			localStatusPod0:         `{"header":{"cluster_id":"124","member_id":"456"},"leader":"456"}`,
 			extraEnv: []string{
 				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
 				"EXPECTED_STATUS_CLUSTER_ID=123",
@@ -7451,6 +7585,10 @@ func withServerID(metrics, serverID string) string {
 	return strings.ReplaceAll(metrics, `server_id="e3f"`, `server_id="`+serverID+`"`)
 }
 
+func withServerRole(metrics, isLeader string) string {
+	return strings.ReplaceAll(metrics, `etcd_server_is_leader{cluster="default"} 1`, `etcd_server_is_leader{cluster="default"} `+isLeader)
+}
+
 func threeMemberStatusJSON() string {
 	return `[
 		{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}},
@@ -7471,7 +7609,7 @@ func defaultLocalStatusJSON(value, memberID string) string {
 	if value != "" {
 		return value
 	}
-	return `{"header":{"cluster_id":"123","member_id":"` + memberID + `","revision":"7","raft_term":"8"}}`
+	return `{"header":{"cluster_id":"123","member_id":"` + memberID + `","revision":"7","raft_term":"8"},"leader":"456","raftTerm":"8","raftIndex":"7","raftAppliedIndex":"7","downgradeInfo":{}}`
 }
 
 func defaultVersionJSON(value string) string {
@@ -7522,9 +7660,12 @@ func defaultInfoMetrics(value string) string {
 		`process_start_time_seconds 200`,
 		`os_fd_used 64`,
 		`os_fd_limit 1048576`,
+		`# TYPE etcd_server_has_leader gauge`,
 		`etcd_server_has_leader{cluster="default"} 1`,
+		`# TYPE etcd_server_is_leader gauge`,
 		`etcd_server_is_leader{cluster="default"} 1`,
 		`etcd_server_leader_changes_seen_total{cluster="default"} 1`,
+		`# TYPE etcd_server_is_learner gauge`,
 		`etcd_server_is_learner{cluster="default"} 0`,
 		`etcd_server_learner_promote_successes{cluster="default"} 0`,
 		`etcd_server_snapshot_apply_in_progress_total{cluster="default"} 0`,

@@ -877,6 +877,49 @@ expect_server_identity_sample() {
 	printf '%s\t%s' "$sample_cluster" "$sample_server_id"
 }
 
+expect_server_role_samples() {
+	local metrics_text="$1"
+	local metric
+	local sample_rows
+	local type_values
+	local role_rows=""
+
+	for metric in etcd_server_has_leader etcd_server_is_leader etcd_server_is_learner; do
+		type_values="$(awk -v metric="$metric" '
+      $1 == "#" && $2 == "TYPE" && $3 == metric { print $4 }
+    ' <<<"$metrics_text")"
+		if [[ "$type_values" != "gauge" ]]; then
+			echo "info metrics mismatch: expected exactly one ${metric} gauge TYPE" >&2
+			return 1
+		fi
+		sample_rows="$(awk -v metric="$metric" '
+      {
+        token = $1
+        name = token
+        sub(/\{.*/, "", name)
+        if (name != metric) next
+        prefix = metric "{cluster=\""
+        if (index(token, prefix) != 1 || substr(token, length(token) - 1) != "\"}" || NF != 2 || $2 !~ /^[01]$/) {
+          print "invalid"
+          next
+        }
+        cluster = substr(token, length(prefix) + 1, length(token) - length(prefix) - 2)
+        if (cluster == "" || prefix cluster "\"}" != token) {
+          print "invalid"
+        } else {
+          print cluster "\t" $2
+        }
+      }
+    ' <<<"$metrics_text")"
+		if [[ -z "$sample_rows" || "$sample_rows" == *$'\n'* || "$sample_rows" == "invalid" ]]; then
+			echo "info metrics mismatch: ${metric} must contain exactly one cluster-labeled canonical 0/1 sample" >&2
+			return 1
+		fi
+		role_rows+="${sample_rows}"$'\t'
+	done
+	printf '%s' "${role_rows%$'\t'}"
+}
+
 expect_hashkv_cache_counter() {
 	local metrics_text="$1"
 	local metric="$2"
@@ -1111,22 +1154,32 @@ pod_local_status_identity() {
 	local local_status_cluster_id
 	local local_status_member_type
 	local local_status_member_id
+	local local_status_leader_type
+	local local_status_leader_id
+	local local_status_is_learner_type
+	local local_status_is_learner
 	local local_status_error
 
 	local_status_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 		exec "$pod" -- sh -c 'curl -fsS -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:3379/v3/maintenance/status')"
 	local_status_values="$(printf '%s' "$local_status_json" | "$JQ" -r '
 		if type != "object" or (.header | type) != "object" then
-			"invalid\tinvalid\tinvalid\tinvalid\tinvalid"
+			"invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
 		else
 			.header as $header
 			| (if ($header | has("cluster_id")) then $header.cluster_id elif ($header | has("clusterId")) then $header.clusterId else null end) as $cluster_id
 			| (if ($header | has("member_id")) then $header.member_id elif ($header | has("memberId")) then $header.memberId else null end) as $member_id
+			| (if has("leader") then .leader elif has("leader_id") then .leader_id elif has("leaderId") then .leaderId else null end) as $leader_id
+			| (if has("isLearner") then .isLearner elif has("is_learner") then .is_learner else false end) as $is_learner
 			| [
 				($cluster_id | type),
 				($cluster_id | tostring),
 				($member_id | type),
 				($member_id | tostring),
+				($leader_id | type),
+				($leader_id | tostring),
+				($is_learner | type),
+				($is_learner | tostring),
 				(if has("errors") then
 					(if (.errors | type) != "array" then "invalid" elif (.errors | length) == 0 then "" else (.errors | map(tostring) | join(",")) end)
 				 elif has("error") then (.error | tostring)
@@ -1135,7 +1188,7 @@ pod_local_status_identity() {
 			] | @tsv
 		end
 	')"
-	IFS=$'\t' read -r local_status_cluster_type local_status_cluster_id local_status_member_type local_status_member_id local_status_error <<<"$local_status_values"
+	IFS=$'\t' read -r local_status_cluster_type local_status_cluster_id local_status_member_type local_status_member_id local_status_leader_type local_status_leader_id local_status_is_learner_type local_status_is_learner local_status_error <<<"$local_status_values"
 	if [[ "$local_status_cluster_type" != "string" || "$local_status_member_type" != "string" ]]; then
 		echo "info metrics mismatch: local Status cluster/member IDs must be JSON strings for pod ${pod}" >&2
 		return 1
@@ -1152,7 +1205,15 @@ pod_local_status_identity() {
 		echo "info metrics mismatch: local Status error must be empty for pod ${pod}, got ${local_status_error}" >&2
 		return 1
 	fi
-	printf '%s\t%s' "$local_status_cluster_id" "$local_status_member_id"
+	if [[ "$local_status_leader_type" != "string" ]] || ! operation_is_positive_uint64 "$local_status_leader_id"; then
+		echo "info metrics mismatch: local Status leader ID must be a canonical positive uint64 JSON string for pod ${pod}, got ${local_status_leader_id}" >&2
+		return 1
+	fi
+	if [[ "$local_status_is_learner_type" != "boolean" || ( "$local_status_is_learner" != "true" && "$local_status_is_learner" != "false" ) ]]; then
+		echo "info metrics mismatch: local Status isLearner must be a JSON boolean for pod ${pod}" >&2
+		return 1
+	fi
+	printf '%s\t%s\t%s\t%s' "$local_status_cluster_id" "$local_status_member_id" "$local_status_leader_id" "$local_status_is_learner"
 }
 
 snapshot_hashkv_cache_counters() {
@@ -1178,6 +1239,17 @@ snapshot_hashkv_cache_counters() {
 	local local_status_identity
 	local local_status_member_id
 	local local_status_member_id_hex
+	local local_status_leader_id
+	local local_status_is_learner
+	local expected_is_leader
+	local expected_is_learner
+	local server_role_cluster_has_leader
+	local server_role_cluster_is_leader
+	local server_role_cluster_is_learner
+	local server_role_has_leader
+	local server_role_is_leader
+	local server_role_is_learner
+	local server_role_row
 	local server_identity_cluster
 	local server_identity_full_enumeration="0"
 	local server_identity_row
@@ -1210,10 +1282,18 @@ snapshot_hashkv_cache_counters() {
 		fi
 		IFS=$'\t' read -r server_identity_cluster server_identity_server_id <<<"$server_identity_row"
 		if [[ "$server_identity_full_enumeration" == "1" ]]; then
+			if ! server_role_row="$(expect_server_role_samples "$pod_metrics")"; then
+				return 1
+			fi
+			IFS=$'\t' read -r server_role_cluster_has_leader server_role_has_leader server_role_cluster_is_leader server_role_is_leader server_role_cluster_is_learner server_role_is_learner <<<"$server_role_row"
+			if [[ "$server_role_cluster_has_leader" != "$server_identity_cluster" || "$server_role_cluster_is_leader" != "$server_identity_cluster" || "$server_role_cluster_is_learner" != "$server_identity_cluster" ]]; then
+				echo "info metrics mismatch: Ready Pod server role metric clusters disagree with server identity for pod ${pod}" >&2
+				return 1
+			fi
 			if ! local_status_identity="$(pod_local_status_identity "$pod")"; then
 				return 1
 			fi
-			IFS=$'\t' read -r local_status_cluster_id local_status_member_id <<<"$local_status_identity"
+			IFS=$'\t' read -r local_status_cluster_id local_status_member_id local_status_leader_id local_status_is_learner <<<"$local_status_identity"
 			if [[ "$local_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
 				echo "info metrics mismatch: local Status cluster ID differs from Status endpoint cluster for pod ${pod}: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${local_status_cluster_id}" >&2
 				return 1
@@ -1224,6 +1304,22 @@ snapshot_hashkv_cache_counters() {
 			fi
 			if [[ "$server_identity_server_id" != "$local_status_member_id_hex" ]]; then
 				echo "info metrics mismatch: Ready Pod server identity does not match local Status member for pod ${pod}: metrics=${server_identity_server_id}, status=${local_status_member_id_hex}" >&2
+				return 1
+			fi
+			if [[ "$local_status_leader_id" != "$status_leader_ids" ]]; then
+				echo "info metrics mismatch: local Status leader differs from fully enumerated Status leader for pod ${pod}: expected ${status_leader_ids}, got ${local_status_leader_id}" >&2
+				return 1
+			fi
+			expected_is_leader="0"
+			if [[ "$local_status_member_id" == "$local_status_leader_id" ]]; then
+				expected_is_leader="1"
+			fi
+			expected_is_learner="0"
+			if [[ "$local_status_is_learner" == "true" ]]; then
+				expected_is_learner="1"
+			fi
+			if [[ "$server_role_has_leader" != "1" || "$server_role_is_leader" != "$expected_is_leader" || "$server_role_is_learner" != "$expected_is_learner" ]]; then
+				echo "info metrics mismatch: Ready Pod server roles do not match local Status for pod ${pod}: metrics=has_leader:${server_role_has_leader},is_leader:${server_role_is_leader},is_learner:${server_role_is_learner}, status=leader:${local_status_leader_id},is_learner:${local_status_is_learner}" >&2
 				return 1
 			fi
 			if [[ -n "${server_identity_pods_by_id[$server_identity_server_id]+x}" ]]; then
@@ -3152,7 +3248,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     hashkv_cache_counter_baseline="$(snapshot_hashkv_cache_counters)"
     if [[ "$expected_status_endpoints" == "$EXPECTED_READY_PODS" ]]; then
-      hashkv_server_identity_summary=", hashkv_server_identity_members_match=true, hashkv_server_identity_local_status_match=true"
+      hashkv_server_identity_summary=", hashkv_server_identity_members_match=true, hashkv_server_identity_local_status_match=true, hashkv_server_role_local_status_match=true"
     fi
   fi
   hashkv_json="$(run_etcdctl_with_probe_timeout --endpoints="$STATUS_ENDPOINTS" endpoint hashkv -w json)"
