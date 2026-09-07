@@ -1409,6 +1409,12 @@ expect_hash_metrics_boundary() {
 	local -A baseline_server_ids=()
 	local -A baseline_uids=()
 	local client_metrics
+	local final_count="0"
+	local final_pod
+	local final_pod_container_identity
+	local final_pod_identity_rows
+	local final_pod_uid
+	local final_pods_json
 	local hashkv_cache_hit
 	local hashkv_cache_hit_cluster
 	local hashkv_cache_hit_delta
@@ -1582,8 +1588,34 @@ expect_hash_metrics_boundary() {
 		mvcc_hash_rev_count_delta_total=$((mvcc_hash_rev_count_delta_total + mvcc_hash_rev_count_delta))
 		post_count=$((post_count + 1))
 	done <<<"$pod_identity_rows"
+	final_pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+		get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
+	final_pod_identity_rows="$(ready_pod_runtime_identities "$final_pods_json")"
+	while IFS=$'\t' read -r final_pod final_pod_uid final_pod_container_identity; do
+		if [[ -z "$final_pod" ]]; then
+			echo "info metrics mismatch: Ready Pod name is required after post HashKV evidence collection" >&2
+			exit 1
+		fi
+		if [[ -z "$final_pod_uid" || -z "$final_pod_container_identity" ]]; then
+			echo "info metrics mismatch: complete Pod runtime identity is required after post HashKV evidence collection for pod ${final_pod}" >&2
+			exit 1
+		fi
+		if [[ -z "${baseline_uids[$final_pod]+x}" || -z "${baseline_container_identities[$final_pod]+x}" ]]; then
+			echo "info metrics mismatch: missing Pod runtime identity baseline after post HashKV evidence collection for pod ${final_pod}" >&2
+			exit 1
+		fi
+		if [[ "$final_pod_uid" != "${baseline_uids[$final_pod]}" || "$final_pod_container_identity" != "${baseline_container_identities[$final_pod]}" ]]; then
+			echo "info metrics mismatch: Pod runtime identity changed during post HashKV evidence collection for pod ${final_pod}" >&2
+			exit 1
+		fi
+		final_count=$((final_count + 1))
+	done <<<"$final_pod_identity_rows"
 	if [[ "$post_count" != "$baseline_count" ]]; then
 		echo "info metrics mismatch: HashKV completed cache baseline pod count changed: before=${baseline_count}, after=${post_count}" >&2
+		exit 1
+	fi
+	if [[ "$final_count" != "$baseline_count" ]]; then
+		echo "info metrics mismatch: post HashKV evidence Pod count changed: before=${baseline_count}, after=${final_count}" >&2
 		exit 1
 	fi
 	if (( hashkv_cache_hit_delta_total <= 0 )); then
@@ -3939,7 +3971,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     expect_hash_metrics_boundary "${ENDPOINT%/}/metrics" "$hashkv_cache_counter_baseline"
     status_summary+=", mvcc_hash_metrics=ok, mvcc_hash_count_delta=${mvcc_hash_count_delta_summary}, mvcc_hash_rev_count_delta=${mvcc_hash_rev_count_delta_summary}, hashkv_cache_metrics=ok"
     status_summary+=", hashkv_cache_hit_delta=${hashkv_cache_hit_delta_summary}, hashkv_cache_miss_delta=${hashkv_cache_miss_delta_summary}"
-    status_summary+=", hashkv_cache_process_identity=stable${hashkv_server_identity_summary}"
+		status_summary+=", hashkv_cache_process_identity=stable, hashkv_post_evidence_runtime_identity=stable${hashkv_server_identity_summary}"
   fi
   fi
 fi

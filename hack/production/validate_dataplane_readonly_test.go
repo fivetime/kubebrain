@@ -16,6 +16,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		name                    string
 		podsJSON                string
 		postPodsJSON            string
+		finalPodsJSON           string
 		readyz                  string
 		readyzVerbose           string
 		readyzExcludeData       string
@@ -3908,6 +3909,35 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "info metrics mismatch: Pod runtime identity changed during HashKV probes for pod kubebrain-0",
 		},
 		{
+			name: "rejects Pod restart during post HashKV evidence collection",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-0","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-1","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-2","restartCount":0,"ready":true}]}}
+			]}`,
+			postPodsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-0","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-1","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-2","restartCount":0,"ready":true}]}}
+			]}`,
+			finalPodsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://new-0","restartCount":1,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-1","restartCount":0,"ready":true}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://old-2","restartCount":0,"ready":true}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: Pod runtime identity changed during post HashKV evidence collection for pod kubebrain-0",
+		},
+		{
 			name: "allows stable multi-container identity in different API order",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"sidecar","containerID":"containerd://sidecar-0","restartCount":2,"ready":true},{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true}]}},
@@ -7075,6 +7105,10 @@ if [[ -f "$FAKE_KUBECTL_GET_LOG" ]]; then
 	get_calls="$(wc -l <"$FAKE_KUBECTL_GET_LOG")"
 fi
 printf 'get\n' >>"$FAKE_KUBECTL_GET_LOG"
+if (( get_calls >= 2 )) && [[ -n "${FAKE_FINAL_PODS_JSON:-}" ]]; then
+	printf '%s' "$FAKE_FINAL_PODS_JSON"
+	exit 0
+fi
 if (( get_calls >= 1 )) && [[ -n "${FAKE_POST_PODS_JSON:-}" ]]; then
 	printf '%s' "$FAKE_POST_PODS_JSON"
 	exit 0
@@ -7340,6 +7374,7 @@ exec "$@"
 				"PROBE_TIMEOUT=10s",
 				"FAKE_PODS_JSON=" + podJSONWithDefaultRuntimeIdentities(t, tc.podsJSON),
 				"FAKE_POST_PODS_JSON=" + podJSONWithDefaultRuntimeIdentities(t, tc.postPodsJSON),
+				"FAKE_FINAL_PODS_JSON=" + podJSONWithDefaultRuntimeIdentities(t, tc.finalPodsJSON),
 				"FAKE_READYZ=" + tc.readyz,
 				"FAKE_READYZ_VERBOSE=" + defaultReadyzVerbose(tc.readyzVerbose),
 				"FAKE_READYZ_EXCLUDE_DATA=" + defaultReadyzExcludeData(tc.readyzExcludeData),
