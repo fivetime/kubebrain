@@ -1321,6 +1321,7 @@ CRITICAL，但本轮 canary 仍失败；当前等于唯一 candidate spec 时执
 ```shell
 KUBE_CONTEXT=production \
 KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
+KUBEBRAIN_CONTAINER_NAME=kubebrain \
 EXPECTED_READY_PODS=3 \
 ENDPOINT=https://instance-a.example:2379 \
 READYZ_URL=https://instance-a-readyz.example/readyz \
@@ -1755,7 +1756,10 @@ HashKV hash、hashRevision、compactRevision 逐字段相等，而非借用其�
 `ENDPOINT` 的 Maintenance Hash，要求 direct/gateway
 ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；通过摘要输出
 `direct_hash=<n>` 与 `gateway_hash_match=true`；若同时启用 metrics
-检查，每个 Ready Pod 的 info listener `/metrics` 还必须暴露 upstream 兼容且 `TYPE=histogram` 的
+检查，脚本会把 `KUBEBRAIN_CONTAINER_NAME`（默认 `kubebrain`）作为 lowercase DNS label 预先校验，并对每次逐 Pod
+metrics 与 loopback Status 的 `kubectl exec` 显式传入该容器名；因此多容器 Pod 的 default-container 注解或容器顺序不能把
+sidecar 证据冒充为 KubeBrain 证据。通过摘要输出 `hashkv_evidence_container=<name>`。目标容器的 info listener
+`/metrics` 还必须暴露 upstream 兼容且 `TYPE=histogram` 的
 `etcd_mvcc_hash_duration_seconds` 与 `etcd_mvcc_hash_rev_duration_seconds`；各自唯一、只带非空 `cluster` 标签的 `_count`
 必须是 `[0,2^53-1]` 内的 canonical 十进制整数。两个 family 都必须完整包含 upstream 的 15 个指数边界
 `0.01` 至 `163.84` 及 `+Inf` bucket；bucket 必须绑定同一 cluster、使用安全整数、按边界累计单调且 `+Inf` 等于 `_count`，
@@ -1818,7 +1822,8 @@ hit 与 miss 增量分别大于零，既证明本轮至少一次物理扫描，
 `hashkv_cache_hit_delta=<n>`、`hashkv_cache_miss_delta=<n>`、`hashkv_cache_process_identity=stable`、
 `hashkv_post_evidence_runtime_identity=stable`、
 `hashkv_server_identity_members_match=true`、`hashkv_server_identity_local_status_match=true`、
-`hashkv_server_role_local_status_match=true`、`hashkv_server_role_process_identity=stable`（五者仅完整枚举 Status 时）、
+`hashkv_server_role_local_status_match=true`、`hashkv_server_role_process_identity=stable`（后四者仅完整枚举 Status 时）、
+`hashkv_evidence_container=<name>`、
 `mvcc_put_size_metrics=ok`、
 `mvcc_pending_event_metrics=ok`、`mvcc_revision_metrics=ok`、
 `mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、

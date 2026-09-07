@@ -73330,6 +73330,51 @@ revision/HashKV/compact/term 为 `75044/1984703050/66760/811`，Auth disabled。
 tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
 `/root/.local/share/Trash/files/kubebrain-a5769-20260907T101000Z`；稳定镜像和数据卷未删除。
 
+### A5770：把逐 Pod 证据绑定到明确的 KubeBrain 容器
+
+A5769 已把 Pod UID 与全部容器运行身份贯穿 Hash/HashKV 证据窗口，但逐 Pod metrics 和 loopback Status 仍使用未带 `-c` 的
+`kubectl exec`。在带 sidecar 的 Pod 中，`kubectl.kubernetes.io/default-container` 注解或容器顺序可以令命令进入非 KubeBrain
+容器；只要该容器返回形状正确的响应，旧门禁就会把 sidecar 证据错误归属于 KubeBrain。修复前，fake kubectl 要求每次 exec
+必须包含 `-c kubebrain --` 时，原有完整三成员成功用例明确 RED，输出 `kubectl exec did not target container kubebrain`。
+
+提交 `f93ac9bea9e9f294bae53128090d63544307e389` 新增 `KUBEBRAIN_CONTAINER_NAME`，默认 `kubebrain`，并在任何外部命令前
+要求它是最长 63 字符的 lowercase DNS label。baseline/post metrics 与两轮逐 Pod loopback Status 的全部 exec 都显式选择该
+容器；通过摘要新增 `hashkv_evidence_container=<name>`。测试 fake 对每一次 exec 强制检查容器参数，另有非法名称
+`sidecar/default` 的 preflight 负测证明不会先访问 Kubernetes。
+
+目标成功与非法配置两项连续 `count=10` 为 24.987 秒；完整 production probe 普通/race 为 239.429/240.186 秒，
+`go vet`、`bash -n`、gofmt 和 diff check 全部 GREEN。代码提交前 verifier 为 703=`170/193/180/160`，四分片为
+`251.742/440.734/301.626/649.303s`；提交后 verifier 不变，四分片为
+`255.236/452.939/309.534/662.206s`，再次全部 GREEN。
+
+最终候选 `docker.io/library/kubebrain@sha256:8978905f6372d6394596938859bb8ecf62136c9ce99b29b75cc9f8db51261f52`
+内嵌版本 `0.0.0-f93ac9be`、完整 commit、build time `2026-09-07T10:45:55Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,847,232 bytes，SHA-256
+`05675fd69eb0b8c2046c4b5ff73344e0a162a7fd7d1ae3bad13c583d3188ec8e`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`62a9826d2341f84c1e67845fa7572536f810ab95626c8d7d90fc9002e516ee73`、
+`sha256:8978905f6372d6394596938859bb8ecf62136c9ce99b29b75cc9f8db51261f52`、
+`sha256:20a58e7fa89886eaa58469d34d8f45266da2e79e68a12ad1244eb838fb91102a`、
+`sha256:b3dbea19bb86ed312e3f381b9da13142ae805edcb5c200b3c6fcba0c2af2c034`、
+`sha256:466b35b1d7360abe15a312c8378cdabb7c1232f270b5f66a0fc01fdb0688a8f0`。78/78 blobs 与 78/78 descriptor
+edges 的 size/hash 全匹配且 0 orphan；镜像为 `65532:65532`、正确入口、71/71 diff IDs。SPDX layer
+`sha256:a86833d28a18c0f0b9cf9829122df24d891b942588a4037ef4d94fa392b9c0c7` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:068172ca01b78c849e1bc1e484d469dafc798eb8e3fa02be3fe884203fa8c323`
+含 3 项固定 materials，两份 statement 都只有一个 subject 并精确绑定 platform manifest。
+
+候选使用 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test，从 generation 970 原子投放到
+generation/observed `971/971`、RV `8915646`；3/3 Ready、restart 0，三个 runtime imageID 均为候选 nested digest。
+以显式 `KUBEBRAIN_CONTAINER_NAME=kubebrain` 运行的完整 readonly gate 一次 GREEN，新增 container 归属摘要成立；
+Hash/HashKV histogram 聚合增量 `2/5`、cache hit/miss 增量 `3/3`，revision/HashKV/compact/term 为
+`75044/1984703050/66760/813`，三副本及 direct/gateway 结果一致，Auth disabled。
+
+随后用新鲜六类 JSON test 回滚稳定 digest；终态 generation/observed `972/972`、RV `8916342`、3/3 Ready、restart 0、
+22 参数，三个 runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+省略未来 `EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS` 的稳定适用 gate 在 60 秒窗口 GREEN，
+revision/HashKV/compact/term 为 `75044/1984703050/66760/815`，Auth disabled。最终关闭六个 listener 端口，精确删除候选
+tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
+`/root/.local/share/Trash/files/kubebrain-a5770-20260907T111841Z`；稳定镜像和数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
