@@ -73421,6 +73421,50 @@ revision/HashKV/compact/term 为 `75044/1984703050/66760/820`，Auth disabled；
 最终关闭六个 listener 端口，精确删除候选 tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive
 与展开审计目录已移入可恢复目录 `/root/.local/share/Trash/files/kubebrain-a5771-20260907T125818Z`；稳定镜像和数据卷未删除。
 
+### A5772：安全诊断只读发布探针的 timeout 与失败
+
+A5771 在候选 gate 中暴露了一个可运维性缺口：外部探针 timeout 会以 exit 124 静默退出，生产日志无法判断哪个命令失败；
+同时直接打印 argv 又可能泄漏 curl payload、Authorization header、token 或密码。修复前强制 timeout 的独立 RED 用例得到
+完全空输出并在 0.074 秒退出，证明现有门禁虽能 fail closed，却缺少安全、可定位的失败证据。
+
+提交 `da5bf2802cb44a19c365e435d3455baa05d90fc7` 令所有外部探针共用 `run_with_probe_timeout`。
+timeout 只报告命令 basename、`PROBE_TIMEOUT` 与调用方脚本 basename:line；其他失败只报告 basename、exit code 与同一来源，
+完整 argv 永不进入日志，并原样保留 124 或其他退出码。prefix-tool、maintenance Status、Hash 与 HashKV 原先的直接 timeout
+调用也全部纳入该包装器。测试覆盖 timeout、非 timeout、prefix-tool 共用路径，并以 secret password/context/selector 的
+负断言锁定不泄漏合同。三类诊断 `count=10` 为 2.753 秒；正常路径、诊断与内部 timeout 组合 `count=10` 为 14.065 秒；
+完整 production probe 普通/race 为 251.776/252.749 秒，`go vet`、`bash -n` 与 diff check 全部 GREEN。代码提交前 verifier
+为 703=`170/193/180/160`，四分片为 `260.194/452.357/304.254/669.078s`；提交后 verifier 不变，四分片为
+`255.942/451.952/306.772/667.458s`，再次全部 GREEN。
+
+最终候选 `docker.io/library/kubebrain@sha256:22871997ccadec5f5450f5641658eb26e060bd2f33e195911609ffbb85832619`
+内嵌版本 `0.0.0-da5bf280`、完整 commit、build time `2026-09-07T13:42:38Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`；镜像内 kubectl 为 v1.36.2。OCI archive 为 914,847,744 bytes，SHA-256
+`f41a388aaed77a48d0f05fba09c98650bd33742acc992beb2b903e32d17d9bbd`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`92f612b0ab016c19660bf2125bc1cf9a1a0b3475b1b6616476931d8b34fe163c`、
+`sha256:22871997ccadec5f5450f5641658eb26e060bd2f33e195911609ffbb85832619`、
+`sha256:d3fbb7a8f329fafa9f196997fa0d8a53cb86db6b9560120f122b51d86c0c430f`、
+`sha256:5e12934a4ba600c9c1c6c38174d09793e02208c5d5ee3dd24b28e3ca555971b9`、
+`sha256:af86d3343003bb763aadab04c8793192fb831fb0cc5113ab5d490d7d3ff7055b`。78/78 blobs 与 78/78 descriptor
+edges 的 size/hash 全匹配且 0 orphan；镜像为 `65532:65532`、正确入口、71/71 diff IDs。SPDX layer
+`sha256:f8f249b969ce351ba5d7df138357084f740c076fbdd25408e3b220d445483f90` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:2bb29f2e85e06c186f84ee82c5970f8f8807f05f354b8a5e713db182a007ab80`
+含 3 项固定 materials，两份 statement 都只有一个 subject 并精确绑定 platform manifest。
+
+候选使用 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test，从 generation 974 原子投放到
+generation/observed `975/975`、RV `8935450`；3/3 Ready、restart 0，三个 runtime imageID 均为候选顶层
+`index.json` digest `sha256:92f612b0...`。10 秒完整 readonly gate 首次 GREEN，Hash/HashKV histogram 聚合增量 `2/5`、
+cache hit/miss 增量 `3/4`，revision/HashKV/compact/term 为 `75044/1984703050/66760/822`，Auth disabled。
+候选容器内另以注入的 secret context/password 和强制失败 timeout 命令运行打包脚本，exit 1 且唯一诊断为
+`command=kubectl exit_code=1 source=validate-dataplane-readonly.sh:1801`，secret 未出现，证明制品中的安全诊断合同成立。
+
+随后用新鲜六类 JSON test 回滚稳定 digest；终态 generation/observed `976/976`、RV `8936327`、3/3 Ready、restart 0、
+22 参数，三个 runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+省略未来 `EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS`、显式绑定稳定 runtime digest 的 60 秒适用 gate GREEN，
+revision/HashKV/compact/term 为 `75044/1984703050/66760/825`，Auth disabled；PD/TiKV 均 3/3 Normal，三个 store Up。
+最终关闭六个 listener 端口，精确删除候选 tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive
+与展开审计目录已移入可恢复目录 `/root/.local/share/Trash/files/kubebrain-a5772-20260907T140411Z`；稳定镜像和数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
