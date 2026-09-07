@@ -1177,6 +1177,28 @@ validate_unambiguous_pod_ready_conditions() {
 	fi
 }
 
+validate_running_pod_phases() {
+	local source_pods_json="$1"
+	local context="${2:-}"
+	local phase_errors
+
+	phase_errors="$(printf '%s' "$source_pods_json" | "$JQ" -r '
+		[
+			.items[]
+			| select(.metadata.deletionTimestamp == null)
+			| (if (.metadata.name | type) == "string" and .metadata.name != "" then .metadata.name else "<invalid>" end) as $pod_name
+			| if (.status.phase | type) != "string" or .status.phase != "Running" then
+				"\($pod_name):phase=\(.status.phase | tojson)"
+			  else empty
+			  end
+		] | join(",")
+	')"
+	if [[ -n "$phase_errors" ]]; then
+		echo "KubeBrain Pod lifecycle mismatch${context}: ${phase_errors}" >&2
+		return 1
+	fi
+}
+
 validate_ready_pod_statefulset_ownership() {
 	local source_pods_json="$1"
 	local ownership_result
@@ -1678,6 +1700,7 @@ expect_hash_metrics_boundary() {
 
 	post_pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 		get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
+	validate_running_pod_phases "$post_pods_json" " after HashKV cache probes"
 	validate_unambiguous_pod_ready_conditions "$post_pods_json" " after HashKV cache probes"
 	validate_ready_pod_statefulset_ownership "$post_pods_json"
 	pod_identity_rows="$(ready_pod_runtime_identities "$post_pods_json")"
@@ -1796,6 +1819,7 @@ expect_hash_metrics_boundary() {
 	done <<<"$pod_identity_rows"
 	final_pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 		get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
+	validate_running_pod_phases "$final_pods_json" " after post HashKV evidence collection"
 	validate_unambiguous_pod_ready_conditions "$final_pods_json" " after post HashKV evidence collection"
 	validate_ready_pod_statefulset_ownership "$final_pods_json"
 	final_pod_identity_rows="$(ready_pod_runtime_identities "$final_pods_json")"
@@ -1928,6 +1952,7 @@ fi
 
 pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
   get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
+validate_running_pod_phases "$pods_json"
 validate_unambiguous_pod_ready_conditions "$pods_json"
 validate_ready_pod_statefulset_ownership "$pods_json"
 ready_pods="$(printf '%s' "$pods_json" | "$JQ" -r '
