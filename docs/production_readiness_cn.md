@@ -1370,6 +1370,12 @@ auth disabled 时不应用该拒绝，gateway 继续按普通路径工作。
 其他控制器 Pod，或窗口内发生 owner 漂移后仍错误通过；成功摘要会输出
 `kubebrain_statefulset_uid=<immutable UID>`。应从待发布 StatefulSet 的 `metadata.uid` 读取该值，不能用可复用的名称替代。
 
+只读门禁还会在 initial、HashKV post 和最终证据三次 Pod 快照中验证 Ready condition 不歧义。非空
+`status.conditions` 必须是数组；每个非删除 Pod 最多只能有一个 `type=Ready` 条目，其 status 只能是 Kubernetes
+枚举 `True`、`False` 或 `Unknown`。缺少 Ready 或唯一 Ready 非 True 仍由副本数/身份守恒拒绝；同一 Pod 同时出现
+True/False、两个 True，或畸形 status 则在任何 metrics/RPC 证据读取前直接 fail closed，不能用 `any(Ready=True)`
+掩盖冲突的 kubelet/API 快照。
+
 `EXPECTED_KUBEBRAIN_IMAGE_DIGEST` 可选，但一旦配置就必须是小写 canonical `sha256:<64 hex>`。无论是否配置期望值，
 脚本都会要求每个非删除 Ready Pod 恰好有一个名为 `KUBEBRAIN_CONTAINER_NAME` 的 container status、该容器自身
 `ready=true`，且 `imageID` 以 canonical SHA-256 digest 结尾；所有 Ready Pod 提取出的 runtime digest 必须唯一。
