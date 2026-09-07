@@ -73654,6 +73654,51 @@ StatefulSet UID 的 60 秒适用 gate GREEN；正常 leader handoff 后 revision
 OCI archive 与展开审计目录已移入可恢复目录
 `/root/.local/share/Trash/files/kubebrain-a5776-20260907T194800Z`；稳定镜像和数据卷未删除。
 
+### A5777：拒绝歧义的只读运行时身份集合
+
+A5776 已冻结三类 container status 的状态机，但同一 Pod 中重复的 `scope/name`、重复 `containerID`，或 Ready Pod 集合中
+重复/非法的 name、UID 仍可能让两份不同 Kubernetes 对象被规范化成看似稳定的同一组证据。修复前向普通 status 注入同 scope
+同名 sidecar，旧 gate 在 1.95 秒内整体 GREEN，形成独立 RED；这不是合法多容器拓扑，而是 API 快照歧义，必须 fail closed。
+`/root/etcd` 复核仍停在干净基线 `5cd9f4ee13801e18825d661e5005ae599460bc3a`，没有新的上游提交需要吸收。
+
+提交 `defd400e6ffd438c2422feacc67054976c421e5b` 要求 Ready Pod 的 metadata name/UID 均为非空字符串且分别唯一，并要求
+每个 Pod 内 `scope/name` 与 `containerID` 各自唯一。空值或非字符串以显式 `<invalid>` 哨兵输出，避免 Bash TSV 读取时丢弃
+前导空列而误把后续字段当成合法身份；相同容器名仍可出现在普通、init/native-sidecar 与 ephemeral 不同 scope 中。新增重复
+scope/name、Pod name、container ID、Pod UID，以及非字符串 Pod UID/name 六组拒绝用例；稳定多容器正例让三种 scope 都使用
+`sidecar` 名称，证明 scope 隔离不误拒绝合法拓扑。七组聚焦用例 `count=10` 为 73.188 秒；最终完整 production probe
+普通/race 为 262.375/264.612 秒，`go vet`、`bash -n`、gofmt 与 diff check 全部 GREEN。代码提交前 verifier 为
+703=`170/193/180/160`，四分片为 `259.781/448.618/310.195/682.598s`；提交后 verifier 不变，四分片为
+`253.155/446.442/303.989/675.202s`，再次全部 GREEN。
+
+最终候选 `docker.io/library/kubebrain@sha256:49fc95de6e8ccd4f0510de2050c7bb6bd6a4480de6d5887dd3dcc1116ed99b1d`
+内嵌版本 `0.0.0-defd400e`、完整 commit、build time `2026-09-07T20:44:44Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`；镜像内 kubectl 为 v1.36.2。OCI archive 为 914,848,768 bytes，SHA-256
+`263c94ce2bfc0864d4304eee0f7400d6a63d4bede62a0ab7dbea55f9ae5a2f26`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`4ad1c908be6ab61e805d266a1fa76096821b70a64ba43c8a4fc0ba3b6885210a`、
+`sha256:49fc95de6e8ccd4f0510de2050c7bb6bd6a4480de6d5887dd3dcc1116ed99b1d`、
+`sha256:33353f429f4b156c884a4a67b8c1fe5a4d15217b3eed3fa2c4aebefb79cfe708`、
+`sha256:4f13437a44e9f36b5ebefbbd56ddf868b3252ba775062f8d36a82b97751b9d55`、
+`sha256:f25683794cf8cc03e13b6219c2be2790d60a5127088dece22d6fa0f62b725ab3`。78/78 blobs 与 78/78 OCI graph
+descriptor edges 的 size/hash 全匹配且 0 orphan；镜像为 `65532:65532`、正确入口、71/71 diff IDs。SPDX layer
+`sha256:09f59935203b19dfcc8352cf26f0a26ccc52e01c923fb9591f158c3fa7a50174` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:d84c37ac4ff54404ef595c2cf1dd64a59cc98faad48ae19f7f9ca7ecc88c201e`
+含 3 项固定 materials 与四项精确 build args，两份 statement 都只有一个 subject 并精确绑定 platform manifest。
+
+候选使用 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test，从 generation 984 原子投放到
+generation/observed `985/985`、RV `8986846`；3/3 Ready，owner UID 全部正确，Pod name/UID、逐 scope name 与
+containerID 全部唯一，三个 runtime imageID 均为候选顶层 `index.json` digest `sha256:4ad1c908...`。绑定 StatefulSet UID
+与 runtime digest 的 10 秒完整 readonly gate 一次 GREEN；Hash/HashKV histogram 聚合增量 `2/5`、cache hit/miss 增量
+`4/3`，revision/HashKV/compact/term 为 `75044/1984703050/66760/845`，Auth disabled。
+
+随后用新鲜六类 JSON test 回滚稳定 digest；终态 generation/observed `986/986`、RV `8988208`、3/3 Ready、22 参数，
+三个 runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+省略未来 `EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS`、绑定稳定 runtime digest 与 StatefulSet UID 的 60 秒适用 gate
+GREEN；正常 leader handoff 后 revision/HashKV/compact/term 为 `75044/1984703050/66760/846`，Auth disabled，PD/TiKV
+均 3/3 Normal、PD API 确认三个 store 全部 Up。最终关闭六个 listener 端口，精确删除候选 tag/nested/top-level/config
+四个 Kind image 名称；候选 containerd 名称、CRI container 与 workload 引用均为 0。OCI archive 与展开审计目录已移入
+可恢复目录 `/root/.local/share/Trash/files/kubebrain-a5777-20260907T211000Z`；稳定镜像和数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

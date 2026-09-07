@@ -1379,7 +1379,10 @@ auth disabled 时不应用该拒绝，gateway 继续按普通路径工作。
 HashKV 长窗口的 baseline/post/final Pod 身份快照也会记录所有容器的完整 `imageID`，因此窗口内镜像切换会与
 container ID/restartCount 漂移一样 fail closed。身份集合同时覆盖普通 `containerStatuses`、原生 sidecar/初始化容器所在的
 `initContainerStatuses`，以及运行中的 `ephemeralContainerStatuses`；每项带明确 scope 后统一排序，防止不同类别同名时
-混淆。每个 status 的 `ready` 还必须是 JSON boolean 并进入同一快照；目标容器、sidecar 或调试容器在 post/final 边界
+混淆。每次快照中的 Pod name/UID 都必须是非空字符串，并分别在 Ready Pod 集合内唯一；非法字段以显式 `<invalid>`
+哨兵进入 TSV，而不是因 Bash 丢弃前导空字段造成错列。每个 Pod 内的 status 还必须同时满足 `scope/name` 唯一和
+`containerID` 唯一；普通、init/native-sidecar 与 ephemeral 容器可以跨 scope 同名，但同一 status 不能重复表示同一
+作用域名称或同一运行时容器。每个 status 的 `ready` 还必须是 JSON boolean 并进入同一快照；目标容器、sidecar 或调试容器在 post/final 边界
 失去 readiness、重启、换镜像或被增删，即使 Pod Ready condition 尚未同步翻转，也会作为运行身份漂移 fail closed，
 不能把起始时刻的 Ready 结论延伸到整个 HashKV 证据窗口。每个 status 还必须提供恰含 `running`、`waiting` 或
 `terminated` 之一的对象型 `state`，`lastState` 必须是空对象或恰含上述一种状态；可选 `started` 只能是 boolean 或 null。
