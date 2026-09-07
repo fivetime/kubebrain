@@ -1768,6 +1768,11 @@ Hash 与 HashKV 的全实例聚合增量都必须大于零，不能用旧样本�
 `cluster` 值，并且必须等于同次 scrape 中唯一、严格为 value=1 的
 `etcd_server_id{cluster="<cluster>",server_id="<lower-hex>"}` 服务身份 cluster。门禁会把该 cluster 与 server ID
 都纳入逐 Pod 基线，探针结束时任何 cluster 或 server ID 漂移都会 fail closed，不能跨逻辑集群或成员身份拼接计数。
+当 `STATUS_ENDPOINTS` 数量与 Ready Pod 数量相等、即调用方声明 Status 已完整枚举数据面成员时，门禁还会把每个
+Status 十进制 member ID 按 upstream `types.ID.String()` 语义编码为 canonical 小写十六进制，并要求 Ready Pod 的
+`etcd_server_id` 全部唯一且两边集合精确相等；重复 Pod 身份、缺失成员或集合外身份都会 fail closed。单一 LB/入口只返回
+部分 Status 的部署不会伪装成完整枚举，也不会用不完整集合误判 Pod 身份。完整枚举通过时摘要输出
+`hashkv_server_identity_members_match=true`。
 门禁在 HashKV 探针前后分别抓取同一组 Pod 的基线和终值，使用 64 位整数做精确差值与
 带安全上界的聚合，要求 counter 不倒退且聚合不得溢出，
 并把每个 Pod 名绑定到不可变 UID 及按容器名排序的完整 `containerID/restartCount` 集合；探针结束后重新读取 Kubernetes Pod
@@ -1793,7 +1798,8 @@ hit 与 miss 增量分别大于零，既证明本轮至少一次物理扫描，
 `backend_defrag_metrics=ok`、`health_metrics=ok`、`auth_metrics=ok`、
 `quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
 `mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`hashkv_cache_metrics=ok`、
-`hashkv_cache_hit_delta=<n>`、`hashkv_cache_miss_delta=<n>`、`hashkv_cache_process_identity=stable`、`mvcc_put_size_metrics=ok`、
+`hashkv_cache_hit_delta=<n>`、`hashkv_cache_miss_delta=<n>`、`hashkv_cache_process_identity=stable`、
+`hashkv_server_identity_members_match=true`（仅完整枚举 Status 时）、`mvcc_put_size_metrics=ok`、
 `mvcc_pending_event_metrics=ok`、`mvcc_revision_metrics=ok`、
 `mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、
 `lease_metrics=ok`、`promhttp_metrics=ok`、
