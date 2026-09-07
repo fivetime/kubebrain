@@ -74,6 +74,16 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput:     "EXPECTED_READY_PODS must be a canonical positive int32",
 		},
 		{
+			name:           "rejects invalid KubeBrain container name before commands",
+			podsJSON:       `{"items":[]}`,
+			readyz:         "ok",
+			count:          "4",
+			statusJSON:     `[]`,
+			extraEnv:       []string{"KUBEBRAIN_CONTAINER_NAME=sidecar/default"},
+			wantNoCommands: true,
+			wantOutput:     "KUBEBRAIN_CONTAINER_NAME must be a lowercase DNS label of at most 63 characters",
+		},
+		{
 			name:           "rejects prefix count overflow before commands",
 			podsJSON:       `{"items":[]}`,
 			readyz:         "ok",
@@ -4604,6 +4614,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_STATUS_VERSION=3.7.0",
 				"EXPECTED_HASHKV_HASH=111",
 				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"FAKE_REQUIRE_EXEC_CONTAINER=kubebrain",
 				"FAKE_HASHKV_JSON=" + threeMemberHashKVJSON(),
 			},
 			wantOK:     true,
@@ -7062,6 +7073,10 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "kubectl"), `#!/usr/bin/env bash
 set -euo pipefail
 if [[ " $* " == *" exec "* ]]; then
+if [[ -n "${FAKE_REQUIRE_EXEC_CONTAINER:-}" && " $* " != *" -c ${FAKE_REQUIRE_EXEC_CONTAINER} -- "* ]]; then
+	echo "kubectl exec did not target container ${FAKE_REQUIRE_EXEC_CONTAINER}" >&2
+	exit 1
+fi
 if [[ " $* " == *"/v3/maintenance/status"* ]]; then
 		if [[ " $* " == *" kubebrain-1 "* ]]; then
 			printf '%s' "$FAKE_LOCAL_STATUS_POD_1"

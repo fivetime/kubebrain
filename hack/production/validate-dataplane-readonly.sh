@@ -6,6 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 
 KUBEBRAIN_NAMESPACE="${KUBEBRAIN_NAMESPACE:-kubebrain-system}"
 KUBEBRAIN_LABEL_SELECTOR="${KUBEBRAIN_LABEL_SELECTOR:-app.kubernetes.io/name=kubebrain}"
+KUBEBRAIN_CONTAINER_NAME="${KUBEBRAIN_CONTAINER_NAME:-kubebrain}"
 EXPECTED_READY_PODS="${EXPECTED_READY_PODS:-3}"
 ENDPOINT="${ENDPOINT:-}"
 READYZ_URL="${READYZ_URL:-}"
@@ -40,6 +41,10 @@ PROCESS_START_TIME_MAX_SECONDS=9007199254740991
 
 if ! operation_is_positive_int64 "$EXPECTED_READY_PODS" || (( EXPECTED_READY_PODS > 2147483647 )); then
   echo "EXPECTED_READY_PODS must be a canonical positive int32" >&2
+  exit 2
+fi
+if [[ ! "$KUBEBRAIN_CONTAINER_NAME" =~ ^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$ ]]; then
+  echo "KUBEBRAIN_CONTAINER_NAME must be a lowercase DNS label of at most 63 characters" >&2
   exit 2
 fi
 if [[ -n "$EXPECTED_PREFIX_COUNT" ]] && ! operation_is_nonnegative_int64 "$EXPECTED_PREFIX_COUNT"; then
@@ -1161,7 +1166,7 @@ pod_local_status_identity() {
 	local local_status_error
 
 	local_status_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
-		exec "$pod" -- sh -c 'curl -fsS -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:3379/v3/maintenance/status')"
+		exec "$pod" -c "$KUBEBRAIN_CONTAINER_NAME" -- sh -c 'curl -fsS -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:3379/v3/maintenance/status')"
 	local_status_values="$(printf '%s' "$local_status_json" | "$JQ" -r '
 		if type != "object" or (.header | type) != "object" then
 			"invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"
@@ -1324,7 +1329,7 @@ snapshot_hashkv_cache_counters() {
 			return 1
 		fi
 		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
-			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
+			exec "$pod" -c "$KUBEBRAIN_CONTAINER_NAME" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
 		if ! server_identity_row="$(expect_server_identity_sample "$pod_metrics")"; then
 			return 1
 		fi
@@ -1493,7 +1498,7 @@ expect_hash_metrics_boundary() {
 			exit 1
 		fi
 		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
-			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
+			exec "$pod" -c "$KUBEBRAIN_CONTAINER_NAME" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
 		if ! server_identity_row="$(expect_server_identity_sample "$pod_metrics")"; then
 			exit 1
 		fi
@@ -3971,7 +3976,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     expect_hash_metrics_boundary "${ENDPOINT%/}/metrics" "$hashkv_cache_counter_baseline"
     status_summary+=", mvcc_hash_metrics=ok, mvcc_hash_count_delta=${mvcc_hash_count_delta_summary}, mvcc_hash_rev_count_delta=${mvcc_hash_rev_count_delta_summary}, hashkv_cache_metrics=ok"
     status_summary+=", hashkv_cache_hit_delta=${hashkv_cache_hit_delta_summary}, hashkv_cache_miss_delta=${hashkv_cache_miss_delta_summary}"
-		status_summary+=", hashkv_cache_process_identity=stable, hashkv_post_evidence_runtime_identity=stable${hashkv_server_identity_summary}"
+		status_summary+=", hashkv_cache_process_identity=stable, hashkv_post_evidence_runtime_identity=stable${hashkv_server_identity_summary}, hashkv_evidence_container=${KUBEBRAIN_CONTAINER_NAME}"
   fi
   fi
 fi
