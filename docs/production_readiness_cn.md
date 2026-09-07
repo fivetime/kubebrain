@@ -1377,7 +1377,9 @@ auth disabled 时不应用该拒绝，gateway 继续按普通路径工作。
 `kubebrain_image_digest=sha256:<digest>`。该值来自 kubelet/CRI 的 `status.containerStatuses[].imageID`，可能是离线
 导入器的顶层 OCI index digest，不应从 StatefulSet 的 spec image、发布 tag、nested index 或二进制版本字符串推导。
 HashKV 长窗口的 baseline/post/final Pod 身份快照也会记录所有容器的完整 `imageID`，因此窗口内镜像切换会与
-container ID/restartCount 漂移一样 fail closed。
+container ID/restartCount 漂移一样 fail closed。每个 container status 的 `ready` 还必须是 JSON boolean 并进入同一
+排序后身份快照；目标容器或 sidecar 在 post/final 边界失去 readiness，即使 Pod Ready condition 尚未同步翻转，也会
+作为运行身份漂移 fail closed，不能把起始时刻的 Ready 结论延伸到整个 HashKV 证据窗口。
 
 该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 与 `/livez` 必须返回 `ok`，
 `/livez?verbose` 必须包含 `[+]serializable_read ok` 并以 `ok` 结束；配置
