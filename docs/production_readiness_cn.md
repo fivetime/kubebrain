@@ -1381,7 +1381,12 @@ container ID/restartCount 漂移一样 fail closed。身份集合同时覆盖普
 `initContainerStatuses`，以及运行中的 `ephemeralContainerStatuses`；每项带明确 scope 后统一排序，防止不同类别同名时
 混淆。每个 status 的 `ready` 还必须是 JSON boolean 并进入同一快照；目标容器、sidecar 或调试容器在 post/final 边界
 失去 readiness、重启、换镜像或被增删，即使 Pod Ready condition 尚未同步翻转，也会作为运行身份漂移 fail closed，
-不能把起始时刻的 Ready 结论延伸到整个 HashKV 证据窗口。
+不能把起始时刻的 Ready 结论延伸到整个 HashKV 证据窗口。每个 status 还必须提供恰含 `running`、`waiting` 或
+`terminated` 之一的对象型 `state`，`lastState` 必须是空对象或恰含上述一种状态；可选 `started` 只能是 boolean 或 null。
+这三个字段会递归按对象 key canonicalize 后进入同一身份，因此状态类型、时间、reason、exit code、signal、message、
+`lastState` 或 startup probe 的 started 结论在 baseline/post/final 任一边界变化都会 fail closed。普通、init/native-sidecar
+和 ephemeral 三类 status 使用相同规则；不能仅凭暂时未更新的 `ready`、container ID 与 restartCount 把已经 waiting/terminated
+或 startup 状态变化的进程继续当作稳定证据。
 
 该脚本只读检查 KubeBrain Pod Ready 数、`/readyz` 与 `/livez` 必须返回 `ok`，
 `/livez?verbose` 必须包含 `[+]serializable_read ok` 并以 `ok` 结束；配置
