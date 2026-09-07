@@ -13,48 +13,51 @@ import (
 
 func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 	for _, tc := range []struct {
-		name                string
-		podsJSON            string
-		postPodsJSON        string
-		readyz              string
-		readyzVerbose       string
-		readyzExcludeData   string
-		livez               string
-		livezVerbose        string
-		livezExclude        string
-		livezNamedVerbose   string
-		healthJSON          string
-		healthMethodCode    string
-		healthMethodAllow   string
-		httpHeaderType      string
-		httpHeaderNosniff   string
-		versionHeaderType   string
-		serialHealthJSON    string
-		count               string
-		statusJSON          string
-		secondStatusJSON    string
-		gatewayJSON         string
-		directStatusJSON    string
-		directAuthJSON      string
-		authJSON            string
-		directAlarmJSON     string
-		alarmJSON           string
-		versionJSON         string
-		infoVersionJSON     string
-		baselineInfoMetrics string
-		infoMetrics         string
-		infoMetricsPod1     string
-		clientMetrics       string
-		infoDebugVars       string
-		clientDebugVars     string
-		debugVarsHeader     string
-		infoPprof           string
-		clientPprof         string
-		extraEnv            []string
-		wantTimeout         []string
-		wantNoCommands      bool
-		wantOK              bool
-		wantOutput          string
+		name                    string
+		podsJSON                string
+		postPodsJSON            string
+		readyz                  string
+		readyzVerbose           string
+		readyzExcludeData       string
+		livez                   string
+		livezVerbose            string
+		livezExclude            string
+		livezNamedVerbose       string
+		healthJSON              string
+		healthMethodCode        string
+		healthMethodAllow       string
+		httpHeaderType          string
+		httpHeaderNosniff       string
+		versionHeaderType       string
+		serialHealthJSON        string
+		count                   string
+		statusJSON              string
+		secondStatusJSON        string
+		gatewayJSON             string
+		directStatusJSON        string
+		directAuthJSON          string
+		authJSON                string
+		directAlarmJSON         string
+		alarmJSON               string
+		versionJSON             string
+		infoVersionJSON         string
+		baselineInfoMetrics     string
+		baselineInfoMetricsPod1 string
+		baselineInfoMetricsPod2 string
+		infoMetrics             string
+		infoMetricsPod1         string
+		infoMetricsPod2         string
+		clientMetrics           string
+		infoDebugVars           string
+		clientDebugVars         string
+		debugVarsHeader         string
+		infoPprof               string
+		clientPprof             string
+		extraEnv                []string
+		wantTimeout             []string
+		wantNoCommands          bool
+		wantOK                  bool
+		wantOutput              string
 	}{
 		{
 			name:           "rejects ready Pod count above int32 before commands",
@@ -4547,6 +4550,85 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "info metrics mismatch: etcd_server_id must contain exactly one cluster/server_id-labeled value=1 sample",
 		},
 		{
+			name: "allows Ready Pod server identity set matching fully enumerated Status members",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:                  "ok",
+			count:                   "4",
+			statusJSON:              threeMemberStatusJSON(),
+			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "315"),
+			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "abc"),
+			infoMetrics:             withServerID(defaultInfoMetrics(""), "1c8"),
+			infoMetricsPod1:         withServerID(defaultInfoMetrics(""), "315"),
+			infoMetricsPod2:         withServerID(defaultInfoMetrics(""), "abc"),
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"FAKE_HASHKV_JSON=" + threeMemberHashKVJSON(),
+			},
+			wantOK:     true,
+			wantOutput: "hashkv_server_identity_members_match=true",
+		},
+		{
+			name: "rejects duplicate Ready Pod server identities with fully enumerated Status members",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:                  "ok",
+			count:                   "4",
+			statusJSON:              threeMemberStatusJSON(),
+			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "315"),
+			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "315"),
+			infoMetrics:             withServerID(defaultInfoMetrics(""), "1c8"),
+			infoMetricsPod1:         withServerID(defaultInfoMetrics(""), "315"),
+			infoMetricsPod2:         withServerID(defaultInfoMetrics(""), "315"),
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"FAKE_HASHKV_JSON=" + threeMemberHashKVJSON(),
+			},
+			wantOutput: "info metrics mismatch: Ready Pod server IDs must be unique",
+		},
+		{
+			name: "rejects Ready Pod server identity outside fully enumerated Status members",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:                  "ok",
+			count:                   "4",
+			statusJSON:              threeMemberStatusJSON(),
+			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "315"),
+			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "def"),
+			infoMetrics:             withServerID(defaultInfoMetrics(""), "1c8"),
+			infoMetricsPod1:         withServerID(defaultInfoMetrics(""), "315"),
+			infoMetricsPod2:         withServerID(defaultInfoMetrics(""), "def"),
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"FAKE_HASHKV_JSON=" + threeMemberHashKVJSON(),
+			},
+			wantOutput: "info metrics mismatch: Ready Pod server ID set must match Status member ID set",
+		},
+		{
 			name: "rejects gateway hashkv hash drift",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -6694,11 +6776,23 @@ if [[ " $* " == *" exec "* ]]; then
 	exec_calls="${exec_calls//[[:space:]]/}"
 	printf 'exec\n' >>"$FAKE_KUBECTL_EXEC_LOG"
 	if (( exec_calls < EXPECTED_READY_PODS )); then
+		if [[ " $* " == *" kubebrain-1 "* && -n "${FAKE_BASELINE_INFO_METRICS_POD_1:-}" ]]; then
+			printf '%s' "$FAKE_BASELINE_INFO_METRICS_POD_1"
+			exit 0
+		fi
+		if [[ " $* " == *" kubebrain-2 "* && -n "${FAKE_BASELINE_INFO_METRICS_POD_2:-}" ]]; then
+			printf '%s' "$FAKE_BASELINE_INFO_METRICS_POD_2"
+			exit 0
+		fi
 		printf '%s' "$FAKE_BASELINE_INFO_METRICS"
 		exit 0
 	fi
 	if [[ " $* " == *" kubebrain-1 "* && -n "${FAKE_INFO_METRICS_POD_1:-}" ]]; then
 		printf '%s' "$FAKE_INFO_METRICS_POD_1"
+		exit 0
+	fi
+	if [[ " $* " == *" kubebrain-2 "* && -n "${FAKE_INFO_METRICS_POD_2:-}" ]]; then
+		printf '%s' "$FAKE_INFO_METRICS_POD_2"
 		exit 0
 	fi
   printf '%s' "$FAKE_INFO_METRICS"
@@ -7002,8 +7096,11 @@ exec "$@"
 				"FAKE_VERSION_JSON=" + defaultVersionJSON(tc.versionJSON),
 				"FAKE_INFO_VERSION_JSON=" + defaultVersionJSON(tc.infoVersionJSON),
 				"FAKE_BASELINE_INFO_METRICS=" + defaultBaselineInfoMetrics(tc.baselineInfoMetrics),
+				"FAKE_BASELINE_INFO_METRICS_POD_1=" + tc.baselineInfoMetricsPod1,
+				"FAKE_BASELINE_INFO_METRICS_POD_2=" + tc.baselineInfoMetricsPod2,
 				"FAKE_INFO_METRICS=" + defaultInfoMetrics(tc.infoMetrics),
 				"FAKE_INFO_METRICS_POD_1=" + tc.infoMetricsPod1,
+				"FAKE_INFO_METRICS_POD_2=" + tc.infoMetricsPod2,
 				"FAKE_KUBECTL_EXEC_LOG=" + kubectlExecLog,
 				"FAKE_KUBECTL_GET_LOG=" + kubectlGetLog,
 				"FAKE_CLIENT_METRICS_RESPONSE=" + defaultClientMetricsResponse(tc.clientMetrics),
@@ -7233,6 +7330,26 @@ func withHashObservabilityCluster(metrics, cluster string) string {
 		`etcd_mvcc_hash_rev_duration_seconds_sum{cluster="default"}`, `etcd_mvcc_hash_rev_duration_seconds_sum{cluster="`+cluster+`"}`,
 		`etcd_mvcc_hash_rev_duration_seconds_count{cluster="default"}`, `etcd_mvcc_hash_rev_duration_seconds_count{cluster="`+cluster+`"}`,
 	).Replace(metrics)
+}
+
+func withServerID(metrics, serverID string) string {
+	return strings.ReplaceAll(metrics, `server_id="e3f"`, `server_id="`+serverID+`"`)
+}
+
+func threeMemberStatusJSON() string {
+	return `[
+		{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}},
+		{"Endpoint":"http://127.0.0.2:2379","Status":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}},
+		{"Endpoint":"http://127.0.0.3:2379","Status":{"header":{"cluster_id":123,"member_id":2748,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}
+	]`
+}
+
+func threeMemberHashKVJSON() string {
+	return `[
+		{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}},
+		{"Endpoint":"http://127.0.0.2:2379","HashKV":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}},
+		{"Endpoint":"http://127.0.0.3:2379","HashKV":{"header":{"cluster_id":123,"member_id":2748,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}
+	]`
 }
 
 func defaultVersionJSON(value string) string {

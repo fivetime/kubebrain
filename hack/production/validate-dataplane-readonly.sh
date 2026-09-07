@@ -1123,8 +1123,19 @@ snapshot_hashkv_cache_counters() {
 	local pod_uid
 	local process_start_time
 	local server_identity_cluster
+	local server_identity_full_enumeration="0"
 	local server_identity_row
 	local server_identity_server_id
+	local status_member_id
+	local status_member_id_hex
+	local expected_server_id_set
+	local observed_server_id_set
+	local -a expected_server_ids=()
+	local -A server_identity_pods_by_id=()
+
+	if [[ "$expected_status_endpoints" == "$EXPECTED_READY_PODS" ]]; then
+		server_identity_full_enumeration="1"
+	fi
 
 	pod_identity_rows="$(ready_pod_runtime_identities "$pods_json")"
 	while IFS=$'\t' read -r pod pod_uid pod_container_identity; do
@@ -1142,6 +1153,13 @@ snapshot_hashkv_cache_counters() {
 			return 1
 		fi
 		IFS=$'\t' read -r server_identity_cluster server_identity_server_id <<<"$server_identity_row"
+		if [[ "$server_identity_full_enumeration" == "1" ]]; then
+			if [[ -n "${server_identity_pods_by_id[$server_identity_server_id]+x}" ]]; then
+				echo "info metrics mismatch: Ready Pod server IDs must be unique: server_id=${server_identity_server_id}, pods=${server_identity_pods_by_id[$server_identity_server_id]},${pod}" >&2
+				return 1
+			fi
+			server_identity_pods_by_id["$server_identity_server_id"]="$pod"
+		fi
 		if ! hashkv_cache_hit_row="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"; then
 			return 1
 		fi
@@ -1171,6 +1189,21 @@ snapshot_hashkv_cache_counters() {
 		fi
 		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pod" "$pod_uid" "$pod_container_identity" "$process_start_time" "$server_identity_cluster" "$server_identity_server_id" "$hashkv_cache_hit" "$hashkv_cache_miss" "$mvcc_hash_count" "$mvcc_hash_rev_count"
 	done <<<"$pod_identity_rows"
+	if [[ "$server_identity_full_enumeration" == "1" ]]; then
+		for status_member_id in "${status_member_id_array[@]}"; do
+			if ! printf -v status_member_id_hex '%x' "$status_member_id" 2>/dev/null; then
+				echo "info metrics mismatch: could not encode Status member ID ${status_member_id} as uint64 hexadecimal" >&2
+				return 1
+			fi
+			expected_server_ids+=("$status_member_id_hex")
+		done
+		expected_server_id_set="$(printf '%s\n' "${expected_server_ids[@]}" | LC_ALL=C sort | paste -sd, -)"
+		observed_server_id_set="$(printf '%s\n' "${!server_identity_pods_by_id[@]}" | LC_ALL=C sort | paste -sd, -)"
+		if [[ "$observed_server_id_set" != "$expected_server_id_set" ]]; then
+			echo "info metrics mismatch: Ready Pod server ID set must match Status member ID set: expected ${expected_server_id_set}, got ${observed_server_id_set}" >&2
+			return 1
+		fi
+	fi
 }
 
 expect_hash_metrics_boundary() {
@@ -3039,12 +3072,16 @@ fi
 hashkv_cache_counter_baseline=""
 hashkv_cache_hit_delta_summary=""
 hashkv_cache_miss_delta_summary=""
+hashkv_server_identity_summary=""
 mvcc_hash_count_delta_summary=""
 mvcc_hash_rev_count_delta_summary=""
 hashkv_summary=""
 if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     hashkv_cache_counter_baseline="$(snapshot_hashkv_cache_counters)"
+    if [[ "$expected_status_endpoints" == "$EXPECTED_READY_PODS" ]]; then
+      hashkv_server_identity_summary=", hashkv_server_identity_members_match=true"
+    fi
   fi
   hashkv_json="$(run_etcdctl_with_probe_timeout --endpoints="$STATUS_ENDPOINTS" endpoint hashkv -w json)"
   expected_hashkv_endpoints="${#status_endpoint_array[@]}"
@@ -3718,7 +3755,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
     expect_hash_metrics_boundary "${ENDPOINT%/}/metrics" "$hashkv_cache_counter_baseline"
     status_summary+=", mvcc_hash_metrics=ok, mvcc_hash_count_delta=${mvcc_hash_count_delta_summary}, mvcc_hash_rev_count_delta=${mvcc_hash_rev_count_delta_summary}, hashkv_cache_metrics=ok"
     status_summary+=", hashkv_cache_hit_delta=${hashkv_cache_hit_delta_summary}, hashkv_cache_miss_delta=${hashkv_cache_miss_delta_summary}"
-    status_summary+=", hashkv_cache_process_identity=stable"
+    status_summary+=", hashkv_cache_process_identity=stable${hashkv_server_identity_summary}"
   fi
   fi
 fi
