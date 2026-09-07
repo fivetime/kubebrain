@@ -73238,6 +73238,52 @@ revision/HashKV/compact/term 为 `75044/1984703050/66760/802`，Auth disabled。
 tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
 `/root/.local/share/Trash/files/kubebrain-a5767-20260907T075759Z`；稳定镜像和数据卷未删除。
 
+### A5768：在 HashKV 探针后重新绑定每个 Pod 的 role metrics 与本地 Status
+
+A5767 只在 HashKV metrics baseline 时证明逐 Pod role/Status 一致。把真实 leader Pod 的后置
+`etcd_server_is_leader` 从 1 改成 0、保留 baseline 正确时，旧 gate 仍错误整体 GREEN；Pod UID、container ID、
+process start time 和 server ID 都不变，已有 process fence 无法推导角色样本未漂移。长 HashKV 窗口需要在结束边界重新取得
+同实例证据，而不是把起始瞬时检查延伸为整个窗口结论。
+
+提交 `119c9d7ebb0f7665c756b5a2f45d063a3119d862` 把逐 Pod server role/loopback Status 校验提取为共享函数，
+在 baseline 与 post metrics 快照各执行一次。后置轮再次要求 role metric family 的类型、唯一 canonical 0/1 样本与 cluster
+绑定，local Status 的 cluster/member/leader/isLearner envelope 合法，member 等于稳定 server ID、leader 等于起始完整 Status
+共识，并要求 has-leader/is-leader/is-learner 与同轮本地 Status 精确一致。通过摘要新增
+`hashkv_server_role_process_identity=stable`；后置 leader role 漂移有独立 RED/GREEN 回归，原有十三类身份/角色分支继续覆盖。
+
+十四类身份/角色用例 `count=10` 为 173.545 秒；完整 production probe 普通/race 为 227.993/229.632 秒，
+`go vet`、`bash -n`、gofmt、文档合同和 diff check 全部 GREEN。代码提交前 verifier 为
+703=`170/193/180/160`，四分片为 `258.017/459.936/315.717/661.131s`；提交后 verifier 不变，四分片为
+`257.478/455.394/309.478/656.588s`，再次全部 GREEN。
+
+最终候选 `docker.io/library/kubebrain@sha256:07a74a9197120a53e062677ab454c5825bbc79767a7cd0c44d6558988927bb33`
+内嵌版本 `0.0.0-119c9d7e`、完整 commit、build time `2026-09-07T08:28:40Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,846,720 bytes，SHA-256
+`6f4167aba3b7974950631e7f46f29d0efa32293d20ae91312a0419b13453d05a`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`2449628b99f15152ec838740a4a6f404bf7cb8ae24e90eecc3d282168940513e`、
+`sha256:07a74a9197120a53e062677ab454c5825bbc79767a7cd0c44d6558988927bb33`、
+`sha256:da2a916e045084e090d8a431d9caf9610840a4f226c049d283989afdc754a43f`、
+`sha256:8a652dd136bdc376023fba0af53469457a2457b0667e8796b95c8e77a47a8117`、
+`sha256:b662774197b747d822ac6b7fee2d0d6adcb0f468c5a2f46a0eb22221220c4fce`。78/78 blobs 与 78/78 descriptor
+edges 的 size/hash 全匹配且无 orphan；镜像为 `65532:65532`、正确入口、71/71 diff IDs。SPDX layer
+`sha256:eb2124ce760dc07ea78214f55791d1a3b6eb2630abf957587fb49f0943036794` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:aa2d789173b41b2dd72415d19ab6082164702d265073a6cd4edc7361eb383018`
+含 3 项固定 materials，两份 statement 均只有一个 subject 并精确绑定 platform manifest。
+
+候选使用 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test，从 generation 966 原子投放到
+generation/observed `967/967`、RV `8899009`；3/3 Ready、restart 0，三个 runtime imageID 均为候选 nested digest。
+完整 readonly gate GREEN，新增 post role/process 摘要成立；Hash/HashKV histogram 聚合增量 `2/5`、cache hit/miss
+增量 `3/4`，revision/HashKV/compact/term 为 `75044/1984703050/66760/804`，三副本及 direct/gateway 结果一致，
+Auth disabled。
+
+随后用新鲜六类 JSON test 回滚稳定 digest；终态 generation/observed `968/968`、RV `8899786`、3/3 Ready、restart 0、
+22 参数，三个 runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+省略未来 `EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS` 的稳定适用 gate 在 60 秒旧 HashKV 窗口 GREEN，
+revision/HashKV/compact/term 为 `75044/1984703050/66760/807`，Auth disabled。最终关闭六个 listener 端口，精确删除候选
+tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
+`/root/.local/share/Trash/files/kubebrain-a5768-20260907T090244Z`；稳定镜像和数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：

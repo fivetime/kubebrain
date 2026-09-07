@@ -1783,6 +1783,10 @@ Status 十进制 member ID 按 upstream `types.ID.String()` 语义编码为 cano
 metrics 的 has-leader 必须为 1，is-leader 必须精确等于 `member==leader`，is-learner 必须等于同 Pod Status。
 这会拒绝实例身份正确但 leader/learner 角色指标错误的部署；通过时输出
 `hashkv_server_role_local_status_match=true`。
+同一逐 Pod 绑定会在 HashKV/Hash 探针完成后再次执行，并与已经固定的 Pod UID、container identity、
+process start time 和 server ID 后置快照组合；因此探针期间角色样本漂移、local Status 身份变化或 leader
+偏离起始完整 Status 共识都会 fail closed。前后两轮都通过时额外输出
+`hashkv_server_role_process_identity=stable`。
 门禁在 HashKV 探针前后分别抓取同一组 Pod 的基线和终值，使用 64 位整数做精确差值与
 带安全上界的聚合，要求 counter 不倒退且聚合不得溢出，
 并把每个 Pod 名绑定到不可变 UID 及按容器名排序的完整 `containerID/restartCount` 集合；探针结束后重新读取 Kubernetes Pod
@@ -1810,7 +1814,7 @@ hit 与 miss 增量分别大于零，既证明本轮至少一次物理扫描，
 `mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`hashkv_cache_metrics=ok`、
 `hashkv_cache_hit_delta=<n>`、`hashkv_cache_miss_delta=<n>`、`hashkv_cache_process_identity=stable`、
 `hashkv_server_identity_members_match=true`、`hashkv_server_identity_local_status_match=true`、
-`hashkv_server_role_local_status_match=true`（三者仅完整枚举 Status 时）、
+`hashkv_server_role_local_status_match=true`、`hashkv_server_role_process_identity=stable`（四者仅完整枚举 Status 时）、
 `mvcc_put_size_metrics=ok`、
 `mvcc_pending_event_metrics=ok`、`mvcc_revision_metrics=ok`、
 `mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、
