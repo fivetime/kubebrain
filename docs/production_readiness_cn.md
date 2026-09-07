@@ -1322,6 +1322,7 @@ CRITICAL，但本轮 canary 仍失败；当前等于唯一 candidate spec 时执
 KUBE_CONTEXT=production \
 KUBEBRAIN_NAMESPACE=kubebrain-instance-a \
 KUBEBRAIN_CONTAINER_NAME=kubebrain \
+EXPECTED_KUBEBRAIN_STATEFULSET_UID=01234567-89ab-cdef-0123-456789abcdef \
 EXPECTED_KUBEBRAIN_IMAGE_DIGEST=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
 EXPECTED_READY_PODS=3 \
 ENDPOINT=https://instance-a.example:2379 \
@@ -1362,6 +1363,12 @@ HTTP 400 和固定文本
 并跳过不可能到达内部 gRPC 的 gateway Status/AuthStatus/Alarm/Hash/HashKV payload 校验；官方
 gRPC `etcdctl endpoint status/hashkv`、client/info `/version`、健康和可选 info metrics 检查仍保留。
 auth disabled 时不应用该拒绝，gateway 继续按普通路径工作。
+
+`EXPECTED_KUBEBRAIN_STATEFULSET_UID` 可选；配置后，脚本要求每个非删除 Ready Pod 恰有一个
+`controller=true` ownerReference，且其 `apiVersion=apps/v1`、`kind=StatefulSet`、name 非空、UID 与期望值
+精确相等。相同校验会覆盖 HashKV 长窗口的 baseline、post 和 final 三次 Pod 快照，防止 selector 同时选中孤儿 Pod、
+其他控制器 Pod，或窗口内发生 owner 漂移后仍错误通过；成功摘要会输出
+`kubebrain_statefulset_uid=<immutable UID>`。应从待发布 StatefulSet 的 `metadata.uid` 读取该值，不能用可复用的名称替代。
 
 `EXPECTED_KUBEBRAIN_IMAGE_DIGEST` 可选，但一旦配置就必须是小写 canonical `sha256:<64 hex>`。无论是否配置期望值，
 脚本都会要求每个非删除 Ready Pod 恰好有一个名为 `KUBEBRAIN_CONTAINER_NAME` 的 container status、该容器自身
