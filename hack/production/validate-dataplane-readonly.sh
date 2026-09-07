@@ -1200,6 +1200,7 @@ ready_pod_runtime_identities() {
 					(.name | type) == "string" and .name != ""
 					and (.containerID | type) == "string" and .containerID != ""
 					and (.imageID | type) == "string" and (.imageID | test("sha256:[0-9a-f]{64}$"))
+					and (.ready | type) == "boolean"
 					and (.restartCount | type) == "number"
 					and .restartCount == (.restartCount | floor)
 					and .restartCount >= 0
@@ -1207,7 +1208,7 @@ ready_pod_runtime_identities() {
 			)
 			then (.status.containerStatuses
 				| sort_by(.name)
-				| map({name: .name, containerID: .containerID, imageID: .imageID, restartCount: .restartCount})
+				| map({name: .name, containerID: .containerID, imageID: .imageID, ready: .ready, restartCount: .restartCount})
 				| tojson
 				| @base64)
 			else ""
