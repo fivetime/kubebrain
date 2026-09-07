@@ -1103,6 +1103,58 @@ ready_pod_runtime_identities() {
 	'
 }
 
+pod_local_status_identity() {
+	local pod="$1"
+	local local_status_json
+	local local_status_values
+	local local_status_cluster_type
+	local local_status_cluster_id
+	local local_status_member_type
+	local local_status_member_id
+	local local_status_error
+
+	local_status_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+		exec "$pod" -- sh -c 'curl -fsS -X POST -H "Content-Type: application/json" -d "{}" http://127.0.0.1:3379/v3/maintenance/status')"
+	local_status_values="$(printf '%s' "$local_status_json" | "$JQ" -r '
+		if type != "object" or (.header | type) != "object" then
+			"invalid\tinvalid\tinvalid\tinvalid\tinvalid"
+		else
+			.header as $header
+			| (if ($header | has("cluster_id")) then $header.cluster_id elif ($header | has("clusterId")) then $header.clusterId else null end) as $cluster_id
+			| (if ($header | has("member_id")) then $header.member_id elif ($header | has("memberId")) then $header.memberId else null end) as $member_id
+			| [
+				($cluster_id | type),
+				($cluster_id | tostring),
+				($member_id | type),
+				($member_id | tostring),
+				(if has("errors") then
+					(if (.errors | type) != "array" then "invalid" elif (.errors | length) == 0 then "" else (.errors | map(tostring) | join(",")) end)
+				 elif has("error") then (.error | tostring)
+				 else ""
+				 end)
+			] | @tsv
+		end
+	')"
+	IFS=$'\t' read -r local_status_cluster_type local_status_cluster_id local_status_member_type local_status_member_id local_status_error <<<"$local_status_values"
+	if [[ "$local_status_cluster_type" != "string" || "$local_status_member_type" != "string" ]]; then
+		echo "info metrics mismatch: local Status cluster/member IDs must be JSON strings for pod ${pod}" >&2
+		return 1
+	fi
+	if ! operation_is_positive_uint64 "$local_status_cluster_id"; then
+		echo "info metrics mismatch: local Status cluster ID must be canonical positive uint64 for pod ${pod}, got ${local_status_cluster_id}" >&2
+		return 1
+	fi
+	if ! operation_is_positive_uint64 "$local_status_member_id"; then
+		echo "info metrics mismatch: local Status member ID must be canonical positive uint64 for pod ${pod}, got ${local_status_member_id}" >&2
+		return 1
+	fi
+	if [[ -n "$local_status_error" ]]; then
+		echo "info metrics mismatch: local Status error must be empty for pod ${pod}, got ${local_status_error}" >&2
+		return 1
+	fi
+	printf '%s\t%s' "$local_status_cluster_id" "$local_status_member_id"
+}
+
 snapshot_hashkv_cache_counters() {
 	local hashkv_cache_hit
 	local hashkv_cache_hit_cluster
@@ -1122,6 +1174,10 @@ snapshot_hashkv_cache_counters() {
 	local pod_metrics
 	local pod_uid
 	local process_start_time
+	local local_status_cluster_id
+	local local_status_identity
+	local local_status_member_id
+	local local_status_member_id_hex
 	local server_identity_cluster
 	local server_identity_full_enumeration="0"
 	local server_identity_row
@@ -1154,6 +1210,22 @@ snapshot_hashkv_cache_counters() {
 		fi
 		IFS=$'\t' read -r server_identity_cluster server_identity_server_id <<<"$server_identity_row"
 		if [[ "$server_identity_full_enumeration" == "1" ]]; then
+			if ! local_status_identity="$(pod_local_status_identity "$pod")"; then
+				return 1
+			fi
+			IFS=$'\t' read -r local_status_cluster_id local_status_member_id <<<"$local_status_identity"
+			if [[ "$local_status_cluster_id" != "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
+				echo "info metrics mismatch: local Status cluster ID differs from Status endpoint cluster for pod ${pod}: expected ${EXPECTED_STATUS_CLUSTER_ID}, got ${local_status_cluster_id}" >&2
+				return 1
+			fi
+			if ! printf -v local_status_member_id_hex '%x' "$local_status_member_id" 2>/dev/null; then
+				echo "info metrics mismatch: could not encode local Status member ID ${local_status_member_id} as uint64 hexadecimal for pod ${pod}" >&2
+				return 1
+			fi
+			if [[ "$server_identity_server_id" != "$local_status_member_id_hex" ]]; then
+				echo "info metrics mismatch: Ready Pod server identity does not match local Status member for pod ${pod}: metrics=${server_identity_server_id}, status=${local_status_member_id_hex}" >&2
+				return 1
+			fi
 			if [[ -n "${server_identity_pods_by_id[$server_identity_server_id]+x}" ]]; then
 				echo "info metrics mismatch: Ready Pod server IDs must be unique: server_id=${server_identity_server_id}, pods=${server_identity_pods_by_id[$server_identity_server_id]},${pod}" >&2
 				return 1
@@ -3080,7 +3152,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     hashkv_cache_counter_baseline="$(snapshot_hashkv_cache_counters)"
     if [[ "$expected_status_endpoints" == "$EXPECTED_READY_PODS" ]]; then
-      hashkv_server_identity_summary=", hashkv_server_identity_members_match=true"
+      hashkv_server_identity_summary=", hashkv_server_identity_members_match=true, hashkv_server_identity_local_status_match=true"
     fi
   fi
   hashkv_json="$(run_etcdctl_with_probe_timeout --endpoints="$STATUS_ENDPOINTS" endpoint hashkv -w json)"

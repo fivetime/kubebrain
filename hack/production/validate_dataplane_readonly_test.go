@@ -47,6 +47,9 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		infoMetrics             string
 		infoMetricsPod1         string
 		infoMetricsPod2         string
+		localStatusPod0         string
+		localStatusPod1         string
+		localStatusPod2         string
 		clientMetrics           string
 		infoDebugVars           string
 		clientDebugVars         string
@@ -4574,7 +4577,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"FAKE_HASHKV_JSON=" + threeMemberHashKVJSON(),
 			},
 			wantOK:     true,
-			wantOutput: "hashkv_server_identity_members_match=true",
+			wantOutput: "hashkv_server_identity_members_match=true, hashkv_server_identity_local_status_match=true",
 		},
 		{
 			name: "rejects duplicate Ready Pod server identities with fully enumerated Status members",
@@ -4592,6 +4595,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			infoMetrics:             withServerID(defaultInfoMetrics(""), "1c8"),
 			infoMetricsPod1:         withServerID(defaultInfoMetrics(""), "315"),
 			infoMetricsPod2:         withServerID(defaultInfoMetrics(""), "315"),
+			localStatusPod2:         defaultLocalStatusJSON("", "789"),
 			extraEnv: []string{
 				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
 				"EXPECTED_STATUS_CLUSTER_ID=123",
@@ -4618,6 +4622,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			infoMetrics:             withServerID(defaultInfoMetrics(""), "1c8"),
 			infoMetricsPod1:         withServerID(defaultInfoMetrics(""), "315"),
 			infoMetricsPod2:         withServerID(defaultInfoMetrics(""), "def"),
+			localStatusPod2:         defaultLocalStatusJSON("", "3567"),
 			extraEnv: []string{
 				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
 				"EXPECTED_STATUS_CLUSTER_ID=123",
@@ -4627,6 +4632,101 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"FAKE_HASHKV_JSON=" + threeMemberHashKVJSON(),
 			},
 			wantOutput: "info metrics mismatch: Ready Pod server ID set must match Status member ID set",
+		},
+		{
+			name: "rejects swapped Ready Pod server identities despite matching Status member set",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:                  "ok",
+			count:                   "4",
+			statusJSON:              threeMemberStatusJSON(),
+			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "315"),
+			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "abc"),
+			infoMetrics:             withServerID(defaultInfoMetrics(""), "315"),
+			infoMetricsPod1:         withServerID(defaultInfoMetrics(""), "1c8"),
+			infoMetricsPod2:         withServerID(defaultInfoMetrics(""), "abc"),
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				"FAKE_HASHKV_JSON=" + threeMemberHashKVJSON(),
+			},
+			wantOutput: "info metrics mismatch: Ready Pod server identity does not match local Status member",
+		},
+		{
+			name: "rejects numeric local Status identity for fully enumerated Ready Pods",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:                  "ok",
+			count:                   "4",
+			statusJSON:              threeMemberStatusJSON(),
+			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "315"),
+			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "abc"),
+			localStatusPod0:         `{"header":{"cluster_id":123,"member_id":456}}`,
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+			},
+			wantOutput: "info metrics mismatch: local Status cluster/member IDs must be JSON strings for pod kubebrain-0",
+		},
+		{
+			name: "rejects local Status cluster mismatch for fully enumerated Ready Pods",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:                  "ok",
+			count:                   "4",
+			statusJSON:              threeMemberStatusJSON(),
+			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "315"),
+			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "abc"),
+			localStatusPod0:         `{"header":{"cluster_id":"124","member_id":"456"}}`,
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+			},
+			wantOutput: "info metrics mismatch: local Status cluster ID differs from Status endpoint cluster for pod kubebrain-0",
+		},
+		{
+			name: "rejects local Status errors for fully enumerated Ready Pods",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:                  "ok",
+			count:                   "4",
+			statusJSON:              threeMemberStatusJSON(),
+			baselineInfoMetrics:     withServerID(defaultBaselineInfoMetrics(""), "1c8"),
+			baselineInfoMetricsPod1: withServerID(defaultBaselineInfoMetrics(""), "315"),
+			baselineInfoMetricsPod2: withServerID(defaultBaselineInfoMetrics(""), "abc"),
+			localStatusPod0:         `{"header":{"cluster_id":"123","member_id":"456"},"errors":["backend unavailable"]}`,
+			extraEnv: []string{
+				"STATUS_ENDPOINTS=http://127.0.0.1:2379,http://127.0.0.2:2379,http://127.0.0.3:2379",
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+			},
+			wantOutput: "info metrics mismatch: local Status error must be empty for pod kubebrain-0",
 		},
 		{
 			name: "rejects gateway hashkv hash drift",
@@ -6772,6 +6872,18 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			writeDataplaneProbeExecutable(t, filepath.Join(dir, "kubectl"), `#!/usr/bin/env bash
 set -euo pipefail
 if [[ " $* " == *" exec "* ]]; then
+if [[ " $* " == *"/v3/maintenance/status"* ]]; then
+		if [[ " $* " == *" kubebrain-1 "* ]]; then
+			printf '%s' "$FAKE_LOCAL_STATUS_POD_1"
+			exit 0
+		fi
+		if [[ " $* " == *" kubebrain-2 "* ]]; then
+			printf '%s' "$FAKE_LOCAL_STATUS_POD_2"
+			exit 0
+		fi
+		printf '%s' "$FAKE_LOCAL_STATUS_POD_0"
+		exit 0
+	fi
 	exec_calls="$(wc -l <"$FAKE_KUBECTL_EXEC_LOG" 2>/dev/null || true)"
 	exec_calls="${exec_calls//[[:space:]]/}"
 	printf 'exec\n' >>"$FAKE_KUBECTL_EXEC_LOG"
@@ -7101,6 +7213,9 @@ exec "$@"
 				"FAKE_INFO_METRICS=" + defaultInfoMetrics(tc.infoMetrics),
 				"FAKE_INFO_METRICS_POD_1=" + tc.infoMetricsPod1,
 				"FAKE_INFO_METRICS_POD_2=" + tc.infoMetricsPod2,
+				"FAKE_LOCAL_STATUS_POD_0=" + defaultLocalStatusJSON(tc.localStatusPod0, "456"),
+				"FAKE_LOCAL_STATUS_POD_1=" + defaultLocalStatusJSON(tc.localStatusPod1, "789"),
+				"FAKE_LOCAL_STATUS_POD_2=" + defaultLocalStatusJSON(tc.localStatusPod2, "2748"),
 				"FAKE_KUBECTL_EXEC_LOG=" + kubectlExecLog,
 				"FAKE_KUBECTL_GET_LOG=" + kubectlGetLog,
 				"FAKE_CLIENT_METRICS_RESPONSE=" + defaultClientMetricsResponse(tc.clientMetrics),
@@ -7350,6 +7465,13 @@ func threeMemberHashKVJSON() string {
 		{"Endpoint":"http://127.0.0.2:2379","HashKV":{"header":{"cluster_id":123,"member_id":789,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}},
 		{"Endpoint":"http://127.0.0.3:2379","HashKV":{"header":{"cluster_id":123,"member_id":2748,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}
 	]`
+}
+
+func defaultLocalStatusJSON(value, memberID string) string {
+	if value != "" {
+		return value
+	}
+	return `{"header":{"cluster_id":"123","member_id":"` + memberID + `","revision":"7","raft_term":"8"}}`
 }
 
 func defaultVersionJSON(value string) string {
