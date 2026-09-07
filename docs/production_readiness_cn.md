@@ -1765,7 +1765,9 @@ Hash 与 HashKV 的全实例聚合增量都必须大于零，不能用旧样本�
 `backend_hashkv_completed_cache_hit` 与 `backend_hashkv_completed_cache_miss` counter；
 两者都必须只有一个非空 `cluster` 标签，且样本必须是 `[0,2^53-1]` 内的 canonical 十进制整数；小数、指数、前导零、负数和
 超出安全整数范围的值都 fail closed。同一次 scrape 中，这两个 cache counter 与两个 Hash histogram family 必须携带完全相同的
-`cluster` 值；门禁还会把该值纳入逐 Pod 基线，探针结束时任何 cluster 漂移都会 fail closed，不能跨逻辑集群拼接计数。
+`cluster` 值，并且必须等于同次 scrape 中唯一、严格为 value=1 的
+`etcd_server_id{cluster="<cluster>",server_id="<lower-hex>"}` 服务身份 cluster。门禁会把该 cluster 与 server ID
+都纳入逐 Pod 基线，探针结束时任何 cluster 或 server ID 漂移都会 fail closed，不能跨逻辑集群或成员身份拼接计数。
 门禁在 HashKV 探针前后分别抓取同一组 Pod 的基线和终值，使用 64 位整数做精确差值与
 带安全上界的聚合，要求 counter 不倒退且聚合不得溢出，
 并把每个 Pod 名绑定到不可变 UID 及按容器名排序的完整 `containerID/restartCount` 集合；探针结束后重新读取 Kubernetes Pod

@@ -4457,6 +4457,96 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "info metrics mismatch: Hash observability metric cluster changed during probes for pod kubebrain-0",
 		},
 		{
+			name: "rejects hash observability cluster detached from server identity",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:              "ok",
+			count:               "4",
+			statusJSON:          `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			baselineInfoMetrics: withHashObservabilityCluster(defaultBaselineInfoMetrics(""), "other"),
+			infoMetrics:         withHashObservabilityCluster(defaultInfoMetrics(""), "other"),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: Hash observability metric cluster disagrees with server identity for pod kubebrain-0",
+		},
+		{
+			name: "rejects server identity drift during hash probes",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.ReplaceAll(
+				defaultInfoMetrics(""),
+				`server_id="e3f"`,
+				`server_id="abc"`,
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: server identity changed during HashKV probes for pod kubebrain-0",
+		},
+		{
+			name: "rejects duplicate baseline server identity during hash probes",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			baselineInfoMetrics: defaultBaselineInfoMetrics("") +
+				"etcd_server_id{cluster=\"default\",server_id=\"abc\"} 1\n",
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: etcd_server_id must contain exactly one cluster/server_id-labeled value=1 sample",
+		},
+		{
+			name: "rejects noncanonical baseline server identity value during hash probes",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			baselineInfoMetrics: strings.ReplaceAll(
+				defaultBaselineInfoMetrics(""),
+				"etcd_server_id{cluster=\"default\",server_id=\"e3f\"} 1\n",
+				"etcd_server_id{cluster=\"default\",server_id=\"e3f\"} 1.0\n",
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: etcd_server_id must contain exactly one cluster/server_id-labeled value=1 sample",
+		},
+		{
 			name: "rejects gateway hashkv hash drift",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -7132,6 +7222,19 @@ func defaultHashHistogramMetrics(metric, count, sum string) string {
 	return strings.Join(lines, "\n")
 }
 
+func withHashObservabilityCluster(metrics, cluster string) string {
+	return strings.NewReplacer(
+		`backend_hashkv_completed_cache_hit{cluster="default"}`, `backend_hashkv_completed_cache_hit{cluster="`+cluster+`"}`,
+		`backend_hashkv_completed_cache_miss{cluster="default"}`, `backend_hashkv_completed_cache_miss{cluster="`+cluster+`"}`,
+		`etcd_mvcc_hash_duration_seconds_bucket{cluster="default"`, `etcd_mvcc_hash_duration_seconds_bucket{cluster="`+cluster+`"`,
+		`etcd_mvcc_hash_duration_seconds_sum{cluster="default"}`, `etcd_mvcc_hash_duration_seconds_sum{cluster="`+cluster+`"}`,
+		`etcd_mvcc_hash_duration_seconds_count{cluster="default"}`, `etcd_mvcc_hash_duration_seconds_count{cluster="`+cluster+`"}`,
+		`etcd_mvcc_hash_rev_duration_seconds_bucket{cluster="default"`, `etcd_mvcc_hash_rev_duration_seconds_bucket{cluster="`+cluster+`"`,
+		`etcd_mvcc_hash_rev_duration_seconds_sum{cluster="default"}`, `etcd_mvcc_hash_rev_duration_seconds_sum{cluster="`+cluster+`"}`,
+		`etcd_mvcc_hash_rev_duration_seconds_count{cluster="default"}`, `etcd_mvcc_hash_rev_duration_seconds_count{cluster="`+cluster+`"}`,
+	).Replace(metrics)
+}
+
 func defaultVersionJSON(value string) string {
 	if value != "" {
 		return value
@@ -7337,7 +7440,8 @@ func TestProductionReadinessDataplaneReadonlyExampleIncludesReadonlyAuditFields(
 	}
 	require.Contains(t, doc, "所有 Status version 唯一且等于期望 semver")
 	require.Contains(t, doc, "同一次 scrape 中，这两个 cache counter 与两个 Hash histogram family 必须携带完全相同的")
-	require.Contains(t, doc, "探针结束时任何 cluster 漂移都会 fail closed")
+	require.Contains(t, doc, "etcd_server_id{cluster=\"<cluster>\",server_id=\"<lower-hex>\"}")
+	require.Contains(t, doc, "探针结束时任何 cluster 或 server ID 漂移都会 fail closed")
 	for _, required := range []string{
 		"readyz_verbose=ok",
 		"readyz_data_corruption=ok",

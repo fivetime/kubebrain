@@ -840,6 +840,43 @@ expect_info_metrics_boundary() {
   done
 }
 
+expect_server_identity_sample() {
+	local metrics_text="$1"
+	local sample_cluster
+	local sample_rows
+	local sample_server_id
+
+	sample_rows="$(awk '
+    {
+      token = $1
+      name = token
+      sub(/\{.*/, "", name)
+      if (name != "etcd_server_id") next
+      prefix = "etcd_server_id{cluster=\""
+      rest = substr(token, length(prefix) + 1)
+      separator = index(rest, "\",server_id=\"")
+      if (index(token, prefix) != 1 || NF != 2 || separator <= 1 || substr(token, length(token) - 1) != "\"}" || $2 !~ /^1$/) {
+        print "invalid"
+        next
+      }
+      cluster = substr(rest, 1, separator - 1)
+      server_id = substr(rest, separator + length("\",server_id=\""))
+      server_id = substr(server_id, 1, length(server_id) - 2)
+      if (prefix cluster "\",server_id=\"" server_id "\"}" != token || server_id !~ /^[0-9a-f]+$/) {
+        print "invalid"
+      } else {
+        print cluster "\t" server_id
+      }
+    }
+	' <<<"$metrics_text")"
+	IFS=$'\t' read -r sample_cluster sample_server_id <<<"$sample_rows"
+	if [[ -z "$sample_cluster" || -z "$sample_server_id" || "$sample_rows" != "${sample_cluster}"$'\t'"${sample_server_id}" ]]; then
+		echo "info metrics mismatch: etcd_server_id must contain exactly one cluster/server_id-labeled value=1 sample" >&2
+		return 1
+	fi
+	printf '%s\t%s' "$sample_cluster" "$sample_server_id"
+}
+
 expect_hashkv_cache_counter() {
 	local metrics_text="$1"
 	local metric="$2"
@@ -1085,6 +1122,9 @@ snapshot_hashkv_cache_counters() {
 	local pod_metrics
 	local pod_uid
 	local process_start_time
+	local server_identity_cluster
+	local server_identity_row
+	local server_identity_server_id
 
 	pod_identity_rows="$(ready_pod_runtime_identities "$pods_json")"
 	while IFS=$'\t' read -r pod pod_uid pod_container_identity; do
@@ -1098,6 +1138,10 @@ snapshot_hashkv_cache_counters() {
 		fi
 		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
+		if ! server_identity_row="$(expect_server_identity_sample "$pod_metrics")"; then
+			return 1
+		fi
+		IFS=$'\t' read -r server_identity_cluster server_identity_server_id <<<"$server_identity_row"
 		if ! hashkv_cache_hit_row="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"; then
 			return 1
 		fi
@@ -1121,7 +1165,11 @@ snapshot_hashkv_cache_counters() {
 			echo "info metrics mismatch: Hash observability metric clusters disagree for pod ${pod}" >&2
 			return 1
 		fi
-		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pod" "$pod_uid" "$pod_container_identity" "$process_start_time" "$hashkv_cache_hit_cluster" "$hashkv_cache_hit" "$hashkv_cache_miss" "$mvcc_hash_count" "$mvcc_hash_rev_count"
+		if [[ "$hashkv_cache_hit_cluster" != "$server_identity_cluster" ]]; then
+			echo "info metrics mismatch: Hash observability metric cluster disagrees with server identity for pod ${pod}" >&2
+			return 1
+		fi
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pod" "$pod_uid" "$pod_container_identity" "$process_start_time" "$server_identity_cluster" "$server_identity_server_id" "$hashkv_cache_hit" "$hashkv_cache_miss" "$mvcc_hash_count" "$mvcc_hash_rev_count"
 	done <<<"$pod_identity_rows"
 }
 
@@ -1138,6 +1186,7 @@ expect_hash_metrics_boundary() {
 	local baseline_pod_container_identity
 	local baseline_pod_uid
 	local baseline_process_start_time
+	local baseline_server_id
 	local -A baseline_container_identities=()
 	local -A baseline_hits=()
 	local -A baseline_hash_counts=()
@@ -1145,6 +1194,7 @@ expect_hash_metrics_boundary() {
 	local -A baseline_metric_clusters=()
 	local -A baseline_misses=()
 	local -A baseline_process_start_times=()
+	local -A baseline_server_ids=()
 	local -A baseline_uids=()
 	local client_metrics
 	local hashkv_cache_hit
@@ -1175,6 +1225,9 @@ expect_hash_metrics_boundary() {
 	local pod_metrics
 	local pod_uid
 	local process_start_time
+	local server_identity_cluster
+	local server_identity_row
+	local server_identity_server_id
 
 	client_metrics="$(run_with_probe_timeout "$CURL" -sS -i "$client_url")"
 	if [[ "${client_metrics%%$'\n'*}" != HTTP/*" 404 "* ]]; then
@@ -1185,7 +1238,7 @@ expect_hash_metrics_boundary() {
     echo "client metrics mismatch after hash checks: expected 404 page not found body" >&2
 		exit 1
 	fi
-	while IFS=$'\t' read -r baseline_pod baseline_pod_uid baseline_pod_container_identity baseline_process_start_time baseline_metric_cluster baseline_hit baseline_miss baseline_hash_count baseline_hash_rev_count; do
+	while IFS=$'\t' read -r baseline_pod baseline_pod_uid baseline_pod_container_identity baseline_process_start_time baseline_metric_cluster baseline_server_id baseline_hit baseline_miss baseline_hash_count baseline_hash_rev_count; do
 		if [[ -z "$baseline_pod" ]]; then
 			continue
 		fi
@@ -1193,6 +1246,7 @@ expect_hash_metrics_boundary() {
 		baseline_container_identities["$baseline_pod"]="$baseline_pod_container_identity"
 		baseline_process_start_times["$baseline_pod"]="$baseline_process_start_time"
 		baseline_metric_clusters["$baseline_pod"]="$baseline_metric_cluster"
+		baseline_server_ids["$baseline_pod"]="$baseline_server_id"
 		baseline_hits["$baseline_pod"]="$baseline_hit"
 		baseline_misses["$baseline_pod"]="$baseline_miss"
 		baseline_hash_counts["$baseline_pod"]="$baseline_hash_count"
@@ -1222,6 +1276,10 @@ expect_hash_metrics_boundary() {
 		fi
 		pod_metrics="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 			exec "$pod" -- sh -c 'curl -fsS http://127.0.0.1:8080/metrics')"
+		if ! server_identity_row="$(expect_server_identity_sample "$pod_metrics")"; then
+			exit 1
+		fi
+		IFS=$'\t' read -r server_identity_cluster server_identity_server_id <<<"$server_identity_row"
 		if ! hashkv_cache_hit_row="$(expect_hashkv_cache_counter "$pod_metrics" "backend_hashkv_completed_cache_hit")"; then
 			exit 1
 		fi
@@ -1245,12 +1303,20 @@ expect_hash_metrics_boundary() {
 			echo "info metrics mismatch: Hash observability metric clusters disagree for pod ${pod}" >&2
 			exit 1
 		fi
-		if [[ -z "${baseline_metric_clusters[$pod]+x}" || -z "${baseline_hits[$pod]+x}" || -z "${baseline_misses[$pod]+x}" || -z "${baseline_hash_counts[$pod]+x}" || -z "${baseline_hash_rev_counts[$pod]+x}" ]]; then
+		if [[ -z "${baseline_metric_clusters[$pod]+x}" || -z "${baseline_server_ids[$pod]+x}" || -z "${baseline_hits[$pod]+x}" || -z "${baseline_misses[$pod]+x}" || -z "${baseline_hash_counts[$pod]+x}" || -z "${baseline_hash_rev_counts[$pod]+x}" ]]; then
 			echo "info metrics mismatch: missing HashKV cache or MVCC hash histogram baseline for pod ${pod}" >&2
 			exit 1
 		fi
 		if [[ "$hashkv_cache_hit_cluster" != "${baseline_metric_clusters[$pod]}" ]]; then
 			echo "info metrics mismatch: Hash observability metric cluster changed during probes for pod ${pod}" >&2
+			exit 1
+		fi
+		if [[ "$hashkv_cache_hit_cluster" != "$server_identity_cluster" ]]; then
+			echo "info metrics mismatch: Hash observability metric cluster disagrees with server identity for pod ${pod}" >&2
+			exit 1
+		fi
+		if [[ "$server_identity_server_id" != "${baseline_server_ids[$pod]}" ]]; then
+			echo "info metrics mismatch: server identity changed during HashKV probes for pod ${pod}" >&2
 			exit 1
 		fi
 		if [[ -z "${baseline_process_start_times[$pod]+x}" || "$process_start_time" != "${baseline_process_start_times[$pod]}" ]]; then
