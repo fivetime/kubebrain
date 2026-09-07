@@ -1757,7 +1757,9 @@ ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；
 `direct_hash=<n>` 与 `gateway_hash_match=true`；若同时启用 metrics
 检查，每个 Ready Pod 的 info listener `/metrics` 还必须暴露 upstream 兼容且 `TYPE=histogram` 的
 `etcd_mvcc_hash_duration_seconds` 与 `etcd_mvcc_hash_rev_duration_seconds`；各自唯一、只带非空 `cluster` 标签的 `_count`
-必须是 `[0,2^53-1]` 内的 canonical 十进制整数。门禁在探针前后逐 Pod 保存并精确相减这两个 count，拒绝倒退或聚合溢出，且
+必须是 `[0,2^53-1]` 内的 canonical 十进制整数。两个 family 都必须完整包含 upstream 的 15 个指数边界
+`0.01` 至 `163.84` 及 `+Inf` bucket；bucket 必须绑定同一 cluster、使用安全整数、按边界累计单调且 `+Inf` 等于 `_count`，
+唯一 `_sum` 也必须是有限非负数。门禁在探针前后逐 Pod 保存并精确相减这两个 count，拒绝倒退或聚合溢出，且
 Hash 与 HashKV 的全实例聚合增量都必须大于零，不能用旧样本、错误 TYPE 或同名字符串前缀伪造本轮观测。
 每个 Ready Pod 还必须分别暴露唯一的
 `backend_hashkv_completed_cache_hit` 与 `backend_hashkv_completed_cache_miss` counter；

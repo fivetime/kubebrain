@@ -4253,11 +4253,11 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			count:      "4",
 			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
 			baselineInfoMetrics: strings.NewReplacer(
-				"etcd_mvcc_hash_duration_seconds_count{cluster=\"default\"} 0\n",
-				"etcd_mvcc_hash_duration_seconds_count{cluster=\"default\"} 1\n",
-				"etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 0\n",
-				"etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 1\n",
-			).Replace(defaultBaselineInfoMetrics("")),
+				"backend_hashkv_completed_cache_hit{cluster=\"default\"} 1\n",
+				"backend_hashkv_completed_cache_hit{cluster=\"default\"} 0\n",
+				"backend_hashkv_completed_cache_miss{cluster=\"default\"} 1\n",
+				"backend_hashkv_completed_cache_miss{cluster=\"default\"} 0\n",
+			).Replace(defaultInfoMetrics("")),
 			extraEnv: []string{
 				"EXPECTED_STATUS_CLUSTER_ID=123",
 				"EXPECTED_STATUS_VERSION=3.7.0",
@@ -4311,6 +4311,78 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
 			wantOutput: "info metrics mismatch: etcd_mvcc_hash_rev_duration_seconds_count must contain exactly one cluster-labeled canonical non-negative safe integer sample",
+		},
+		{
+			name: "rejects incomplete post hash mvcc histogram buckets",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.ReplaceAll(
+				defaultInfoMetrics(""),
+				"etcd_mvcc_hash_duration_seconds_bucket{cluster=\"default\",le=\"0.01\"} 1\n",
+				"",
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: etcd_mvcc_hash_duration_seconds histogram family is incomplete or inconsistent",
+		},
+		{
+			name: "rejects nonmonotonic post hash mvcc histogram buckets",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.ReplaceAll(
+				defaultInfoMetrics(""),
+				"etcd_mvcc_hash_duration_seconds_bucket{cluster=\"default\",le=\"0.02\"} 1\n",
+				"etcd_mvcc_hash_duration_seconds_bucket{cluster=\"default\",le=\"0.02\"} 0\n",
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: etcd_mvcc_hash_duration_seconds histogram family is incomplete or inconsistent",
+		},
+		{
+			name: "rejects overflowing post hash mvcc histogram sum",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.ReplaceAll(
+				defaultInfoMetrics(""),
+				"etcd_mvcc_hash_duration_seconds_sum{cluster=\"default\"} 0.005\n",
+				"etcd_mvcc_hash_duration_seconds_sum{cluster=\"default\"} 1e9999\n",
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: etcd_mvcc_hash_duration_seconds histogram family is incomplete or inconsistent",
 		},
 		{
 			name: "rejects gateway hashkv hash drift",
@@ -6972,6 +7044,22 @@ func defaultDirectAlarmJSON(value string) string {
 	return `{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8}}`
 }
 
+func defaultHashHistogramMetrics(metric, count, sum string) string {
+	levels := []string{
+		"0.01", "0.02", "0.04", "0.08", "0.16", "0.32", "0.64", "1.28",
+		"2.56", "5.12", "10.24", "20.48", "40.96", "81.92", "163.84", "+Inf",
+	}
+	lines := []string{fmt.Sprintf("# TYPE %s histogram", metric)}
+	for _, level := range levels {
+		lines = append(lines, fmt.Sprintf(`%s_bucket{cluster="default",le=%q} %s`, metric, level, count))
+	}
+	lines = append(lines,
+		fmt.Sprintf(`%s_sum{cluster="default"} %s`, metric, sum),
+		fmt.Sprintf(`%s_count{cluster="default"} %s`, metric, count),
+	)
+	return strings.Join(lines, "\n")
+}
+
 func defaultVersionJSON(value string) string {
 	if value != "" {
 		return value
@@ -7086,10 +7174,8 @@ func defaultInfoMetrics(value string) string {
 		`etcd_debugging_lease_granted_total{cluster="default"} 0`,
 		`etcd_debugging_lease_revoked_total{cluster="default"} 0`,
 		`etcd_debugging_lease_renewed_total{cluster="default"} 0`,
-		`# TYPE etcd_mvcc_hash_duration_seconds histogram`,
-		`etcd_mvcc_hash_duration_seconds_count{cluster="default"} 1`,
-		`# TYPE etcd_mvcc_hash_rev_duration_seconds histogram`,
-		`etcd_mvcc_hash_rev_duration_seconds_count{cluster="default"} 1`,
+		defaultHashHistogramMetrics("etcd_mvcc_hash_duration_seconds", "1", "0.005"),
+		defaultHashHistogramMetrics("etcd_mvcc_hash_rev_duration_seconds", "1", "0.005"),
 		`# TYPE backend_hashkv_completed_cache_hit counter`,
 		`backend_hashkv_completed_cache_hit{cluster="default"} 1`,
 		`# TYPE backend_hashkv_completed_cache_miss counter`,
@@ -7104,10 +7190,10 @@ func defaultBaselineInfoMetrics(value string) string {
 		return value
 	}
 	return strings.NewReplacer(
-		"etcd_mvcc_hash_duration_seconds_count{cluster=\"default\"} 1\n",
-		"etcd_mvcc_hash_duration_seconds_count{cluster=\"default\"} 0\n",
-		"etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 1\n",
-		"etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 0\n",
+		defaultHashHistogramMetrics("etcd_mvcc_hash_duration_seconds", "1", "0.005"),
+		defaultHashHistogramMetrics("etcd_mvcc_hash_duration_seconds", "0", "0"),
+		defaultHashHistogramMetrics("etcd_mvcc_hash_rev_duration_seconds", "1", "0.005"),
+		defaultHashHistogramMetrics("etcd_mvcc_hash_rev_duration_seconds", "0", "0"),
 		"backend_hashkv_completed_cache_hit{cluster=\"default\"} 1\n",
 		"backend_hashkv_completed_cache_hit{cluster=\"default\"} 0\n",
 		"backend_hashkv_completed_cache_miss{cluster=\"default\"} 1\n",

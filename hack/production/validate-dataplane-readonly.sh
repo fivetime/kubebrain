@@ -882,6 +882,7 @@ expect_mvcc_hash_histogram_count() {
 	local metrics_text="$1"
 	local metric="$2"
 	local count_metric="${metric}_count"
+	local family_valid
 	local sample_values
 	local type_values
 
@@ -912,6 +913,85 @@ expect_mvcc_hash_histogram_count() {
 	fi
 	if (( ${#sample_values} == 16 )) && [[ "$sample_values" > "$PROMETHEUS_COUNTER_MAX_SAFE_INTEGER" ]]; then
 		echo "info metrics mismatch: ${count_metric} must contain exactly one cluster-labeled canonical non-negative safe integer sample" >&2
+		return 1
+	fi
+	family_valid="$(awk -v metric="$metric" -v max="$PROMETHEUS_COUNTER_MAX_SAFE_INTEGER" '
+    BEGIN {
+      expected_count = split("0.01 0.02 0.04 0.08 0.16 0.32 0.64 1.28 2.56 5.12 10.24 20.48 40.96 81.92 163.84 +Inf", expected, " ")
+      valid = 1
+    }
+    function bind_cluster(cluster) {
+      if (cluster == "") {
+        valid = 0
+      } else if (family_cluster == "") {
+        family_cluster = cluster
+      } else if (family_cluster != cluster) {
+        valid = 0
+      }
+    }
+    function decimal_le(left, right,    i, left_digit, right_digit) {
+      for (i = 1; i <= length(left); i++) {
+        left_digit = substr(left, i, 1)
+        right_digit = substr(right, i, 1)
+        if (left_digit < right_digit) return 1
+        if (left_digit > right_digit) return 0
+      }
+      return 1
+    }
+    function safe_integer(value) {
+      return value ~ /^(0|[1-9][0-9]*)$/ && length(value) <= 16 && (length(value) < 16 || decimal_le(value, max))
+    }
+    function parse_cluster_token(token, prefix,    rest, cluster) {
+      if (index(token, prefix) != 1 || substr(token, length(token) - 1) != "\"}") return ""
+      rest = substr(token, length(prefix) + 1)
+      cluster = substr(rest, 1, length(rest) - 2)
+      if (prefix cluster "\"}" != token) return ""
+      return cluster
+    }
+    {
+      token = $1
+      name = token
+      sub(/\{.*/, "", name)
+      if (name == metric "_bucket") {
+        bucket_count++
+        prefix = metric "_bucket{cluster=\""
+        rest = substr(token, length(prefix) + 1)
+        separator = index(rest, "\",le=\"")
+        if (index(token, prefix) != 1 || NF != 2 || separator <= 1 || substr(token, length(token) - 1) != "\"}") {
+          valid = 0
+          next
+        }
+        cluster = substr(rest, 1, separator - 1)
+        le = substr(rest, separator + length("\",le=\""))
+        le = substr(le, 1, length(le) - 2)
+        if (prefix cluster "\",le=\"" le "\"}" != token || bucket_count > expected_count || le != expected[bucket_count] || !safe_integer($2)) {
+          valid = 0
+          next
+        }
+        bind_cluster(cluster)
+        if (bucket_count > 1 && $2 < previous_bucket) valid = 0
+        previous_bucket = $2
+        last_bucket = $2
+      } else if (name == metric "_sum") {
+        sum_seen++
+        cluster = parse_cluster_token(token, metric "_sum{cluster=\"")
+        bind_cluster(cluster)
+        if (NF != 2 || $2 !~ /^[0-9]+([.][0-9]+)?([eE][+-]?[0-9]+)?$/ || $2 < 0 || $2 > max) valid = 0
+      } else if (name == metric "_count") {
+        count_seen++
+        cluster = parse_cluster_token(token, metric "_count{cluster=\"")
+        bind_cluster(cluster)
+        if (NF != 2 || !safe_integer($2)) valid = 0
+        count_value = $2
+      }
+    }
+    END {
+      if (bucket_count != expected_count || sum_seen != 1 || count_seen != 1 || family_cluster == "" || last_bucket != count_value) valid = 0
+      print valid ? "valid" : "invalid"
+    }
+	' <<<"$metrics_text")"
+	if [[ "$family_valid" != "valid" ]]; then
+		echo "info metrics mismatch: ${metric} histogram family is incomplete or inconsistent" >&2
 		return 1
 	fi
 	printf '%s' "$sample_values"
