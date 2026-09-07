@@ -149,7 +149,25 @@ for variable in ENDPOINT READYZ_URL PREFIX STATUS_ENDPOINTS INFO_ENDPOINTS; do
 done
 
 run_with_probe_timeout() {
-  "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$@"
+  local command_path="$1"
+  local command_name="${command_path##*/}"
+  local caller_source="${BASH_SOURCE[1]##*/}"
+  local caller_line="${BASH_LINENO[0]}"
+  local rc
+
+  if "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$@"; then
+    return 0
+  else
+    rc=$?
+  fi
+  if [[ "$rc" == "124" ]]; then
+    printf 'dataplane readonly probe timed out: command=%q timeout=%s source=%s:%s\n' \
+      "$command_name" "$PROBE_TIMEOUT" "$caller_source" "$caller_line" >&2
+  else
+    printf 'dataplane readonly probe failed: command=%q exit_code=%s source=%s:%s\n' \
+      "$command_name" "$rc" "$caller_source" "$caller_line" >&2
+  fi
+  return "$rc"
 }
 
 run_etcdctl_with_probe_timeout() {
@@ -1940,7 +1958,7 @@ prefix_count=""
 first_prefix_endpoint=""
 for prefix_endpoint in "${prefix_endpoint_array[@]}"; do
   current_prefix_count="$(ENDPOINT="$prefix_endpoint" ACTION=count PREFIX="$PREFIX" TIMEOUT="$PROBE_TIMEOUT" \
-    "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$GO" run "$ROOT_DIR/hack/backup/cmd/prefix-tool")"
+    run_with_probe_timeout "$GO" run "$ROOT_DIR/hack/backup/cmd/prefix-tool")"
   current_prefix_count="$(printf '%s' "$current_prefix_count" | tr -d '[:space:]')"
   if ! [[ "$current_prefix_count" =~ ^[0-9]+$ ]]; then
     echo "prefix count probe for ${prefix_endpoint} returned non-numeric output: ${current_prefix_count}" >&2
@@ -2879,7 +2897,7 @@ if [[ -n "$EXPECTED_STATUS_CLUSTER_ID" ]]; then
     exit 1
   fi
   direct_status_json="$(ENDPOINT="$ENDPOINT" TIMEOUT="$PROBE_TIMEOUT" \
-    "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$GO" run "$ROOT_DIR/hack/production/cmd/maintenance-status-probe")"
+    run_with_probe_timeout "$GO" run "$ROOT_DIR/hack/production/cmd/maintenance-status-probe")"
   direct_status_errors_state="$(printf '%s' "$direct_status_json" | "$JQ" -r '
     if type != "object" or (.errors | type) != "array" or any(.errors[]; type != "string") then
       "invalid"
@@ -3745,7 +3763,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
 
   if [[ "$EXPECTED_GATEWAY_CLIENT_CERT_AUTH_REJECTION" != "1" ]]; then
   direct_hash_json="$(ENDPOINT="$ENDPOINT" TIMEOUT="$PROBE_TIMEOUT" \
-    "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$GO" run "$ROOT_DIR/hack/production/cmd/maintenance-hash-probe")"
+    run_with_probe_timeout "$GO" run "$ROOT_DIR/hack/production/cmd/maintenance-hash-probe")"
   direct_hash_values="$(printf '%s' "$direct_hash_json" | "$JQ" -r '
     if type != "object" then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid"
@@ -3794,7 +3812,7 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   fi
 
   direct_hashkv_json="$(ENDPOINT="$ENDPOINT" TIMEOUT="$PROBE_TIMEOUT" \
-    "$TIMEOUT_CMD" "$PROBE_TIMEOUT" "$GO" run "$ROOT_DIR/hack/production/cmd/maintenance-hashkv-probe")"
+    run_with_probe_timeout "$GO" run "$ROOT_DIR/hack/production/cmd/maintenance-hashkv-probe")"
   direct_hashkv_values="$(printf '%s' "$direct_hashkv_json" | "$JQ" -r '
     if type != "object" then
       "invalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid\tinvalid"

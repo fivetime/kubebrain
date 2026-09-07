@@ -62,6 +62,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 		wantNoCommands          bool
 		wantOK                  bool
 		wantOutput              string
+		wantNotOutput           []string
 	}{
 		{
 			name:           "rejects ready Pod count above int32 before commands",
@@ -232,6 +233,56 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			},
 			wantOK:     true,
 			wantOutput: "status_cluster_id=123",
+		},
+		{
+			name: "reports timed out probe without exposing arguments",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"FAKE_TIMEOUT_EXIT_CODE=124",
+				"ETCDCTL_USER=root:do-not-print",
+			},
+			wantOutput:    "dataplane readonly probe timed out: command=kubectl timeout=10s",
+			wantNotOutput: []string{"do-not-print", "kind-kubebrain-dbaas", "app.kubernetes.io/name=kubebrain"},
+		},
+		{
+			name: "reports non-timeout probe exit without exposing arguments",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"FAKE_TIMEOUT_EXIT_CODE=42",
+				"ETCDCTL_USER=root:another-secret",
+			},
+			wantOutput:    "dataplane readonly probe failed: command=kubectl exit_code=42",
+			wantNotOutput: []string{"another-secret", "kind-kubebrain-dbaas", "app.kubernetes.io/name=kubebrain"},
+		},
+		{
+			name: "reports prefix tool timeout through shared probe wrapper",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			extraEnv: []string{
+				"FAKE_TIMEOUT_EXIT_CODE=124",
+				"FAKE_TIMEOUT_MATCH=prefix-tool",
+			},
+			wantOutput: "dataplane readonly probe timed out: command=go timeout=10s",
 		},
 		{
 			name: "passes authenticated gateway and client probes",
@@ -7438,6 +7489,9 @@ set -euo pipefail
 duration="$1"
 shift
 printf '%s %s\n' "$duration" "$(basename "$1")" >>"$FAKE_TIMEOUT_LOG"
+if [[ -n "${FAKE_TIMEOUT_EXIT_CODE:-}" && ( -z "${FAKE_TIMEOUT_MATCH:-}" || " $* " == *"${FAKE_TIMEOUT_MATCH}"* ) ]]; then
+  exit "$FAKE_TIMEOUT_EXIT_CODE"
+fi
 exec "$@"
 `)
 			timeoutLog := filepath.Join(dir, "timeout.log")
@@ -7522,6 +7576,9 @@ exec "$@"
 				require.Error(t, err, string(output))
 			}
 			require.Contains(t, string(output), tc.wantOutput)
+			for _, unwanted := range tc.wantNotOutput {
+				require.NotContains(t, string(output), unwanted)
+			}
 			if len(tc.wantTimeout) > 0 {
 				timeoutBytes, readErr := os.ReadFile(timeoutLog)
 				require.NoError(t, readErr)
