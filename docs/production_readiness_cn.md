@@ -1755,9 +1755,11 @@ HashKV hash、hashRevision、compactRevision 逐字段相等，而非借用其�
 `ENDPOINT` 的 Maintenance Hash，要求 direct/gateway
 ResponseHeader 与 hash 完全一致，且两侧 hash 都是 canonical uint32；通过摘要输出
 `direct_hash=<n>` 与 `gateway_hash_match=true`；若同时启用 metrics
-检查，Hash/HashKV 后的 info listener `/metrics` 还必须出现 upstream 兼容的
-`etcd_mvcc_hash_duration_seconds_count` 与
-`etcd_mvcc_hash_rev_duration_seconds_count`。每个 Ready Pod 还必须分别暴露唯一的
+检查，每个 Ready Pod 的 info listener `/metrics` 还必须暴露 upstream 兼容且 `TYPE=histogram` 的
+`etcd_mvcc_hash_duration_seconds` 与 `etcd_mvcc_hash_rev_duration_seconds`；各自唯一、只带非空 `cluster` 标签的 `_count`
+必须是 `[0,2^53-1]` 内的 canonical 十进制整数。门禁在探针前后逐 Pod 保存并精确相减这两个 count，拒绝倒退或聚合溢出，且
+Hash 与 HashKV 的全实例聚合增量都必须大于零，不能用旧样本、错误 TYPE 或同名字符串前缀伪造本轮观测。
+每个 Ready Pod 还必须分别暴露唯一的
 `backend_hashkv_completed_cache_hit` 与 `backend_hashkv_completed_cache_miss` counter；
 两者都必须只有一个非空 `cluster` 标签，且样本必须是 `[0,2^53-1]` 内的 canonical 十进制整数；小数、指数、前导零、负数和
 超出安全整数范围的值都 fail closed。门禁在 HashKV 探针前后分别抓取同一组 Pod 的基线和终值，使用 64 位整数做精确差值与

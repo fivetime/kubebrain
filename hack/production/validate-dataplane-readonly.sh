@@ -35,7 +35,7 @@ STATUS_ENDPOINTS="${STATUS_ENDPOINTS:-$ENDPOINT}"
 INFO_ENDPOINTS="${INFO_ENDPOINTS:-}"
 ETCDCTL_USER="${ETCDCTL_USER:-}"
 ETCDCTL_PASSWORD="${ETCDCTL_PASSWORD:-}"
-HASHKV_CACHE_MAX_SAFE_INTEGER=9007199254740991
+PROMETHEUS_COUNTER_MAX_SAFE_INTEGER=9007199254740991
 PROCESS_START_TIME_MAX_SECONDS=9007199254740991
 
 if ! operation_is_positive_int64 "$EXPECTED_READY_PODS" || (( EXPECTED_READY_PODS > 2147483647 )); then
@@ -871,8 +871,47 @@ expect_hashkv_cache_counter() {
 		echo "info metrics mismatch: ${metric} must contain exactly one cluster-labeled canonical non-negative safe integer sample" >&2
 		return 1
 	fi
-	if (( ${#sample_values} == 16 )) && [[ "$sample_values" > "$HASHKV_CACHE_MAX_SAFE_INTEGER" ]]; then
+	if (( ${#sample_values} == 16 )) && [[ "$sample_values" > "$PROMETHEUS_COUNTER_MAX_SAFE_INTEGER" ]]; then
 		echo "info metrics mismatch: ${metric} must contain exactly one cluster-labeled canonical non-negative safe integer sample" >&2
+		return 1
+	fi
+	printf '%s' "$sample_values"
+}
+
+expect_mvcc_hash_histogram_count() {
+	local metrics_text="$1"
+	local metric="$2"
+	local count_metric="${metric}_count"
+	local sample_values
+	local type_values
+
+	type_values="$(awk -v metric="$metric" '
+    $1 == "#" && $2 == "TYPE" && $3 == metric { print $4 }
+  ' <<<"$metrics_text")"
+	if [[ "$type_values" != "histogram" ]]; then
+		echo "info metrics mismatch: expected ${metric} histogram" >&2
+		return 1
+	fi
+	sample_values="$(awk -v metric="$count_metric" '
+    {
+      token = $1
+      name = token
+      sub(/\{.*/, "", name)
+      if (name != metric) next
+      pattern = "^" metric "\\{cluster=\"[^\"]+\"\\}$"
+      if (token !~ pattern || NF != 2) {
+        print "invalid"
+      } else {
+        print $2
+      }
+    }
+	' <<<"$metrics_text")"
+	if [[ ! "$sample_values" =~ ^(0|[1-9][0-9]{0,15})$ ]]; then
+		echo "info metrics mismatch: ${count_metric} must contain exactly one cluster-labeled canonical non-negative safe integer sample" >&2
+		return 1
+	fi
+	if (( ${#sample_values} == 16 )) && [[ "$sample_values" > "$PROMETHEUS_COUNTER_MAX_SAFE_INTEGER" ]]; then
+		echo "info metrics mismatch: ${count_metric} must contain exactly one cluster-labeled canonical non-negative safe integer sample" >&2
 		return 1
 	fi
 	printf '%s' "$sample_values"
@@ -945,6 +984,8 @@ ready_pod_runtime_identities() {
 snapshot_hashkv_cache_counters() {
 	local hashkv_cache_hit
 	local hashkv_cache_miss
+	local mvcc_hash_count
+	local mvcc_hash_rev_count
 	local pod
 	local pod_container_identity
 	local pod_identity_rows
@@ -973,7 +1014,13 @@ snapshot_hashkv_cache_counters() {
 		if ! process_start_time="$(expect_process_start_time_seconds "$pod_metrics")"; then
 			return 1
 		fi
-		printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$pod" "$pod_uid" "$pod_container_identity" "$process_start_time" "$hashkv_cache_hit" "$hashkv_cache_miss"
+		if ! mvcc_hash_count="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_duration_seconds")"; then
+			return 1
+		fi
+		if ! mvcc_hash_rev_count="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_rev_duration_seconds")"; then
+			return 1
+		fi
+		printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pod" "$pod_uid" "$pod_container_identity" "$process_start_time" "$hashkv_cache_hit" "$hashkv_cache_miss" "$mvcc_hash_count" "$mvcc_hash_rev_count"
 	done <<<"$pod_identity_rows"
 }
 
@@ -982,6 +1029,8 @@ expect_hash_metrics_boundary() {
 	local baseline="$2"
 	local baseline_count="0"
 	local baseline_hit
+	local baseline_hash_count
+	local baseline_hash_rev_count
 	local baseline_miss
 	local baseline_pod
 	local baseline_pod_container_identity
@@ -989,6 +1038,8 @@ expect_hash_metrics_boundary() {
 	local baseline_process_start_time
 	local -A baseline_container_identities=()
 	local -A baseline_hits=()
+	local -A baseline_hash_counts=()
+	local -A baseline_hash_rev_counts=()
 	local -A baseline_misses=()
 	local -A baseline_process_start_times=()
 	local -A baseline_uids=()
@@ -999,6 +1050,12 @@ expect_hash_metrics_boundary() {
 	local hashkv_cache_miss
 	local hashkv_cache_miss_delta
 	local hashkv_cache_miss_delta_total="0"
+	local mvcc_hash_count
+	local mvcc_hash_count_delta
+	local mvcc_hash_count_delta_total="0"
+	local mvcc_hash_rev_count
+	local mvcc_hash_rev_count_delta
+	local mvcc_hash_rev_count_delta_total="0"
 	local pod
 	local pod_container_identity
 	local pod_identity_rows
@@ -1007,7 +1064,6 @@ expect_hash_metrics_boundary() {
 	local pod_metrics
 	local pod_uid
 	local process_start_time
-	local combined_metrics
 
 	client_metrics="$(run_with_probe_timeout "$CURL" -sS -i "$client_url")"
 	if [[ "${client_metrics%%$'\n'*}" != HTTP/*" 404 "* ]]; then
@@ -1018,7 +1074,7 @@ expect_hash_metrics_boundary() {
     echo "client metrics mismatch after hash checks: expected 404 page not found body" >&2
 		exit 1
 	fi
-	while IFS=$'\t' read -r baseline_pod baseline_pod_uid baseline_pod_container_identity baseline_process_start_time baseline_hit baseline_miss; do
+	while IFS=$'\t' read -r baseline_pod baseline_pod_uid baseline_pod_container_identity baseline_process_start_time baseline_hit baseline_miss baseline_hash_count baseline_hash_rev_count; do
 		if [[ -z "$baseline_pod" ]]; then
 			continue
 		fi
@@ -1027,13 +1083,14 @@ expect_hash_metrics_boundary() {
 		baseline_process_start_times["$baseline_pod"]="$baseline_process_start_time"
 		baseline_hits["$baseline_pod"]="$baseline_hit"
 		baseline_misses["$baseline_pod"]="$baseline_miss"
+		baseline_hash_counts["$baseline_pod"]="$baseline_hash_count"
+		baseline_hash_rev_counts["$baseline_pod"]="$baseline_hash_rev_count"
 		baseline_count=$((baseline_count + 1))
 	done <<<"$baseline"
 
 	post_pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRAIN_NAMESPACE" \
 		get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
 	pod_identity_rows="$(ready_pod_runtime_identities "$post_pods_json")"
-	combined_metrics=""
 	while IFS=$'\t' read -r pod pod_uid pod_container_identity; do
 		if [[ -z "$pod" ]]; then
 			echo "info metrics mismatch: Ready Pod name is required after HashKV cache probes" >&2
@@ -1062,8 +1119,14 @@ expect_hash_metrics_boundary() {
 		if ! process_start_time="$(expect_process_start_time_seconds "$pod_metrics")"; then
 			exit 1
 		fi
-		if [[ -z "${baseline_hits[$pod]+x}" || -z "${baseline_misses[$pod]+x}" ]]; then
-			echo "info metrics mismatch: missing HashKV completed cache baseline for pod ${pod}" >&2
+		if ! mvcc_hash_count="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_duration_seconds")"; then
+			exit 1
+		fi
+		if ! mvcc_hash_rev_count="$(expect_mvcc_hash_histogram_count "$pod_metrics" "etcd_mvcc_hash_rev_duration_seconds")"; then
+			exit 1
+		fi
+		if [[ -z "${baseline_hits[$pod]+x}" || -z "${baseline_misses[$pod]+x}" || -z "${baseline_hash_counts[$pod]+x}" || -z "${baseline_hash_rev_counts[$pod]+x}" ]]; then
+			echo "info metrics mismatch: missing HashKV cache or MVCC hash histogram baseline for pod ${pod}" >&2
 			exit 1
 		fi
 		if [[ -z "${baseline_process_start_times[$pod]+x}" || "$process_start_time" != "${baseline_process_start_times[$pod]}" ]]; then
@@ -1078,20 +1141,39 @@ expect_hash_metrics_boundary() {
 			echo "info metrics mismatch: HashKV completed cache miss counter decreased for pod ${pod}" >&2
 			exit 1
 		fi
+		if (( mvcc_hash_count < baseline_hash_counts[$pod] )); then
+			echo "info metrics mismatch: MVCC hash histogram count decreased for pod ${pod}" >&2
+			exit 1
+		fi
+		if (( mvcc_hash_rev_count < baseline_hash_rev_counts[$pod] )); then
+			echo "info metrics mismatch: MVCC hash-by-revision histogram count decreased for pod ${pod}" >&2
+			exit 1
+		fi
 		hashkv_cache_hit_delta=$((hashkv_cache_hit - baseline_hits[$pod]))
 		hashkv_cache_miss_delta=$((hashkv_cache_miss - baseline_misses[$pod]))
-		if (( hashkv_cache_hit_delta_total > HASHKV_CACHE_MAX_SAFE_INTEGER - hashkv_cache_hit_delta )); then
+		mvcc_hash_count_delta=$((mvcc_hash_count - baseline_hash_counts[$pod]))
+		mvcc_hash_rev_count_delta=$((mvcc_hash_rev_count - baseline_hash_rev_counts[$pod]))
+		if (( hashkv_cache_hit_delta_total > PROMETHEUS_COUNTER_MAX_SAFE_INTEGER - hashkv_cache_hit_delta )); then
 			echo "info metrics mismatch: aggregate HashKV completed cache hit delta exceeds safe integer range" >&2
 			exit 1
 		fi
-		if (( hashkv_cache_miss_delta_total > HASHKV_CACHE_MAX_SAFE_INTEGER - hashkv_cache_miss_delta )); then
+		if (( hashkv_cache_miss_delta_total > PROMETHEUS_COUNTER_MAX_SAFE_INTEGER - hashkv_cache_miss_delta )); then
 			echo "info metrics mismatch: aggregate HashKV completed cache miss delta exceeds safe integer range" >&2
+			exit 1
+		fi
+		if (( mvcc_hash_count_delta_total > PROMETHEUS_COUNTER_MAX_SAFE_INTEGER - mvcc_hash_count_delta )); then
+			echo "info metrics mismatch: aggregate MVCC hash histogram count delta exceeds safe integer range" >&2
+			exit 1
+		fi
+		if (( mvcc_hash_rev_count_delta_total > PROMETHEUS_COUNTER_MAX_SAFE_INTEGER - mvcc_hash_rev_count_delta )); then
+			echo "info metrics mismatch: aggregate MVCC hash-by-revision histogram count delta exceeds safe integer range" >&2
 			exit 1
 		fi
 		hashkv_cache_hit_delta_total=$((hashkv_cache_hit_delta_total + hashkv_cache_hit_delta))
 		hashkv_cache_miss_delta_total=$((hashkv_cache_miss_delta_total + hashkv_cache_miss_delta))
+		mvcc_hash_count_delta_total=$((mvcc_hash_count_delta_total + mvcc_hash_count_delta))
+		mvcc_hash_rev_count_delta_total=$((mvcc_hash_rev_count_delta_total + mvcc_hash_rev_count_delta))
 		post_count=$((post_count + 1))
-		combined_metrics+=$'\n'"$pod_metrics"
 	done <<<"$pod_identity_rows"
 	if [[ "$post_count" != "$baseline_count" ]]; then
 		echo "info metrics mismatch: HashKV completed cache baseline pod count changed: before=${baseline_count}, after=${post_count}" >&2
@@ -1105,17 +1187,18 @@ expect_hash_metrics_boundary() {
 		echo "info metrics mismatch: HashKV completed cache miss counter must increase during hashkv probes" >&2
 		exit 1
 	fi
+	if (( mvcc_hash_count_delta_total <= 0 )); then
+		echo "info metrics mismatch: MVCC hash histogram count must increase during hash probes" >&2
+		exit 1
+	fi
+	if (( mvcc_hash_rev_count_delta_total <= 0 )); then
+		echo "info metrics mismatch: MVCC hash-by-revision histogram count must increase during hashkv probes" >&2
+		exit 1
+	fi
 	hashkv_cache_hit_delta_summary="$hashkv_cache_hit_delta_total"
 	hashkv_cache_miss_delta_summary="$hashkv_cache_miss_delta_total"
-
-	if [[ "$combined_metrics" != *"etcd_mvcc_hash_duration_seconds_count{"* && "$combined_metrics" != *"etcd_mvcc_hash_duration_seconds_count "* ]]; then
-		echo "info metrics mismatch: expected etcd_mvcc_hash_duration_seconds_count after gateway hash" >&2
-		exit 1
-	fi
-	if [[ "$combined_metrics" != *"etcd_mvcc_hash_rev_duration_seconds_count{"* && "$combined_metrics" != *"etcd_mvcc_hash_rev_duration_seconds_count "* ]]; then
-		echo "info metrics mismatch: expected etcd_mvcc_hash_rev_duration_seconds_count after gateway hashkv" >&2
-		exit 1
-	fi
+	mvcc_hash_count_delta_summary="$mvcc_hash_count_delta_total"
+	mvcc_hash_rev_count_delta_summary="$mvcc_hash_rev_count_delta_total"
 }
 
 expect_debug_vars_boundary() {
@@ -2766,6 +2849,8 @@ fi
 hashkv_cache_counter_baseline=""
 hashkv_cache_hit_delta_summary=""
 hashkv_cache_miss_delta_summary=""
+mvcc_hash_count_delta_summary=""
+mvcc_hash_rev_count_delta_summary=""
 hashkv_summary=""
 if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
@@ -3441,9 +3526,9 @@ if [[ -n "$EXPECTED_HASHKV_HASH" ]]; then
   fi
   if [[ "$EXPECTED_INFO_METRICS_CHECKS" == "1" ]]; then
     expect_hash_metrics_boundary "${ENDPOINT%/}/metrics" "$hashkv_cache_counter_baseline"
-    status_summary+=", mvcc_hash_metrics=ok, hashkv_cache_metrics=ok"
+    status_summary+=", mvcc_hash_metrics=ok, mvcc_hash_count_delta=${mvcc_hash_count_delta_summary}, mvcc_hash_rev_count_delta=${mvcc_hash_rev_count_delta_summary}, hashkv_cache_metrics=ok"
     status_summary+=", hashkv_cache_hit_delta=${hashkv_cache_hit_delta_summary}, hashkv_cache_miss_delta=${hashkv_cache_miss_delta_summary}"
-		status_summary+=", hashkv_cache_process_identity=stable"
+    status_summary+=", hashkv_cache_process_identity=stable"
   fi
   fi
 fi

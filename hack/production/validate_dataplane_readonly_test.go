@@ -3728,7 +3728,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
 			wantOK:     true,
-			wantOutput: "mvcc_hash_metrics=ok, hashkv_cache_metrics=ok, hashkv_cache_hit_delta=3, hashkv_cache_miss_delta=3, hashkv_cache_process_identity=stable",
+			wantOutput: "mvcc_hash_metrics=ok, mvcc_hash_count_delta=3, mvcc_hash_rev_count_delta=3, hashkv_cache_metrics=ok, hashkv_cache_hit_delta=3, hashkv_cache_miss_delta=3, hashkv_cache_process_identity=stable",
 		},
 		{
 			name: "rejects missing post hashkv completed cache hit metric",
@@ -4240,7 +4240,77 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_INFO_METRICS_CHECKS=1",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
-			wantOutput: "info metrics mismatch: expected etcd_mvcc_hash_rev_duration_seconds_count after gateway hashkv",
+			wantOutput: "info metrics mismatch: etcd_mvcc_hash_rev_duration_seconds_count must contain exactly one cluster-labeled canonical non-negative safe integer sample",
+		},
+		{
+			name: "rejects stale post hash mvcc histogram counts without current probe deltas",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			baselineInfoMetrics: strings.NewReplacer(
+				"etcd_mvcc_hash_duration_seconds_count{cluster=\"default\"} 0\n",
+				"etcd_mvcc_hash_duration_seconds_count{cluster=\"default\"} 1\n",
+				"etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 0\n",
+				"etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 1\n",
+			).Replace(defaultBaselineInfoMetrics("")),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: MVCC hash histogram count must increase during hash probes",
+		},
+		{
+			name: "rejects non histogram post hash mvcc metric",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: defaultInfoMetrics("") +
+				"# TYPE etcd_mvcc_hash_duration_seconds gauge\n",
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: expected etcd_mvcc_hash_duration_seconds histogram",
+		},
+		{
+			name: "rejects prefixed post hash mvcc count spoof",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			infoMetrics: strings.ReplaceAll(
+				defaultInfoMetrics(""),
+				"etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 1\n",
+				"spoof_etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 1\n",
+			),
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123",
+				"EXPECTED_STATUS_VERSION=3.7.0",
+				"EXPECTED_HASHKV_HASH=111",
+				"EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "info metrics mismatch: etcd_mvcc_hash_rev_duration_seconds_count must contain exactly one cluster-labeled canonical non-negative safe integer sample",
 		},
 		{
 			name: "rejects gateway hashkv hash drift",
@@ -7016,7 +7086,9 @@ func defaultInfoMetrics(value string) string {
 		`etcd_debugging_lease_granted_total{cluster="default"} 0`,
 		`etcd_debugging_lease_revoked_total{cluster="default"} 0`,
 		`etcd_debugging_lease_renewed_total{cluster="default"} 0`,
+		`# TYPE etcd_mvcc_hash_duration_seconds histogram`,
 		`etcd_mvcc_hash_duration_seconds_count{cluster="default"} 1`,
+		`# TYPE etcd_mvcc_hash_rev_duration_seconds histogram`,
 		`etcd_mvcc_hash_rev_duration_seconds_count{cluster="default"} 1`,
 		`# TYPE backend_hashkv_completed_cache_hit counter`,
 		`backend_hashkv_completed_cache_hit{cluster="default"} 1`,
@@ -7032,6 +7104,10 @@ func defaultBaselineInfoMetrics(value string) string {
 		return value
 	}
 	return strings.NewReplacer(
+		"etcd_mvcc_hash_duration_seconds_count{cluster=\"default\"} 1\n",
+		"etcd_mvcc_hash_duration_seconds_count{cluster=\"default\"} 0\n",
+		"etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 1\n",
+		"etcd_mvcc_hash_rev_duration_seconds_count{cluster=\"default\"} 0\n",
 		"backend_hashkv_completed_cache_hit{cluster=\"default\"} 1\n",
 		"backend_hashkv_completed_cache_hit{cluster=\"default\"} 0\n",
 		"backend_hashkv_completed_cache_miss{cluster=\"default\"} 1\n",
