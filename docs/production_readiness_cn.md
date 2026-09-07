@@ -1793,7 +1793,10 @@ process start time 和 server ID 后置快照组合；因此探针期间角色�
 对象，任一同名 Pod 重建、容器重启、Ready Pod 集合变化或运行身份字段缺失都会 fail closed，不能把新进程计数减去旧进程基线。
 每次 counter 抓取还必须同时包含唯一、有限、正数、无标签的标准 `process_start_time_seconds` gauge，同 metric family 的任何带标签或
 重复样本都会 fail closed，数值上界为 `2^53-1` 秒，且同一 Pod 前后值精确相等；因此
-即使容器恰在 post Kubernetes 查询与 metrics 抓取之间重启，也不能跨进程拼接 counter。只有运行身份保持不变时才要求全实例聚合
+即使容器恰在 post Kubernetes 查询与 metrics 抓取之间重启，也不能跨进程拼接 counter。所有后置 metrics 与同 Pod local Status
+证据采集完成后，门禁还会第三次读取 Ready Pod 集合，并再次要求 Pod 名、UID 及完整排序后的
+`container name/containerID/restartCount` 身份与基线逐项相等、数量相等；这会封住 post Pod 快照之后、逐 Pod 后置证据采集期间发生
+重启或替换的 TOCTOU 窗口。该收尾快照通过时输出 `hashkv_post_evidence_runtime_identity=stable`。只有运行身份保持不变时才要求全实例聚合
 hit 与 miss 增量分别大于零，既证明本轮至少一次物理扫描，
 也证明未变化逻辑状态的结果被真实复用；follower 若被 leader 的快速缓存命中抢先取消，允许本地计数保持零。
 通过摘要会显式输出 `readyz_verbose=ok`、`readyz_data_corruption=ok`、
@@ -1813,8 +1816,9 @@ hit 与 miss 增量分别大于零，既证明本轮至少一次物理扫描，
 `quota_metrics=ok`、`mvcc_db_size_metrics=ok`、
 `mvcc_key_metrics=ok`、`mvcc_hash_metrics=ok`、`hashkv_cache_metrics=ok`、
 `hashkv_cache_hit_delta=<n>`、`hashkv_cache_miss_delta=<n>`、`hashkv_cache_process_identity=stable`、
+`hashkv_post_evidence_runtime_identity=stable`、
 `hashkv_server_identity_members_match=true`、`hashkv_server_identity_local_status_match=true`、
-`hashkv_server_role_local_status_match=true`、`hashkv_server_role_process_identity=stable`（四者仅完整枚举 Status 时）、
+`hashkv_server_role_local_status_match=true`、`hashkv_server_role_process_identity=stable`（五者仅完整枚举 Status 时）、
 `mvcc_put_size_metrics=ok`、
 `mvcc_pending_event_metrics=ok`、`mvcc_revision_metrics=ok`、
 `mvcc_compaction_metrics=ok`、`mvcc_watch_metrics=ok`、

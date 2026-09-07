@@ -73284,6 +73284,52 @@ revision/HashKV/compact/term 为 `75044/1984703050/66760/807`，Auth disabled。
 tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
 `/root/.local/share/Trash/files/kubebrain-a5768-20260907T090244Z`；稳定镜像和数据卷未删除。
 
+### A5769：以第三次 Pod 快照封住后置 HashKV 证据窗口
+
+A5768 在 Hash/HashKV 探针后先读取 Pod 运行身份，再依次采集三个 Pod 的 metrics 与 loopback Status。若容器只在该
+post Pod 快照之后、逐 Pod 后置证据采集期间重启或被替换，旧门禁仍可能把不同进程的证据组合后错误 GREEN。修复前新增用例只在
+第三次 Pod 查询中改变 container ID/restartCount，旧 gate 确实错误通过，形成独立 RED。
+
+提交 `2309460e9fac9d640953f4b2f3cf1af50a939a51` 在全部后置 metrics/local Status 校验完成后再读取一次 Ready Pod，
+按 Pod 名逐项比较 UID 与按容器名排序的完整 `name/containerID/restartCount` 身份，并要求最终 Pod 数量等于基线；任一字段缺失、
+Pod 集合变化、重建或重启都 fail closed。通过摘要新增 `hashkv_post_evidence_runtime_identity=stable`。新负测改为
+“rejects Pod restart during post HashKV evidence collection”后 GREEN，多容器稳定路径和完整三成员路径继续通过。
+
+三个聚焦用例为 6.153 秒；六类运行身份用例 `count=10` 为 108.664 秒；完整 production probe 普通/race 为
+234.636/236.742 秒，`go vet`、`bash -n`、文档合同和 diff check 全部 GREEN。代码提交前 verifier 为
+703=`170/193/180/160`，四分片为 `301.810/489.970/340.944/696.057s`；提交后 verifier 不变，四片明确证据为
+`256.136/449.829/293.340/662.862s`，全部 GREEN。其中 shard 2 原会话的终端输出因会话记录丢失未计入证据，单独补跑后
+以 293.340 秒 exit 0。
+
+最终候选 `docker.io/library/kubebrain@sha256:a38b443c3223466e380b151523fbebf97a0218b7fb279921c497e2ceb4b06059`
+内嵌版本 `0.0.0-2309460e`、完整 commit、build time `2026-09-07T09:31:07Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,847,232 bytes，SHA-256
+`2ca3cd1fca15c07d93eb4d4bd75a278f79a533ba7a43a3f944853beed47c5460`；顶层 `index.json` SHA-256、nested
+index、platform manifest、config、attestation manifest 分别为
+`09853921886d3e63e1460c391e8af00eb85b55407e8a5d1eca8c43c24164b6a3`、
+`sha256:a38b443c3223466e380b151523fbebf97a0218b7fb279921c497e2ceb4b06059`、
+`sha256:9c7d9b4d4c70bbcd2d1b8f7a5563e0f85a1d26a799e6428b0b64e808621b39f4`、
+`sha256:ccd0ff5ba7438e32f344501d1a2f06b9679a2e793fd22a5e71765d640db4021c`、
+`sha256:66489af7a7da95991baefbbaa069db9f81130ed0b492313e7792af07caf70fe3`。78/78 blobs 与 78/78 descriptor
+edges 的 size/hash 全匹配且 0 orphan；镜像为 `65532:65532`、正确入口、71/71 diff IDs。SPDX layer
+`sha256:f8186692eac8cefc75665591292efc571554289dbd611fc2e611d159d1500fa8` 含 2,592 packages、381 files、
+8,096 relationships；SLSA layer `sha256:1451fd81749d9559573193392e0186c5a30892839248d3db8f3d8d9ceccc052a`
+含 3 项固定 materials，两份 statement 均只有一个 subject 并精确绑定 platform manifest。
+
+候选使用 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test，从 generation 968 原子投放到
+generation/observed `969/969`、RV `8907020`；3/3 Ready、restart 0，三个 runtime imageID 均为候选 nested digest。
+候选刚滚动后的首次完整 gate 在 gateway Hash 请求处触发单次 10 秒 timeout、exit 124，未误计 GREEN；端口、Pod 与 PD/TiKV
+均健康。带执行轨迹的诊断重跑及随后无调试普通重跑都完整 GREEN，正式轮 Hash/HashKV histogram 聚合增量 `2/5`、cache
+hit/miss 增量 `4/2`，新增 post evidence runtime identity 与已有逐 Pod identity/role 摘要全部成立；
+revision/HashKV/compact/term 为 `75044/1984703050/66760/809`，三副本及 direct/gateway 结果一致，Auth disabled。
+
+随后用新鲜六类 JSON test 回滚稳定 digest；终态 generation/observed `970/970`、RV `8908153`、3/3 Ready、restart 0、
+22 参数，三个 runtime 恢复 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+省略未来 `EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS` 的稳定适用 gate 在 60 秒窗口 GREEN，
+revision/HashKV/compact/term 为 `75044/1984703050/66760/811`，Auth disabled。最终关闭六个 listener 端口，精确删除候选
+tag/digest/config 三个 Kind image 引用；候选引用和 listener 均为 0。OCI archive 与展开审计目录已移入可恢复目录
+`/root/.local/share/Trash/files/kubebrain-a5769-20260907T101000Z`；稳定镜像和数据卷未删除。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
