@@ -642,3 +642,21 @@ Kubernetes DeleteOptions 的精确 UID + resourceVersion preconditions 删除这
 本次删除的是专属已终止测试 Pod、其临时工作制品和本机编译程序；未删除 PVC/PV、
 Secret、StatefulSet 或后端数据卷。源码、清单、摘要和日志均保留，程序可从提交重建；
 临时 Snapshot 文件不作为备份保留。没有清理共享 Go/BuildKit 缓存。
+
+### e156a9f7 镜像完成，准备快进发布恢复修复
+
+image run `34284304697` 最终 completed/success，job `102256177342` 用时 1h16m17s。
+发布验证 23:21:47–23:24:07 UTC 成功，promotion 23:24:07–23:24:14 成功，
+整个运行于 23:24:44 UTC 更新为完成；未被后续推送取消。
+源码为 `e156a9f7e79b2d5aa20214bc80d5ee2e73e68b28`，索引 digest
+`sha256:b017e3421d670c7b0d9223601e9c75528eae7ddb4f579f3167d5f06c3e1a2185`，
+amd64 子镜像 `sha256:3e7e26f8f4a009ef41f1cd2f3cee0e6756a33b2b470f6a384bbce98fdf0109ad`，
+arm64 子镜像 `sha256:fd000dd82789b5bdf9632e52ff7baf7ac7314bd29537ea9a030047c658bfdb0b`。
+registry 回读索引与 CI 成功状态均已核验；证据 `security-e156a9f7-image-manifest.json`、
+`security-e156a9f7-image-ci.json`、`security-e156a9f7-image-ci.log`。
+Runner 报告部分固定 action 使用 Node 20 声明并被强制以 Node 24 运行的弃用警告，
+但本次步骤均成功；后续应独立升级 action，不以此警告掩盖发布失败。
+
+该镜像尚不包含后来的 checkpoint `67b31c2f` / restore TLS `669ac470` 修复；不替换当前
+已通过诊断测试的 `339381af` 三副本。当前准备将修复及其前后两轮 703 项门禁、真实重测
+和清理记录一起快进推送 `dbaas`，由新 push 自动构建完整新镜像，不重复 workflow_dispatch。
