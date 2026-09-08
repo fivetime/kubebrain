@@ -17,7 +17,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"hash"
@@ -36,7 +35,6 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
 	"go.etcd.io/etcd/server/v3/embed"
@@ -306,6 +304,7 @@ type restoredSnapshotConfig struct {
 	initialClusterToken string
 	quotaBackendBytes   int64
 	tls                 restoredSnapshotTLSConfig
+	localTLS            *restoredSnapshotLocalTLS
 	auth                *restoredSnapshotAuthExpectation
 }
 
@@ -346,7 +345,15 @@ func (cfg restoredSnapshotConfig) validate() error {
 	if got := strings.Join(initialCluster, ","); cfg.initialCluster != got {
 		return fmt.Errorf("restored Snapshot initial cluster mismatch: got=%q want=%q", cfg.initialCluster, got)
 	}
-	return cfg.tls.validate()
+	if err := cfg.tls.validate(); err != nil {
+		return err
+	}
+	if cfg.tls.enabled() && (cfg.localTLS == nil || cfg.localTLS.server.CertFile == "" || cfg.localTLS.server.KeyFile == "" ||
+		cfg.localTLS.server.ServerName != "localhost" || cfg.localTLS.server.TrustedCAFile == "" || !cfg.localTLS.server.ClientCertAuth ||
+		cfg.localTLS.passwordClient.CertFile == "" || cfg.localTLS.passwordClient.KeyFile == "") {
+		return errors.New("restored Snapshot TLS requires an independent loopback server identity and source client authentication")
+	}
+	return nil
 }
 
 type restoredSnapshotVerifier func(context.Context, restoredSnapshotConfig, []streamProbeExpectation, int64) error
@@ -541,6 +548,9 @@ func newRestoredSnapshotConfig(restoreRoot string, memberCount int, tlsCfg resto
 	if memberCount != 1 && memberCount < 3 {
 		return restoredSnapshotConfig{}, fmt.Errorf("restored Snapshot member count must be one or at least three: %d", memberCount)
 	}
+	if err := tlsCfg.validate(); err != nil {
+		return restoredSnapshotConfig{}, err
+	}
 	const restoreName = "kubebrain-rollout-restore"
 	members := make([]restoredSnapshotMemberConfig, memberCount)
 	initialCluster := make([]string, memberCount)
@@ -562,6 +572,13 @@ func newRestoredSnapshotConfig(restoreRoot string, memberCount int, tlsCfg resto
 	cfg := restoredSnapshotConfig{
 		members: members, initialCluster: strings.Join(initialCluster, ","), initialClusterToken: restoreName,
 		tls: tlsCfg, auth: auth,
+	}
+	if tlsCfg.enabled() {
+		serverTLS, err := newRestoredSnapshotServerTLS(restoreRoot, tlsCfg.caFile)
+		if err != nil {
+			return restoredSnapshotConfig{}, err
+		}
+		cfg.localTLS = serverTLS
 	}
 	if err := cfg.validate(); err != nil {
 		return restoredSnapshotConfig{}, err
@@ -585,9 +602,7 @@ func newRestoredSnapshotEmbedConfig(cfg restoredSnapshotConfig, member restoredS
 	embedCfg.QuotaBackendBytes = cfg.quotaBackendBytes
 	embedCfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
 	if cfg.tls.enabled() {
-		embedCfg.ClientTLSInfo = transport.TLSInfo{
-			CertFile: cfg.tls.certFile, KeyFile: cfg.tls.keyFile, TrustedCAFile: cfg.tls.caFile, ClientCertAuth: true,
-		}
+		embedCfg.ClientTLSInfo = cfg.localTLS.server
 	}
 	return embedCfg
 }
@@ -2070,20 +2085,9 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 	verifyCtx, cancel := context.WithTimeout(ctx, restoredSnapshotVerificationTimeout)
 	defer cancel()
 
-	var (
-		clientTLSConfig *tls.Config
-		err             error
-	)
-	if cfg.tls.enabled() {
-		clientTLSConfig, err = (transport.TLSInfo{
-			TrustedCAFile: cfg.tls.caFile,
-			CertFile:      cfg.tls.certFile,
-			KeyFile:       cfg.tls.keyFile,
-			ServerName:    cfg.tls.serverName,
-		}).ClientConfig()
-		if err != nil {
-			return fmt.Errorf("configure client for officially restored etcd TLS: %w", err)
-		}
+	clientTLSConfig, err := cfg.clientTLSConfig()
+	if err != nil {
+		return fmt.Errorf("configure client for officially restored etcd TLS: %w", err)
 	}
 	restored := make([]*embed.Etcd, len(cfg.members))
 	defer func() {
@@ -2127,7 +2131,15 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		}
 	}
 	if clientTLSConfig != nil {
-		clientConfig.DialOptions = append(clientConfig.DialOptions, grpc.WithAuthority(cfg.tls.serverName))
+		clientConfig.DialOptions = append(clientConfig.DialOptions, grpc.WithAuthority(cfg.localTLS.server.ServerName))
+	}
+	passwordClientConfig := clientConfig
+	passwordClientConfig.Username, passwordClientConfig.Password = "", ""
+	if cfg.localTLS != nil {
+		passwordClientConfig.TLS, err = cfg.localTLS.passwordClient.ClientConfig()
+		if err != nil {
+			return fmt.Errorf("configure password client for officially restored etcd TLS: %w", err)
+		}
 	}
 	client, err := clientv3.New(clientConfig)
 	if err != nil {
@@ -2183,7 +2195,7 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		if err := validateHeader(response.Header); err != nil {
 			return err
 		}
-		return verifyRestoredSnapshotAuthWithAdmin(verifyCtx, client, clientConfig, cfg.auth, revision, verifyCluster)
+		return verifyRestoredSnapshotAuthWithAdmin(verifyCtx, client, clientConfig, passwordClientConfig, cfg.auth, revision, verifyCluster)
 	}
 	type keyedExpectedEvent struct {
 		key   string
@@ -2456,7 +2468,7 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 			return fmt.Errorf("wait for officially restored etcd historical seed Watch: %w", context.Cause(verifyCtx))
 		}
 	}
-	return verifyRestoredSnapshotAuthWithAdmin(verifyCtx, client, clientConfig, cfg.auth, revision, verifyCluster)
+	return verifyRestoredSnapshotAuthWithAdmin(verifyCtx, client, clientConfig, passwordClientConfig, cfg.auth, revision, verifyCluster)
 }
 
 func validateSnapshotArtifactWithVerifier(ctx context.Context, manager snapshotArtifactManager, path, wireVersion, artifactDir string,

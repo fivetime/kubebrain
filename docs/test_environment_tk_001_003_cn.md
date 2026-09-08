@@ -472,3 +472,75 @@ checkpoint 修复提交前 verifier 与四分片已全部通过，703 项，耗�
 253.171/451.373/305.544/728.379 秒，证据 `security-checkpoint-missing-pre-*`。
 22:29:59 UTC 查询 image run `34284304697` 遇 GitHub API rate-limit 403；这是观测失败，
 不是构建终态，不重新派发、取消或以新代码推送替换该运行。
+
+### checkpoint 已提交，恢复探针 TLS 修复本机验证
+
+checkpoint 错误分类修复提交 `67b31c2f` 已完成提交后 verifier 与四分片 703 项，耗时
+272.506/477.971/328.523/753.739 秒；日志 `security-checkpoint-missing-post-*`。
+尚未推送以免取消仍未取得终态的 image run `34284304697`。22:45:30 UTC 同一 run API
+仍返回 rate-limit 403；匿名网页返回 404，不据此判断私有仓库的 CI 已停止。
+
+恢复 TLS 回归首先证明旧实现复用源客户端 certificate/key，负向对照失败记录为
+`security-restore-tls-before.log`。第一步分离服务端身份后，新的 CN=root 客户端用例又
+揭示权限测试把已有证书管理员的连接当作匿名连接：期望拒绝的 Range 实际成功，记录为
+`security-restore-tls-after.log`。两项失败均保留，不以最终修复结果覆盖原证据。
+
+修复草稿现在使用仅限本地 loopback 的短期 serverAuth 身份；源客户端证书/私钥及 CN
+保持原样，由恢复服务端继续核验源 CA。另生成 clientAuth-only、空 CN 的恢复专属身份，
+供匿名与密码权限矩阵使用，防止源 CN=root 使拒绝测试失真。两份新身份均不是 CA，
+只在这次恢复内部固定信任；源连接、生产 trust bundle 和源数据库权限均不修改。
+所有临时身份文件 0600、目录 0700，随恢复目录在成功/失败后移除。无需生产 CA 私钥
+或服务端私钥，不禁用双向 TLS，也不放宽 Snapshot/恢复超时或通过条件。
+
+本机验证结果：
+
+- 探针整个包普通测试通过，194.905 秒，`security-restore-tls-full.log`。
+- 新 client-only 三成员恢复覆盖“恢复后启用 auth”和“已启用 auth、仅证书管理员”两种
+  状态，以及生产规模数据、权限矩阵和既有复制/成员变更验证；race 通过，64.843 秒，
+  `security-restore-tls-integration-race.log`。
+- 实际 TCP/TLS 验证原 CN=root 与空 CN 传输身份，拒绝错误主机名、不可信/过期服务端、
+  不可信或缺少客户端证书；还验证身份用途、非 CA、权限、配置缺失和无效源 CA。
+  边界 race 连续 20 次通过，2.770 秒，`security-restore-tls-race.log`。
+- vet 与 `go run honnef.co/go/tools/cmd/staticcheck@v0.8.1` 通过；首次直接调用
+  `staticcheck` 因未安装可执行程序退出 127，不能把该次尝试算成功。后续指定版本检查
+  的终态日志为 `security-restore-tls-staticcheck.log`。
+
+隔离工作区 `/tmp/kubebrain-restore-tls.aiSeig/repo` 的四个源码文件已逐字节核对并用补丁
+同步回主工作区。当前草稿尚未提交、发布或替换运行镜像；提交前 verifier 已通过 703 项，
+四分片正在运行，日志 `security-restore-tls-pre-*`。真实集群仍固定 `339381af`，三副本
+Ready；首轮综合失败仍是有效失败记录，修复探针的真实重测尚未执行。
+
+上述隔离工作区的测试进程均已取得终态；四文件与主工作区逐字节一致后，已移除该临时
+worktree 及空父目录。修复源码仍完整保留于主工作区，测试日志位于仓库外材料目录，
+没有清理共享 Go 或镜像构建缓存。
+
+### 修复探针真实重测准备
+
+22:54 UTC 通过同一源码提交的 GraphQL statusCheckRollup 核验到 `build-and-push`
+IN_PROGRESS，detailsUrl 精确对应 image run `34284304697` / job `102256177342`。
+REST core 配额重置时间为 22:55:05 UTC，随后 REST 查询恢复，仍为同一 build/push 步骤
+in_progress。没有重新派发构建或把限流视为失败。
+
+仓库外 `kubebrain-security-smoke-restore-tls.template.yaml` 预留独立重测 Pod
+`security-smoke-restore-tls`、fixture 前缀
+`/kubebrain-rollout-availability/security-smoke-restore-tls/` 和 lease IDs
+`2026090823000001/2026090823000002/2026090823000003`。目前仅生成模板、确认同名 Pod
+不存在，未创建或执行。模板沿用已验证 `339381af` 不可变镜像，但等待上传单独编译的修复
+probe，通过精确 SHA-256 后才运行；创建前必须填入已提交源码 SHA 与实际二进制摘要。
+此方式是修复探针的诊断性集群重测，不是修复后发布镜像的验收，不能把基础镜像标签
+误记成包含新修复。三副本服务、后端、证书 Secret、存储卷均不因此变更；不触及 secondary。
+
+重测前再次核验 kube-system/测试 namespace UID 与原锚点一致，三个服务副本仍 Ready、
+后端 3 PD + 3 TiKV 均 Ready、restart 0。固定 PD Pod UID 的只读 exec 适配 Region/存储
+门禁再次通过：3 个连续 Region 样本无异常，证据 `security-restore-tls-region-gate.log`；
+仍不声明原 API Service proxy 网络入口已经恢复。
+
+本次只读对照 `/root/etcd` commit `5cd9f4ee13801e18825d661e5005ae599460bc3a`：
+`server/etcdserver/v3_server.go` 的 AuthInfoFromCtx 先检查 token，再在 ClientCertAuth
+启用时读取 TLS 身份；`server/auth/store.go` 的 AuthInfoFromTLS 使用已验证链叶证书 CN。
+因此 CN=root 的无密码连接并非匿名连接，不能期待其在启用 auth 后被拒绝；这不是要求
+KubeBrain 改变证书认证语义，而是修复恢复探针的身份隔离。参考源码没有改动。
+
+恢复 TLS 修复提交前 verifier 与四分片 703 项已全部通过，耗时
+268.762/498.608/331.407/753.403 秒，日志 `security-restore-tls-pre-*`。
+下一步提交该批修复，立即执行提交后同样的 verifier/四分片，并从精确提交构建诊断探针。

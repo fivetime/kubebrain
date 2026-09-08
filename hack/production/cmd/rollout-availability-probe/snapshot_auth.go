@@ -549,7 +549,7 @@ func (fixture *snapshotAuthFixture) deleteOwnedState(ctx context.Context, client
 
 type restoredSnapshotAdminVerifier func(*clientv3.Client, clientv3.Config) error
 
-func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.Client, clientConfig clientv3.Config,
+func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.Client, clientConfig, passwordClientConfig clientv3.Config,
 	expected *restoredSnapshotAuthExpectation, revision int64, verifyAdmin restoredSnapshotAdminVerifier,
 ) (retErr error) {
 	if expected == nil {
@@ -714,11 +714,7 @@ func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.C
 		if _, err = client.AuthEnable(ctx); err != nil {
 			return fmt.Errorf("enable auth in isolated restored etcd: %w", err)
 		}
-		if _, err = client.Get(ctx, expected.access[0].key); !errors.Is(err, rpctypes.ErrUserEmpty) &&
-			!errors.Is(err, rpctypes.ErrPermissionDenied) {
-			return fmt.Errorf("unauthenticated restored Range after AuthEnable returned %v, want user empty or permission denied", err)
-		}
-		rootConfig := clientConfig
+		rootConfig := passwordClientConfig
 		rootConfig.Username = "root"
 		rootConfig.Password = restoredRootPassword
 		rootConfig.Logger = zap.NewNop()
@@ -733,6 +729,22 @@ func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.C
 		}()
 		adminClient = rootClient
 		adminConfig = rootConfig
+	}
+	// mTLS authenticates the transport, but this dedicated empty-CN client has
+	// neither a certificate username nor a password token. A source CN=root
+	// connection cannot stand in for an unauthenticated authorization check.
+	anonymous, err := clientv3.New(passwordClientConfig)
+	if err != nil {
+		return fmt.Errorf("create unauthenticated restored client: %w", err)
+	}
+	defer func() {
+		if closeErr := anonymous.Close(); closeErr != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("close unauthenticated restored client: %w", closeErr))
+		}
+	}()
+	if _, err = anonymous.Get(ctx, expected.access[0].key); !errors.Is(err, rpctypes.ErrUserEmpty) &&
+		!errors.Is(err, rpctypes.ErrPermissionDenied) {
+		return fmt.Errorf("unauthenticated restored Range after AuthEnable returned %v, want user empty or permission denied", err)
 	}
 	if _, err = adminClient.RoleList(ctx); err != nil {
 		return fmt.Errorf("list roles as isolated restored root user: %w", err)
@@ -769,7 +781,7 @@ func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.C
 			}
 			continue
 		}
-		cfg := clientConfig
+		cfg := passwordClientConfig
 		cfg.Username = user.name
 		cfg.Password = user.password
 		cfg.Logger = zap.NewNop()
