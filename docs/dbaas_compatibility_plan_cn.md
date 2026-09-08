@@ -73939,6 +73939,59 @@ OCI archive 与展开审计目录保存在可恢复实体 `/tmp/kubebrain-a5782-
 `/root/.local/share/Trash/files/kubebrain-a5782-20260908T052547Z` 保留符号链接。为预留空间，A5771 实体也暂移至
 `/tmp/kubebrain-a5771-20260907T125818Z` 并保留原回收站符号链接；最终根盘可用约 7.4 GiB。
 
+### A5783：为 Maintenance Hash 使用有界 TiKV 批量扫描
+
+A5782 的候选冷态 10 秒 gate 在 `POST /v3/maintenance/hash` 首次超时，随后连续三次仍需
+8.849/8.845/8.918 秒。审计发现 `HashKV` 的 live 全量扫描已把 TiKV Scan 行上限从客户端默认 256 提升到有界
+2,048，而同样遍历完整物理 tenant keyspace 的 backend `Hash` 仍使用默认值，放大了长寿命实例的远程往返。提交
+`36dc7c5c62617d014b152cf9d1359e62ad1f08c5` 只在非 checkpoint 的 live Hash context 注入已有
+`hashKVScanBatchSize=2048` 提示；snapshot timestamp、严格物理 key 顺序、CRC 输入、exclusive logical-write fence 和响应
+revision 均不变。带 serializable checkpoint 的 protected/pinned 路径继续使用默认 batch 0，避免在 PD 隔离的两秒 per-peer
+预算内放大单次响应。
+
+独立 RED 在 0.058 秒内证明旧 live 路径实际记录 batch 0、未携带 2048 提示；同一测试同时固定 pinned 路径必须保持 0。
+修复后 focused 普通 100 次/race 20 次为 0.964/1.669 秒，BackendHash 相邻组连续 10 次为 0.500 秒；完整 backend
+普通/race 为 49.855/70.861 秒，完整 server/etcd 普通/race 为 157.246/406.107 秒，`go vet ./...`、gofmt 与
+diff check 全部 GREEN。提交前 verifier 为 703=`170/193/180/160`，四分片
+268.322/468.905/317.029/731.881 秒 GREEN；提交后 verifier 不变，四分片
+258.303/457.417/300.011/718.995 秒 GREEN。`/root/etcd` 仍为干净
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`；本项优化 TiKV 传输实现，不改变上游可见 Hash 语义。
+
+候选 `docker.io/library/kubebrain@sha256:01917cf4ac6fc3df556fc0d3fce45f29e4088d504fae9583e6f0e9bcf57c6ce4`
+内嵌版本 `0.0.0-36dc7c5c`、完整 commit、build time `2026-09-08T06:38:58Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`。OCI archive 为 914,850,304 bytes，SHA-256
+`fc7b40a89149581e9aee9c53daeb2b732ca95b9e82581ce2d3c29c9967286039`；顶层 `index.json` SHA-256、nested index、
+platform manifest、config、attestation manifest 分别为
+`ad73b02661111a9f2be0046b4ee55ba0abab475c45632bb03d49bb2984a0ae9d`、
+`sha256:01917cf4ac6fc3df556fc0d3fce45f29e4088d504fae9583e6f0e9bcf57c6ce4`、
+`sha256:c1540cc705ef7abe7c6e6dccfde7cf931d41586a94f4597ce8fa4b8737646d17`、
+`sha256:2854a370f879bafc76586745f213d6b0d8b3b6ba30e87e92e1a5fd6f732c0137`、
+`sha256:8845038ac97e93f9d549958a9eff3ee205054d69ce12873cdd2221bd5dd8693a`。78/78 descriptor edges、
+78/78 可达 blobs、0 orphan、71/71 diff IDs 均成立；镜像为 `65532:65532` 和正确入口。SPDX
+`sha256:3b195892cb3b0c85cef535a77dbb53547e0b0d1cdf129a6ea527852cae7597ad` 含 2,592 packages、381 files、
+8,096 relationships；SLSA `sha256:d77baebfa000cde885cc7e645be73199f34d4444addf0223168823e130d36183`
+含 3 项固定 materials 与四项精确 build args，两份 statement 均唯一绑定 platform manifest。BuildKit 记录
+`xfoh612h1aqttqkdc19kkvwwo` 已按精确 ID 删除，没有全局 prune。
+
+Kind import 后在工作负载变更前补齐 nested-index digest 别名。候选从 generation 1000/RV `9050230` 经
+UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test 原子投放到 generation 1001/RV
+`9060901`；最终候选 RV `9061265`、3/3 Ready、restart 0，Ready/ContainersReady generation 与 runtime-state 围栏
+全部成立，runtime imageID 为顶层 `sha256:ad73b02661111a9f2be0046b4ee55ba0abab475c45632bb03d49bb2984a0ae9d`。
+新进程建立六转发后的前三次 gateway Hash（首项即冷态首业务请求）为 5.156/4.871/4.789 秒，相比 A5782
+8.849/8.845/8.918 秒显著下降且 hash `1488414574`、revision `75044` 不变；数据传输和 CRC 成本仍存在，因此不宣称
+理论八倍加速。随后全部适用 HEAD 合同的 10 秒 readonly gate 首次即 GREEN；Auth disabled、Alarm 为空、HashKV
+`1984703050`，runtime identity 三阶段稳定。
+
+停止六转发后，以新鲜六类 JSON test 从候选 generation 1001/RV `9061265` 精确回滚稳定 digest；patch 生成
+generation 1002/RV `9061772`，终态 generation/observed `1002/1002`、RV `9062130`、3/3 Ready、restart 0、
+22 参数，runtime 恢复稳定 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。
+省略未来 `EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS` 的 60 秒稳定适用 gate GREEN；revision/HashKV 保持
+`75044/1984703050`，正常回滚选主后 term `871`。最终 PD/TiKV 3+3 Running/Ready、三个 store 全部 Up；候选
+workload、CRI container、四个 Kind image 名称和六 listener 均为 0，稳定镜像和数据卷保留。OCI archive 与审计目录位于
+可恢复实体 `/tmp/kubebrain-a5783-20260908T070234Z`，回收站路径
+`/root/.local/share/Trash/files/kubebrain-a5783-20260908T070234Z` 保留链接。为构建空间，A5769/A5770 实体也暂移到
+同名 `/tmp` 路径并保留原回收站链接；最终根盘可用约 6.1 GiB。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
