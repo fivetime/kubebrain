@@ -233,7 +233,14 @@ func (b *backend) loadSerializableCheckpointWatermarksAt(ctx context.Context, ti
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	revision, err := decodeDurableRevisionWatermark(values[string(durableKey)])
+	durableValue, durableExists := values[string(durableKey)]
+	if !durableExists {
+		// A common Store safe timestamp may predate this keyspace's first
+		// durable marker. Keep waiting for a verifiable snapshot; neither the
+		// latest marker nor an assumed empty revision can replace this read.
+		return 0, 0, 0, fmt.Errorf("%w: durable revision watermark is not visible at timestamp %d", ErrSerializableCheckpointUnavailable, timestamp)
+	}
+	revision, err := decodeDurableRevisionWatermark(durableValue)
 	if err != nil {
 		return 0, 0, 0, err
 	}

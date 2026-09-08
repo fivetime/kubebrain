@@ -368,3 +368,107 @@ server-side dry-run 通过，并断言恰好五个 namespaced 对象、三副本
 两类 4 GiB 工作卷都使用 rook-ceph 消费者 SC。证据 `security-339381af-dry-run.json`。
 首次汇总误按 List 解析 kubectl 输出的五个连续 JSON 对象，jq 失败；改用 slurp 并对五项
 完整断言后通过，没有忽略校验错误。本记录时尚未创建 StatefulSet，下一步才执行部署。
+
+### 三副本首次部署与冷启动延迟
+
+已创建上述五个对象，StatefulSet UID `2650ad15-1d37-41c4-836c-d40dd4502720`；
+ServiceAccount UID `6389933b-c121-446b-81a1-b2399ce9f0a7`、PDB UID
+`9680eb28-e0d2-47ab-91e1-172b01d24215`，client/peer Service UID 分别为
+`a0fbf77b-010b-4595-a28b-471b73d2d640` / `6a2695bb-e303-4788-999b-9ae4e35f30f4`。
+创建响应保存在 `security-339381af-created.json`。六个 4 GiB 工作 PVC 已 Bound，均为指定
+rook-ceph 消费者 SC。Pod 0/1/2 分别落在 worker3/1/2，UID 为
+`f4f7c830-5a2a-485d-bd43-b53f18c53bcb`、`af235510-0e4b-4e55-bbb5-ff51df089311`、
+`fcec128c-edce-4689-9576-8fd85c820864`。三个 Pod imageID 均报告上述固定索引；Pod 内实际
+version 核对得到 TiKV、linux/amd64、Go 1.26.8、源码 `339381af`、构建时间 `20:35:19Z`。
+
+首次 10 分钟 rollout 等待超时，不能写成一次正常启动。leader kubebrain-2 在 checkpoint
+阶段反复报 `decode durable revision watermark: invalid revision watermark length 0`；
+followers 正确拒绝向 NOT_SERVING leader 转发。只读诊断确认当前持久 watermark 是 1，
+但 Store safe timestamp 为 `468946512982310913`（17:36:20.798 UTC），远早于本次启动。
+该历史快照的 GetAt 返回 not found、BatchGetAt 不含该键；代码直接对缺失 map 值解码，
+把历史快照尚未包含 watermark 表现成损坏值。不能通过当作当前 revision 或跳过安全时间戳
+来放行。后续需要区分缺失/损坏，并调查冷启动安全时间戳推进延迟。
+
+诊断程序只读指定 keyspace 的 watermark、TSO 和 range safe timestamp，没有执行数据写入、
+GC、锁清理或集群配置变更；临时上传程序已从 Pod snapshot 工作卷移除。
+日志 `security-339381af-checkpoint-readonly.log`。其中 compact 范围首次诊断使用了未附加
+keyspace 后缀的协调前缀，不能拿它证明实际 compact Region；object/durable 范围和当前
+watermark 读取直接使用正确的 `kubebrain-dbaas-test` coder，不受该范围错误影响。
+
+三个副本随后自然变为 Ready、零重启；再次 rollout 观察通过，日志
+`security-339381af-rollout-after-delay.log`，首次超时保留在 `security-339381af-rollout.log`。
+启动错误/恢复记录为 `security-339381af-startup-watermark.log`、`security-339381af-startup-recovery.log`。
+TiKV 的 resolved-ts.enable=true、advance-ts-interval=20s；没有更改参数来掩盖延迟。
+
+下一步专属 probe 清单 `kubebrain-security-smoke-339381af.yaml` 固定同一镜像与 StatefulSet UID。
+Pod 名 `security-smoke-339381af`，fixture 前缀
+`/kubebrain-rollout-availability/security-smoke-339381af/`，预留 lease IDs 为
+`2026090822060001/2026090822060002/2026090822060003`；旧 5645caa6 probe 未执行，旧 ID 不复用。
+先三副本逐一审计，再跑 300 轮可用性/Watch/Lease/RangeStream/Snapshot 与 PD/TiKV 探针。
+此处为执行前身份登记，尚未取得 probe 结果。
+
+Staticcheck 提交 `e156a9f7e79b2d5aa20214bc80d5ee2e73e68b28` 的提交后 verifier 与四分片
+703 项全部通过（255.788/455.628/308.469/731.352 秒），日志 `security-staticcheck-post-*`。
+前后两轮均完成，随后快进推送；新提交的镜像构建不替代当前已部署 `339381af` 的验收身份。
+
+快进推送已成功，自动触发 image run
+`34284304697`（https://github.com/fivetime/kubebrain/actions/runs/34284304697），源码精确为
+`e156a9f7e79b2d5aa20214bc80d5ee2e73e68b28`，当前 build/push in_progress，不重复派发或推送
+后续代码取消它。当前服务继续固定使用已经验证的 `339381af` 索引。
+
+综合探针已创建，UID `c4bad481-abbc-48ee-b8fa-d90181c1e660`，创建响应
+`security-339381af-smoke-created.json`，持续日志 `security-339381af-smoke.log`。三个直连
+审计均通过：依次 Put/Delete revision 为 2/3、4/5、6/7，同一 PD/数据面 cluster ID，
+三个 60 秒 audit lease 的回收验证通过。随后综合探针打印 PROBE_STARTED；当前 Pod Running，
+尚无 PROBE_SUMMARY/终态，不能把审计通过当作 300 轮、Snapshot 或恢复已通过。
+
+六个工作 PVC/PV 的精确 claimRef UID 一一匹配、六个 volumeHandle 唯一，CSI driver 与
+clusterID 全为 rook-ceph 消费者；清单为 `security-339381af-work-pvcs.json` 与
+`security-339381af-work-pvs.json`。三个副本的 snapshot/spill 挂载实际文件系统均
+4,046,560 KiB、当时使用 1%，不是 node-root 容量。只读诊断源保存在仓库外
+`checkpoint-readonly-diagnostic.go`；本机 `/tmp/kubebrain-checkpoint-diagnostic.2LlyPP`
+及其编译产物、Pod 内上传文件已清理，源码与日志仍可恢复诊断过程。
+
+### checkpoint 缺失 watermark 错误分类修复草稿
+
+根据真实启动观察新增 `TestSerializableCheckpointWaitsForDurableWatermarkVisibility`。
+旧代码在“安全快照缺失 watermark”用例中实际返回 InvalidMVCCMetadata，负向测试按预期
+失败；空值但存在的键仍要求损坏错误。修复读取 map 的存在位，缺失时返回带 timestamp
+的 ErrSerializableCheckpointUnavailable，继续 fail-closed；不发布 checkpoint，不用
+当前 watermark 或假定 revision=1 替代历史快照，也不改变 TiKV safe timestamp。
+测试还验证 marker 真正进入后续安全快照后恢复创建 checkpoint。
+
+`security-checkpoint-missing-before.log` 记录复现；修复后 checkpoint 系列普通测试
+0.275 秒通过，新用例 race 连续 20 次 2.109 秒通过，backend vet/Staticcheck 通过。
+日志 `security-checkpoint-missing-after.log`、`security-checkpoint-missing-race.log`。
+该草稿只解决缺失与损坏混淆，不宣称修复了 10m26s 的真实冷启动 safe-ts 延迟。
+新批次 verifier 已通过 703 项、170/193/180/160，提交前四分片运行中，日志前缀
+`security-checkpoint-missing-pre-`；草稿尚未提交或包含在运行镜像内。Badger 标签 fixture
+兼容性缺口仍待后续处理。
+
+### 综合探针失败终态与恢复 TLS 诊断
+
+`security-smoke-339381af`（UID `c4bad481-abbc-48ee-b8fa-d90181c1e660`）于
+22:18:32 UTC 终止，Pod Failed、exit 1。最终错误为
+`stream integrity probe did not complete one RangeStream and Snapshot within 8m2s: range=461 snapshot=0: context deadline exceeded`。
+没有 PROBE_SUMMARY；三个直连审计通过不等于综合验收通过。曾观察到 33,681,440 字节
+Snapshot 文件与恢复目录，只能证明进入恢复阶段，不能证明恢复验证完成。日志及终态分别为
+`security-339381af-smoke.log`、`security-339381af-smoke-latest.json`。
+
+另建精确绑定原 probe UID、StatefulSet UID、fixture 前缀及三个 lease ID 的清理审计 Pod
+`security-smoke-339381af-cleanup`（UID `dc45ba83-0bfc-4fd5-b496-5f9d8d94d9a7`）。
+22:21:49 UTC Succeeded、exit 0，输出 `FIXTURE_CLEANUP_OK status=absent`，
+keys/users/roles/leases 全为零；审计在任何删除操作前确认不存在残留，没有额外删除数据。
+证据 `security-339381af-cleanup.log` 与 `security-339381af-cleanup-result.json`。
+两个终态 Pod 暂留，未重跑失败测试、未重启后端或放宽门禁。
+
+代码核查发现恢复探针把源连接的 client certificate/key 同时用作本地嵌入式 etcd 的
+server certificate/key。实际挂载的 test-client.crt 是 CN=root、仅 clientAuth、无 SAN；
+现有 TLS 恢复测试使用含 serverAuth/clientAuth 与 SAN 的 SelfCert，未覆盖该合法客户端身份。
+下一步以 client-only 证书复现并分离本地恢复 PKI；不向 probe 挂载生产服务端或 CA 私钥，
+不关闭 TLS 验证。尚不能把此代码问题已定位写成修复后综合验收通过。
+
+checkpoint 修复提交前 verifier 与四分片已全部通过，703 项，耗时
+253.171/451.373/305.544/728.379 秒，证据 `security-checkpoint-missing-pre-*`。
+22:29:59 UTC 查询 image run `34284304697` 遇 GitHub API rate-limit 403；这是观测失败，
+不是构建终态，不重新派发、取消或以新代码推送替换该运行。

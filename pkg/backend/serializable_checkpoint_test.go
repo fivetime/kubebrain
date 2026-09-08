@@ -547,6 +547,51 @@ func TestSerializableCheckpointUsesRevisionWatermarksAtReadyTimestamp(t *testing
 	require.Equal(t, [][]byte{b.ks.ObjectKeyspaceEnd(), append(append([]byte(nil), compactKey...), 0)}, store.readinessEnds)
 }
 
+func TestSerializableCheckpointWaitsForDurableWatermarkVisibility(t *testing.T) {
+	for _, present := range []bool{false, true} {
+		name := "absent at safe timestamp"
+		if present {
+			name = "present but empty is corrupt"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), readyTimestamp: 300}
+			b := newCheckpointBackend(t, store)
+			b.SetCurrentRevision(1)
+			durableKey := string(b.ks.EncodeInternalKey(durableRevisionKey))
+			store.snapshotValues = map[string][]byte{}
+			if present {
+				store.snapshotValues[durableKey] = nil
+			}
+
+			checkpoint, err := b.createSerializableCheckpoint(context.Background())
+			require.Equal(t, SerializableCheckpoint{}, checkpoint)
+			if present {
+				require.ErrorIs(t, err, ErrInvalidMVCCMetadata)
+				require.NotErrorIs(t, err, ErrSerializableCheckpointUnavailable)
+			} else {
+				require.ErrorIs(t, err, ErrSerializableCheckpointUnavailable)
+				require.NotErrorIs(t, err, ErrInvalidMVCCMetadata)
+			}
+			// The latest marker exists, but it must not stand in for the marker
+			// at the common safe timestamp, or admit an unverified checkpoint.
+			current, err := b.GetDurableRevision(context.Background())
+			require.NoError(t, err)
+			require.Equal(t, uint64(1), current)
+			_, err = b.kv.Get(context.Background(), b.ks.EncodeInternalKey(serializableCheckpointKey))
+			require.ErrorIs(t, err, storage.ErrKeyNotFound)
+
+			if !present {
+				store.readyTimestamp = 301
+				store.snapshotValues[durableKey] = uint64ToBytes(1)
+				checkpoint, err = b.createSerializableCheckpoint(context.Background())
+				require.NoError(t, err)
+				require.Equal(t, SerializableCheckpoint{Revision: 1, Timestamp: 301}, checkpoint)
+				require.Equal(t, []uint64{300, 301}, store.batchTimestamps)
+			}
+		})
+	}
+}
+
 func TestSerializableCheckpointUsesCommonObjectAndCompactRegionSafeTimestamp(t *testing.T) {
 	store := &checkpointTestStorage{KvStorage: memkv.NewKvStorage(), readyTimestamps: []uint64{320, 300}}
 	b := newCheckpointBackend(t, store)
