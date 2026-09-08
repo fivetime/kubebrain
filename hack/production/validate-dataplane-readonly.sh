@@ -1329,6 +1329,7 @@ ready_pod_runtime_identities() {
 				| if all($runtime_statuses[];
 					if (.status | type) != "object" then false else
 						(.status.name | valid_container_name)
+						and (.status.image | type) == "string" and .status.image != ""
 						and (.status.containerID | valid_container_id)
 						and (.status.imageID | type) == "string" and (.status.imageID | test("sha256:[0-9a-f]{64}$"))
 						and (.status.ready | type) == "boolean"
@@ -1345,6 +1346,7 @@ ready_pod_runtime_identities() {
 					| map({
 						scope: .scope,
 						name: .status.name,
+						image: .status.image,
 						containerID: .status.containerID,
 						imageID: .status.imageID,
 						ready: .status.ready,
@@ -1431,6 +1433,10 @@ ready_pod_target_image_digest() {
 				{error: "\($pod_name):target-count=\($matches | length)"}
 			  elif $matches[0].ready != true then
 				{error: "\($pod_name):target-not-ready"}
+			  elif (($matches[0].image | type) != "string") then
+				{error: "\($pod_name):image-not-string"}
+			  elif $matches[0].image == "" then
+				{error: "\($pod_name):image-empty"}
 			  elif (($matches[0].imageID | type) != "string") then
 				{error: "\($pod_name):imageID-not-string"}
 			  elif ($matches[0].imageID | test("sha256:[0-9a-f]{64}$") | not) then
