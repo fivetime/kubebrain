@@ -74143,6 +74143,60 @@ readonly gate 首次 GREEN；Auth disabled，revision/HashKV/term 为 `75044/198
 OCI 与审计材料位于可恢复实体 `/tmp/kubebrain-a5786-20260908T111646Z`，回收站路径
 `/root/.local/share/Trash/files/kubebrain-a5786-20260908T111646Z` 保留链接；最终根盘可用约 3.9 GiB。
 
+### A5787：校验 Kubernetes 容器状态名称与跨类型唯一性
+
+A5786 已把 `containerID` 收紧到 `<type>://<container_id>`，但完整 runtime identity 对 `ContainerStatus.Name`
+仍只要求非空，并以 `[scope,name]` 判重，因此会接受 `Bad_Name`，也会接受普通、init、ephemeral 三类状态复用同一名称。
+Kubernetes `core/v1.ContainerStatus.Name` 的权威契约是 DNS_LABEL，并明确要求名称在所有容器类型之间唯一。跨类型重复名与
+非 DNS label 名称的两项 RED 在 4.062 秒内证明旧 gate 都会误判 GREEN。提交
+`629bc13421faa3644528c39eb627221d9aa473e8` 增加共用 DNS label 谓词，将普通、init、ephemeral 状态名称全部限制为
+1..63 字符的小写字母、数字和连字符格式，并把唯一性从 `[scope,name]` 改为全局 `name`；原有不同 API 顺序的稳定身份用例
+改用 `sidecar/mesh/debugger` 三个真实唯一名称，继续保证排序不影响身份哈希。
+
+三个目标用例单次 focused 为 3.862 秒，focused 连续 10 次为 40.576 秒，race 连续 10 次为 43.614 秒；完整
+`TestValidateDataplaneReadonlyProbe` 为 286.111 秒，`go vet`、bash syntax、gofmt 和 diff check 全部 GREEN。提交前
+verifier 为 703=`170/193/180/160`，四分片 276.237/470.414/312.156/738.089 秒 GREEN；提交后 verifier
+不变，四分片 259.512/449.756/310.309/716.042 秒 GREEN。`/root/etcd` 仍为干净
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`，没有新增上游提交；本项只收紧 Kubernetes 运行时证据真实性，
+不改变 etcd 客户端语义。
+
+候选 spec 镜像 `docker.io/library/kubebrain@sha256:be38de8f4ce6a88b769d9ac8877bd27c1ba6e1295d7c7b3a8eae71b1805ad0be`
+内嵌版本 `0.0.0-629bc134`、完整 commit、build time `2026-09-08T11:57:36Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`；镜像内门禁脚本 SHA-256 为 `ff9ccff63ac3a6a9fa3a1716d88e86d6e5846648d48070097bf83306e7427e81`，
+与提交内容逐字节一致。OCI archive 为 914,849,792 bytes，SHA-256
+`6623bd2832059cd362dfceff141931095ee0dafbb67b4d006f42c818d5b2c6eb`；顶层 `index.json` SHA-256、nested index、
+platform manifest、config、attestation manifest 分别为
+`9d2cdd14ccc2c38aa86d1b0abae9a37d96df16a8ab59b012ad2fdb7e61e4541e`、
+`sha256:be38de8f4ce6a88b769d9ac8877bd27c1ba6e1295d7c7b3a8eae71b1805ad0be`、
+`sha256:0aebfe028d4b5d38e8bf43ede1b426d6cdb64b8448044120ad783f82bf8bf4ab`、
+`sha256:45b5538e1daf403cb02271bb9f5e070299b7af55ba3075f367dc04423715642f`、
+`sha256:865763d0a5a336c5ff28bb4e38264411e591948f490fb82cf6e645b3494bf282`。78/78 descriptor edges、
+78/78 可达 blobs、0 orphan、71/71 唯一 diff IDs 均成立，镜像为 `65532:65532` 和正确入口。SPDX
+`sha256:c389720aee59777fcdc5f44825a08c94a875cad3f8cac7eea415fa7640163455` 含 2,592 packages、381 files、
+8,096 relationships；SLSA `sha256:65017ebf872ad2d34cb0e57ae137c31ebc24d519fc181007967b7633b0434b9c`
+含 3 项固定 materials 与四项精确 build args，两份 statement 均只有一个 subject 并绑定 platform manifest。
+BuildKit 记录 `mijes1c3yrtwx799mp1q862tt` 与本轮 4.145 GB 编译挂载
+`t996iqmt5a90ue6zogfztacm0` 已分别按精确 ID 删除，没有全局 prune。
+
+候选从稳定 generation 1008/RV `9104173` 经 UID/resourceVersion/generation/container/current image/full 22 args
+六类 JSON test 原子投放，patch 生成 generation 1009/RV `9105163`。镜像导入一度把宿主根盘压到约 231 MiB，
+`kubebrain-0` 的临时目录启动探针因 `no space left on device` 发生两次环境性重启；精确回收本轮 BuildKit 编译挂载、
+删除 import/config 别名并重新创建三份候选 Pod 后，终态 RV `9106730`、3/3、restart 0，Ready/ContainersReady
+generation、running-only 状态、规范 `startedAt`、规范且唯一的 container name/containerID 全部成立。运行时 imageID
+为已审计顶层 `sha256:9d2cdd14ccc2c38aa86d1b0abae9a37d96df16a8ab59b012ad2fdb7e61e4541e`。全部适用 HEAD
+合同的 10 秒 readonly gate 首次 GREEN；Auth disabled，revision/HashKV/term 为 `75044/1984703050/888`。
+
+停止六转发后，以新鲜六类 JSON test 从候选 generation 1009/RV `9106730` 精确回滚；patch 生成 generation 1010/RV
+`9107295`，终态 generation/observed `1010/1010`、RV `9107655`、3/3 Ready、restart 0、22 参数，runtime
+恢复稳定 `sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。省略未来
+`EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS` 的 60 秒稳定适用 gate GREEN；revision/HashKV 保持
+`75044/1984703050`，正常回滚选主后 term `891`。PD/TiKV 3+3 Running/Ready，三个 TiKV store 全部 Up；六 listener、
+候选 workload、CRI container、containerd 候选名称、关键 content 与 snapshot 引用均为 0，稳定镜像和数据卷保留。
+containerd CRI 在反复按精确 config ID 与 repoDigest 删除后仍枚举一条 unpinned、无底层名称/content/snapshot 的候选
+内存孤儿索引；为避免扩大影响，本轮没有重启 containerd 或执行全局 prune，并如实保留该运行时清理限制。OCI 与审计材料
+位于可恢复实体 `/tmp/kubebrain-a5787-20260908T123802Z`，回收站路径
+`/root/.local/share/Trash/files/kubebrain-a5787-20260908T123802Z` 保留链接；最终根盘可用约 3.0 GiB。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
