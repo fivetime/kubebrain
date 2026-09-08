@@ -1364,6 +1364,10 @@ validate_ready_pod_target_runtime_state() {
 	local state_errors
 
 	state_errors="$(printf '%s' "$source_pods_json" | "$JQ" -r --arg target "$KUBEBRAIN_CONTAINER_NAME" '
+		def canonical_kubernetes_time:
+			type == "string" and
+			(. as $value |
+				try ((fromdateiso8601 | todateiso8601) == $value) catch false);
 		[
 			.items[]
 			| select(.metadata.deletionTimestamp == null)
@@ -1381,8 +1385,7 @@ validate_ready_pod_target_runtime_state() {
 				"\($pod_name):target-state=\(if ($matches[0].state | length) == 0 then "<empty>" else ($matches[0].state | keys | join("+")) end)"
 			  elif ($matches[0].state.running | type) != "object" then
 				"\($pod_name):target-running=\($matches[0].state.running | tojson)"
-			  elif ($matches[0].state.running.startedAt | type) != "string" or
-				$matches[0].state.running.startedAt == "" then
+			  elif ($matches[0].state.running.startedAt | canonical_kubernetes_time | not) then
 				"\($pod_name):target-started-at=\($matches[0].state.running.startedAt | tojson)"
 			  else empty
 			  end

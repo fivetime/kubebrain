@@ -432,6 +432,18 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "KubeBrain target container runtime state mismatch: kubebrain-0:target-started-at=null",
 		},
 		{
+			name: "rejects ready target container with malformed running start time",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true,"started":true,"state":{"running":{"startedAt":"garbage"}}}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain target container runtime state mismatch: kubebrain-0:target-started-at=\"garbage\"",
+		},
+		{
 			name: "rejects target container image ID without canonical digest",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","imageID":"docker.io/library/kubebrain:latest","restartCount":0,"ready":true}]}},
