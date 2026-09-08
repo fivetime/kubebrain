@@ -111,4 +111,11 @@ API `/version` 本次返回 v1.36.1；此前 v1.36.0 来自节点 kubelet 信息
 本机全局 kubectl 和用户 Kubernetes 集群未升级。记录位于环境材料目录 `security-kubectl-*`；
 临时下载的候选工具和本地/容器构建输出已清理，后续可按固定模块及 metadata 重新构建。
 
+安全更新产品提交 `5645caa6b014c2c17b84af968f242efeee3a388a` 已完成提交前、提交后的
+703 项生产四分片验证并推送。新镜像由 push 自动触发
+[run 34264830428](https://github.com/fivetime/kubebrain/actions/runs/34264830428)，首次回读 queued；
+待验证成功后记录不可变 digest。完整本地预提交镜像的 66 个 Go 可执行文件均通过二进制扫描，
+该验证镜像、提取容器和临时二进制已清理；`security-product-image-*` 日志留存。
+本地构建使用预提交 metadata，不冒充该产品提交的发布产物。
+
 取得新安全基线已验证的镜像后，部署三副本 KubeBrain、客户端语义测试及产品恢复验证，再补监控和故障演练。不要将当前后端与 CSI 冒烟测试标为整个产品验收完成。

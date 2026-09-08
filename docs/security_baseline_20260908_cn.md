@@ -86,7 +86,10 @@ timeout，产品默认 10 秒；尚不能仅凭这一差异认定根因。原样
 （275.473/469.110/326.519/742.669 秒）。随后因补齐 kubectl 二进制修复，对最终变更执行第三轮
 完整 verifier/四分片，703 项全部通过（258.426/452.167/308.982/737.011 秒）。
 首轮非稳定失败仍保留为待观察项，不用后续通过抹去，也不声称已经证明其根因。
-提交后还需原样再跑 verifier 和四分片，再推送并跟踪新镜像 CI。
+产品提交 `5645caa6b014c2c17b84af968f242efeee3a388a` 后立即原样执行 verifier 和四分片，
+703 项全部通过（250.398/449.578/301.841/719.691 秒）。提交已快进推送；push 自动触发
+[镜像 CI 34264830428](https://github.com/fivetime/kubebrain/actions/runs/34264830428)，
+首次回读为 queued，尚不能据此认定发布成功；未重复手动派发。
 
 完整根 Dockerfile 的 amd64/TiKV 本地预提交构建成功，镜像
 `kubebrain:security-precommit-20260908`，本地 image ID
@@ -94,10 +97,16 @@ timeout，产品默认 10 秒；尚不能仅凭这一差异认定根因。原样
 非 root 用户 `65532:65532`、主程序 TiKV/Go 1.26.8/linux-amd64 与 OCI labels 均已回读。
 该预提交镜像使用基线 SHA b2f4bed9 和明确的 `0.0.0-security-precommit` 标识，仅验证本地构建，
 不是新产品提交的发布镜像，也没有部署到集群。构建日志保存在环境材料目录 `security-product-image-build.log`。
+从未启动的临时容器提取实际镜像 `/usr/local/bin` 后，全部 66 个 Go 可执行文件均核验为
+Go 1.26.8、amd64，逐个二进制漏洞扫描通过；模块级 OpenPGP 告警仍保留。
+完整扫描与镜像身份记录为 `security-product-image-binary-scan.log` 和
+`security-product-image-inspect.json`。提取容器、临时目录以及上述仅供验证的本地镜像
+已定向删除，日志保留；未清理共享 Go/BuildKit 缓存。
 
 产品 Staticcheck v0.7.0 本轮仍失败，输出包含 52 项诊断；在隔离临时源码目录使用同一
 Go 1.26.8 对修改前 commit `b2f4bed9` 复测，输出逐行完全相同，确认是既有未清项。
 前后日志保存在环境材料目录 `security-staticcheck-before.log` / `security-staticcheck-after.log`。
 用于对照的临时源码目录已清理，可从 Git 恢复。
 不得把 govulncheck 成功写成全部 CI 成功。objectstore 的 Staticcheck 已通过。
-新安全基线镜像尚未构建/部署，三副本 KubeBrain、恢复、监控及故障验收仍待后续推进。
+新安全基线发布镜像仍待 CI 完成，尚未部署；本地预提交构建不替代发布验证。
+三副本 KubeBrain、恢复、监控及故障验收仍待后续推进。
