@@ -1,64 +1,46 @@
-name: Docker Image
+name: Build & Push DBaaS test image
 
 on:
   push:
-    branches:
-      - main
+    branches: [dbaas]
   workflow_dispatch:
-    inputs:
-      source_ref:
-        description: Full commit SHA reachable from main; empty uses the triggering commit
-        required: false
-        default: ""
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: docker-image-${{ github.workflow }}-${{ github.ref }}
+  group: dbaas-image-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build-and-push:
-    name: Build and push image
+    if: github.ref == 'refs/heads/dbaas'
     runs-on: self-hosted
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.inputs.source_ref || github.sha }}
-          fetch-depth: 0
+          ref: ${{ github.sha }}
+          fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify immutable release source
-        env:
-          REQUESTED_REVISION: ${{ github.event.inputs.source_ref || github.sha }}
-        run: |
-          revision="$(git rev-parse HEAD)"
-          test "$revision" = "$REQUESTED_REVISION"
-          test "$(printf '%s' "$revision" | grep -Ec '^[0-9a-f]{40}$')" -eq 1
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            git fetch --no-tags origin main
-            git merge-base --is-ancestor "$revision" origin/main
-          fi
-
-      - name: Compute image tag
+      - name: Compute immutable image metadata
         id: vars
         run: |
+          set -euo pipefail
           revision="$(git rev-parse HEAD)"
-          short_sha="$(git rev-parse --short=12 HEAD)"
-          version="$(git describe --tags --exact-match 2>/dev/null || printf '0.0.0-%s' "$short_sha")"
-          echo "revision=${revision}" >> "$GITHUB_OUTPUT"
-          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          test "$revision" = "$GITHUB_SHA"
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+          echo "version=0.0.0-dbaas-${revision:0:12}" >> "$GITHUB_OUTPUT"
           echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-          echo "image=${REGISTRY}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
@@ -69,15 +51,16 @@ jobs:
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push TiKV image
+      - name: Build and push TiKV test image
         id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
+          file: Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           build-args: |
@@ -85,36 +68,25 @@ jobs:
             KUBEBRAIN_VERSION=${{ steps.vars.outputs.version }}
             KUBEBRAIN_GIT_SHA=${{ steps.vars.outputs.revision }}
             KUBEBRAIN_BUILD_DATE=${{ steps.vars.outputs.created }}
-          tags: |
-            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.short_sha }}
-            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.revision }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.vars.outputs.image }}:dbaas-${{ steps.vars.outputs.revision }}
+          cache-from: type=gha,scope=kubebrain-dbaas
+          cache-to: type=gha,scope=kubebrain-dbaas,mode=max
           provenance: mode=max
           sbom: true
 
-      - name: Verify published multi-platform index
+      - name: Verify published test image
         run: |
+          set -euo pipefail
           reference="${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}"
-          docker buildx imagetools inspect --raw "$reference" > "$RUNNER_TEMP/manifest.json"
-          jq -e '
-            [.manifests[].platform
-              | select(.os == "linux" and (.architecture == "amd64" or .architecture == "arm64"))
-              | .architecture] | sort == ["amd64", "arm64"]
-          ' "$RUNNER_TEMP/manifest.json"
-          test "$(jq '[.manifests[] | select(.platform.os == "linux")] | length' \
-            "$RUNNER_TEMP/manifest.json")" -eq 2
-          docker buildx imagetools inspect "$reference"
-
-      - name: Verify runtime image metadata
-        run: |
-          reference="${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}"
+          manifest="$RUNNER_TEMP/dbaas-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-manifest.json"
+          docker buildx imagetools inspect --raw "$reference" > "$manifest"
+          jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' "$manifest"
           docker pull --platform linux/amd64 "$reference"
           version_output="$(docker run --rm --platform linux/amd64 \
             --entrypoint /usr/local/bin/kube-brain "$reference" version)"
           printf '%s\n' "$version_output"
           printf '%s\n' "$version_output" | grep -F -- "Version:" | grep -F -- "${{ steps.vars.outputs.version }}"
-          printf '%s\n' "$version_output" | grep -F -- "Storage:" | grep -F -- "tikv"
+          printf '%s\n' "$version_output" | grep -F -- "Storage:" | grep -F -- "TiKV"
           printf '%s\n' "$version_output" | grep -F -- "Git SHA:" | grep -F -- "${{ steps.vars.outputs.revision }}"
           printf '%s\n' "$version_output" | grep -F -- "BuildTime:" | grep -F -- "${{ steps.vars.outputs.created }}"
           labels_json="$(docker image inspect "$reference" --format '{{json .Config.Labels}}')"
@@ -124,16 +96,17 @@ jobs:
             --arg created "${{ steps.vars.outputs.created }}" \
             '.["org.opencontainers.image.version"] == $version and
              .["org.opencontainers.image.revision"] == $revision and
-             .["org.opencontainers.image.created"] == $created' \
-            <<<"$labels_json"
+             .["org.opencontainers.image.created"] == $created' <<<"$labels_json"
           test "$(docker image inspect "$reference" --format '{{.Config.User}}')" = "65532:65532"
 
-      - name: Promote verified image to latest
+      - name: Promote verified image to dbaas
         run: |
+          set -euo pipefail
           reference="${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}"
           docker buildx imagetools create \
-            --tag "${{ steps.vars.outputs.image }}:latest" \
-            "$reference"
+            --tag "${{ steps.vars.outputs.image }}:dbaas" "$reference"
           test "$(docker buildx imagetools inspect \
-            "${{ steps.vars.outputs.image }}:latest" --format '{{json .Manifest}}' |
+            "${{ steps.vars.outputs.image }}:dbaas" --format '{{json .Manifest}}' |
             jq -r '.digest')" = "${{ steps.build.outputs.digest }}"
+          printf 'Verified DBaaS test image: `%s`\n\nCommit: `%s`\n' \
+            "$reference" "${{ steps.vars.outputs.revision }}" >> "$GITHUB_STEP_SUMMARY"

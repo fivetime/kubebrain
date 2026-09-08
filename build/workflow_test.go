@@ -14,6 +14,7 @@ import (
 func TestWorkflowsAreValidYAML(t *testing.T) {
 	for _, path := range []string{
 		"../.github/workflows/ci.yml",
+		"../.github/workflows/image.yml",
 		"../.github/workflows/docker-image.yml",
 		"../.github/workflows/integration.yml",
 	} {
@@ -32,6 +33,7 @@ func TestWorkflowActionsArePinnedAndCheckoutDropsCredentials(t *testing.T) {
 
 	for _, path := range []string{
 		"../.github/workflows/ci.yml",
+		"../.github/workflows/image.yml",
 		"../.github/workflows/docker-image.yml",
 		"../.github/workflows/integration.yml",
 	} {
@@ -177,6 +179,37 @@ func TestReleaseWorkflowPublishesVerifiedMultiPlatformImage(t *testing.T) {
 	require.Less(t,
 		strings.Index(content, "Verify published multi-platform index"),
 		strings.Index(content, "Promote verified image to latest"))
+}
+
+func TestDBaaSImageWorkflowUsesSelfHostedAndIsolatesTestTags(t *testing.T) {
+	workflow, err := os.ReadFile("../.github/workflows/image.yml")
+	require.NoError(t, err)
+	content := string(workflow)
+	for _, required := range []string{
+		"branches: [dbaas]",
+		"if: github.ref == 'refs/heads/dbaas'",
+		"runs-on: self-hosted",
+		"persist-credentials: false",
+		"file: Dockerfile",
+		"platforms: linux/amd64,linux/arm64",
+		"STORAGE=tikv",
+		"KUBEBRAIN_VERSION=${{ steps.vars.outputs.version }}",
+		"KUBEBRAIN_GIT_SHA=${{ steps.vars.outputs.revision }}",
+		"KUBEBRAIN_BUILD_DATE=${{ steps.vars.outputs.created }}",
+		"dbaas-${{ steps.vars.outputs.revision }}",
+		"provenance: mode=max",
+		"sbom: true",
+		`grep -F -- "Storage:" | grep -F -- "TiKV"`,
+		"Verify published test image",
+		"Promote verified image to dbaas",
+		`--tag "${{ steps.vars.outputs.image }}:dbaas"`,
+	} {
+		require.Contains(t, content, required)
+	}
+	require.NotContains(t, content, "pull_request:")
+	require.NotContains(t, content, ":latest")
+	require.Less(t, strings.Index(content, "Verify published test image"),
+		strings.Index(content, "Promote verified image to dbaas"))
 }
 
 func TestIntegrationToolDownloadsAreVersionedAndVerified(t *testing.T) {
