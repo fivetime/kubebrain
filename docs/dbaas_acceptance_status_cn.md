@@ -1,9 +1,11 @@
 # DBaaS 验收状态
 
-核验日期：2026-09-08。范围为 `dbaas` 分支和 `kind-kubebrain-dbaas` 实验集群。
+核验日期：2026-09-08。下表保存 `dbaas` 分支在 A5788 收尾时的 `kind-kubebrain-dbaas` 基线，不代表新环境的状态。
 产品要求及兼容性矩阵见 [兼容性计划](dbaas_compatibility_plan_cn.md)。本页列出当前证据的边界与下一步验收条件，不能代替完整矩阵。
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
+
+用户现已授权使用 `root@10.32.32.66` 控制的 `tk-001-003` 集群，并明确只使用 rook-ceph 消费者存储、禁止使用 rook-ceph-secondary。连接路径、安全边界、资源 UID 和实时部署结果统一记录于 [tk-001-003 测试环境交接记录](test_environment_tk_001_003_cn.md)。新环境已部署独立 3 PD/3 TiKV，rook-ceph 基本快照恢复通过，Region/存储门禁在固定 Pod exec 传输适配后通过；原 API Service proxy 入口仍受 Cilium 隔离策略限制。KubeBrain 本体尚待镜像分发入口，不能将后端部署成功当作完整产品部署成功。
 
 | 验收项 | 当前证据 | 尚需取得的证据 |
 | --- | --- | --- |
@@ -16,9 +18,9 @@
 | 恢复与长期验证 | 计划 P2 明确保留真实 CSI target retirement→provisioning→durable restore、加密 key promotion/撤权、版本矩阵、生产规模和长时间 soak | 对每个开放项提供新鲜、可追溯的真实执行结果；已有实验结果不能外推未测拓扑/规模 |
 | 管理面与计量 | 计划 P1 仍列出跨 cluster/region 调度、管理面/外部 IdP HA soak、预生产 Prometheus evaluation/连续 24 小时采样及外部财务系统真实回执等开放项 | 本轮未验证这些外部系统；须按完整计划分别取得实际证据，不能由数据面门禁替代 |
 
-下一步顺序：把验证工作推进到独立存储和真实故障域环境，再执行 P2 开放的恢复、故障历史与长时间测试。当前 kubeconfig 仅有 `kind-kubebrain-dbaas`，唯一 StorageClass `standard` 的 provisioner 为 `rancher.io/local-path`。下一环境需要明确已授权的 context/kubeconfig 路径、namespace、节点/故障域、CSI StorageClass 及持久证据归档位置；不得自行购置云资源或迁移现有数据卷来制造验收结果。
+下一步顺序：取得新环境可用的镜像仓库或明确授权的镜像导入方式，部署 KubeBrain 并完成客户端语义测试，再推进 P2 恢复、故障历史与长时间测试。原 kind 环境及其 hostPath 卷保留，不迁移或覆盖；新环境固定使用仓库外独立 kubeconfig。三 worker 的物理宿主机/可用区独立性尚未证明，节点级故障还涉及用户已有工作负载，需先确认具体授权范围。
 
-部署入口复核：`deploy/production/kubebrain.yaml` 和 `deploy/production/tidb-cluster.yaml` 均要求同组件副本按 `kubernetes.io/hostname` 硬反亲和，不能在当前单节点上满足三副本调度；zone 规则仅为偏好，模板本身不证明跨区放置。当前 `CSIDriver` 数量为 0，CRD 清单没有 VolumeSnapshot、Prometheus 或 ServiceMonitor API。现有模板仍需目标环境注入镜像、存储、证书、网络与监控配置，不能直接 apply 到实验实例。上述是相应部署/恢复/计量验收的环境前置缺口，不应记作已经复现的 etcd API 语义缺陷，也不代表所有产品代码工作都依赖这些环境。
+原 kind 部署入口复核：`deploy/production/kubebrain.yaml` 和 `deploy/production/tidb-cluster.yaml` 均要求同组件副本按 `kubernetes.io/hostname` 硬反亲和，不能在该单节点上满足三副本调度；zone 规则仅为偏好，模板本身不证明跨区放置。该 kind 集群 `CSIDriver` 数量为 0，CRD 清单没有 VolumeSnapshot、Prometheus 或 ServiceMonitor API。现有模板仍需目标环境注入镜像、存储、证书、网络与监控配置，不能直接 apply 到实验实例。上述是相应部署/恢复/计量验收的环境前置缺口，不应记作已经复现的 etcd API 语义缺陷，也不代表所有产品代码工作都依赖这些环境。
 
 2026-09-08 构建清理：按明确 ID 回收 84 条 KubeBrain 编译缓存（约 348 GB），删除 1,744 个旧 OCI/解包临时文件（41,548,937,075 bytes）及 3 个本地编译二进制；未删除源码、测试记录或数据卷。根分区可用空间由约 1.7 GiB 恢复至 327 GiB；本轮镜像导入后约 324 GiB。旧实施记录中的 `/tmp` 镜像归档位置是历史位置，清理后不再代表可恢复实物；对应构建产物需要从记录的提交重新生成。
 
