@@ -81,6 +81,13 @@ func (b *backend) Hash(ctx context.Context) (result BackendHashResult, retErr er
 	if err := ctx.Err(); err != nil {
 		return BackendHashResult{}, err
 	}
+	// The complete encoded backend is a bulk scan just like HashKV. TiKV's
+	// default 256-row Scan limit multiplies round trips on long-running tenants,
+	// while this bounded hint preserves row order, the selected snapshot and
+	// CRC input. Protected checkpoints retain the conservative engine default.
+	if !pinned {
+		ctx = storage.WithScanBatchSize(ctx, hashKVScanBatchSize)
+	}
 	timestamp := uint64(0)
 	if pinned {
 		timestamp = checkpoint.Timestamp

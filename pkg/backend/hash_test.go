@@ -485,6 +485,36 @@ func TestBackendHashHonorsCancellation(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 }
 
+func TestBackendHashUsesBoundedLiveScanBatchAndConservativePinnedDefault(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	store := &hashKVPartitionTestStorage{KvStorage: memkv.NewKvStorage()}
+	b := NewBackend(store, Config{
+		Prefix: prefix, Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, metricsmock.NewMinimalMetrics(ctrl)).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(uint64(time.Now().UnixNano()))
+
+	_, err := b.Hash(context.Background())
+	require.NoError(t, err)
+	store.mu.Lock()
+	liveBatchSizes := append([]int(nil), store.iterBatchSizes...)
+	store.iterBatchSizes = nil
+	store.mu.Unlock()
+	require.Equal(t, []int{hashKVScanBatchSize}, liveBatchSizes,
+		"live backend Hash must carry the bounded bulk-scan hint")
+
+	pinned := WithSerializableCheckpoint(context.Background(), SerializableCheckpoint{
+		Revision: 77, Timestamp: 987654321,
+	})
+	_, err = b.Hash(pinned)
+	require.NoError(t, err)
+	store.mu.Lock()
+	pinnedBatchSizes := append([]int(nil), store.iterBatchSizes...)
+	store.mu.Unlock()
+	require.Equal(t, []int{0}, pinnedBatchSizes,
+		"protected backend Hash must retain TiKV's conservative default scan batch")
+}
+
 func TestBackendHashUsesPinnedSnapshotTimestampAndRevision(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	rawStore := memkv.NewKvStorage()
