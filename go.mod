@@ -1,9 +1,9 @@
 module github.com/kubewharf/kubebrain
 
-// client-go v2.0.7 stores transaction memdb key lengths in uint16 and silently
-// truncates physical keys above 65535 bytes. The local fork widens that field
-// to uint32 so the DBaaS data plane can honor etcd's request-sized key domain.
-replace github.com/tikv/client-go/v2 => ./third_party/tikv-client-go
+// The maintained fork preserves KubeBrain's large-key, cancellation and
+// protected-checkpoint contracts. Pin a reviewed remote commit; see
+// docs/tikv_client_maintenance_cn.md for the patch inventory and upgrade gates.
+replace github.com/tikv/client-go/v2 => github.com/fivetime/tikv-client-go/v2 v2.0.8-0.20260908163401-c29dacb1d522
 
 go 1.26.0
 

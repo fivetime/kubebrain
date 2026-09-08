@@ -171,7 +171,9 @@ KubeBrain 的 2 MiB 原始物理 Key 合同；后者又覆盖约 1.5 MiB 的公�
 fail closed，不能依赖 TiKV 默认值。超过该托管合同的物理 Key 会在客户端提交前返回
 `ResourceExhausted`，不得截断、哈希替换或以成功响应丢失数据。
 
-生产构建使用仓库内 `third_party/tikv-client-go` 替换 upstream v2.0.7，并仅把事务
+生产构建通过远端固定版本的 `fivetime/tikv-client-go` fork 替换 upstream v2.0.7；
+不再内置客户端源码。完整补丁清单、历史映射与升级规则见
+[客户端分仓维护说明](tikv_client_maintenance_cn.md)。其中大 Key 补丁将事务
 memdb 的 Key 长度从 `uint16` 扩为 `uint32`。未打补丁的 client-go 会让超过 65535
 字节的 Key 在 memdb arena 中按模 65536 截断，即使 TiKV 已放宽 server limit 也可能
 返回 Commit 成功并持久化错误物理 Key。升级该 fork 时必须重新审计上游对应字段、重跑
@@ -812,10 +814,13 @@ manifest 前，应从每个 build stage/final image 提取全部可执行文件�
 再合并 manifest list。
 
 CI 的 Go 版本必须与 Docker build stage 精确一致，当前均为 1.26.5；Dockerfile 同时固定
-精确 patch tag 和不可变 digest。根模块及 objectstore、etcd-client-compat、bigstream、loadgen、
-third_party/tikv-client-go 五个独立模块都必须声明 `toolchain go1.26.5`，让
+精确 patch tag 和不可变 digest。产品根模块及 objectstore、etcd-client-compat、bigstream、loadgen
+四个嵌套模块，以及分仓后的独立 TiKV 客户端均声明 `toolchain go1.26.5`，让
 `GOTOOLCHAIN=auto` 的本地 build/test/scan 也不能静默退回存在已知标准库漏洞的 1.26.0。
-CI 使用固定 `govulncheck` 版本扫描全部六个模块的可达漏洞，
+产品 CI 扫描本仓库五个模块，客户端独立 CI 扫描客户端模块，均使用固定 `govulncheck` 版本。
+2026-09-08 新扫描已发现当前 Go 1.26.5 及客户端独立依赖图的可达漏洞；详见
+[分仓记录](tikv_client_maintenance_cn.md)，不得将历史版本固定等同于当前安全扫描通过。
+CI
 使用固定 `staticcheck` 版本扫描生产模块，并使用固定 tag+digest 的
 ShellCheck 镜像检查全部 Git 跟踪 shell 脚本的 warning/error；任一命中均阻止发布。CI 构建 TiKV 和
 Badger image 时必须显式传入 `TARGETARCH=amd64` 及上述三项 metadata，并回读 OCI

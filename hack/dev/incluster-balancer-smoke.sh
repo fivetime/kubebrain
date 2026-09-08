@@ -79,10 +79,6 @@ if [[ -z "$PROBE_IMAGE" ]]; then
     printf '%s\0' "$GO_IMAGE" "$RUNTIME_IMAGE" "$probe_goos" "$probe_goarch"
     sha256sum "$ROOT_DIR/hack/dev/incluster-balancer-smoke.sh" \
       "$ROOT_DIR/hack/dev/cmd/balancer-smoke/main.go" "$ROOT_DIR/go.mod" "$ROOT_DIR/go.sum"
-    while IFS= read -r -d '' path; do
-      printf '%s\0' "${path#"$ROOT_DIR/"}"
-      sha256sum "$path"
-    done < <(find "$ROOT_DIR/third_party/tikv-client-go" -type f -print0 | sort -z)
   } | sha256sum | cut -c1-20)"
   [[ "$probe_source_digest" =~ ^[a-f0-9]{20}$ ]] || { echo "cannot digest probe image inputs" >&2; exit 1; }
   PROBE_IMAGE="kubebrain:balancer-smoke-${probe_goarch}-${probe_source_digest}"
@@ -107,7 +103,6 @@ FROM --platform=\$BUILDPLATFORM \${GO_IMAGE} AS build
 ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
-COPY third_party/tikv-client-go ./third_party/tikv-client-go
 RUN go mod download
 COPY hack/dev/cmd/balancer-smoke/main.go ./hack/dev/cmd/balancer-smoke/main.go
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=\${TARGETARCH} go build -trimpath -o /balancer-smoke ./hack/dev/cmd/balancer-smoke

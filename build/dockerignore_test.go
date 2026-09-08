@@ -129,7 +129,6 @@ func TestDockerfileCachesObjectstoreDependenciesBeforeSourceCopy(t *testing.T) {
 
 	steps := []string{
 		"COPY go.mod go.sum ./",
-		"COPY third_party/tikv-client-go/go.mod third_party/tikv-client-go/go.sum ./third_party/tikv-client-go/",
 		"RUN go mod download",
 		"COPY hack/backup/objectstore/go.mod hack/backup/objectstore/go.sum ./hack/backup/objectstore/",
 		"RUN cd hack/backup/objectstore && go mod download",
