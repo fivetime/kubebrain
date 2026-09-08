@@ -1374,7 +1374,10 @@ auth disabled 时不应用该拒绝，gateway 继续按普通路径工作。
 Pod 的 `status.phase` 必须是字符串且精确等于 `Running`；`Pending`、`Succeeded`、`Failed`、`Unknown`、缺失或非字符串 phase
 即使仍带陈旧 `Ready=True` 也会在任何后续身份、metrics 或 RPC 证据读取前 fail closed。非空
 `status.conditions` 必须是数组；每个非删除 Pod 最多只能有一个 `type=Ready` 条目，其 status 只能是 Kubernetes
-枚举 `True`、`False` 或 `Unknown`。缺少 Ready 或唯一 Ready 非 True 仍由副本数/身份守恒拒绝；同一 Pod 同时出现
+枚举 `True`、`False` 或 `Unknown`。当 Ready condition 明确携带可选 `observedGeneration` 时，Pod 当前
+`metadata.generation` 与该字段都必须是正的 JSON 安全整数且精确相等；显式陈旧、字符串化、零值、小数或超出安全整数范围
+都会 fail closed，缺省 `observedGeneration` 则保留 Kubernetes API 的 optional 语义。缺少 Ready 或唯一 Ready 非 True
+仍由副本数/身份守恒拒绝；同一 Pod 同时出现
 True/False、两个 True，或畸形 status 则在任何 metrics/RPC 证据读取前直接 fail closed，不能用 `any(Ready=True)`
 掩盖冲突的 kubelet/API 快照。
 

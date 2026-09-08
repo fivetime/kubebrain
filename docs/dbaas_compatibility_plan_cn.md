@@ -73787,6 +73787,55 @@ port-forward，并以新鲜六类 JSON test 回滚；终态 generation/observed 
 实体暂移至 `/tmp/kubebrain-a5777-20260907T211000Z`，原 Trash 路径保留指向该实体的符号链接；没有执行全局
 Docker/containerd prune。
 
+### A5780：拒绝陈旧 Pod Ready observedGeneration
+
+A5779 已把 selected Pod phase 绑定到 Running，但门禁仍只看 Ready status；当 Pod 已推进到
+`metadata.generation=2`、Ready condition 仍显式报告 `observedGeneration=1,status=True` 时，旧脚本在 0.21 秒内整体
+GREEN，形成独立 RED。提交 `1c78d8af8778e66e81a339a5e0b7698f5089678b` 扩展三阶段 Ready 围栏：当可选
+`observedGeneration` 存在时，当前 generation 与 observed generation 都必须是 `1..2^53-1` 的 JSON 整数并精确相等；
+字段缺省仍保留 Kubernetes API optional 语义。initial、HashKV post、final 任一边界显式陈旧或畸形都会先于所有权、运行身份、
+metrics/RPC 证据 fail closed。测试 helper 给既有合法 fixture 注入相等 generation，使成功路径也实际覆盖新合同；五类负例覆盖
+initial stale、字符串 observed、畸形 current，以及 post/final 漂移。聚焦用例连续 `count=10` 为 37.832 秒；完整 production
+probe 普通/race 为 285.104/287.424 秒，`go vet`、`bash -n`、gofmt 与 diff check 全部 GREEN。
+
+提交前 verifier 为 703=`170/193/180/160`，四分片为 `264.601/461.158/320.391/708.377s`；提交后 verifier
+仍为 703，四分片为 `263.398/453.276/310.332/701.213s`，全部 GREEN。`/root/etcd` 仍是干净基线
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`，没有新增上游提交。
+
+候选 `docker.io/library/kubebrain@sha256:208ef54dd17846ae81322c9bd86e3773acb4bf3340f920102c2f0f849bc9938e`
+内嵌版本 `0.0.0-1c78d8af`、完整 commit、build time `2026-09-08T01:06:57Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`；镜像内 kubectl 为 v1.36.2。OCI archive 为 914,849,280 bytes，SHA-256
+`072c74d6c62597fff7feebd90e3ba4cf602a946b5cf7428da7a79e093f432368`；顶层 `index.json` SHA-256、nested index、
+platform manifest、config、attestation manifest 分别为
+`2a3bbaf86407c34a3f9daeee952a4fbaaa6263e7bcb88daa921c5824b8433a72`、
+`sha256:208ef54dd17846ae81322c9bd86e3773acb4bf3340f920102c2f0f849bc9938e`、
+`sha256:7003da64ca538265af10d50aa6c5e9185cd8412d1922fb65c90e9e67c3e5e2fd`、
+`sha256:926a9dd1529d3cde11d0a71c385c3a2bf0907e1d5f86000fceb58b124b6add35`、
+`sha256:1df12a10f34e11b30266b9e50bfe92b5ab1a4274ca536f1f59970b15abcc9d2b`。78/78 descriptor edges、78/78
+可达 blobs、0 orphan、71/71 diff IDs 均成立；镜像为 `65532:65532` 和正确入口。SPDX
+`sha256:11c7ab429f77df80a10c12305163e2c24e0c493fedd0c01d9d56d1f0ce0f0ed0` 含 2,592 packages、381 files、
+8,096 relationships；SLSA `sha256:6d6fccdcb1ca615012fbbb66c4fc7b25f8ea3c27dcd12e1b1fdd2af296475981`
+含 3 项固定 materials 与四项精确 build args，两份 statement 都只有一个 subject 并绑定 platform manifest。
+
+首次从 generation 992/RV `9019506` 以 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test
+投放到 generation 993 时，BuildKit 编译缓存将 Kind 根 overlay 压到 0 bytes；首个候选 Pod 无法在 `/tmp` 创建 range-stream
+探针目录而 CrashLoop，restartCount 达 4，三 Pod Ready 一度全 False，候选门禁未运行。立即以新鲜六类 test 从 RV `9019696`
+精确回滚到 generation 994；移动可恢复归档释放空间后稳定态恢复 3/3 Ready、restart 0。没有把容量事故冒充代码失败，也没有
+执行全局 Docker/containerd prune。
+
+节点保有 5.2 GiB 空闲后，重新导入同一已审计 OCI，并从 generation 994/RV `9020503` 以新鲜六类 test 投放到
+generation/observed `995/995`；3/3 Pod phase 均为 Running、每 Pod 恰一个 `Ready=True`、restart 0，三个 Pod 的
+`Ready.observedGeneration=1` 与各自 `metadata.generation=1` 精确一致，runtime imageID 均为顶层
+`sha256:2a3bbaf8...`。启用 info metrics 等全部候选合同的 10 秒 readonly gate GREEN。随后停止旧 port-forward，以新鲜六类
+test 回滚；终态 generation/observed `996/996`、RV `9022249`、3/3 Ready、restart 0、22 参数，三个 runtime 恢复稳定
+`sha256:bc6b443f...`。省略未来 `EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS` 的 60 秒稳定适用 gate GREEN；Auth disabled。
+
+最终 PD/TiKV 3+3 Running/Ready，PD API 报告三个 store 全部 Up；六个 listener 以及候选 workload、CRI 和 containerd 引用
+均为 0。候选 tag/nested/top-level/config 四个 Kind image 名称已精确删除；本轮独占 4.145 GB BuildKit 编译记录
+`87wlu8g55zrhrt1zoizyxwjxz` 以完整 ID 加 `--all` 精确回收，共享 cache、稳定镜像和数据卷未删除。OCI archive 与展开审计
+目录已移入可恢复目录 `/root/.local/share/Trash/files/kubebrain-a5780-20260908T014000Z`。容量救援期间 A5773/A5774/A5775/
+A5778/A5779 实体暂移到同机 `/tmp`，原 Trash 路径均保留指向实体的符号链接；最终根盘可用约 9.8 GiB。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
