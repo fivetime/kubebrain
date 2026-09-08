@@ -67,6 +67,24 @@
 
 日常开发如需跨仓联调，可在仓库外使用临时 Go workspace；提交与 CI 必须验证远端固定依赖，不能把本机路径写回正式 go.mod。
 
+### 后端 TLS 行为回归补充（2026-09-08）
+
+新增 `pkg/storage/tikv/security_test.go`，经产品 `Security.TLSConfig()` 调用固定远端客户端，
+在本机 TCP loopback 上实际完成 TLS 1.2/1.3 双向握手。覆盖 PD/TiKV CN allowlist 精确匹配、
+大小写/前缀拒绝、CN 不替代 CA/SAN/有效期验证、不可信或缺失客户端身份，以及客户端证书
+轮换后新连接使用新身份、损坏证书不得回退旧身份。未改客户端版本或生产校验逻辑。
+
+新测试普通模式及 race 连续 10 次通过；整个 TiKV 存储包的本机单测/race、vet 也通过，
+三个依赖 `KUBEBRAIN_TIKV_PD` 的真实 TiKV 集成测试在本轮明确跳过。该包 Staticcheck
+仍有 `proto_codec_test.go` 的既有 protobuf 弃用告警，不把本轮单测通过扩大为全 CI GREEN。
+
+负向对照在临时客户端副本中仅用 Go overlay 换回上游 v2.0.7 的 `config/security.go`，
+TLS 1.2/1.3 的 wrong_CN 用例均因错误 CN 实际连接成功而失败；正常远端固定依赖下均通过。
+此证据仅针对 v2.0.7 基线，不声明最新 upstream master 仍有同一缺口，也不代表已向上游提 PR。
+材料与失败尝试边界见[测试环境记录](test_environment_tk_001_003_cn.md)。
+新增测试的提交前 verifier/四分片共 703 项全部通过，提交后同一门禁仍待完成；真实 PD/TiKV TLS 部署、轮换与故障验收
+继续保留，不能由本机 HTTP/TLS loopback 用例替代。
+
 ## 向上游贡献
 
 上游[贡献规则](https://github.com/tikv/client-go/blob/master/CONTRIBUTING.md)欢迎修复 PR，要求 DCO 签署；最终是否接受由维护者决定。本次只完成分仓，没有向上游创建 PR 或 issue。

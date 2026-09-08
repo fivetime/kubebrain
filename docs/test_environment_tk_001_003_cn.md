@@ -249,3 +249,36 @@ pkg/storage/tikv 明确输出 `[no tests to run]`，不计为后端传输测试�
 两提交已快进推送 dbaas，自动触发 [run 34275611099](https://github.com/fivetime/kubebrain/actions/runs/34275611099)，
 创建于 `2026-09-08T20:34:39Z`，首次状态 queued，源码 SHA 一致；尚未取得可部署的固定
 digest。继续保留旧候选 `6ab33dc8…` 的拒绝结论，不以新 CI 启动代替发布门禁通过。
+
+### 后端 TLS loopback 回归已补充
+
+`pkg/storage/tikv/security_test.go` 新增实际 TLS 1.2/1.3 双向握手与客户端证书轮换测试，
+覆盖及限定范围见[客户端维护说明](tikv_client_maintenance_cn.md)。新用例普通测试与 race
+连续 10 次通过；整个存储包本机单测/race、vet 通过，但三个真实 TiKV 集成测试明确跳过，
+不计为本环境后端 TLS 验收。日志为 `security-backend-tls-handshake.log`、
+`security-backend-tls-handshake-race.log`、`security-backend-storage-unit.log`、
+`security-backend-storage-unit-race.log`。首次用例误把 TLS 1.2 缺失客户端证书时的
+handshake failure 断言成 TLS 1.3 的证书错误，后按协议分别断言，仍要求连接失败，未改产品逻辑。
+
+负向日志 `security-backend-tls-isolated-baseline-negative.log`：在临时副本中只将固定
+客户端的 `config/security.go` 替换为上游 v2.0.7 对应文件，wrong_CN 用例在两个协议版本
+均因“期望错误但实际连接成功”失败；检查退出码及两个明确失败用例后才认定复现。
+首次尝试直接 overlay 模块缓存被 Go 拒绝，日志 `security-backend-tls-upstream-baseline-negative.log`
+不构成行为证据；当时外层命令未对后续匹配失败立即退出，打印的预期复现尾行无效。
+后改用独立客户端归档、临时 modfile/overlay 并严格检查失败输出，未改正式 go.mod、fork
+工作树或模块缓存。临时副本清理后只保留日志。新增测试尚未提交，不会改变在运行的
+image run `34275611099`（源码仍是 `339381af`）。
+
+临时归档 `/tmp/kubebrain-tls-baseline.L06FtU` 已完整删除；正式 `go mod verify` 全部通过，
+fork 工作树保持干净，未清空共享 Go/BuildKit 缓存。新测试的提交前 verifier 确认 703 项
+完整分配（170/193/180/160），四分片全部通过（251.971/452.596/308.033/731.406 秒），
+日志为 `security-backend-tls-pre-verify.log` 及 `security-backend-tls-pre-shard-{0,1,2,3}.log`。
+接着提交测试补充，并立即运行相同的提交后 verifier/四分片；提交后终态仍待回读。
+
+镜像 CI `34275611099` 已由 self-hosted Runner `raas-1502` 接手，job
+`102227752676` 开始于 `2026-09-08T20:35:09Z`。自动目标架构回归与 runtime manifest
+选择回归均于 `20:40:06Z` 成功完成，build/push 从 `20:40:07Z` 开始，当前仍在运行。
+这证明新增的两个构建前检查已在 Runner 执行，不替代后续实际镜像字节/架构核验或最终发布成功。
+
+为避免当前镜像构建被 concurrency 策略取消，TLS 测试补充提交暂留本地，不立即推送。
+该提交仅增加测试及证据文档，不改运行时代码或客户端依赖；在运行镜像的源码仍为 `339381af`。
