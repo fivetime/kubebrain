@@ -18,6 +18,8 @@
 
 下一步顺序：把验证工作推进到独立存储和真实故障域环境，再执行 P2 开放的恢复、故障历史与长时间测试。当前 kubeconfig 仅有 `kind-kubebrain-dbaas`，唯一 StorageClass `standard` 的 provisioner 为 `rancher.io/local-path`。下一环境需要明确已授权的 context/kubeconfig 路径、namespace、节点/故障域、CSI StorageClass 及持久证据归档位置；不得自行购置云资源或迁移现有数据卷来制造验收结果。
 
+部署入口复核：`deploy/production/kubebrain.yaml` 和 `deploy/production/tidb-cluster.yaml` 均要求同组件副本按 `kubernetes.io/hostname` 硬反亲和，不能在当前单节点上满足三副本调度；zone 规则仅为偏好，模板本身不证明跨区放置。当前 `CSIDriver` 数量为 0，CRD 清单没有 VolumeSnapshot、Prometheus 或 ServiceMonitor API。现有模板仍需目标环境注入镜像、存储、证书、网络与监控配置，不能直接 apply 到实验实例。上述是相应部署/恢复/计量验收的环境前置缺口，不应记作已经复现的 etcd API 语义缺陷，也不代表所有产品代码工作都依赖这些环境。
+
 2026-09-08 构建清理：按明确 ID 回收 84 条 KubeBrain 编译缓存（约 348 GB），删除 1,744 个旧 OCI/解包临时文件（41,548,937,075 bytes）及 3 个本地编译二进制；未删除源码、测试记录或数据卷。根分区可用空间由约 1.7 GiB 恢复至 327 GiB；本轮镜像导入后约 324 GiB。旧实施记录中的 `/tmp` 镜像归档位置是历史位置，清理后不再代表可恢复实物；对应构建产物需要从记录的提交重新生成。
 
 当前 OCI 和日志保存在 `/tmp` 的 tmpfs 上，只能视为本次运行的临时证据。重启或清理会丢失，生产验收还需要持久保存镜像、日志和验收结果。
