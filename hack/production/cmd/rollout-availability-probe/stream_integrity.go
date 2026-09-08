@@ -124,7 +124,7 @@ func newStreamProbeExpectations(prefix string) []streamProbeExpectation {
 
 func newSnapshotScaleExpectation(prefix string, keyCount, valueBytes int) (*snapshotScaleExpectation, error) {
 	if prefix == "" || keyCount <= 0 || valueBytes <= 0 {
-		return nil, fmt.Errorf("Snapshot scale expectation requires a prefix, positive key count, and positive value size")
+		return nil, fmt.Errorf("etcd Snapshot scale expectation requires a prefix, positive key count, and positive value size")
 	}
 	scale := &snapshotScaleExpectation{
 		prefix: prefix + "snapshot-scale/", valueBytes: valueBytes,
@@ -222,7 +222,7 @@ func validSnapshotScalePutResponse(put *etcdserverpb.PutResponse, clusterID uint
 func streamProbeTxnSeeds(expected []streamProbeExpectation) ([]*streamProbeExpectation, error) {
 	indexes := [...]int{4, 2, 3}
 	if len(expected) <= indexes[0] {
-		return nil, fmt.Errorf("Snapshot subrevision probe requires at least %d stream seeds", indexes[0]+1)
+		return nil, fmt.Errorf("etcd Snapshot subrevision probe requires at least %d stream seeds", indexes[0]+1)
 	}
 	seeds := make([]*streamProbeExpectation, 0, len(indexes))
 	for _, index := range indexes {
@@ -246,7 +246,7 @@ func streamProbeNestedTxnSeeds(expected []streamProbeExpectation) (streamProbeNe
 		innerPutIndex = 8
 	)
 	if len(expected) <= outerPutIndex {
-		return streamProbeNestedSeeds{}, fmt.Errorf("Snapshot nested transaction probe requires at least %d stream seeds", outerPutIndex+1)
+		return streamProbeNestedSeeds{}, fmt.Errorf("etcd Snapshot nested transaction probe requires at least %d stream seeds", outerPutIndex+1)
 	}
 	return streamProbeNestedSeeds{
 		compare:  &expected[compareIndex],
@@ -275,7 +275,7 @@ func streamProbeMultilevelTxnSeeds(expected []streamProbeExpectation) (streamPro
 		innerPutIndex     = 13
 	)
 	if len(expected) <= outerPutIndex {
-		return streamProbeMultilevelSeeds{}, fmt.Errorf("Snapshot multilevel transaction probe requires at least %d stream seeds", outerPutIndex+1)
+		return streamProbeMultilevelSeeds{}, fmt.Errorf("etcd Snapshot multilevel transaction probe requires at least %d stream seeds", outerPutIndex+1)
 	}
 	return streamProbeMultilevelSeeds{
 		outerCompare: &expected[outerCompareIndex],
@@ -463,7 +463,7 @@ func consumeSnapshotTo(stream snapshotReceiver, artifact io.Writer) (bool, strin
 		response, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
 			if !complete {
-				return partial, version, errors.New("Snapshot ended before its checksum frame")
+				return partial, version, errors.New("etcd Snapshot ended before its checksum frame")
 			}
 			return partial, version, nil
 		}
@@ -472,19 +472,19 @@ func consumeSnapshotTo(stream snapshotReceiver, artifact io.Writer) (bool, strin
 		}
 		partial = true
 		if response == nil {
-			return partial, version, errors.New("Snapshot returned an empty frame")
+			return partial, version, errors.New("etcd Snapshot returned an empty frame")
 		}
 		if complete {
-			return partial, version, errors.New("Snapshot continued after its checksum frame")
+			return partial, version, errors.New("etcd Snapshot continued after its checksum frame")
 		}
 		if versionObserved && response.Version != version {
-			return partial, version, errors.New("Snapshot changed storage version")
+			return partial, version, errors.New("etcd Snapshot changed storage version")
 		}
 		version = response.Version
 		versionObserved = true
 		if awaitingChecksum {
 			if response.RemainingBytes != 0 || len(response.Blob) != sha256.Size || !bytes.Equal(response.Blob, digest.Sum(nil)) {
-				return partial, version, errors.New("Snapshot returned an invalid checksum frame")
+				return partial, version, errors.New("etcd Snapshot returned an invalid checksum frame")
 			}
 			if _, err = artifact.Write(response.Blob); err != nil {
 				return partial, version, fmt.Errorf("write Snapshot checksum: %w", err)
@@ -493,11 +493,11 @@ func consumeSnapshotTo(stream snapshotReceiver, artifact io.Writer) (bool, strin
 			continue
 		}
 		if len(response.Blob) == 0 {
-			return partial, version, errors.New("Snapshot returned an empty data frame")
+			return partial, version, errors.New("etcd Snapshot returned an empty data frame")
 		}
 		if haveData {
 			if uint64(len(response.Blob)) > remaining || response.RemainingBytes != remaining-uint64(len(response.Blob)) {
-				return partial, version, errors.New("Snapshot returned discontinuous remaining bytes")
+				return partial, version, errors.New("etcd Snapshot returned discontinuous remaining bytes")
 			}
 		}
 		if _, err = artifact.Write(response.Blob); err != nil {

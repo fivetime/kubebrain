@@ -1322,16 +1322,14 @@ func randomHex(bytesCount int) (string, error) {
 }
 
 func expectWatchEvent(watch clientv3.WatchChan, eventType mvccpb.Event_EventType, key, value []byte, leaseID clientv3.LeaseID, revision int64, admission *targetverify.ResponseAdmission) error {
-	for response := range watch {
-		if err := targetverify.ValidateProbeWatchEvent(response, eventType, key, value, leaseID, revision); err != nil {
-			return err
-		}
-		if err := admission.AdmitWatch(response); err != nil {
-			return err
-		}
-		return nil
+	response, ok := <-watch
+	if !ok {
+		return errors.New("watch closed before expected event")
 	}
-	return errors.New("watch closed before expected event")
+	if err := targetverify.ValidateProbeWatchEvent(response, eventType, key, value, leaseID, revision); err != nil {
+		return err
+	}
+	return admission.AdmitWatch(response)
 }
 
 func digest(data []byte) string {

@@ -196,53 +196,51 @@ func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, err
 	ctx = b.withLogicalWriteOwnership(ctx)
 	ctx, unlock := b.lockCorruptAlarm(ctx)
 	defer unlock()
-	for {
-		members, raw, exists, err := b.readCorruptAlarms(ctx)
-		if err != nil {
-			return false, err
-		}
-		generation, generationRaw, generationExists, err := b.readCorruptAlarmGeneration(ctx)
-		if err != nil {
-			return false, err
-		}
-		index := sort.Search(len(members), func(i int) bool { return members[i] >= memberID })
-		if index == len(members) || members[index] != memberID {
-			return false, nil
-		}
-		// A restart witness is durable evidence that a transaction's event set
-		// or one of its referenced object versions may be incomplete. Do not let
-		// an operator reopen writes while that evidence still fails validation.
-		if err := b.validatePersistedTxnWitnesses(ctx, true); err != nil {
-			return false, err
-		}
-		members = append(members[:index], members[index+1:]...)
-		op := InternalCASOp{Key: corruptAlarmKey, Expected: raw, ExpectedExists: exists}
-		if len(members) == 0 {
-			op.Delete = true
-		} else {
-			op.Value, err = json.Marshal(members)
-			if err != nil {
-				return false, err
-			}
-		}
-		nextGeneration, err := encodeNextCorruptAlarmGeneration(generation)
-		if err != nil {
-			return false, err
-		}
-		ops := []InternalCASOp{
-			op,
-			{Key: corruptAlarmGenerationKey, Value: nextGeneration, Expected: generationRaw, ExpectedExists: generationExists},
-		}
-		ops, err = b.appendCorruptAlarmFenceOps(ctx, ops, nextGeneration, generationRaw, generationExists)
-		if err != nil {
-			return false, err
-		}
-		err = b.InternalCAS(ctx, ops)
-		if errors.Is(err, storage.ErrCASFailed) {
-			return false, ErrCorruptAlarmChanged
-		}
-		return err == nil, err
+	members, raw, exists, err := b.readCorruptAlarms(ctx)
+	if err != nil {
+		return false, err
 	}
+	generation, generationRaw, generationExists, err := b.readCorruptAlarmGeneration(ctx)
+	if err != nil {
+		return false, err
+	}
+	index := sort.Search(len(members), func(i int) bool { return members[i] >= memberID })
+	if index == len(members) || members[index] != memberID {
+		return false, nil
+	}
+	// A restart witness is durable evidence that a transaction's event set
+	// or one of its referenced object versions may be incomplete. Do not let
+	// an operator reopen writes while that evidence still fails validation.
+	if err := b.validatePersistedTxnWitnesses(ctx, true); err != nil {
+		return false, err
+	}
+	members = append(members[:index], members[index+1:]...)
+	op := InternalCASOp{Key: corruptAlarmKey, Expected: raw, ExpectedExists: exists}
+	if len(members) == 0 {
+		op.Delete = true
+	} else {
+		op.Value, err = json.Marshal(members)
+		if err != nil {
+			return false, err
+		}
+	}
+	nextGeneration, err := encodeNextCorruptAlarmGeneration(generation)
+	if err != nil {
+		return false, err
+	}
+	ops := []InternalCASOp{
+		op,
+		{Key: corruptAlarmGenerationKey, Value: nextGeneration, Expected: generationRaw, ExpectedExists: generationExists},
+	}
+	ops, err = b.appendCorruptAlarmFenceOps(ctx, ops, nextGeneration, generationRaw, generationExists)
+	if err != nil {
+		return false, err
+	}
+	err = b.InternalCAS(ctx, ops)
+	if errors.Is(err, storage.ErrCASFailed) {
+		return false, ErrCorruptAlarmChanged
+	}
+	return err == nil, err
 }
 
 func (b *backend) readCorruptAlarmGeneration(ctx context.Context) (uint64, []byte, bool, error) {

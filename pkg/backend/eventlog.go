@@ -86,12 +86,6 @@ type eventLogPending struct {
 	ordered bool
 }
 
-// appendEventLog stages this write's event-log entry onto its own batch.
-func appendEventLog(ks *coder.Keyspace, batch storage.BatchWrite, revision uint64, userKey []byte, verb proto.Event_EventType, prevRev uint64, subRevision, total uint32) {
-	key, value := encodeEventLogEntry(ks, revision, userKey, verb, prevRev, subRevision, total)
-	batch.Put(key, value, 0)
-}
-
 func encodeEventLogEntry(ks *coder.Keyspace, revision uint64, userKey []byte, verb proto.Event_EventType, prevRev uint64, subRevision, total uint32) ([]byte, []byte) {
 	return ks.EncodeEventLogKey(revision, userKey), coder.EncodeOrderedEventLogValue(byte(verb), prevRev, subRevision, total)
 }

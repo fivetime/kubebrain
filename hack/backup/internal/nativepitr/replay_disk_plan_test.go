@@ -623,8 +623,8 @@ func TestApplyReplayDiskPlanRejectsSequenceChangeAfterPreflight(t *testing.T) {
 	}{
 		{name: "middle deletion", match: "ordinal", change: func(bucket *bolt.Bucket) error {
 			cursor := bucket.Cursor()
-			key, _ := cursor.First()
-			key, _ = cursor.Next()
+			cursor.First()
+			key, _ := cursor.Next()
 			return bucket.Delete(key)
 		}},
 		{name: "tail deletion", match: "count", change: func(bucket *bolt.Bucket) error {

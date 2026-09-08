@@ -115,7 +115,7 @@ func TestSnapshotAuthFixtureInstallCleanupAndCollisionOwnership(t *testing.T) {
 	lastRevision, err = enabled.install(ctx, rootClient, initial.Header.ClusterId, lastRevision, 3*time.Second)
 	require.NoError(t, err)
 	require.True(t, enabled.expected.enabled)
-	lastRevision, err = enabled.cleanup(rootClient, initial.Header.ClusterId, lastRevision, 3*time.Second)
+	_, err = enabled.cleanup(rootClient, initial.Header.ClusterId, lastRevision, 3*time.Second)
 	require.NoError(t, err)
 	statusResponse, err := rootClient.AuthStatus(ctx)
 	require.NoError(t, err)

@@ -86,10 +86,10 @@ func run(parent context.Context, o options, issue tokenIssuer) error {
 	defer cancel()
 	token, err := issue(ctx, o, username, string(passwordBytes), tlsConfig)
 	if err != nil {
-		return errors.New("Authenticate failed")
+		return errors.New("etcd Authenticate failed")
 	}
 	if token == "" || len(token) > maxTokenBytes || strings.ContainsAny(token, "\r\n\t ") {
-		return errors.New("Authenticate returned an invalid token")
+		return errors.New("etcd Authenticate returned an invalid token")
 	}
 	return publishNoClobber(o.output, []byte(token))
 }

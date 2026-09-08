@@ -239,14 +239,6 @@ func TestBroadcastEvictsSlowConsumerBeforeNextBatch(t *testing.T) {
 		"evicted sub must have received a contiguous prefix with no gap")
 }
 
-// newCatchUpHub builds a hub wired to a real watch-cache ring, as the backend
-// does. Events must be Add()ed to the ring before broadcast, mirroring the
-// collector's order — the catch-up re-attach proof depends on it.
-func newCatchUpHub(t *testing.T, bufSize, ringSize int) (*WatcherHub, *Ring) {
-	hub := newTestWatcherHub(t, bufSize)
-	return wireCatchUpHub(hub, ringSize)
-}
-
 func newRecordedCatchUpHub(bufSize, ringSize int, metricCli metrics.Metrics) (*WatcherHub, *Ring) {
 	hub := &WatcherHub{
 		subs:       make(map[chan []*proto.Event][]byte),

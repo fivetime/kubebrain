@@ -282,3 +282,89 @@ fork 工作树保持干净，未清空共享 Go/BuildKit 缓存。新测试的�
 
 为避免当前镜像构建被 concurrency 策略取消，TLS 测试补充提交暂留本地，不立即推送。
 该提交仅增加测试及证据文档，不改运行时代码或客户端依赖；在运行镜像的源码仍为 `339381af`。
+
+TLS 回归提交为 `0f78c31a4885cae154fd5833dff24e24b5fd75fa`，提交后 verifier 与四分片
+703 项全部通过（285.912/486.156/322.032/764.257 秒），日志为
+`security-backend-tls-post-verify.log`、`security-backend-tls-post-shard-{0,1,2,3}.log`。
+提交后存储包普通/race、vet 也通过（本机模式，三个真实 TiKV 集成用例仍未执行），
+日志为 `security-backend-storage-post-unit.log`、`security-backend-storage-post-unit-race.log`。
+该提交仍仅在本地，未推送以免取消在运行的镜像 CI。
+
+等待期间创建隔离工作树 `/tmp/kubebrain-staticcheck.gUgTUr/repo`（detached 于同一
+`0f78c31a`）处理既有 52 项 Staticcheck 诊断；基线日志
+`security-staticcheck-isolated-before.log` 与此前诊断一致。草稿仅在此工作树，尚未提交或
+合回主工作树；须验证后迁移，并执行新代码提交前后完整测试。迁移完成前不要清理该目录，
+完成后定向移除临时 worktree，不清空共享缓存。
+
+### Staticcheck 清理与传输回归（2026-09-08）
+
+隔离草稿已通过根模块 Staticcheck/vet，以及 objectstore 子模块 Staticcheck。删除的是
+无调用的旧辅助函数和未使用赋值；保留告警解除的 CAS 冲突失败、事务见证验证、领导权
+就绪后的 epoch、Watch 首响应校验。两个故意传 nil context 的负向测试保留原输入及
+断言，仅对对应行标注 SA1012 的原因；未全局屏蔽诊断或减弱门禁。
+
+native-pitr-preflight 从弃用的 DialContext/WithBlock 迁移到 NewClient，显式保留
+passthrough 地址解析、连接 Ready 屏障和调用方 context。新增本机 TCP/gRPC 测试覆盖
+HTTP/2 尚未就绪时等待、deadline/cancel、空请求正常响应、意外 checkpoint 和 RPC 错误。
+普通测试通过；与 TiKV 存储包一起 race 连续三轮通过。protobuf 测试改用 V2/protoadapt
+桥接固定的 V1 kvproto 消息，保留所有字节所有权、错误响应、复用对象和分配阈值断言。
+
+核心包普通测试全部通过：backend 50.654 秒、server/etcd 143.087 秒、endpoint 22.601 秒、
+etcdproxy 1.776 秒、storage/tikv 0.206 秒。备份验证和发布探针等七个受影响包也全部通过，
+其中 rollout-availability-probe 124.463 秒。告警/事务见证/领导权相关筛选 race 在 backend
+和 server/etcd 分别 6.342/12.066 秒通过，不等同于这两个包的全量 race。
+TiKV 存储包仍未设置真实 PD 地址，三个环境依赖测试跳过，不计作真实 TiKV 验收。
+
+编解码 Scan/Batch 两项 fuzz 各 30 秒通过（86,711/76,851 次执行）；本机分配 benchmark
+为 generated 6,159 allocs/op、owned-frame 4 allocs/op，原分配阈值测试通过。此数据仅说明
+测试 API 迁移没有丢失相应检查，不代表生产负载性能验收。
+
+证据均在仓库外材料目录，前缀 `security-staticcheck-`：`isolated-final.log`、
+`isolated-with-transport.log`、`isolated-vet.log`、`objectstore.log`、`core-unit.log`、
+`probes-unit.log`、`transport-unit.log`、`transport-codec-race.log`、`fence-race.log`、
+`codec-fuzz-scan.log`、`codec-fuzz-batch.log`、`codec-benchmark.log`。
+
+已用 apply_patch 迁回主工作树，并逐字节比较全部 Go diff 和新增测试，确认一致后定向
+移除 `/tmp/kubebrain-staticcheck.gUgTUr/repo` 及空父目录；改动完整保留在主工作树，未清理
+共享 Go/BuildKit 缓存。主工作树 Staticcheck 再次通过（`main-pre.log`）。提交前 verifier
+通过，仍是 703 项、170/193/180/160；四分片已启动，结果待回读（`pre-verify.log`、
+`pre-shard-{0,1,2,3}.log`）。本批改动尚未提交，提交后门禁尚未运行。
+
+`2026-09-08T21:37Z` 回读镜像 run `34275611099` 仍为 build/push in_progress；尚未执行
+Verify/Promote，不推送新代码取消它，不部署旧的已拒绝镜像。本轮没有对测试集群执行写入。
+
+补充构建检查：`go build -tags tikv ./...` 和 `go build -tags badger ./...` 均通过，
+只使用 Go 编译缓存，不生成仓库 bin 产物。额外 `staticcheck -tags badger ./...` 失败于
+既有 `cmd/option/initial_cluster_test.go` 三处直接引用 TiKV 专用 `pdAddrs` 字段；该文件
+在 HEAD 与本轮工作树相同，属于此前未覆盖的标签测试编译缺口。普通根模块 Staticcheck
+PASS 不扩大为 Badger 标签测试 PASS。日志为 `security-staticcheck-build-tikv.log`、
+`security-staticcheck-build-badger.log`、`security-staticcheck-badger.log`。后续须保留
+成员身份校验断言并使 fixture 按存储配置初始化，不能直接给通用测试加标签来跳过 Badger。
+
+后续只读复查：namespace、SC、六个 PD/TiKV Pod UID 均与锚点一致，六 Pod Ready/零重启；
+KubeBrain StatefulSet 仍不存在。使用原脚本及固定 PD Pod UID 的 exec 适配器重新通过
+3 PD/3 Up store、连续三次无异常 Region 和六卷身份/容量/水位检查，日志为
+`security-staticcheck-predeploy-storage-gate.log`。未变更集群资源或网络策略。
+
+Staticcheck 清理的提交前 verifier/四分片 703 项全部通过：258.613/470.765/308.194/745.028 秒，
+日志为前述 `security-staticcheck-pre-*`。随后提交本批变更，并立即执行相同提交后门禁；
+提交后结果待回读。Badger 标签测试编译缺口仍单列保留，不影响本批默认 TiKV 配置的结果边界。
+
+### 修复镜像发布成功（339381af）
+
+image run `34275611099` 已终态 success。Verify published test image 于
+`2026-09-08T21:44:22Z` 成功，Promote 于 `21:44:29Z` 成功，之后收尾也成功。
+源码为 `339381afb74eb225d7bab8e67196ccea07596509`，不是本地 TLS 测试/Staticcheck 后续提交。
+registry 按完整源码 tag 回读的不可变索引为：
+`ghcr.io/fivetime/kubebrain@sha256:a245c95fea36c387358d86e3808a9d29073a327028d5a4e3a80e4d272663e865`。
+linux/amd64 子镜像 `sha256:b14371c47b78fc7d3eaf632296ebd6158374becf38d3fee6cb96b6f27d5222b1`，
+linux/arm64 子镜像 `sha256:d7429739f9e35c99cafef595286c9ba4a74a5a04bd29672597b2fa417ff94686`。
+CI 实际两架构各 66 个 Go 程序的 GOARCH/ELF、运行时平台/SHA、kubectl 字节对比等发布检查
+均通过；arm64 运行使用 Runner QEMU，不声明原生 arm64 生产验收。
+
+重新渲染 `kubebrain-tls-339381af.yaml`，SHA-256
+`01a841e2e5536f317ff84ba95aa895755baa98b76c26b9efb6ff9c4bbb0a79ee`，固定使用上述索引。
+server-side dry-run 通过，并断言恰好五个 namespaced 对象、三副本、非 root/只读根文件系统、
+两类 4 GiB 工作卷都使用 rook-ceph 消费者 SC。证据 `security-339381af-dry-run.json`。
+首次汇总误按 List 解析 kubectl 输出的五个连续 JSON 对象，jq 失败；改用 slurp 并对五项
+完整断言后通过，没有忽略校验错误。本记录时尚未创建 StatefulSet，下一步才执行部署。

@@ -120,6 +120,7 @@ func TestAllRejectsAPageReturnedAfterCancellation(t *testing.T) {
 }
 
 func TestAllRejectsInvalidInputs(t *testing.T) {
+	//lint:ignore SA1012 This negative test verifies rejection of an absent context.
 	_, err := All(nil, &recordingLister{}, metav1.ListOptions{}, 2, 10, 1<<20)
 	require.Error(t, err)
 	_, err = All(context.Background(), nil, metav1.ListOptions{}, 2, 10, 1<<20)

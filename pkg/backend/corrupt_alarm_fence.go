@@ -158,8 +158,8 @@ func (b *backend) ValidateCorruptAlarmMetadata(ctx context.Context) error {
 		return invalidAlarmMetadataf("corrupt alarm fence has %d shards, want %d", len(shards), corruptAlarmFenceShardCount)
 	}
 	for shard := uint64(0); shard < corruptAlarmFenceShardCount; shard++ {
-		key := string(corruptAlarmFenceShardKey(shard))
-		if !bytes.Equal(shards[key], generationRaw) {
+		key := corruptAlarmFenceShardKey(shard)
+		if !bytes.Equal(shards[string(key)], generationRaw) {
 			return invalidAlarmMetadataf("corrupt alarm fence shard %02x generation mismatch", shard)
 		}
 	}

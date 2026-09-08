@@ -28,6 +28,7 @@ func TestSliceStopsDuringCancellation(t *testing.T) {
 }
 
 func TestSliceRejectsInvalidInputs(t *testing.T) {
+	//lint:ignore SA1012 This negative test verifies rejection of an absent context.
 	require.Error(t, Slice[int](nil, nil, func(left, right int) bool { return left < right }))
 	require.Error(t, Slice[int](context.Background(), nil, nil))
 }

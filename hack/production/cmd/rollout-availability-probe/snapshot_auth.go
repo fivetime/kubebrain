@@ -165,7 +165,7 @@ func (fixture *snapshotAuthFixture) install(ctx context.Context, client *clientv
 	lastRevision int64, commandTimeout time.Duration,
 ) (int64, error) {
 	if fixture == nil {
-		return lastRevision, errors.New("Snapshot auth fixture is nil")
+		return lastRevision, errors.New("etcd Snapshot auth fixture is nil")
 	}
 	validateHeader := func(label string, header *etcdserverpb.ResponseHeader) error {
 		_, revision, err := validateResponseHeader(header, clusterID, lastRevision)
@@ -324,7 +324,7 @@ func (fixture *snapshotAuthFixture) cleanup(client *clientv3.Client, clusterID u
 	cancel()
 	if err == nil {
 		if usersResponse == nil {
-			err = errors.New("Snapshot auth user cleanup returned a nil response")
+			err = errors.New("etcd Snapshot auth user cleanup returned a nil response")
 		}
 	}
 	if err == nil {
@@ -339,7 +339,7 @@ func (fixture *snapshotAuthFixture) cleanup(client *clientv3.Client, clusterID u
 			}
 			for _, name := range usersResponse.Users {
 				if _, leaked := created[name]; leaked {
-					err = fmt.Errorf("Snapshot auth user %q remains after cleanup", name)
+					err = fmt.Errorf("etcd Snapshot auth user %q remains after cleanup", name)
 					break
 				}
 			}
@@ -353,7 +353,7 @@ func (fixture *snapshotAuthFixture) cleanup(client *clientv3.Client, clusterID u
 	cancel()
 	if err == nil {
 		if rolesResponse == nil {
-			err = errors.New("Snapshot auth role cleanup returned a nil response")
+			err = errors.New("etcd Snapshot auth role cleanup returned a nil response")
 		}
 	}
 	if err == nil {
@@ -368,7 +368,7 @@ func (fixture *snapshotAuthFixture) cleanup(client *clientv3.Client, clusterID u
 			}
 			for _, name := range rolesResponse.Roles {
 				if _, leaked := created[name]; leaked {
-					err = fmt.Errorf("Snapshot auth role %q remains after cleanup", name)
+					err = fmt.Errorf("etcd Snapshot auth role %q remains after cleanup", name)
 					break
 				}
 			}
@@ -382,7 +382,7 @@ func (fixture *snapshotAuthFixture) cleanup(client *clientv3.Client, clusterID u
 	cancel()
 	if err == nil {
 		if statusResponse == nil {
-			err = errors.New("Snapshot auth status cleanup returned a nil response")
+			err = errors.New("etcd Snapshot auth status cleanup returned a nil response")
 		}
 	}
 	if err == nil {
@@ -405,7 +405,7 @@ func (fixture *snapshotAuthFixture) cleanup(client *clientv3.Client, clusterID u
 
 func (fixture *snapshotAuthFixture) inspectOwnedState(ctx context.Context, client *clientv3.Client) ([]string, []string, error) {
 	if fixture == nil || client == nil {
-		return nil, nil, errors.New("Snapshot auth ownership inspection requires fixture and client")
+		return nil, nil, errors.New("etcd Snapshot auth ownership inspection requires fixture and client")
 	}
 	expectedUsers := make(map[string]restoredSnapshotAuthUserExpectation, len(fixture.expected.users))
 	for _, user := range fixture.expected.users {
@@ -508,7 +508,7 @@ func (fixture *snapshotAuthFixture) deleteOwnedState(ctx context.Context, client
 	presentUsers, presentRoles []string,
 ) error {
 	if fixture == nil || client == nil {
-		return errors.New("Snapshot auth ownership deletion requires fixture and client")
+		return errors.New("etcd Snapshot auth ownership deletion requires fixture and client")
 	}
 	userSet := make(map[string]struct{}, len(presentUsers))
 	for _, name := range presentUsers {

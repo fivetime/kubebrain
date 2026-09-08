@@ -82,8 +82,12 @@
 TLS 1.2/1.3 的 wrong_CN 用例均因错误 CN 实际连接成功而失败；正常远端固定依赖下均通过。
 此证据仅针对 v2.0.7 基线，不声明最新 upstream master 仍有同一缺口，也不代表已向上游提 PR。
 材料与失败尝试边界见[测试环境记录](test_environment_tk_001_003_cn.md)。
-新增测试的提交前 verifier/四分片共 703 项全部通过，提交后同一门禁仍待完成；真实 PD/TiKV TLS 部署、轮换与故障验收
+新增测试提交 `0f78c31a` 的提交前、提交后 verifier/四分片均为 703 项全部通过；真实 PD/TiKV TLS 部署、轮换与故障验收
 继续保留，不能由本机 HTTP/TLS loopback 用例替代。
+
+后续 Staticcheck 清理草稿已将 `proto_codec_test.go` 改为 protobuf V2/protoadapt 桥接，
+根模块 Staticcheck 已通过。TiKV 存储包普通测试、race 三轮及 Scan/Batch fuzz 各 30 秒
+通过，保留原有所有权和分配阈值断言；草稿尚待自己的提交前后完整门禁，不代表远端 CI 已通过。
 
 ## 向上游贡献
 

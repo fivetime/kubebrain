@@ -18,14 +18,29 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/golang/protobuf/proto"
 	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/pingcap/kvproto/pkg/tikvpb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/encoding"
 	"google.golang.org/grpc/mem"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/protoadapt"
 )
+
+// The pinned kvproto messages implement the V1 interface. Use the supported
+// bridge to protobuf V2, which is also what gRPC's standard codec exercises.
+func marshalProtoV1(message protoadapt.MessageV1) ([]byte, error) {
+	return proto.Marshal(protoadapt.MessageV2Of(message))
+}
+
+func equalProtoV1(left, right protoadapt.MessageV1) bool {
+	return proto.Equal(protoadapt.MessageV2Of(left), protoadapt.MessageV2Of(right))
+}
+
+func cloneProtoV1(message protoadapt.MessageV1) protoadapt.MessageV1 {
+	return protoadapt.MessageV1Of(proto.Clone(protoadapt.MessageV2Of(message)))
+}
 
 func scanResponseFixture(pairCount int) *kvrpcpb.ScanResponse {
 	pairs := make([]*kvrpcpb.KvPair, pairCount)
@@ -40,7 +55,7 @@ func scanResponseFixture(pairCount int) *kvrpcpb.ScanResponse {
 
 func TestTiKVProtoCodecOwnsSuccessfulScanRows(t *testing.T) {
 	original := scanResponseFixture(4)
-	wire, err := proto.Marshal(original)
+	wire, err := marshalProtoV1(original)
 	require.NoError(t, err)
 
 	decoded := &kvrpcpb.ScanResponse{}
@@ -68,7 +83,7 @@ func TestTiKVProtoCodecDecodesScanOnlyBatch(t *testing.T) {
 		RequestIds:         []uint64{17, 23},
 		TransportLayerLoad: 280,
 	}
-	wire, err := proto.Marshal(original)
+	wire, err := marshalProtoV1(original)
 	require.NoError(t, err)
 
 	decoded := &tikvpb.BatchCommandsResponse{}
@@ -86,7 +101,7 @@ func TestTiKVProtoCodecFallsBackForMixedBatch(t *testing.T) {
 		},
 		RequestIds: []uint64{1, 2},
 	}
-	wire, err := proto.Marshal(original)
+	wire, err := marshalProtoV1(original)
 	require.NoError(t, err)
 
 	decoded := &tikvpb.BatchCommandsResponse{}
@@ -97,22 +112,22 @@ func TestTiKVProtoCodecFallsBackForMixedBatch(t *testing.T) {
 }
 
 func TestTiKVProtoCodecFallsBackForErrorAndFragmentedResponses(t *testing.T) {
-	tests := []proto.Message{
+	tests := []protoadapt.MessageV1{
 		&kvrpcpb.ScanResponse{RegionError: &errorpb.Error{Message: "not leader"}},
 		&kvrpcpb.ScanResponse{Error: &kvrpcpb.KeyError{Abort: "aborted"}},
 	}
 	for _, original := range tests {
-		wire, err := proto.Marshal(original)
+		wire, err := marshalProtoV1(original)
 		require.NoError(t, err)
 		decoded := &kvrpcpb.ScanResponse{}
 		require.NoError(t, newTiKVProtoCodec().Unmarshal(
 			mem.BufferSlice{mem.SliceBuffer(wire)}, decoded,
 		))
-		require.True(t, proto.Equal(original, decoded))
+		require.True(t, equalProtoV1(original, decoded))
 	}
 
 	original := scanResponseFixture(3)
-	wire, err := proto.Marshal(original)
+	wire, err := marshalProtoV1(original)
 	require.NoError(t, err)
 	split := len(wire) / 2
 	decoded := &kvrpcpb.ScanResponse{}
@@ -139,7 +154,7 @@ func TestTiKVProtoCodecRejectsMalformedScan(t *testing.T) {
 func TestTiKVProtoCodecResetsReusedScanMessages(t *testing.T) {
 	tests := []*kvrpcpb.ScanResponse{{}, scanResponseFixture(2)}
 	for _, original := range tests {
-		wire, err := proto.Marshal(original)
+		wire, err := marshalProtoV1(original)
 		require.NoError(t, err)
 		decoded := &kvrpcpb.ScanResponse{
 			RegionError: &errorpb.Error{Message: "stale"},
@@ -149,7 +164,7 @@ func TestTiKVProtoCodecResetsReusedScanMessages(t *testing.T) {
 		require.NoError(t, newTiKVProtoCodec().Unmarshal(
 			mem.BufferSlice{mem.SliceBuffer(wire)}, decoded,
 		))
-		require.True(t, proto.Equal(original, decoded))
+		require.True(t, equalProtoV1(original, decoded))
 	}
 
 	originalBatch := &tikvpb.BatchCommandsResponse{
@@ -158,7 +173,7 @@ func TestTiKVProtoCodecResetsReusedScanMessages(t *testing.T) {
 		},
 		RequestIds: []uint64{42}, TransportLayerLoad: 180,
 	}
-	wire, err := proto.Marshal(originalBatch)
+	wire, err := marshalProtoV1(originalBatch)
 	require.NoError(t, err)
 	decodedBatch := &tikvpb.BatchCommandsResponse{
 		Responses:          originalBatch.Responses,
@@ -169,11 +184,11 @@ func TestTiKVProtoCodecResetsReusedScanMessages(t *testing.T) {
 	require.NoError(t, newTiKVProtoCodec().Unmarshal(
 		mem.BufferSlice{mem.SliceBuffer(wire)}, decodedBatch,
 	))
-	require.True(t, proto.Equal(originalBatch, decodedBatch))
+	require.True(t, equalProtoV1(originalBatch, decodedBatch))
 }
 
 func TestTiKVProtoCodecReducesScanAllocations(t *testing.T) {
-	wire, err := proto.Marshal(scanResponseFixture(2048))
+	wire, err := marshalProtoV1(scanResponseFixture(2048))
 	require.NoError(t, err)
 	data := mem.BufferSlice{mem.SliceBuffer(wire)}
 	baselineCodec := encoding.GetCodecV2("proto")
@@ -199,7 +214,7 @@ func TestTiKVProtoCodecReducesScanBatchAllocations(t *testing.T) {
 		}
 		requestIDs[i] = uint64(i + 1)
 	}
-	wire, err := proto.Marshal(&tikvpb.BatchCommandsResponse{
+	wire, err := marshalProtoV1(&tikvpb.BatchCommandsResponse{
 		Responses: responses, RequestIds: requestIDs,
 	})
 	require.NoError(t, err)
@@ -217,7 +232,7 @@ func TestTiKVProtoCodecReducesScanBatchAllocations(t *testing.T) {
 }
 
 func BenchmarkTiKVProtoCodecScanResponse(b *testing.B) {
-	wire, err := proto.Marshal(scanResponseFixture(2048))
+	wire, err := marshalProtoV1(scanResponseFixture(2048))
 	require.NoError(b, err)
 	data := mem.BufferSlice{mem.SliceBuffer(wire)}
 	baselineCodec := encoding.GetCodecV2("proto")
@@ -248,7 +263,7 @@ func FuzzTiKVProtoCodecMatchesStandardScan(f *testing.F) {
 		{RegionError: &errorpb.Error{Message: "not leader"}},
 		{Error: &kvrpcpb.KeyError{Abort: "aborted"}},
 	} {
-		wire, err := proto.Marshal(fixture)
+		wire, err := marshalProtoV1(fixture)
 		require.NoError(f, err)
 		f.Add(wire)
 	}
@@ -262,7 +277,7 @@ func FuzzTiKVProtoCodecMatchesStandardScan(f *testing.F) {
 			RegionError: &errorpb.Error{Message: "stale"},
 			Pairs:       scanResponseFixture(1).Pairs,
 		}
-		optimized := proto.Clone(standard).(*kvrpcpb.ScanResponse)
+		optimized := cloneProtoV1(standard).(*kvrpcpb.ScanResponse)
 		standardErr := encoding.GetCodecV2("proto").Unmarshal(
 			mem.BufferSlice{mem.SliceBuffer(wire)}, standard,
 		)
@@ -271,7 +286,7 @@ func FuzzTiKVProtoCodecMatchesStandardScan(f *testing.F) {
 		)
 		require.Equal(t, standardErr == nil, optimizedErr == nil)
 		if standardErr == nil {
-			require.True(t, proto.Equal(standard, optimized))
+			require.True(t, equalProtoV1(standard, optimized))
 		}
 	})
 }
@@ -293,7 +308,7 @@ func FuzzTiKVProtoCodecMatchesStandardBatch(f *testing.F) {
 		},
 	}
 	for _, fixture := range fixtures {
-		wire, err := proto.Marshal(fixture)
+		wire, err := marshalProtoV1(fixture)
 		require.NoError(f, err)
 		f.Add(wire)
 	}
@@ -308,7 +323,7 @@ func FuzzTiKVProtoCodecMatchesStandardBatch(f *testing.F) {
 			TransportLayerLoad: 999,
 			XXX_unrecognized:   []byte{0xa0, 0x06, 0x01},
 		}
-		optimized := proto.Clone(standard).(*tikvpb.BatchCommandsResponse)
+		optimized := cloneProtoV1(standard).(*tikvpb.BatchCommandsResponse)
 		standardErr := encoding.GetCodecV2("proto").Unmarshal(
 			mem.BufferSlice{mem.SliceBuffer(wire)}, standard,
 		)
@@ -317,7 +332,7 @@ func FuzzTiKVProtoCodecMatchesStandardBatch(f *testing.F) {
 		)
 		require.Equal(t, standardErr == nil, optimizedErr == nil)
 		if standardErr == nil {
-			require.True(t, proto.Equal(standard, optimized))
+			require.True(t, equalProtoV1(standard, optimized))
 		}
 	})
 }

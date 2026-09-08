@@ -1133,8 +1133,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 	}
 	var epoch uint64
 	if !readOnly {
-		var leadingFresh bool
-		epoch, leadingFresh = s.peers.EpochAndLeadingFresh()
+		_, leadingFresh := s.peers.EpochAndLeadingFresh()
 		if !leadingFresh {
 			s.metricCli.EmitCounter("write.follower", 1)
 			if s.peers.EtcdProxyEnabled() {
@@ -1783,7 +1782,7 @@ func validateDeleteRangeRequest(r *etcdserverpb.DeleteRangeRequest) error {
 }
 
 func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionRequest) (_ *etcdserverpb.CompactionResponse, retErr error) {
-	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
 		s.metricCli.EmitCounter("write.follower", 1)
 		// Unlike upstream's raft follower, this ingress may have lost its entire
@@ -1822,7 +1821,7 @@ func (s *RPCServer) Compact(ctx context.Context, r *etcdserverpb.CompactionReque
 	if waitErr != nil {
 		return nil, waitErr
 	}
-	epoch = readyEpoch
+	epoch := readyEpoch
 	defer beginEtcdApply(s.metricCli, "Compaction", &retErr)()
 	if err := s.rejectCorrupt(ctx); err != nil {
 		return nil, err
@@ -1917,7 +1916,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	}
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
-	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh && s.peers.EtcdProxyEnabled() {
 		s.metricCli.EmitCounter("write.follower", 1)
 		proxyCtx, err := s.forwardWriteAuthContext(ctx)
@@ -1946,7 +1945,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	if waitErr != nil {
 		return nil, waitErr
 	}
-	epoch = readyEpoch
+	epoch := readyEpoch
 	if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
 		return nil, authErr
 	}
@@ -2017,7 +2016,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if err := validateDeleteRangeRequest(r); err != nil {
 		return nil, err
 	}
-	epoch, leadingFresh := s.peers.EpochAndLeadingFresh()
+	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if !leadingFresh {
 		s.metricCli.EmitCounter("write.follower", 1)
 		if s.peers.EtcdProxyEnabled() {
@@ -2037,7 +2036,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if waitErr != nil {
 		return nil, waitErr
 	}
-	epoch = readyEpoch
+	epoch := readyEpoch
 	if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
 		return nil, authErr
 	}

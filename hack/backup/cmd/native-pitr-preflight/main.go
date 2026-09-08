@@ -33,6 +33,7 @@ import (
 	pd "github.com/tikv/pd/client"
 	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -229,10 +230,10 @@ func validateStoreTopology(stores []*metapb.Store) ([]*metapb.Store, error) {
 		host, portText, err := net.SplitHostPort(address)
 		port, portErr := strconv.ParseUint(portText, 10, 16)
 		if err != nil || portErr != nil || host == "" || port == 0 || strings.TrimSpace(address) != address {
-			return nil, fmt.Errorf("Up TiKV store %d has invalid address %q", store.Id, address)
+			return nil, fmt.Errorf("PD reported Up TiKV store %d has invalid address %q", store.Id, address)
 		}
 		if owner, duplicate := seenAddresses[address]; duplicate {
-			return nil, fmt.Errorf("Up TiKV stores %d and %d share address %q", owner, store.Id, address)
+			return nil, fmt.Errorf("PD reported Up TiKV stores %d and %d share address %q", owner, store.Id, address)
 		}
 		seenAddresses[address] = store.Id
 		up = append(up, store)
@@ -325,11 +326,22 @@ func transportCredentials(o options) (credentials.TransportCredentials, error) {
 }
 
 func probeLogBackup(ctx context.Context, address string, creds credentials.TransportCredentials) (retErr error) {
-	conn, err := grpc.DialContext(ctx, address, grpc.WithTransportCredentials(creds), grpc.WithBlock())
+	// Preserve DialContext's literal-address resolver and bounded readiness
+	// barrier; NewClient alone does not establish a transport.
+	conn, err := grpc.NewClient("passthrough:///"+address, grpc.WithTransportCredentials(creds))
 	if err != nil {
 		return fmt.Errorf("connect log-backup service: %w", err)
 	}
 	defer func() { retErr = errors.Join(retErr, conn.Close()) }()
+	conn.Connect()
+	for state := conn.GetState(); state != connectivity.Ready; state = conn.GetState() {
+		if !conn.WaitForStateChange(ctx, state) {
+			return fmt.Errorf("connect log-backup service: %w", ctx.Err())
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("connect log-backup service: %w", err)
+	}
 	response, err := logbackuppb.NewLogBackupClient(conn).GetLastFlushTSOfRegion(ctx, &logbackuppb.GetLastFlushTSOfRegionRequest{})
 	if err != nil {
 		return fmt.Errorf("probe log-backup service: %w", err)

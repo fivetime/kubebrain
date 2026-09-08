@@ -8442,10 +8442,6 @@ exec "$@"
 	}
 }
 
-func compactJSONString(value string) string {
-	return strings.Join(strings.Fields(value), "")
-}
-
 func podJSONWithDefaultRuntimeIdentities(t *testing.T, value string) string {
 	t.Helper()
 	if value == "" {

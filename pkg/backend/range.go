@@ -291,10 +291,6 @@ func (b *backend) getBatch(
 	return responses, nil
 }
 
-func (b *backend) getLatestInternalVal(ctx context.Context, key []byte) (val []byte, modRevision uint64, err error) {
-	return b.getInternalVal(ctx, key, 0)
-}
-
 // get returns the user-visible value and the revision it's modified with.
 // NOTICE: return storage.ErrKeyNotFound if the value is not exist or is a tombstone.
 //

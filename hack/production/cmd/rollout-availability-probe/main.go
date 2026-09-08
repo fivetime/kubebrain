@@ -966,7 +966,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		lastRevision = grantRevision
 	}
 	if historyLeaseIDs[0] == historyLeaseIDs[1] {
-		return fmt.Errorf("Snapshot history leases returned duplicate IDs")
+		return fmt.Errorf("etcd Snapshot history leases returned duplicate IDs")
 	}
 
 	streamExpected := newStreamProbeExpectations(cfg.prefix)

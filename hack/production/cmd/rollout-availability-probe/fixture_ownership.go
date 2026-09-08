@@ -332,34 +332,6 @@ func readFixtureOwnership(ctx context.Context, client *clientv3.Client, prefix s
 	return ownership, proto.Clone(marker).(*mvccpb.KeyValue), response.Header.ClusterId, response.Header.Revision, nil
 }
 
-func (ownership *fixtureOwnership) release(ctx context.Context, client *clientv3.Client,
-	clusterID uint64, minimumRevision int64,
-) (int64, error) {
-	if ownership == nil || client == nil || clusterID == 0 || minimumRevision <= 0 {
-		return minimumRevision, errors.New("fixture ownership release requires ownership, client, cluster, and revision")
-	}
-	released, err := client.Txn(ctx).
-		If(
-			clientv3.Compare(clientv3.Value(ownership.markerKey()), "=", string(ownership.value)),
-			clientv3.Compare(clientv3.Version(ownership.markerKey()), "=", int64(len(ownership.receipt.LeaseIDs)+1)),
-		).
-		Then(clientv3.OpDelete(ownership.receipt.Prefix, clientv3.WithPrefix()), clientv3.OpDelete(ownership.markerKey())).
-		Commit()
-	if err != nil {
-		return minimumRevision, fmt.Errorf("release fixture ownership: %w", err)
-	}
-	if released == nil || released.Header == nil || !released.Succeeded || released.Header.ClusterId != clusterID ||
-		released.Header.Revision < minimumRevision || len(released.Responses) != 2 ||
-		released.Responses[0].GetResponseDeleteRange() == nil || released.Responses[1].GetResponseDeleteRange() == nil ||
-		released.Responses[1].GetResponseDeleteRange().Deleted != 1 {
-		return minimumRevision, fmt.Errorf("release fixture ownership returned invalid response: %+v", released)
-	}
-	if err := verifyFixtureAbsent(ctx, client, newSnapshotAuthFixture(ownership.receipt.Prefix), ownership.receipt.Prefix); err != nil {
-		return minimumRevision, err
-	}
-	return released.Header.Revision, nil
-}
-
 func cleanupOwnedFixture(ctx context.Context, client *clientv3.Client, prefix string,
 	expected fixtureOwnerIdentity, commandTimeout time.Duration,
 ) (fixtureCleanupSummary, error) {
@@ -466,17 +438,4 @@ func verifyFixtureAbsent(ctx context.Context, client *clientv3.Client, fixture *
 		return fmt.Errorf("owned auth identities remain: users=%s roles=%s", strings.Join(users, ","), strings.Join(roles, ","))
 	}
 	return nil
-}
-
-func revokeUnrecordedLease(parent context.Context, client *clientv3.Client, leaseID clientv3.LeaseID,
-	timeout time.Duration,
-) error {
-	ctx, cancel := context.WithTimeout(parent, timeout)
-	defer cancel()
-	_, err := client.Revoke(ctx, leaseID)
-	missing, err := classifyCleanupLeaseError(err)
-	if missing {
-		return nil
-	}
-	return err
 }

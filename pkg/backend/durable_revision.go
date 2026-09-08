@@ -193,12 +193,6 @@ func (b *backend) advanceTxnWitnessPrevalidatedRevision(revision uint64) {
 	}
 }
 
-func (b *backend) stageDurableRevision(batch storage.BatchWrite, revision uint64) {
-	value := make([]byte, 8)
-	binary.BigEndian.PutUint64(value, revision)
-	batch.Put(b.ks.EncodeInternalKey(durableRevisionKey), value, 0)
-}
-
 // stageNextDurableRevision makes the durable watermark the transaction-local
 // revision allocator. The caller's stage function must write the user mutation
 // and its event records through the supplied AtomicBatch; otherwise advancing

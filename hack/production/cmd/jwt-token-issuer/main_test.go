@@ -96,7 +96,7 @@ func TestRunRedactsIssuerErrorAndPreservesCompetingOutput(t *testing.T) {
 	err := run(context.Background(), o, func(context.Context, options, string, string, *tls.Config) (string, error) {
 		return "", errors.New("sensitive-password server-token")
 	})
-	require.EqualError(t, err, "Authenticate failed")
+	require.EqualError(t, err, "etcd Authenticate failed")
 	require.NotContains(t, err.Error(), "sensitive-password")
 	require.NotContains(t, err.Error(), "server-token")
 	require.NoFileExists(t, output)

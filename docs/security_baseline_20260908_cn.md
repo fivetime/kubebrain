@@ -227,3 +227,14 @@ COPY 的 66 个，另有三个用于独立 native full backup/restore stage。�
 快进推送已成功，自动触发 [image run 34275611099](https://github.com/fivetime/kubebrain/actions/runs/34275611099)，
 创建时间 `2026-09-08T20:34:39Z`，head SHA 精确匹配 `339381afb74eb225d7bab8e67196ccea07596509`。
 首次回读状态 queued，尚无已验证镜像 digest；没有手动重复派发或提升旧镜像。
+
+### 发布门禁与静态检查后续结果
+
+run `34275611099` 现已 success，实际双架构字节/平台校验及标签提升成功；固定发布索引为
+`sha256:a245c95fea36c387358d86e3808a9d29073a327028d5a4e3a80e4d272663e865`，源码仍为
+`339381afb74eb225d7bab8e67196ccea07596509`。旧索引 `6ab33dc8…` 的拒绝结论不变。
+
+后续本地 Staticcheck 清理已通过根模块及 objectstore 检查、根模块 vet、受影响包单测、
+相关 race 和编解码 fuzz；本批提交前 703 项完整门禁全部通过。详细范围、日志、未执行的
+真实 TiKV 测试及 Badger 标签测试编译缺口见[环境交接记录](test_environment_tk_001_003_cn.md)。
+该清理尚未包含在上述已发布镜像中；仍不把单项扫描/构建通过等同于整体生产就绪。

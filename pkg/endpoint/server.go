@@ -646,12 +646,3 @@ func runSubServer(ctx context.Context, lsn net.Listener, server exposedServer) f
 	}
 
 }
-
-func waitFor(ctx context.Context, closed chan error) error {
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-closed:
-		return err
-	}
-}

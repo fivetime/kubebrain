@@ -571,9 +571,8 @@ func (b *backend) validatePersistedTxnWitnessesAfter(
 					}
 				} else {
 					for _, objectKey := range objectKeys {
-						objectID := string(objectKey)
 						validationErr := b.validateEventObjectValue(
-							ctx, objectUserKeys[objectID], objectRevisions[objectID], values[objectID],
+							ctx, objectUserKeys[string(objectKey)], objectRevisions[string(objectKey)], values[string(objectKey)],
 						)
 						if validationErr == nil {
 							continue

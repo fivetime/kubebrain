@@ -2,7 +2,6 @@ package production_test
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -145,5 +144,5 @@ func (f *jwtRotationFixture) run(t *testing.T, action string, success bool, sett
 		require.Error(t, err, "%s", out)
 		require.Contains(t, string(out), want)
 	}
-	return fmt.Sprintf("%s", out)
+	return string(out)
 }

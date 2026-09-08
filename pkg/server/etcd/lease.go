@@ -188,7 +188,7 @@ func leaseMetadataStorageID(key []byte) (int64, error) {
 
 func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGrantRequest) (_ *etcdserverpb.LeaseGrantResponse, retErr error) {
 	m.srv.metricCli.EmitCounter("lease.grant", 1)
-	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	_, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh && m.srv.peers.EtcdProxyEnabled() {
 		if req.ID == 0 {
 			req.ID = m.nextLeaseID()
@@ -244,7 +244,7 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 	if err != nil {
 		return nil, err
 	}
-	epoch = readyEpoch
+	epoch := readyEpoch
 	if err := m.requireLeaseReady(); err != nil {
 		return nil, err
 	}
@@ -468,7 +468,7 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	m.srv.metricCli.EmitCounter("lease.revoke", 1)
 	ctx, cancel := withUnaryRequestTimeout(ctx)
 	defer cancel()
-	epoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
+	_, leadingFresh := m.srv.peers.EpochAndLeadingFresh()
 	if !leadingFresh && m.srv.peers.EtcdProxyEnabled() {
 		proxyCtx, err := m.srv.forwardWriteAuthContext(ctx)
 		if err != nil {
@@ -490,7 +490,7 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	// Revoke is a durable lease/key mutation and must not race the new leader's
 	// lease/event/checkpoint reload. Parking here also avoids consuming grpc-go's
 	// finite retry budget on a rapid stream of leadership-fence rejections.
-	epoch, err = m.srv.waitLeaderReadyEpoch(ctx)
+	epoch, err := m.srv.waitLeaderReadyEpoch(ctx)
 	if err != nil {
 		return nil, err
 	}

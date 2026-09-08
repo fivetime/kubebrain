@@ -307,7 +307,7 @@ func (e *etcdProxy) updateClient() {
 func (e *etcdProxy) updateClientContext(ctx context.Context) {
 	// Serialize the whole build/swap: concurrent callers otherwise leak clients
 	// and stampede the leader (#41/#47). Once the winner has a healthy client, the
-	// queued callers fall through the hasClient()+checkConn() fast path and return
+	// queued callers fall through the hasClient()+checkConnContext() fast path and return
 	// without redialing.
 	e.updateMu.Lock()
 	defer e.updateMu.Unlock()
@@ -517,10 +517,6 @@ func (e *etcdProxy) hasClient() bool {
 	e.lock.RLock()
 	defer e.lock.RUnlock()
 	return e.client != nil
-}
-
-func (e *etcdProxy) checkConn() error {
-	return e.checkConnContext(context.Background())
 }
 
 func (e *etcdProxy) checkConnContext(ctx context.Context) error {
