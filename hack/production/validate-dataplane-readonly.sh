@@ -1293,6 +1293,10 @@ ready_pod_runtime_identities() {
 		and all(to_entries[]; (.key == "running" or .key == "waiting" or .key == "terminated") and (.value | type) == "object");
 	def nonnegative_int32:
 		type == "number" and . == floor and . >= 0 and . <= 2147483647;
+	def valid_container_id:
+		type == "string" and
+		(split("://") as $parts |
+			($parts | length) == 2 and $parts[0] != "" and $parts[1] != "");
 	[.items[]
 		| select(.metadata.deletionTimestamp == null)
 		| select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
@@ -1323,7 +1327,7 @@ ready_pod_runtime_identities() {
 				| if all($runtime_statuses[];
 					if (.status | type) != "object" then false else
 						(.status.name | type) == "string" and .status.name != ""
-						and (.status.containerID | type) == "string" and .status.containerID != ""
+						and (.status.containerID | valid_container_id)
 						and (.status.imageID | type) == "string" and (.status.imageID | test("sha256:[0-9a-f]{64}$"))
 						and (.status.ready | type) == "boolean"
 						and (.status.restartCount | nonnegative_int32)
@@ -1370,6 +1374,10 @@ validate_ready_pod_target_runtime_state() {
 				try ((fromdateiso8601 | todateiso8601) == $value) catch false);
 		def nonnegative_int32:
 			type == "number" and . == floor and . >= 0 and . <= 2147483647;
+		def valid_container_id:
+			type == "string" and
+			(split("://") as $parts |
+				($parts | length) == 2 and $parts[0] != "" and $parts[1] != "");
 		[
 			.items[]
 			| select(.metadata.deletionTimestamp == null)
@@ -1378,6 +1386,8 @@ validate_ready_pod_target_runtime_state() {
 			| ($pod.metadata.name // "<missing>") as $pod_name
 			| [$pod.status.containerStatuses[]? | select(.name == $target)] as $matches
 			| if ($matches | length) != 1 or $matches[0].ready != true then empty
+			  elif ($matches[0].containerID | valid_container_id | not) then
+				"\($pod_name):target-container-id=\($matches[0].containerID | tojson)"
 			  elif ($matches[0].restartCount | nonnegative_int32 | not) then
 				"\($pod_name):target-restart-count=\($matches[0].restartCount | tojson)"
 			  elif ($matches[0] | has("started")) and
