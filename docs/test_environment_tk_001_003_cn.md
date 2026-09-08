@@ -544,3 +544,101 @@ KubeBrain 改变证书认证语义，而是修复恢复探针的身份隔离。�
 恢复 TLS 修复提交前 verifier 与四分片 703 项已全部通过，耗时
 268.762/498.608/331.407/753.403 秒，日志 `security-restore-tls-pre-*`。
 下一步提交该批修复，立即执行提交后同样的 verifier/四分片，并从精确提交构建诊断探针。
+
+### 修复探针已提交并启动诊断性集群重测
+
+提交为 `669ac47033f1f2681c1f7a5e5cf3e10bc36c78c3`；提交后 verifier 已通过 703 项，
+四分片正在运行，`security-restore-tls-post-*`。从该干净提交编译诊断探针，buildinfo
+确认 Go 1.26.8、linux/amd64、CGO_ENABLED=0、vcs.modified=false、精确源码 SHA，
+二进制 SHA-256 `1b1e204227e6684bb5cc7a9b963f3e25e42363f7103538f15db0133ac98354fc`。
+本机暂存 `/tmp/kubebrain-restore-probe.YtiJH5/restore-probe`，待重测/清理结束后移除。
+完整记录 `security-restore-tls-binary-buildinfo.log`、`security-restore-tls-binary-sha256.log`。
+govulncheck v1.6.0 binary 扫描无可达及导入 package 漏洞；模块级仍报告
+GO-2026-5932（x/crypto/openpgp，不在本探针调用路径），不宣称全部依赖零漏洞。
+证据 `security-restore-tls-binary-scan.log` 与 `security-restore-tls-binary-scan-verbose.log`。
+
+实际清单 `kubebrain-security-smoke-restore-tls.yaml` SHA-256
+`9e85d348b6e074e3e2764bdd203d1c247b9a5ec030fe4814336f2b8876ab0746`，server-side dry-run
+及非 root、只读根、无 SA token、无新增 PVC 等断言通过。创建前重新核验 cluster/StatefulSet
+UID、三副本 Ready、旧 cleanup Pod 精确 UID+Succeeded+exit 0、同名新 Pod 不存在。
+新 Pod UID `758d5c3f-f2c3-48c5-a848-22d72ee5b727`，worker3；上传先写 stage 文件，
+核对摘要后 chmod 0500 并原子改名，入口再次验证摘要后才执行。
+创建/状态/日志为 `security-restore-tls-smoke-created.json`、`security-restore-tls-smoke-latest.json`、
+`security-restore-tls-smoke.log`。
+
+23:08:21 UTC 三个直连审计已通过，Put/Delete revisions 为 356/357、358/359、360/361；
+随后 PROBE_STARTED。当前综合重测尚无终态，不能把审计通过当作 Snapshot/恢复通过。
+提交后本机四分片与这一独立诊断 Pod 并行；未推送取消 image run，未变更服务镜像或后端。
+源服务证书认证五项回归 race 三轮通过（2.647 秒），记录
+`security-restore-tls-source-auth-race.log`。
+
+### 诊断重测因工作卷容量被驱逐，独占 fixture 已回收
+
+新 probe 于 23:09:25 UTC Failed、exit 137，无 PROBE_SUMMARY。仅据 137 不能判断 OOM；
+随后读取精确 Pod UID 的事件确认 23:09:23 Evicted：
+`Usage of EmptyDir volume "work" exceeds the limit "512Mi".`，接着 Killing。
+证据 `security-restore-tls-smoke-events.json`。完成后无法 exec 读取 cgroup，cadvisor
+查询也未匹配该已退出容器；不编造内存峰值。worker3 当前 MemoryPressure/DiskPressure
+均 False。此轮不算综合通过，不重跑相同容量配置以掩盖失败。
+
+创建精确绑定失败 probe UID/前缀/租约的 cleanup Pod `security-smoke-restore-tls-cleanup`，
+UID `da2cffd1-6b3d-44ce-8236-932f04b1c857`。23:11:34 UTC Succeeded、exit 0，输出
+`FIXTURE_CLEANUP_OK status=recovered owner_uid=758d5c3f-f2c3-48c5-a848-22d72ee5b727 keys=529 users=0 roles=0 leases=3`。
+已清除该失败测试的独占键与租约，没有用户/角色残留或其他租户数据删除。
+日志 `security-restore-tls-cleanup.log`、终态 `security-restore-tls-cleanup-result.json`。
+测试数据可由新一轮专属 fixture 重新生成，旧失败记录保持不变。
+
+原 512 MiB 是此次环境手工探针清单的容量，不是产品恢复协议要求。真实恢复需要三个
+成员、后续 voter/learner 数据目录及官方 WAL 预分配，还包含 Snapshot 与 47 MiB 上传
+探针；不能仅按下载的 Snapshot 文件大小分配空间。下一轮使用新的 Pod/fixture/lease ID，
+把工作 emptyDir 和容器 ephemeral-storage limit 显式配置为 2 GiB、request 为 2 GiB；
+CPU/内存、原测试规模、超时和验证条件不变。不调整节点驱逐阈值，不修改 TiKV 或 etcd
+WAL 实现，不把这次容量修正当作产品性能通过。三个服务副本保持原镜像和 Ready 状态。
+
+恢复 TLS 提交 `669ac470` 的提交后 verifier/四分片 703 项全部通过，耗时
+256.984/468.300/315.747/747.043 秒；前后两轮门禁均完成。
+
+2 GiB 重测 Pod 为 `security-smoke-restore-space`，UID
+`6a7035e2-07b3-4312-968e-8a8e2add2942`，前缀
+`/kubebrain-rollout-availability/security-smoke-restore-space/`，lease IDs
+`2026090823200001/2026090823200002/2026090823200003`。实际清单
+`kubebrain-security-smoke-restore-space.yaml` SHA-256
+`b2cbae6d62b9c11a5cf47b02d1b5cbd020154761fa5841ed06d02bb474b12ea9`，server-side dry-run
+与新增临时存储 request/limit 精确断言通过；使用同一个 `669ac470` 修复二进制和同一个
+已验证基础镜像，没有重新编译或改动验证逻辑。原失败 fixture 已回收后才创建新 Pod。
+23:15:38 UTC 三个直连审计通过，Put/Delete revisions 为 641/642、643/644、645/646。
+日志 `security-restore-space-smoke.log`，创建响应 `security-restore-space-smoke-created.json`。
+当前重测仍在进行；启动早期工作目录 47 MiB、memory.current=91,598,848 bytes、
+oom/oom_kill=0，证据 `security-restore-space-resources-initial.log`；该采样不是峰值。
+
+### 修复后二次诊断重测通过
+
+`security-smoke-restore-space` 于 23:17:15 UTC Succeeded、exit 0。最终输出：
+`ok=300 fail=0 total=300 watch=300 direct_watch=300x3 lease=alive direct_lease=alive`
+`range_stream=64 snapshot=1 stream_retries=0 stream_partial_retries=0`。
+public/direct lease restart 均为零，max operation/direct latency 为 562 ms、Put 533 ms、
+Watch-after-Put 93 ms、TSO 102 ms、Region 21 ms。完整日志及终态为
+`security-restore-space-smoke.log` 与 `security-restore-space-smoke-latest.json`。
+其中 Snapshot 成功计数在 checksum、官方 etcdutl restore、三成员启动、历史/规模数据、
+权限矩阵及既有 quorum/voter/learner 验证全部完成后才增加，不只是下载成功。
+后续采集工作目录容量时 Pod 已正常完成，exec 被拒绝；因此没有有效恢复峰值容量/内存
+测量，不能用失败采集文件推断峰值。此前 512 MiB 驱逐记录仍保留。
+
+这证明运行中的 `339381af` KubeBrain 三副本，在此次无故障注入场景下可通过修复后的
+`669ac470` 探针综合验证；不等于包含修复的发布镜像已验收，不等于真实 HA 故障演练、
+后端 TLS 轮换、长时间 soak 或完整生产就绪目标已完成。
+
+独立 cleanup Pod `security-smoke-restore-space-cleanup`，UID
+`d7088514-fc73-4614-980b-710adc21e0a3`，于 23:18:48 UTC Succeeded、exit 0，输出
+`FIXTURE_CLEANUP_OK status=absent owner_uid= keys=0 users=0 roles=0 leases=0`。
+确认成功探针自身已完成独占 fixture 清理，没有再执行额外数据删除；证据
+`security-restore-space-cleanup.log`、`security-restore-space-cleanup-result.json`。
+
+三轮探针及对应三个 cleanup Pod 共六个均已终止；在保存完整终态、日志、事件后，通过
+Kubernetes DeleteOptions 的精确 UID + resourceVersion preconditions 删除这六个对象，
+再次查询均不存在。身份清单 `security-smoke-terminal-pods-before-cleanup.json`；各次
+删除请求/响应为 `delete-security-smoke-*.json` / `delete-security-smoke-*-result.json`。
+同时核验摘要后删除本机 `/tmp/kubebrain-restore-probe.YtiJH5/restore-probe` 及空父目录。
+本次删除的是专属已终止测试 Pod、其临时工作制品和本机编译程序；未删除 PVC/PV、
+Secret、StatefulSet 或后端数据卷。源码、清单、摘要和日志均保留，程序可从提交重建；
+临时 Snapshot 文件不作为备份保留。没有清理共享 Go/BuildKit 缓存。
