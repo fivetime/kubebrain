@@ -11,6 +11,8 @@
 
 客户端的权威[补丁清单及历史映射](https://github.com/fivetime/tikv-client-go/blob/kubebrain-v2.0.7/KUBEBRAIN_PATCH.md)在独立仓库维护，不能再在产品仓库复制一份客户端源码独立修改。
 
+产品分仓提交为 `522da3334662200606d01e32dad8556238a3fc40`，已推送 `dbaas` 并触发 [镜像构建 34253661949](https://github.com/fivetime/kubebrain/actions/runs/34253661949)。该构建在记录时仍运行中，不能把分仓前成功的 run 34247183115 当成这一提交的构建结果。
+
 ## 迁移证据
 
 来源为产品 commit `507016642e298ebde5360339cd397dd48514e61d` 的 `third_party/tikv-client-go`，Git tree 为 `c436408c4d22db571d165609e0c3fc516c40f774`。
@@ -30,7 +32,7 @@
 
 客户端 [CI run 34251930827](https://github.com/fivetime/tikv-client-go/actions/runs/34251930827) 使用 self-hosted Runner，终态为 failure：test job 成功、security job 失败。旧副本和迁移后普通单测通过；迁移后本机 build/vet、全量单测与 race 均通过，远端 build/vet、单测和 race 步骤也已通过。
 
-产品在移除内置目录后，`go build ./...`、`go vet ./...`、除生产门禁包之外的所有根模块测试通过；提交前生产门禁 `--verify 4` 及四分片共 703 项全部通过。`go test -race ./pkg/storage/tikv ./cmd/option`、build/workflow 回归以及 etcd-client-compat 的开发探针回归均通过。
+产品在移除内置目录后，`go build ./...`、`go vet ./...`、除生产门禁包之外的所有根模块测试通过；提交前后均执行生产门禁 `--verify 4` 及四分片，两轮各 703 项全部通过。`go test -race ./pkg/storage/tikv ./cmd/option`、build/workflow 回归以及 etcd-client-compat 的开发探针回归均通过。
 
 真实 TiKV 验证在用户授权的 `tk-001-003` / `kubebrain-dbaas-test` 执行，PD cluster ID `7683177044639569228`，后端 v8.5.3、使用 rook-ceph 消费者卷。用当前远端依赖编译的 `TestLargeKeyRoundTripTiKV` 在 worker3 的专属临时 Pod 执行，完成 600 KiB 和 2 MiB 物理 Key 的 Put/Get/Iter 字节级 round-trip，1.95 秒 PASS，Pod Succeeded/exit 0；用例清理自己的测试前缀。没有执行 skip，也没有使用分仓前镜像冒充新客户端。
 
@@ -50,3 +52,9 @@
 6. 记录两个仓库的 commit、依赖校验和、TiKV/PD 版本、CI 链接和结果，再发布产品镜像；产品升级与客户端版本变更均可独立回退到已验证提交。
 
 日常开发如需跨仓联调，可在仓库外使用临时 Go workspace；提交与 CI 必须验证远端固定依赖，不能把本机路径写回正式 go.mod。
+
+## 向上游贡献
+
+上游[贡献规则](https://github.com/tikv/client-go/blob/master/CONTRIBUTING.md)欢迎修复 PR，要求 DCO 签署；最终是否接受由维护者决定。本次只完成分仓，没有向上游创建 PR 或 issue。
+
+贡献前应在最新上游单独复现问题，检查已有 issue/PR/修复，再拆为独立的最小补丁和回归测试。通用取消、资源清理和错误重试可以优先评估；KubeBrain 专用 checkpoint 扩展应先讨论可通用化的接口。2026-09-08 核对的 upstream master 为 `08cbf831121a7944bf9dd7bdda0670a8c391caeb`，其 memdb 已重构为 ART 等实现，不能把 v2.0.7 的 27 条补丁整体直接提交或假定仍全部必要。测试通过是必要验证，不等于维护者已经认可设计、兼容性和维护成本。
