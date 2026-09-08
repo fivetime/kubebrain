@@ -74094,6 +74094,55 @@ restart 0，Ready/ContainersReady generation、running-only 状态、规范 `sta
 OCI 与审计材料位于可恢复实体 `/tmp/kubebrain-a5785-20260908T100823Z`，回收站路径
 `/root/.local/share/Trash/files/kubebrain-a5785-20260908T100823Z` 保留链接；最终根盘可用约 5.4 GiB。
 
+### A5786：校验 Kubernetes containerID 的 runtime 分隔格式
+
+A5785 已限制 `restartCount` 的 int32 取值域，但完整 runtime identity 仍只要求 `containerID` 为非空字符串，目标
+Ready 容器甚至没有单独验证该字段。Kubernetes `core/v1.ContainerStatus.ContainerID` 明确规定格式为
+`<type>://<container_id>`，kubelet `ContainerID.ParseString` 也要求按 `://` 恰好分成两段。目标容器
+`containerID:"garbage"` 的独立 RED 在 0.264 秒内证明旧 gate 会把畸形对象整体判为 GREEN。提交
+`cd51b15be49393e1b3df672947bb5ce6de927a46` 加入共用格式谓词：runtime type 与 ID 两段都必须非空且只能有一个
+`://` 分隔；目标容器在其他探针前给出精确 `target-container-id=<原值>` 诊断，普通、init、ephemeral 容器则全部纳入
+HashKV 前后完整身份围栏。另加畸形 sidecar 用例，保证非目标容器同样 fail closed。
+
+目标与 sidecar focused 连续 10 次为 9.970 秒，race 连续 10 次为 12.637 秒；完整 readonly probe 为
+283.346 秒，`go vet`、bash syntax、gofmt 和 diff check 全部 GREEN。提交前 verifier 为
+703=`170/193/180/160`，四分片 279.974/474.365/335.163/727.593 秒 GREEN；提交后 verifier 不变，四分片
+272.516/464.307/311.023/728.187 秒 GREEN。`/root/etcd` 仍为干净
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`，没有新增上游提交；本项只收紧 Kubernetes 运行时证据真实性，
+不改变 etcd 客户端语义。
+
+候选 `docker.io/library/kubebrain@sha256:17ecd8c76a6bab9f46413fc58828b2cb58ecd6b2181aa105c543b6e6cc27c27b`
+内嵌版本 `0.0.0-cd51b15b`、完整 commit、build time `2026-09-08T10:54:23Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`；镜像内门禁脚本 SHA-256 为 `bcef1c79afacb52679bd343f989f1ca5678154747d0dbea2de5132ed04d55869`，
+与提交内容逐字节一致。OCI archive 为 914,849,280 bytes，SHA-256
+`0055f912c8f8c8312054f221a6352f049a276dd785de9af0c3b456b84e8529fa`；顶层 `index.json` SHA-256、nested index、
+platform manifest、config、attestation manifest 分别为
+`b8ee589c006a5c476b80b880fe6e08ca031788ac9045a056b754929c9c862d8b`、
+`sha256:17ecd8c76a6bab9f46413fc58828b2cb58ecd6b2181aa105c543b6e6cc27c27b`、
+`sha256:f6ab1ad5bf9c4f89e66daf12d5adae4f583b13ab1cc9646a3342add99bde6ac0`、
+`sha256:27b5f57fcbff8a1481a55a131e65edbfea68ccbbf524ea35e8108e0dfba335df`、
+`sha256:d0baf472e7c2c9420534311cbfc5f510ae91141b0a63ff7b51787e2cff2e3faf`。78/78 descriptor edges、
+78/78 可达 blobs、0 orphan、71/71 唯一 diff IDs 均成立，镜像为 `65532:65532` 和正确入口。SPDX
+`sha256:7f9d523ad9d275d2ad5b346bfd549a775e79180e5fd1939513c8d25b10fa8a0c` 含 2,592 packages、381 files、
+8,096 relationships；SLSA `sha256:8d4fc8b78444ea74c6ddc9f1b69cdd6b24bb717bc40c2af316e51b759c18bf6b`
+含 3 项固定 materials 与四项精确 build args，两份 statement 均只有一个 subject 并绑定 platform manifest。
+BuildKit 记录 `nf6sptzjktxv7a0r96khdii57` 与本轮 4.145 GB 编译挂载
+`3vn62y4gehmjwx2zyniot7ayq` 已分别按精确 ID 删除，没有全局 prune。
+
+候选从稳定 generation 1006 经 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test
+原子投放，patch 生成 generation 1007/RV `9095825`；最终候选 RV `9096131`、3/3、restart 0，三份
+`containerID` 均为规范 `containerd://<id>`，runtime imageID 全部为已审计候选摘要。全部适用 HEAD 合同的 10 秒
+readonly gate 首次 GREEN；Auth disabled，revision/HashKV/term 为 `75044/1984703050/881`。
+
+停止六转发后，以新鲜六类 JSON test 从候选 generation 1007 精确回滚；patch 生成 generation 1008/RV `9096492`，
+终态 generation/observed `1008/1008`、RV `9096887`、3/3 Ready、restart 0、22 参数，runtime 恢复稳定
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`，三份稳定 `containerID` 也通过新增围栏。
+省略未来 `EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS` 的 60 秒稳定适用 gate GREEN；revision/HashKV 保持
+`75044/1984703050`，正常回滚选主后 term `883`。PD/TiKV 3+3 Running/Ready，三个 TiKV store 全部 Up；六 listener、
+候选 workload、CRI container/image、containerd 候选名称、关键 content 与 snapshot 引用均为 0，稳定镜像和数据卷保留。
+OCI 与审计材料位于可恢复实体 `/tmp/kubebrain-a5786-20260908T111646Z`，回收站路径
+`/root/.local/share/Trash/files/kubebrain-a5786-20260908T111646Z` 保留链接；最终根盘可用约 3.9 GiB。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
