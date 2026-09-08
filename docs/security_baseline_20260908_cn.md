@@ -110,3 +110,28 @@ Go 1.26.8 对修改前 commit `b2f4bed9` 复测，输出逐行完全相同，确
 不得把 govulncheck 成功写成全部 CI 成功。objectstore 的 Staticcheck 已通过。
 新安全基线发布镜像仍待 CI 完成，尚未部署；本地预提交构建不替代发布验证。
 三副本 KubeBrain、恢复、监控及故障验收仍待后续推进。
+
+## 已上传发布产物的独立核验
+
+CI `34264830428` 仍报告 build/push in_progress 时，固定源码标签已可读取。以下核验
+针对已上传的不可变产物，不把标签存在或本地验证成功当作 CI 已完成：
+
+- 索引 `sha256:6ab33dc81572dfc318b02d4f840252111790690e1fa04d20af1f772db309a224`，
+  amd64 runtime manifest `sha256:0f5cabecae924442cc011bdf562439908f3334c9958375d61c4b84cdc615d88e`，
+  arm64 runtime manifest `sha256:1ce160482774e91040ad771715b634f22ff7b4e3947e0af78571bb361a8d1479`。
+- 下载 amd64 后以 `--network none` 运行版本入口：`0.0.0-dbaas-5645caa6b014`、
+  源码 `5645caa6b014c2c17b84af968f242efeee3a388a`、Go 1.26.8、TiKV、linux/amd64、
+  构建时间 `2026-09-08T18:45:13Z`；OCI labels 与非 root `65532:65532` 一致。
+- 镜像 kubectl 为 `v1.36.4+kubebrain`，Go 1.26.8、源码 SHA 与构建时间匹配。
+- 提取镜像实际 `/usr/local/bin` 的 66 个 Go 可执行文件，逐个验证 Go 1.26.8、X86-64，
+  govulncheck v1.6.0 二进制扫描全部通过，终态 `SCANNED_GO_BINARIES=66 PASS`。
+  无可达漏洞不等于没有模块级告警，OpenPGP 告警仍保留。
+  主程序 SHA-256 为 `8d4562fa5445a153d13e2c07a21e85f37c3bffac02742f2412df5183861af1e7`，
+  kubectl 为 `0dc44d82cd8d6cce454784bc668f41769f2cff49d4c4438aeff27fefbcdfd51a`。
+
+持久证据为环境材料目录中的 `security-release-image-index.json`、
+`security-release-image-inspect.json`、`security-release-version.log`、
+`security-release-kubectl-version.json`、`security-release-binary-scan.log`。
+提取用未启动容器 `04fdd764537a0328a2b0aed4cb691f83f8cd887f23ab7d8888eb480e181276bb` 已删除。
+本地下载镜像及 `/tmp/kubebrain-release-audit.rIYu3W` 暂留用于紧接着的部署核验，
+其中 kubectl 已用于读取授权集群；未替换全局 kubectl，结束后需定向清理。

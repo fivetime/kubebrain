@@ -168,3 +168,22 @@ API `/version` 本次返回 v1.36.1；此前 v1.36.0 来自节点 kubelet 信息
 `2026090819050001/2026090819050002/2026090819050003`，程序会拒绝复用已存在 ID。
 该探针尚未创建、测试尚未运行，不把计划或模板当作 PASS。失败后必须先按 Pod/StatefulSet UID
 和上述 fixture 身份核验清理，不能直接重跑来掩盖残留；成功后也需回读数据面零重启、卷身份与工作目录清理。
+
+### 发布产物核验中
+
+固定源码标签现已上传，双架构 digest 为
+`sha256:6ab33dc81572dfc318b02d4f840252111790690e1fa04d20af1f772db309a224`。
+独立下载 amd64 后，版本/SHA/Go 1.26.8/TiKV/构建时间/OCI labels/非 root 均匹配；
+实际镜像中的 66 个 Go 可执行文件二进制扫描全部通过。证据与边界见
+[安全基线记录](security_baseline_20260908_cn.md)。CI 同一 run 仍 build/push in_progress，
+未宣称发布完成或部署成功；继续等待 Verify/Promote 及终态。
+
+从固定源码 `5645caa6` 加测试 overlay 重新渲染 `kubebrain-tls-5645caa6.yaml`，
+全部镜像使用上述 digest，文件 SHA-256 为
+`5d8d39df467d8f660d10095a87e1b790531d2fc0cc26cb437a7d7b7928ca07f8`。
+再次通过 server-side dry-run，且逐项核对恰好五个 namespaced 对象、三副本、两类工作卷的
+rook-ceph StorageClass 与 4 GiB 配置；没有创建 StatefulSet 或这些工作卷。
+
+本次读取实时负载时，Metrics API 返回不可用；没有安装或修改用户的 metrics-server。
+节点资源请求和 Ready/Pressure 状态可读，调度余量不替代实时 CPU/内存负载或监控系统验收。
+PD/TiKV 六个 Pod 的 UID 未变化，均 Ready、restart 0。
