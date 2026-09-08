@@ -1291,6 +1291,8 @@ ready_pod_runtime_identities() {
 		and ((keys | length) >= (if $allow_empty then 0 else 1 end))
 		and ((keys | length) <= 1)
 		and all(to_entries[]; (.key == "running" or .key == "waiting" or .key == "terminated") and (.value | type) == "object");
+	def nonnegative_int32:
+		type == "number" and . == floor and . >= 0 and . <= 2147483647;
 	[.items[]
 		| select(.metadata.deletionTimestamp == null)
 		| select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
@@ -1324,9 +1326,7 @@ ready_pod_runtime_identities() {
 						and (.status.containerID | type) == "string" and .status.containerID != ""
 						and (.status.imageID | type) == "string" and (.status.imageID | test("sha256:[0-9a-f]{64}$"))
 						and (.status.ready | type) == "boolean"
-						and (.status.restartCount | type) == "number"
-						and .status.restartCount == (.status.restartCount | floor)
-						and .status.restartCount >= 0
+						and (.status.restartCount | nonnegative_int32)
 						and (.status.state | valid_container_state(false))
 						and (.status.lastState | valid_container_state(true))
 						and ((.status | has("started") | not) or .status.started == null or (.status.started | type) == "boolean")
@@ -1368,6 +1368,8 @@ validate_ready_pod_target_runtime_state() {
 			type == "string" and
 			(. as $value |
 				try ((fromdateiso8601 | todateiso8601) == $value) catch false);
+		def nonnegative_int32:
+			type == "number" and . == floor and . >= 0 and . <= 2147483647;
 		[
 			.items[]
 			| select(.metadata.deletionTimestamp == null)
@@ -1376,6 +1378,8 @@ validate_ready_pod_target_runtime_state() {
 			| ($pod.metadata.name // "<missing>") as $pod_name
 			| [$pod.status.containerStatuses[]? | select(.name == $target)] as $matches
 			| if ($matches | length) != 1 or $matches[0].ready != true then empty
+			  elif ($matches[0].restartCount | nonnegative_int32 | not) then
+				"\($pod_name):target-restart-count=\($matches[0].restartCount | tojson)"
 			  elif ($matches[0] | has("started")) and
 				$matches[0].started != null and $matches[0].started != true then
 				"\($pod_name):target-started=\($matches[0].started | tojson)"
