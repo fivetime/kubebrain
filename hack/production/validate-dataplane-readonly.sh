@@ -1297,6 +1297,8 @@ ready_pod_runtime_identities() {
 		type == "string" and
 		(split("://") as $parts |
 			($parts | length) == 2 and $parts[0] != "" and $parts[1] != "");
+	def valid_container_name:
+		type == "string" and test("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$");
 	[.items[]
 		| select(.metadata.deletionTimestamp == null)
 		| select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
@@ -1326,7 +1328,7 @@ ready_pod_runtime_identities() {
 				+ [ $ephemeral_containers[] | {scope: "ephemeralContainer", status: .} ]) as $runtime_statuses
 				| if all($runtime_statuses[];
 					if (.status | type) != "object" then false else
-						(.status.name | type) == "string" and .status.name != ""
+						(.status.name | valid_container_name)
 						and (.status.containerID | valid_container_id)
 						and (.status.imageID | type) == "string" and (.status.imageID | test("sha256:[0-9a-f]{64}$"))
 						and (.status.ready | type) == "boolean"
@@ -1336,7 +1338,7 @@ ready_pod_runtime_identities() {
 						and ((.status | has("started") | not) or .status.started == null or (.status.started | type) == "boolean")
 					end
 				)
-				and (($runtime_statuses | map([.scope, .status.name]) | unique | length) == ($runtime_statuses | length))
+				and (($runtime_statuses | map(.status.name) | unique | length) == ($runtime_statuses | length))
 				and (($runtime_statuses | map(.status.containerID) | unique | length) == ($runtime_statuses | length))
 				then ($runtime_statuses
 					| sort_by(.scope, .status.name)
