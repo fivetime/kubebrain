@@ -219,3 +219,33 @@ pull/run/create/inspect，提升阶段继续使用完整双架构索引。解析
 PD/TiKV 六个 Pod 均 Ready、restart 0；`kubebrain` StatefulSet 查询仍为空。
 `nvme-rep3-rbd-pool` UID、CSI provisioner、clusterID 及三项 Secret namespace 仍匹配
 rook-ceph 消费者集群。未新增 KubeBrain Pod/PVC 或修改集群配置；后续实际部署前仍须重新核验。
+
+### 后端 TLS 门禁预审（未执行迁移）
+
+当前前端/peer/info 证书不覆盖 PD/TiKV。KubeBrain 已提供 `--tikv-ca-file`、
+`--tikv-cert-file`、`--tikv-key-file` 和 `--tikv-verify-cn`，但本测试 overlay 尚未挂载
+后端客户端证书或配置这些参数，不能把前端 mTLS 当作端到端加密验收。
+
+已查阅 [TiDB Operator v1.6 组件间 TLS 指南](https://docs.pingcap.com/tidb-in-kubernetes/stable/enable-tls-between-components/)：
+现有明文集群的迁移不等价于普通滚动修改 `spec.tlsCluster.enabled`，官方流程涉及 PD
+临时缩容、TLS 重启、内嵌 etcd peerURL 变更和恢复副本。须先审计维护窗口、现有数据保护
+与回退步骤，不能直接在当前三副本上试改开关，也不删除既有 PVC 来绕过迁移。
+证书应使用独立后端 CA，按 Operator 约定提供 `kb-pd-cluster-secret`、
+`kb-tikv-cluster-secret`、`kb-cluster-client-secret`；SAN 必须覆盖实际 peer/service DNS。
+迁移后需同步 HTTPS PD 探针、客户端 TLS、只读适配器的新 Pod UID 锚点，以及正向连接、
+错误 CA/CN 拒绝、Region 健康和大 Key 回归。本文只记录预审，不代表这些资源或步骤已执行。
+
+预审运行 `go test ./cmd/option ./pkg/storage/tikv -run 'Test.*(TLS|Security|CN)' -count=1 -v`：
+cmd/option 的前端 TLS 参数、后端证书全有或全无校验、后端参数绑定共三个顶层测试通过；
+pkg/storage/tikv 明确输出 `[no tests to run]`，不计为后端传输测试通过。
+证据为材料目录 `security-backend-tls-unit-preflight.log`。本轮按 VerifyCN/ClusterVerifyCN
+检索仓库测试，仅定位到参数绑定断言；须补充实际后端 TLSConfig 的可信 CA/匹配 CN 正向
+握手与错误 CA/CN 拒绝回归，并与授权 TiKV/PD 真正开启 TLS 后的端到端测试分别记录。
+
+### 修复镜像 CI 已触发
+
+子镜像 digest 修复 `339381afb74eb225d7bab8e67196ccea07596509` 的提交前后两轮 verifier
+及四分片（各 703 项）均已通过，前置架构修复 `19c23ca6` 也已完成自己的两轮验证。
+两提交已快进推送 dbaas，自动触发 [run 34275611099](https://github.com/fivetime/kubebrain/actions/runs/34275611099)，
+创建于 `2026-09-08T20:34:39Z`，首次状态 queued，源码 SHA 一致；尚未取得可部署的固定
+digest。继续保留旧候选 `6ab33dc8…` 的拒绝结论，不以新 CI 启动代替发布门禁通过。

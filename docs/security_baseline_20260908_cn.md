@@ -213,3 +213,17 @@ COPY 的 66 个，另有三个用于独立 native full backup/restore stage。�
 `security-child-digest-pre-verify.log` 和 `security-child-digest-pre-shard-{0,1,2,3}.log`。
 接着提交此修复并立即执行相同的提交后 verifier/四分片；提交后结果及新 CI 尚待回读，
 不能用本轮提交前 PASS 代替。当前尚未推送或触发新 CI。
+
+### 子镜像 digest 修复的提交后结果
+
+代码提交 `339381afb74eb225d7bab8e67196ccea07596509`：提交后 verifier 再次确认 703 项
+完整分配（170/193/180/160），四分片全部通过（252.444/479.796/313.390/747.224 秒）。
+证据为 `security-child-digest-post-verify.log` 和 `security-child-digest-post-shard-{0,1,2,3}.log`。
+提交后 build 包普通/race、vet、Staticcheck、actionlint、Bash 语法和 diff 检查也通过。
+前置架构修复 `19c23ca6` 的提交前后 703 项结果见上文，两次代码提交均未省略门禁。
+随后按授权快进推送 dbaas，计划由 push 自动触发同一源码 SHA 的镜像 CI；须回读实际 run，
+不可用推送成功替代镜像验证，也不手动重复触发。测试集群仍未部署 KubeBrain。
+
+快进推送已成功，自动触发 [image run 34275611099](https://github.com/fivetime/kubebrain/actions/runs/34275611099)，
+创建时间 `2026-09-08T20:34:39Z`，head SHA 精确匹配 `339381afb74eb225d7bab8e67196ccea07596509`。
+首次回读状态 queued，尚无已验证镜像 digest；没有手动重复派发或提升旧镜像。
