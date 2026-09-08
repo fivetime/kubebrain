@@ -74197,6 +74197,52 @@ containerd CRI 在反复按精确 config ID 与 repoDigest 删除后仍枚举一
 位于可恢复实体 `/tmp/kubebrain-a5787-20260908T123802Z`，回收站路径
 `/root/.local/share/Trash/files/kubebrain-a5787-20260908T123802Z` 保留链接；最终根盘可用约 3.0 GiB。
 
+### A5788：容器运行时镜像引用进入完整身份围栏
+
+提交 `aca51b7fef4810584552d3b895ee35de90835626` 补齐普通、init、ephemeral 容器状态的非空字符串
+`image` 校验，并将该字段纳入完整 runtime identity。此前目标容器空 image、sidecar 空 image、缓存探针期间
+image 引用变化三项 RED 均会被旧门禁误放行；三个 RED 共 4.307 秒。修复后 focused 单次/连续十次为
+2.652/26.387 秒，race 十次 29.324 秒，完整 `TestValidateDataplaneReadonlyProbe` 290.100 秒；vet、bash
+syntax、gofmt、diff check GREEN。提交前后 verifier 均为 703=`170/193/180/160`，提交前四片
+252.935/449.246/308.757/719.153 秒，提交后四片 252.828/444.941/303.773/712.068 秒，全部通过。
+本项依据 Kubernetes `core/v1.ContainerStatus.Image` 运行时证据合同，不改变 etcd 客户端语义；本地 etcd 基线
+仍为干净 `5cd9f4ee13801e18825d661e5005ae599460bc3a`，没有查询远端最新版本。
+
+候选只构建一次，版本 `0.0.0-aca51b7f`、TiKV、Go 1.26.5、linux/amd64、完整 commit、构建时间
+`2026-09-08T13:30:14Z` 均匹配。OCI 为 914,849,792 bytes，SHA-256
+`667fb1f1f83d9559fe1484ce78a20da6db61406ebcc65dcacad09c983e9ec62f`；78/78 descriptor edges、78/78 可达 blobs、
+0 orphan、71/71 diff IDs 验证通过。镜像内 gate SHA-256
+`c0ae981a690c1e5d424248d0003e00585f4e520539c3261661472f6850b65118` 与提交一致。
+SPDX/SLSA 都以唯一 platform manifest
+`sha256:80255232896aa874b72dc1af253612d4766fda06c8c25f073a3041ed16f2c686` 为 subject；SPDX 含
+2,592 packages、381 files、8,096 relationships，SLSA 固定 3 materials 与四项 build args。
+
+磁盘空间不足时没有导入或假报候选验证完成。按用户清理要求回收明确属于本项目的 84 条编译缓存（约 348 GB）、
+1,744 个旧 OCI/解包临时文件（41,548,937,075 bytes）及三个本地二进制后，根盘可用约 327 GiB；未执行全局 prune，
+源码、测试记录、稳定镜像和数据卷保留。旧轮次 `/tmp` 归档路径仅表示历史位置，已清理的二进制/OCI 不再可从该路径恢复。
+
+本轮重用已审计 OCI，重新校验 archive SHA 后导入。候选 spec 和 runtime 使用同一顶层摘要
+`sha256:d24831593f71ebc141e0ff14075d2209bfec5ccf8bea7695790cd2133465c229`；镜像 config 为
+`sha256:47a8b3d217a3853c890b137f5e3eb938339904681537735662cd1c50d56eef2e`。
+从稳定 generation 1010 通过 UID/resourceVersion/generation/container/image/完整 22 args 六类 JSON test
+原子投放，patch generation 1011/RV `9117989`。首次启动出现 `CreateContainerError`：CRI 索引引用规范
+`docker.io/library/import-2026-09-08@<digest>`，但 containerd 缺少该名称；按同一已审计摘要补齐规范名称后原 rollout
+继续，无需重编译、重建 Pod 或重启 containerd。候选最终 RV `9118500`、3/3 Ready、restart 0，完整 10 秒
+readonly gate 首次通过，含 metrics、HashKV cache 与新增 runtime image identity 围栏；Auth disabled，
+revision/HashKV/term 为 `75044/1984703050/894`。端口转发在部分短连接探针结束时记录 broken pipe，最终门禁退出码为 0。
+
+停止六端口转发后，以新鲜六类 JSON test 回滚，patch generation 1012/RV `9118695`，终态 generation/observed
+`1012/1012`、RV `9119057`、3/3 Ready、restart 0，22 参数不变。runtime 恢复稳定
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`；省略未来 metrics 要求的 60 秒稳定适用
+readonly gate 通过，revision/HashKV 不变，term `896`。PD/TiKV 六副本 Ready，store 1/16001/16002 全 Up。
+候选无 workload/CRI container 引用后按精确 config ID 执行 rmi，CRI image、containerd 名称及 top/nested/platform/config
+四份关键 content 均清零；六 listener 关闭，最终根盘可用约 326 GiB。保留最新 OCI 与小型审计日志，不重新积累编译缓存。
+
+清理后严格 TiKV/PD 门禁原样复测仍返回 1：磁盘压力已消除，但六个 PV 各有 CSI 身份及实际容量隔离错误。
+唯一已配置 context 为单节点 `kind-kubebrain-dbaas`，StorageClass 为 `rancher.io/local-path`，没有 zone/region 标签。
+这不是生产存储或多故障域验收通过；真实 CSI restore、跨故障域故障历史和长期 soak 仍开放。汇总及下一环境要求见
+[DBaaS 验收状态](dbaas_acceptance_status_cn.md)。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
