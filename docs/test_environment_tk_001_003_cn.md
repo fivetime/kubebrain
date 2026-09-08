@@ -199,4 +199,23 @@ StatefulSet 和六份 KubeBrain 工作卷仍未创建。保留原有 TLS/隔离�
 修复已通过真实 BuildKit 自动平台回归和完整 arm64 编译阶段的 69 个程序架构/漏洞扫描；
 其中 66 个属于主运行镜像，三个属于独立备份/恢复镜像。提交前 703 项四分片也已全部通过。
 这些本地验证尚不能代替修复提交的新 CI 和真实部署。错误候选及编译阶段的本地镜像、大体积
-提取文件均已清理，日志保留；暂留 `/tmp/kubebrain-release-audit.rIYu3W/kubectl` 作受控调试工具。
+提取文件均已清理，日志保留；最后暂留的 kubectl 及整个
+`/tmp/kubebrain-release-audit.rIYu3W` 临时目录也已删除，未替换全局 kubectl 或清空共享缓存。
+
+架构修复已本地提交 `19c23ca6`，提交后 verifier 及全部四分片通过，尚未推送。
+CI 原失败日志显示先遇到同一索引 digest 切换平台拉取的 `cannot overwrite digest`，并非已经
+运行到 arm64 `cmp`。下一步还须改成按平台子镜像 digest 拉取，再对修复后的整套工作流
+重新提交验证；旧镜像的 arm64 程序错误已由本地直接子镜像提取独立证明。
+不能跳过该拉取错误或部署 amd64-only 候选来宣称双架构发布完成。
+
+`19c23ca6` 提交后测试结束，已开始后续工作流修复：验证阶段按唯一子镜像 digest
+pull/run/create/inspect，提升阶段继续使用完整双架构索引。解析器与工作流回归已加入，
+完整提交前后测试及新镜像 CI 尚待完成。当前仍不得部署旧候选。
+
+子镜像 digest 修复的提交前 verifier/四分片现已全部通过（703 项）；提交后完整验证与
+新镜像 CI 仍是后续门禁。详细日志名、时长与验证范围见[安全基线记录](security_baseline_20260908_cn.md)。
+
+2026-09-08 20:11 UTC 只读复核：kube-system 与测试 namespace 的 UID 仍匹配前述锚点；
+PD/TiKV 六个 Pod 均 Ready、restart 0；`kubebrain` StatefulSet 查询仍为空。
+`nvme-rep3-rbd-pool` UID、CSI provisioner、clusterID 及三项 Secret namespace 仍匹配
+rook-ceph 消费者集群。未新增 KubeBrain Pod/PVC 或修改集群配置；后续实际部署前仍须重新核验。

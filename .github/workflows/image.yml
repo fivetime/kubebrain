@@ -21,7 +21,7 @@ jobs:
   build-and-push:
     if: github.ref == 'refs/heads/dbaas'
     runs-on: self-hosted
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - name: Check out source
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -86,6 +86,9 @@ jobs:
       - name: Verify automatic target architecture
         run: KUBEBRAIN_TEST_DOCKER_PLATFORM=true go test ./build -run '^TestDockerfileAutomaticTargetArchitecture$' -count=1 -v
 
+      - name: Verify runtime manifest selection
+        run: go test ./build -run '^TestImagePlatform' -count=1 -v
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -119,15 +122,17 @@ jobs:
           manifest="$RUNNER_TEMP/dbaas-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-manifest.json"
           docker buildx imagetools inspect --raw "$reference" > "$manifest"
           jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' "$manifest"
-          docker pull --platform linux/amd64 "$reference"
+          amd64_digest="$(bash build/image-platform-digest.sh "$manifest" amd64)"
+          amd64_reference="${{ steps.vars.outputs.image }}@$amd64_digest"
+          docker pull --platform linux/amd64 "$amd64_reference"
           version_output="$(docker run --rm --platform linux/amd64 \
-            --entrypoint /usr/local/bin/kube-brain "$reference" version)"
+            --entrypoint /usr/local/bin/kube-brain "$amd64_reference" version)"
           printf '%s\n' "$version_output"
           printf '%s\n' "$version_output" | grep -F -- "Version:" | grep -F -- "${{ steps.vars.outputs.version }}"
           printf '%s\n' "$version_output" | grep -F -- "Storage:" | grep -F -- "TiKV"
           printf '%s\n' "$version_output" | grep -F -- "Git SHA:" | grep -F -- "${{ steps.vars.outputs.revision }}"
           printf '%s\n' "$version_output" | grep -F -- "BuildTime:" | grep -F -- "${{ steps.vars.outputs.created }}"
-          labels_json="$(docker image inspect "$reference" --format '{{json .Config.Labels}}')"
+          labels_json="$(docker image inspect "$amd64_reference" --format '{{json .Config.Labels}}')"
           jq -e \
             --arg version "${{ steps.vars.outputs.version }}" \
             --arg revision "${{ steps.vars.outputs.revision }}" \
@@ -135,8 +140,8 @@ jobs:
             '.["org.opencontainers.image.version"] == $version and
              .["org.opencontainers.image.revision"] == $revision and
              .["org.opencontainers.image.created"] == $created' <<<"$labels_json"
-          test "$(docker image inspect "$reference" --format '{{.Config.User}}')" = "65532:65532"
-          kubectl_version="$(docker run --rm --platform linux/amd64 --entrypoint /usr/local/bin/kubectl "$reference" version --client -o json)"
+          test "$(docker image inspect "$amd64_reference" --format '{{.Config.User}}')" = "65532:65532"
+          kubectl_version="$(docker run --rm --platform linux/amd64 --entrypoint /usr/local/bin/kubectl "$amd64_reference" version --client -o json)"
           jq -e --arg revision "${{ steps.vars.outputs.revision }}" --arg created "${{ steps.vars.outputs.created }}" \
             '.clientVersion.gitVersion == "v1.36.4+kubebrain" and
              .clientVersion.goVersion == "go1.26.8" and
@@ -150,11 +155,13 @@ jobs:
           trap 'if [[ -n "$container_id" ]]; then docker rm "$container_id"; fi' EXIT
           command -v readelf >/dev/null
           for arch in amd64 arm64; do
-            docker pull --platform "linux/$arch" "$reference"
-            platform_version="$(docker run --rm --platform "linux/$arch" --entrypoint /usr/local/bin/kube-brain "$reference" version)"
+            platform_digest="$(bash build/image-platform-digest.sh "$manifest" "$arch")"
+            platform_reference="${{ steps.vars.outputs.image }}@$platform_digest"
+            docker pull --platform "linux/$arch" "$platform_reference"
+            platform_version="$(docker run --rm --platform "linux/$arch" --entrypoint /usr/local/bin/kube-brain "$platform_reference" version)"
             printf '%s\n' "$platform_version" | grep -F 'Go OS/Arch:' | grep -F "linux/$arch"
             printf '%s\n' "$platform_version" | grep -F 'Git SHA:' | grep -F '${{ steps.vars.outputs.revision }}'
-            container_id="$(docker create --platform "linux/$arch" --entrypoint /usr/local/bin/kubectl "$reference" version --client)"
+            container_id="$(docker create --platform "linux/$arch" --entrypoint /usr/local/bin/kubectl "$platform_reference" version --client)"
             docker cp "$container_id:/usr/local/bin" "$artifact_dir/shipped-bin-$arch"
             cmp "$artifact_dir/kubectl-$arch" "$artifact_dir/shipped-bin-$arch/kubectl"
             case "$arch" in

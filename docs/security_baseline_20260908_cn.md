@@ -179,5 +179,37 @@ COPY 的 66 个，另有三个用于独立 native full backup/restore stage。�
 
 原 CI `34264830428` 最终为 failure：Verify published test image 失败，Promote 步骤 skipped；
 失败日志 `security-release-ci-failed.log`。本地错误候选镜像、提取程序及 arm64 编译 stage
-镜像/产物均已定向清理，提取容器也已删除；暂留单个已扫描 amd64 kubectl 用于本次调试。
+镜像/产物均已定向清理，提取容器也已删除；最后暂留的 amd64 kubectl 随
+`/tmp/kubebrain-release-audit.rIYu3W` 整个临时目录也已删除，未修改全局 kubectl 或清空共享缓存。
 仍未在本机执行 arm64 程序，也未更改宿主机 QEMU/binfmt；完整修复发布镜像仍须重新构建验证。
+
+### 提交后验证与第二个 CI 缺口
+
+架构修复提交为 `19c23ca6`，提交后立即执行 verifier（703 项、170/193/180/160）及四分片；
+四分片最终全部通过（279.419/481.113/329.779/779.004 秒），尚未推送该提交。
+日志为 `security-platform-post-shard-{0,1,2,3}.log`；没有用提交前通过代替提交后验证。
+
+回读远端失败步骤的完整日志，实际先失败于第二个平台拉取：
+`2026-09-08T19:44:23Z cannot overwrite digest sha256:6ab33dc81572dfc318b02d4f840252111790690e1fa04d20af1f772db309a224`。
+因此不能声称本次 CI 已运行到 arm64 `cmp` 并因它失败；arm64 错误来自本地精确子镜像提取和
+真实 BuildKit 回归的独立证据。Runner 对同一索引 digest 切换平台的存储限制是另一个待修问题：
+后续需要从已核验索引选择每个平台的唯一子镜像 digest，再按该 digest pull/run/create。
+必须继续保留双架构验证和标签提升门禁，不能删除 arm64 检查或忽略拉取错误。
+先完成 `19c23ca6` 的提交后验证，再修改此工作流，并遵守下一次代码提交前后的完整测试约定。
+
+提交后四分片结束后，已修改工作流：使用 `build/image-platform-digest.sh` 从已核验的
+索引中解析每个平台唯一的 runtime manifest digest，所有本地 pull/run/create/inspect
+均绑定子镜像；最终提升的仍是原双架构索引。解析器拒绝缺失/重复平台、非镜像描述符、
+无效 digest 和多个 JSON 文档，允许索引包含 unknown/unknown provenance/SBOM 条目。
+真实 Bash/jq 用例及工作流接线回归纳入 image CI 的强制预发布步骤，保留原架构、字节、
+版本、用户与标签检查。原任务耗时 59 分 50 秒，新双架构验证增加工作量，job 上限调整为
+90 分钟；这不忽略任何失败或改变发布门禁。该后续修改尚待提交前后完整测试及新 CI 验证。
+
+后续修改本地 build 包普通/race、vet、Staticcheck、actionlint、Bash 语法检查均通过；
+真实 Dockerfile 自动平台回归再次验证 amd64/arm64 通过（2.319 秒），没有手动 TARGETARCH
+覆盖。解析器在保留的真实 registry 索引上返回前述两项精确子镜像 digest，仅验证选择结果，
+不把被拒绝镜像重新判定为可部署。提交前 verifier 通过（703 项、170/193/180/160），
+四分片全部通过（266.631/485.089/331.441/764.245 秒）；日志为
+`security-child-digest-pre-verify.log` 和 `security-child-digest-pre-shard-{0,1,2,3}.log`。
+接着提交此修复并立即执行相同的提交后 verifier/四分片；提交后结果及新 CI 尚待回读，
+不能用本轮提交前 PASS 代替。当前尚未推送或触发新 CI。
