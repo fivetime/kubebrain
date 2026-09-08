@@ -42,6 +42,41 @@ jobs:
           echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
+      - name: Set up Go for security checks
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.8'
+          cache-dependency-path: |
+            go.sum
+            hack/backup/objectstore/go.sum
+            hack/kubectl/go.sum
+
+      - name: Scan shipped Go modules
+        run: |
+          set -euo pipefail
+          go mod download
+          go mod verify
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+          (cd hack/backup/objectstore && \
+            go mod download && go mod verify && \
+            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd hack/kubectl && \
+            go mod download && go mod verify && \
+            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+
+      - name: Build and scan kubectl binaries
+        env:
+          KUBEBRAIN_GIT_SHA: ${{ steps.vars.outputs.revision }}
+          KUBEBRAIN_BUILD_DATE: ${{ steps.vars.outputs.created }}
+        run: |
+          set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/kubectl-security-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$artifact_dir"
+          for arch in amd64 arm64; do
+            TARGETARCH="$arch" bash hack/kubectl/build.sh "$artifact_dir/kubectl-$arch"
+            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -mode=binary "$artifact_dir/kubectl-$arch"
+          done
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
 
@@ -98,6 +133,26 @@ jobs:
              .["org.opencontainers.image.revision"] == $revision and
              .["org.opencontainers.image.created"] == $created' <<<"$labels_json"
           test "$(docker image inspect "$reference" --format '{{.Config.User}}')" = "65532:65532"
+          kubectl_version="$(docker run --rm --platform linux/amd64 --entrypoint /usr/local/bin/kubectl "$reference" version --client -o json)"
+          jq -e --arg revision "${{ steps.vars.outputs.revision }}" --arg created "${{ steps.vars.outputs.created }}" \
+            '.clientVersion.gitVersion == "v1.36.4+kubebrain" and
+             .clientVersion.goVersion == "go1.26.8" and
+             .clientVersion.gitCommit == $revision and
+             .clientVersion.buildDate == $created and
+             .clientVersion.gitTreeState == "dirty"' <<<"$kubectl_version"
+
+          # Compare the actual shipped bytes with the pre-publish scanned binaries.
+          artifact_dir="$RUNNER_TEMP/kubectl-security-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container_id=''
+          trap 'if [[ -n "$container_id" ]]; then docker rm "$container_id"; fi' EXIT
+          for arch in amd64 arm64; do
+            docker pull --platform "linux/$arch" "$reference"
+            container_id="$(docker create --platform "linux/$arch" --entrypoint /usr/local/bin/kubectl "$reference" version --client)"
+            docker cp "$container_id:/usr/local/bin/kubectl" "$artifact_dir/shipped-$arch"
+            cmp "$artifact_dir/kubectl-$arch" "$artifact_dir/shipped-$arch"
+            docker rm "$container_id"
+            container_id=''
+          done
 
       - name: Promote verified image to dbaas
         run: |

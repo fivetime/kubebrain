@@ -16,8 +16,9 @@ func TestScaleLabRejectsInsecureGoToolchains(t *testing.T) {
 		version string
 		ok      bool
 	}{
-		{name: "previous patch", version: "go1.26.4"},
-		{name: "minimum", version: "go1.26.5", ok: true},
+		{name: "vulnerable old baseline", version: "go1.26.5"},
+		{name: "previous patch", version: "go1.26.7"},
+		{name: "minimum", version: "go1.26.8", ok: true},
 		{name: "newer patch", version: "go1.26.9", ok: true},
 		{name: "newer minor", version: "go1.27.0", ok: true},
 		{name: "unstable string", version: "go1.27rc1"},

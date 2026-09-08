@@ -59,7 +59,7 @@ func TestCIDockerBuildSuppliesRequiredMetadata(t *testing.T) {
 	content := string(workflow)
 
 	for _, required := range []string{
-		`GO_VERSION: "1.26.5"`,
+		`GO_VERSION: "1.26.8"`,
 		`echo "revision=$(git rev-parse HEAD)"`,
 		"--build-arg TARGETARCH=amd64",
 		`--build-arg KUBEBRAIN_VERSION="${{ steps.image.outputs.version }}"`,
@@ -67,7 +67,7 @@ func TestCIDockerBuildSuppliesRequiredMetadata(t *testing.T) {
 		`--build-arg KUBEBRAIN_BUILD_DATE="${{ steps.image.outputs.created }}"`,
 		`= "${{ steps.image.outputs.revision }}"`,
 		`= "65532:65532"`,
-		`= "v1.36.2"`,
+		`= "v1.36.4+kubebrain"`,
 	} {
 		require.Contains(t, content, required)
 	}
@@ -218,7 +218,7 @@ func TestIntegrationToolDownloadsAreVersionedAndVerified(t *testing.T) {
 	content := string(workflow)
 
 	for _, required := range []string{
-		`GO_VERSION: "1.26.5"`,
+		`GO_VERSION: "1.26.8"`,
 		"kindest/node:v1.36.1@sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5",
 		"kind/releases/download/v0.32.0/kind-linux-amd64",
 		"50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54",

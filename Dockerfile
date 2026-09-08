@@ -3,7 +3,7 @@ ARG KUBEBRAIN_GIT_SHA
 ARG KUBEBRAIN_BUILD_DATE
 ARG BUILDPLATFORM=linux/amd64
 
-FROM --platform=${BUILDPLATFORM} golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651 AS build
+FROM --platform=${BUILDPLATFORM} golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 AS build
 
 WORKDIR /src
 ENV CGO_ENABLED=0
@@ -14,19 +14,16 @@ RUN go mod download
 COPY hack/backup/objectstore/go.mod hack/backup/objectstore/go.sum ./hack/backup/objectstore/
 RUN cd hack/backup/objectstore && go mod download
 
+COPY hack/kubectl/go.mod hack/kubectl/go.sum ./hack/kubectl/
+RUN cd hack/kubectl && go mod download && go mod verify
+
 ARG TARGETARCH=amd64
 ENV GOOS=linux GOARCH=${TARGETARCH}
-ARG KUBECTL_VERSION=v1.36.2
 RUN mkdir -p /src/bin \
     && case "$TARGETARCH" in \
-      amd64) KUBECTL_SHA256=1e9045ec32bea85da43de85f0065358529ea7c7a152eca78154fba5b58c27d82 ;; \
-      arm64) KUBECTL_SHA256=c957eb8c4bea27a3bb35b269edd9082e27f027f7b76b20b5bf4afebc726c6d3e ;; \
+      amd64|arm64) ;; \
       *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac \
-    && curl --proto '=https' --tlsv1.2 -fsSLo /src/bin/kubectl \
-      "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
-    && echo "${KUBECTL_SHA256}  /src/bin/kubectl" | sha256sum -c - \
-    && chmod 0755 /src/bin/kubectl
+    esac
 
 COPY . .
 
@@ -39,6 +36,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && test -n "$KUBEBRAIN_BUILD_DATE" \
     && export KUBEBRAIN_VERSION KUBEBRAIN_GIT_SHA KUBEBRAIN_BUILD_DATE \
     && export REQUIRE_BUILD_METADATA=true \
+    && bash ./hack/kubectl/build.sh /src/bin/kubectl \
     && case "$STORAGE" in \
       tikv) bash ./build/build-tikv.sh ;; \
       badger) bash ./build/build-badger.sh ;; \

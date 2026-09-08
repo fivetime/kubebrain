@@ -34,7 +34,7 @@ cp lab.env.example lab.env && $EDITOR lab.env    # set the three host IPs
 ```
 
 Prerequisites the script checks for (install once): `tiup` (TiKV deploy), `kwok`
-binary on the CTRL host, and Go 1.26.5 or newer on the machine you run
+binary on the CTRL host, and Go 1.26.8 or newer on the machine you run
 `setup.sh` from. Build phases fail before writing a binary when the host Go
 toolchain is older than the current standard-library security baseline.
 

@@ -5,7 +5,7 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-用户现已授权使用 `root@10.32.32.66` 控制的 `tk-001-003` 集群，并明确只使用 rook-ceph 消费者存储、禁止使用 rook-ceph-secondary。连接路径、安全边界、资源 UID 和实时部署结果统一记录于 [tk-001-003 测试环境交接记录](test_environment_tk_001_003_cn.md)。新环境已部署独立 3 PD/3 TiKV，rook-ceph 基本快照恢复通过，Region/存储门禁在固定 Pod exec 传输适配后通过；原 API Service proxy 入口仍受 Cilium 隔离策略限制。KubeBrain 本体尚待镜像分发入口，不能将后端部署成功当作完整产品部署成功。
+用户现已授权使用 `root@10.32.32.66` 控制的 `tk-001-003` 集群，并明确只使用 rook-ceph 消费者存储、禁止使用 rook-ceph-secondary。连接路径、安全边界、资源 UID 和实时部署结果统一记录于 [tk-001-003 测试环境交接记录](test_environment_tk_001_003_cn.md)。新环境已部署独立 3 PD/3 TiKV，rook-ceph 基本快照恢复通过，Region/存储门禁在固定 Pod exec 传输适配后通过；原 API Service proxy 入口仍受 Cilium 隔离策略限制。镜像分发入口现已通过 self-hosted CI/ghcr 验证，但已构建镜像仍属旧安全基线；KubeBrain 本体尚待新安全基线镜像，不能将后端部署成功当作完整产品部署成功。
 
 | 验收项 | 当前证据 | 尚需取得的证据 |
 | --- | --- | --- |
@@ -18,7 +18,7 @@
 | 恢复与长期验证 | 计划 P2 明确保留真实 CSI target retirement→provisioning→durable restore、加密 key promotion/撤权、版本矩阵、生产规模和长时间 soak | 对每个开放项提供新鲜、可追溯的真实执行结果；已有实验结果不能外推未测拓扑/规模 |
 | 管理面与计量 | 计划 P1 仍列出跨 cluster/region 调度、管理面/外部 IdP HA soak、预生产 Prometheus evaluation/连续 24 小时采样及外部财务系统真实回执等开放项 | 本轮未验证这些外部系统；须按完整计划分别取得实际证据，不能由数据面门禁替代 |
 
-下一步顺序：取得新环境可用的镜像仓库或明确授权的镜像导入方式，部署 KubeBrain 并完成客户端语义测试，再推进 P2 恢复、故障历史与长时间测试。原 kind 环境及其 hostPath 卷保留，不迁移或覆盖；新环境固定使用仓库外独立 kubeconfig。三 worker 的物理宿主机/可用区独立性尚未证明，节点级故障还涉及用户已有工作负载，需先确认具体授权范围。
+下一步顺序：完成[安全升级门禁](security_baseline_20260908_cn.md)，取得新基线 CI 镜像后部署 KubeBrain 并完成客户端语义测试，再推进 P2 恢复、故障历史与长时间测试。原 kind 环境及其 hostPath 卷保留，不迁移或覆盖；新环境固定使用仓库外独立 kubeconfig。三 worker 的物理宿主机/可用区独立性尚未证明，节点级故障还涉及用户已有工作负载，需先确认具体授权范围。
 
 原 kind 部署入口复核：`deploy/production/kubebrain.yaml` 和 `deploy/production/tidb-cluster.yaml` 均要求同组件副本按 `kubernetes.io/hostname` 硬反亲和，不能在该单节点上满足三副本调度；zone 规则仅为偏好，模板本身不证明跨区放置。该 kind 集群 `CSIDriver` 数量为 0，CRD 清单没有 VolumeSnapshot、Prometheus 或 ServiceMonitor API。现有模板仍需目标环境注入镜像、存储、证书、网络与监控配置，不能直接 apply 到实验实例。上述是相应部署/恢复/计量验收的环境前置缺口，不应记作已经复现的 etcd API 语义缺陷，也不代表所有产品代码工作都依赖这些环境。
 

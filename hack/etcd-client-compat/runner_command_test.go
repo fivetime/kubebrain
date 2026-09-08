@@ -1461,7 +1461,7 @@ func TestReferenceEtcdProvenanceVerifierReadsGoBuildInfo(t *testing.T) {
 	binary := tempDir + "/etcdctl"
 	require.NoError(t, os.WriteFile(binary, []byte("#!/usr/bin/env bash\nprintf 'etcdctl version: 3.8.0-alpha.0\\nAPI version: 3.8\\n'\n"), 0o700))
 	fakeGo := tempDir + "/go"
-	require.NoError(t, os.WriteFile(fakeGo, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$2: go1.26.5\" $'\\tbuild\\tvcs.revision=5cd9f4ee13801e18825d661e5005ae599460bc3a'\n"), 0o700))
+	require.NoError(t, os.WriteFile(fakeGo, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$2: go1.26.8\" $'\\tbuild\\tvcs.revision=5cd9f4ee13801e18825d661e5005ae599460bc3a'\n"), 0o700))
 
 	run := func() ([]byte, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), compatScriptCommandTimeout)
@@ -1478,7 +1478,7 @@ func TestReferenceEtcdProvenanceVerifierReadsGoBuildInfo(t *testing.T) {
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(output), "reference etcd provenance verified: 5cd9f4ee13801e18825d661e5005ae599460bc3a")
 
-	require.NoError(t, os.WriteFile(fakeGo, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$2: go1.26.5\" $'\\tbuild\\tvcs.revision=5cd9f4ee13801e18825d661e5005ae599460bc3a' $'\\tbuild\\tvcs.modified=true'\n"), 0o700))
+	require.NoError(t, os.WriteFile(fakeGo, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$2: go1.26.8\" $'\\tbuild\\tvcs.revision=5cd9f4ee13801e18825d661e5005ae599460bc3a' $'\\tbuild\\tvcs.modified=true'\n"), 0o700))
 	output, err = run()
 	require.Error(t, err)
 	require.Contains(t, string(output), "reference etcd binary was built from a modified worktree")

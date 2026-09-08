@@ -15,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.26.5"
+  GO_VERSION: "1.26.8"
   ETCD_COMPAT_GO_VERSION: "1.26.x"
 
 jobs:
@@ -70,6 +70,7 @@ jobs:
         run: |
           modules=(
             hack/backup/objectstore
+            hack/kubectl
             hack/scale-lab/bigstream
             hack/scale-lab/loadgen
           )
@@ -84,6 +85,8 @@ jobs:
         run: |
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
           (cd hack/backup/objectstore && \
+            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd hack/kubectl && \
             go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
           (cd hack/etcd-client-compat && \
             go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
@@ -179,7 +182,7 @@ jobs:
           test "$(docker image inspect kubebrain:ci-tikv --format '{{ .Config.User }}')" \
             = "65532:65532"
           test "$(docker run --rm --entrypoint kubectl kubebrain:ci-tikv \
-            version --client -o json | jq -r .clientVersion.gitVersion)" = "v1.36.2"
+            version --client -o json | jq -r .clientVersion.gitVersion)" = "v1.36.4+kubebrain"
 
       - name: Build Badger Docker image
         run: |

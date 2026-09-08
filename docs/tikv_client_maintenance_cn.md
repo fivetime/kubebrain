@@ -11,7 +11,7 @@
 
 客户端的权威[补丁清单及历史映射](https://github.com/fivetime/tikv-client-go/blob/kubebrain-v2.0.7/KUBEBRAIN_PATCH.md)在独立仓库维护，不能再在产品仓库复制一份客户端源码独立修改。
 
-产品分仓提交为 `522da3334662200606d01e32dad8556238a3fc40`，已推送 `dbaas` 并触发 [镜像构建 34253661949](https://github.com/fivetime/kubebrain/actions/runs/34253661949)。该构建在记录时仍运行中，不能把分仓前成功的 run 34247183115 当成这一提交的构建结果。
+产品分仓提交为 `522da3334662200606d01e32dad8556238a3fc40`，已推送 `dbaas` 并触发 [镜像构建 34253661949](https://github.com/fivetime/kubebrain/actions/runs/34253661949)。该构建现已 success，双架构 digest 为 `sha256:1e1dd21b06c7cd0ff1fbfda04ea26d55f14e98949ca9333c0eff4f8fd12871cb`；它仍是安全升级前版本，不能当成下述新客户端和工具链的构建结果。
 
 ## 迁移证据
 
@@ -41,6 +41,20 @@
 原 `TestKV/TestRURuntimeStatsCleanUp` 在 race 模式 10 次复测中出现 6 次失败：测试在客户端启动后才启用仅启动时读取的 failpoint，使后台清理可能保留正常 30 分钟间隔。仅修正测试，改为启用开关后创建测试客户端，并有界等待相同的“map 必须清空”断言；race 连续 50 次通过。不改生产清理逻辑，不跳过断言。
 
 2026-09-08 的客户端独立漏洞扫描未通过，报告 6 项可达问题：Go 1.26.5 的 GO-2026-6091/6090/6089/5972、grpc v1.54.0 的 GO-2026-6061、x/net v0.8.0 的 GO-2024-2687。独立 security job 保留非零失败，不使用 continue-on-error。KubeBrain 自身选择 grpc v1.83.0、x/net v0.57.0，不能将客户端独立依赖图的结果直接套到产品；产品编译器和实际依赖图仍需分别扫描。这些安全升级不混入本次无运行时变化的分仓，当前不能称为安全验收通过。
+
+## 分仓后的安全升级
+
+当前固定客户端为 `v2.0.8-0.20260908172918-b5b63af11282`，commit
+`b5b63af1128266a51c1ee63a8abbcf6f23ef5a6b`；前述 c29 版本及 RED 扫描保留为迁移历史。
+新模块校验和 `h1:VNhN3wjFEMGhJ2CBwKV3vehCWkEDBcXM/pqBiL4/MSk=`，go.mod 校验和
+`h1:V4mVPYUvt3A19cV1MoZtZdy3LrQ+xdzAnSbWXEz9wCI=`，已通过远端下载及模块验证。
+
+客户端升级 Go 1.26.8、grpc v1.83.0、x/net v0.57.0 和 etcd 客户端 v3.5.33；依赖要求
+使最低 Go 版本提高到 1.25.0，不再声称兼容 Go 1.19。TiKV/PD 基线和客户端运行时补丁未变。
+提交前后本机 build/vet、全量单测/race、govulncheck 均通过；远端
+[CI 34257592017](https://github.com/fivetime/tikv-client-go/actions/runs/34257592017)
+的 test/security 两个 job 均 success。真实 TiKV 大 key 复测 1.45 秒 PASS。
+产品自己的依赖升级、检查边界及未完成项见[安全升级记录](security_baseline_20260908_cn.md)。
 
 ## 后续客户端或 TiKV 升级流程
 

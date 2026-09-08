@@ -132,9 +132,8 @@ func TestDockerfileCachesObjectstoreDependenciesBeforeSourceCopy(t *testing.T) {
 		"RUN go mod download",
 		"COPY hack/backup/objectstore/go.mod hack/backup/objectstore/go.sum ./hack/backup/objectstore/",
 		"RUN cd hack/backup/objectstore && go mod download",
-		"ARG KUBECTL_VERSION=v1.36.2",
-		"curl --proto '=https' --tlsv1.2 -fsSLo /src/bin/kubectl",
-		"echo \"${KUBECTL_SHA256}  /src/bin/kubectl\" | sha256sum -c -",
+		"COPY hack/kubectl/go.mod hack/kubectl/go.sum ./hack/kubectl/",
+		"RUN cd hack/kubectl && go mod download && go mod verify",
 		"COPY . .",
 	}
 	previous := -1
@@ -145,7 +144,7 @@ func TestDockerfileCachesObjectstoreDependenciesBeforeSourceCopy(t *testing.T) {
 	}
 }
 
-func TestDockerfilePinsOfficialKubectlForSupportedArchitectures(t *testing.T) {
+func TestDockerfileBuildsSecurityPatchedKubectlForSupportedArchitectures(t *testing.T) {
 	dockerfile, err := os.ReadFile("../Dockerfile")
 	require.NoError(t, err)
 	content := string(dockerfile)
@@ -153,16 +152,15 @@ func TestDockerfilePinsOfficialKubectlForSupportedArchitectures(t *testing.T) {
 	for _, required := range []string{
 		"ARG TARGETARCH=amd64",
 		"ENV GOOS=linux GOARCH=${TARGETARCH}",
-		"ARG KUBECTL_VERSION=v1.36.2",
-		"amd64) KUBECTL_SHA256=1e9045ec32bea85da43de85f0065358529ea7c7a152eca78154fba5b58c27d82",
-		"arm64) KUBECTL_SHA256=c957eb8c4bea27a3bb35b269edd9082e27f027f7b76b20b5bf4afebc726c6d3e",
-		`"https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl"`,
-		`echo "${KUBECTL_SHA256}  /src/bin/kubectl" | sha256sum -c -`,
+		"amd64|arm64)",
+		"unsupported TARGETARCH=$TARGETARCH",
+		"bash ./hack/kubectl/build.sh /src/bin/kubectl",
 		"COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl",
 	} {
 		require.Contains(t, content, required)
 	}
 	require.NotContains(t, content, "kubectl=1.34.2-r6")
+	require.NotContains(t, content, "dl.k8s.io", "downloaded kubectl bypasses our reviewed toolchain and dependency graph")
 
 	targetArch := strings.Index(content, "ARG TARGETARCH=amd64")
 	goTarget := strings.Index(content, "ENV GOOS=linux GOARCH=${TARGETARCH}")
@@ -178,7 +176,7 @@ func TestDockerfileMetadataDoesNotInvalidateDependencyOrRuntimePackageLayers(t *
 	require.NoError(t, err)
 	content := string(dockerfile)
 
-	buildStart := strings.Index(content, "FROM --platform=${BUILDPLATFORM} golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651")
+	buildStart := strings.Index(content, "FROM --platform=${BUILDPLATFORM} golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81")
 	require.NotEqual(t, -1, buildStart)
 	sourceCopy := strings.Index(content[buildStart:], "COPY . .")
 	require.NotEqual(t, -1, sourceCopy)
@@ -213,7 +211,7 @@ func TestDockerfileUsesNativeBuildPlatformForCrossCompilation(t *testing.T) {
 
 	require.Contains(t, content, "ARG BUILDPLATFORM=linux/amd64")
 	require.Contains(t, content,
-		"FROM --platform=${BUILDPLATFORM} golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651")
+		"FROM --platform=${BUILDPLATFORM} golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81")
 	require.Equal(t, 1, strings.Count(content, "--platform=${BUILDPLATFORM}"),
 		"only the compiler stage should use the build platform; runtime must use the target platform")
 }

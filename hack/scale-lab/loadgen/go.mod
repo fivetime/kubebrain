@@ -2,7 +2,7 @@ module kwok-scale-loadgen
 
 go 1.26.0
 
-toolchain go1.26.5
+toolchain go1.26.8
 
 require (
 	k8s.io/api v0.36.2

@@ -799,13 +799,16 @@ runtime stage 的每个显式 `apk add` 包也必须使用 `name=version-rN` 精
 
 镜像内 `kubectl` 是 DBaaS backup、restore、certificate rotation、destroy 和 release
 gate 的运行时依赖，版本必须落在受支持 Kubernetes server 的 `±1 minor` skew 窗口内。
-当前支持并系统验证 v1.35/v1.36，因此使用官方 v1.36.2 二进制，而不是 Alpine v3.23
-提供的 v1.34.2。amd64/arm64 下载必须分别固定官方 SHA-256，使用 HTTPS/TLS 1.2+，
-校验成功后才复制进 runtime；不支持的 `TARGETARCH` 必须在源码编译前失败。发布门槛需
+当前支持窗口为 v1.35/v1.36。官方 kubectl v1.36.2/v1.36.4 二进制在 2026-09-08 的扫描中
+分别命中 18/9 项漏洞；不能用越过 v1.35 skew 窗口的 v1.37 替换来缩减支持范围。
+现通过独立 `hack/kubectl` 模块导入官方 v0.36.4 全部命令，以 Go 1.26.8 及已修复依赖编译，
+版本标记 `v1.36.4+kubebrain`、dirty 和产品源码 SHA，不冒充官方发行二进制。
+依赖必须固定版本及 go.sum；发布前扫描 amd64/arm64 二进制，并从实际镜像提取对应文件逐字节比对。
+不支持的 `TARGETARCH` 必须在源码编译前失败。新 CLI 仍需刷新 v1.35/v1.36 完整矩阵；发布门槛需
 从最终非 root 镜像运行 `kubectl version --client -o json`，并用同一二进制连接目标
 Kubernetes API。checksum 门禁不等于跨架构运行验证；当前 arm64 仍需独立 CI runner。
 
-`TARGETARCH` 必须同时控制 kubectl 下载和 build stage 的 `GOARCH`；所有 KubeBrain
+`TARGETARCH` 必须同时控制 kubectl 编译和 build stage 的 `GOARCH`；所有 KubeBrain
 数据面、备份、计量和 operation 二进制必须设置 `GOOS=linux GOARCH=${TARGETARCH}`，
 且 `kube-brain version` 的 `Go OS/Arch` 必须与最终 image platform 一致。发布多架构
 manifest 前，应从每个 build stage/final image 提取全部可执行文件并检查 ELF machine，
@@ -813,13 +816,17 @@ manifest 前，应从每个 build stage/final image 提取全部可执行文件�
 都必须在对应原生 runner 上完成容器启动、kubectl/API、TiKV/PD 和 readiness smoke，
 再合并 manifest list。
 
-CI 的 Go 版本必须与 Docker build stage 精确一致，当前均为 1.26.5；Dockerfile 同时固定
-精确 patch tag 和不可变 digest。产品根模块及 objectstore、etcd-client-compat、bigstream、loadgen
-四个嵌套模块，以及分仓后的独立 TiKV 客户端均声明 `toolchain go1.26.5`，让
+CI 的 Go 版本必须与 Docker build stage 精确一致，当前均为 1.26.8；Dockerfile 同时固定
+精确 patch tag 和不可变 digest。产品根模块及 objectstore、kubectl、etcd-client-compat、bigstream、loadgen
+五个嵌套模块，以及分仓后的独立 TiKV 客户端均声明 `toolchain go1.26.8`，让
 `GOTOOLCHAIN=auto` 的本地 build/test/scan 也不能静默退回存在已知标准库漏洞的 1.26.0。
-产品 CI 扫描本仓库五个模块，客户端独立 CI 扫描客户端模块，均使用固定 `govulncheck` 版本。
-2026-09-08 新扫描已发现当前 Go 1.26.5 及客户端独立依赖图的可达漏洞；详见
-[分仓记录](tikv_client_maintenance_cn.md)，不得将历史版本固定等同于当前安全扫描通过。
+产品 CI 扫描本仓库六个模块，客户端独立 CI 扫描客户端模块，均使用固定 `govulncheck` 版本。
+2026-09-08 的分仓初始扫描发现 Go 1.26.5 及客户端独立依赖图的可达漏洞。
+后续独立安全升级已修复本次扫描命中的可达问题，产品 etcd 模块同步到 v3.7.1；详见
+[安全升级记录](security_baseline_20260908_cn.md)。`dbaas` 镜像工作流在推送前直接扫描
+镜像实际编译的根模块、objectstore 和 kubectl 模块及 kubectl 双架构二进制，失败即停止，
+不依赖仅在 main/PR 运行的常规 CI。
+漏洞扫描通过不等于静态分析、全部集成测试或生产发布验收通过。
 CI
 使用固定 `staticcheck` 版本扫描生产模块，并使用固定 tag+digest 的
 ShellCheck 镜像检查全部 Git 跟踪 shell 脚本的 warning/error；任一命中均阻止发布。CI 构建 TiKV 和

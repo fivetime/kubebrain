@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-required="${SCALE_LAB_MIN_GO_VERSION:-go1.26.5}"
+required="${SCALE_LAB_MIN_GO_VERSION:-go1.26.8}"
 actual="${SCALE_LAB_GO_VERSION_OVERRIDE:-$(go env GOVERSION)}"
 
 version_pattern='^go[0-9]+\.[0-9]+\.[0-9]+$'

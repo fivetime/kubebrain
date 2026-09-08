@@ -27,7 +27,7 @@ PROBE_IMAGE="${PROBE_IMAGE:-}"
 JOB_NAME="${JOB_NAME:-kubebrain-balancer-smoke-$(date +%s)}"
 JOB_TIMEOUT_SECONDS="${JOB_TIMEOUT_SECONDS:-300}"
 EXPECTED_ADVERTISED_ENDPOINTS="${EXPECTED_ADVERTISED_ENDPOINTS:-}"
-GO_IMAGE="${GO_IMAGE:-golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651}"
+GO_IMAGE="${GO_IMAGE:-golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81}"
 
 for command in docker jq kind kubectl sha256sum; do
   command -v "$command" >/dev/null || { echo "missing required command: ${command}" >&2; exit 1; }
