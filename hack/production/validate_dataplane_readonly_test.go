@@ -384,6 +384,54 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "KubeBrain target container image digest mismatch: kubebrain-0:target-not-ready",
 		},
 		{
+			name: "rejects ready target container that is waiting",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true,"started":true,"state":{"waiting":{"reason":"ContainerCreating"}}}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain target container runtime state mismatch: kubebrain-0:target-state=waiting",
+		},
+		{
+			name: "rejects ready target container that has not started",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true,"started":false,"state":{"running":{"startedAt":"2026-01-01T00:00:00Z"}}}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain target container runtime state mismatch: kubebrain-0:target-started=false",
+		},
+		{
+			name: "rejects ready target container that is terminated",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true,"started":true,"state":{"terminated":{"exitCode":0}}}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain target container runtime state mismatch: kubebrain-0:target-state=terminated",
+		},
+		{
+			name: "rejects ready target container without running start time",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","restartCount":0,"ready":true,"started":true,"state":{"running":{}}}]}},
+				{"metadata":{"name":"kubebrain-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain target container runtime state mismatch: kubebrain-0:target-started-at=null",
+		},
+		{
 			name: "rejects target container image ID without canonical digest",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-0","imageID":"docker.io/library/kubebrain:latest","restartCount":0,"ready":true}]}},
@@ -4222,7 +4270,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_INFO_METRICS_CHECKS=1",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
-			wantOutput: "info metrics mismatch: Pod runtime identity changed during HashKV probes for pod kubebrain-0",
+			wantOutput: "KubeBrain target container runtime state mismatch after HashKV cache probes: kubebrain-0:target-state=terminated",
 		},
 		{
 			name: "rejects target container last state change during hashkv cache probes",
@@ -4270,7 +4318,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_INFO_METRICS_CHECKS=1",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
-			wantOutput: "info metrics mismatch: Pod runtime identity changed during HashKV probes for pod kubebrain-0",
+			wantOutput: "KubeBrain target container runtime state mismatch after HashKV cache probes: kubebrain-0:target-started=false",
 		},
 		{
 			name: "rejects incomplete target container state at hashkv baseline",
@@ -4289,7 +4337,7 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				"EXPECTED_INFO_METRICS_CHECKS=1",
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
-			wantOutput: "info metrics mismatch: complete Pod runtime identity is required for HashKV cache baseline pod kubebrain-0",
+			wantOutput: "KubeBrain target container runtime state mismatch: kubebrain-0:target-state=<empty>",
 		},
 		{
 			name: "rejects duplicate scoped runtime status names at hashkv baseline",
@@ -4433,6 +4481,27 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "KubeBrain Pod Ready condition mismatch after HashKV cache probes: kubebrain-1:containers-ready-status=\"False\"",
 		},
 		{
+			name: "rejects target runtime state drift after hashkv cache probes",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			postPodsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-1","restartCount":0,"ready":true,"started":true,"state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_HASHKV_HASH=111", "EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "KubeBrain target container runtime state mismatch after HashKV cache probes: kubebrain-1:target-state=waiting",
+		},
+		{
 			name: "rejects Pod phase drift after hashkv cache probes",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -4525,6 +4594,32 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
 			wantOutput: "KubeBrain Pod Ready condition mismatch after post HashKV evidence collection: kubebrain-0:containers-ready-status=\"Unknown\"",
+		},
+		{
+			name: "rejects target runtime state drift after post hashkv evidence collection",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			postPodsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}]}}
+			]}`,
+			finalPodsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2"},"status":{"conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"kubebrain","containerID":"containerd://app-2","restartCount":0,"ready":true,"started":false,"state":{"running":{"startedAt":"2026-01-01T00:00:00Z"}}}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_HASHKV_HASH=111", "EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "KubeBrain target container runtime state mismatch after post HashKV evidence collection: kubebrain-2:target-started=false",
 		},
 		{
 			name: "rejects Pod phase drift after post hashkv evidence collection",

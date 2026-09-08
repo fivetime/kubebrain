@@ -1358,6 +1358,42 @@ ready_pod_runtime_identities() {
 	'
 }
 
+validate_ready_pod_target_runtime_state() {
+	local source_pods_json="$1"
+	local context="${2:-}"
+	local state_errors
+
+	state_errors="$(printf '%s' "$source_pods_json" | "$JQ" -r --arg target "$KUBEBRAIN_CONTAINER_NAME" '
+		[
+			.items[]
+			| select(.metadata.deletionTimestamp == null)
+			| select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+			| . as $pod
+			| ($pod.metadata.name // "<missing>") as $pod_name
+			| [$pod.status.containerStatuses[]? | select(.name == $target)] as $matches
+			| if ($matches | length) != 1 or $matches[0].ready != true then empty
+			  elif ($matches[0] | has("started")) and
+				$matches[0].started != null and $matches[0].started != true then
+				"\($pod_name):target-started=\($matches[0].started | tojson)"
+			  elif ($matches[0].state | type) != "object" then
+				"\($pod_name):target-state=\($matches[0].state | tojson)"
+			  elif ($matches[0].state | keys) != ["running"] then
+				"\($pod_name):target-state=\(if ($matches[0].state | length) == 0 then "<empty>" else ($matches[0].state | keys | join("+")) end)"
+			  elif ($matches[0].state.running | type) != "object" then
+				"\($pod_name):target-running=\($matches[0].state.running | tojson)"
+			  elif ($matches[0].state.running.startedAt | type) != "string" or
+				$matches[0].state.running.startedAt == "" then
+				"\($pod_name):target-started-at=\($matches[0].state.running.startedAt | tojson)"
+			  else empty
+			  end
+		] | join(",")
+	')"
+	if [[ -n "$state_errors" ]]; then
+		echo "KubeBrain target container runtime state mismatch${context}: ${state_errors}" >&2
+		return 1
+	fi
+}
+
 ready_pod_target_image_digest() {
 	local source_pods_json="$1"
 	local result
@@ -1738,6 +1774,7 @@ expect_hash_metrics_boundary() {
 		get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
 	validate_running_pod_phases "$post_pods_json" " after HashKV cache probes"
 	validate_unambiguous_pod_ready_conditions "$post_pods_json" " after HashKV cache probes"
+	validate_ready_pod_target_runtime_state "$post_pods_json" " after HashKV cache probes"
 	validate_ready_pod_statefulset_ownership "$post_pods_json"
 	pod_identity_rows="$(ready_pod_runtime_identities "$post_pods_json")"
 	while IFS=$'\t' read -r pod pod_uid pod_container_identity; do
@@ -1857,6 +1894,7 @@ expect_hash_metrics_boundary() {
 		get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
 	validate_running_pod_phases "$final_pods_json" " after post HashKV evidence collection"
 	validate_unambiguous_pod_ready_conditions "$final_pods_json" " after post HashKV evidence collection"
+	validate_ready_pod_target_runtime_state "$final_pods_json" " after post HashKV evidence collection"
 	validate_ready_pod_statefulset_ownership "$final_pods_json"
 	final_pod_identity_rows="$(ready_pod_runtime_identities "$final_pods_json")"
 	while IFS=$'\t' read -r final_pod final_pod_uid final_pod_container_identity; do
@@ -1990,6 +2028,7 @@ pods_json="$(run_with_probe_timeout "$KUBECTL" "${kubectl_args[@]}" -n "$KUBEBRA
   get pods -l "$KUBEBRAIN_LABEL_SELECTOR" -o json)"
 validate_running_pod_phases "$pods_json"
 validate_unambiguous_pod_ready_conditions "$pods_json"
+validate_ready_pod_target_runtime_state "$pods_json"
 validate_ready_pod_statefulset_ownership "$pods_json"
 ready_pods="$(printf '%s' "$pods_json" | "$JQ" -r '
   [
