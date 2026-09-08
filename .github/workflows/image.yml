@@ -83,6 +83,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
+      - name: Verify automatic target architecture
+        run: KUBEBRAIN_TEST_DOCKER_PLATFORM=true go test ./build -run '^TestDockerfileAutomaticTargetArchitecture$' -count=1 -v
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -145,11 +148,28 @@ jobs:
           artifact_dir="$RUNNER_TEMP/kubectl-security-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           container_id=''
           trap 'if [[ -n "$container_id" ]]; then docker rm "$container_id"; fi' EXIT
+          command -v readelf >/dev/null
           for arch in amd64 arm64; do
             docker pull --platform "linux/$arch" "$reference"
+            platform_version="$(docker run --rm --platform "linux/$arch" --entrypoint /usr/local/bin/kube-brain "$reference" version)"
+            printf '%s\n' "$platform_version" | grep -F 'Go OS/Arch:' | grep -F "linux/$arch"
+            printf '%s\n' "$platform_version" | grep -F 'Git SHA:' | grep -F '${{ steps.vars.outputs.revision }}'
             container_id="$(docker create --platform "linux/$arch" --entrypoint /usr/local/bin/kubectl "$reference" version --client)"
-            docker cp "$container_id:/usr/local/bin/kubectl" "$artifact_dir/shipped-$arch"
-            cmp "$artifact_dir/kubectl-$arch" "$artifact_dir/shipped-$arch"
+            docker cp "$container_id:/usr/local/bin" "$artifact_dir/shipped-bin-$arch"
+            cmp "$artifact_dir/kubectl-$arch" "$artifact_dir/shipped-bin-$arch/kubectl"
+            case "$arch" in
+              amd64) machine=X86-64 ;;
+              arm64) machine=AArch64 ;;
+            esac
+            go_binaries=0
+            for binary in "$artifact_dir/shipped-bin-$arch/"*; do
+              if build_info="$(go version -m "$binary" 2>/dev/null)"; then
+                printf '%s\n' "$build_info" | grep -Fx $'\tbuild\tGOARCH='"$arch"
+                readelf -h "$binary" | grep -E "Machine:.*${machine}"
+                go_binaries=$((go_binaries + 1))
+              fi
+            done
+            test "$go_binaries" -eq 66
             docker rm "$container_id"
             container_id=''
           done

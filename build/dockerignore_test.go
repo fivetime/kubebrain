@@ -150,7 +150,7 @@ func TestDockerfileBuildsSecurityPatchedKubectlForSupportedArchitectures(t *test
 	content := string(dockerfile)
 
 	for _, required := range []string{
-		"ARG TARGETARCH=amd64",
+		"ARG TARGETARCH\n",
 		"ENV GOOS=linux GOARCH=${TARGETARCH}",
 		"amd64|arm64)",
 		"unsupported TARGETARCH=$TARGETARCH",
@@ -162,7 +162,8 @@ func TestDockerfileBuildsSecurityPatchedKubectlForSupportedArchitectures(t *test
 	require.NotContains(t, content, "kubectl=1.34.2-r6")
 	require.NotContains(t, content, "dl.k8s.io", "downloaded kubectl bypasses our reviewed toolchain and dependency graph")
 
-	targetArch := strings.Index(content, "ARG TARGETARCH=amd64")
+	require.NotRegexp(t, `(?m)^ARG TARGETARCH=`, content, "a default overrides BuildKit's automatic target architecture")
+	targetArch := strings.Index(content, "ARG TARGETARCH\n")
 	goTarget := strings.Index(content, "ENV GOOS=linux GOARCH=${TARGETARCH}")
 	sourceCopy := strings.Index(content, "COPY . .")
 	compile := strings.Index(content, "bash ./build/build-tikv.sh")
@@ -209,7 +210,8 @@ func TestDockerfileUsesNativeBuildPlatformForCrossCompilation(t *testing.T) {
 	require.NoError(t, err)
 	content := string(dockerfile)
 
-	require.Contains(t, content, "ARG BUILDPLATFORM=linux/amd64")
+	require.NotRegexp(t, `(?m)^ARG BUILDPLATFORM=`, content,
+		"the compiler must inherit the actual builder platform, including native arm64 runners")
 	require.Contains(t, content,
 		"FROM --platform=${BUILDPLATFORM} golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81")
 	require.Equal(t, 1, strings.Count(content, "--platform=${BUILDPLATFORM}"),

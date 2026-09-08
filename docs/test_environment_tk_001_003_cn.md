@@ -169,7 +169,7 @@ API `/version` 本次返回 v1.36.1；此前 v1.36.0 来自节点 kubelet 信息
 该探针尚未创建、测试尚未运行，不把计划或模板当作 PASS。失败后必须先按 Pod/StatefulSet UID
 和上述 fixture 身份核验清理，不能直接重跑来掩盖残留；成功后也需回读数据面零重启、卷身份与工作目录清理。
 
-### 发布产物核验中
+### 发布产物核验中（后续架构检查已拒绝此候选）
 
 固定源码标签现已上传，双架构 digest 为
 `sha256:6ab33dc81572dfc318b02d4f840252111790690e1fa04d20af1f772db309a224`。
@@ -187,3 +187,16 @@ rook-ceph StorageClass 与 4 GiB 配置；没有创建 StatefulSet 或这些工�
 本次读取实时负载时，Metrics API 返回不可用；没有安装或修改用户的 metrics-server。
 节点资源请求和 Ready/Pressure 状态可读，调度余量不替代实时 CPU/内存负载或监控系统验收。
 PD/TiKV 六个 Pod 的 UID 未变化，均 Ready、restart 0。
+
+后续核验直接使用 arm64 子镜像 digest，发现其主程序与 kubectl 实际均为 x86-64，
+与 amd64 产物字节完全相同。因此 **`6ab33dc8…` 不可部署**，此前索引/amd64 安全扫描通过
+不等于全平台发布通过。错误来自 Dockerfile 的 TARGETARCH 默认值覆盖自动平台参数，
+修复和失败/通过证据见[安全基线记录](security_baseline_20260908_cn.md)。
+`kubebrain-tls-5645caa6.yaml` 清单已被判定为无效候选，不能因为此前 dry-run 通过而创建它；
+StatefulSet 和六份 KubeBrain 工作卷仍未创建。保留原有 TLS/隔离前置资源，等待修复提交的新镜像。
+
+原 run `34264830428` 已在 Verify published test image 步骤失败，Promote skipped；未部署候选。
+修复已通过真实 BuildKit 自动平台回归和完整 arm64 编译阶段的 69 个程序架构/漏洞扫描；
+其中 66 个属于主运行镜像，三个属于独立备份/恢复镜像。提交前 703 项四分片也已全部通过。
+这些本地验证尚不能代替修复提交的新 CI 和真实部署。错误候选及编译阶段的本地镜像、大体积
+提取文件均已清理，日志保留；暂留 `/tmp/kubebrain-release-audit.rIYu3W/kubectl` 作受控调试工具。

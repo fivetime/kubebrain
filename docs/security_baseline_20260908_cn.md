@@ -111,7 +111,7 @@ Go 1.26.8 对修改前 commit `b2f4bed9` 复测，输出逐行完全相同，确
 新安全基线发布镜像仍待 CI 完成，尚未部署；本地预提交构建不替代发布验证。
 三副本 KubeBrain、恢复、监控及故障验收仍待后续推进。
 
-## 已上传发布产物的独立核验
+## 已上传发布产物的独立核验（后续架构检查已拒绝发布）
 
 CI `34264830428` 仍报告 build/push in_progress 时，固定源码标签已可读取。以下核验
 针对已上传的不可变产物，不把标签存在或本地验证成功当作 CI 已完成：
@@ -135,3 +135,49 @@ CI `34264830428` 仍报告 build/push in_progress 时，固定源码标签已可
 提取用未启动容器 `04fdd764537a0328a2b0aed4cb691f83f8cd887f23ab7d8888eb480e181276bb` 已删除。
 本地下载镜像及 `/tmp/kubebrain-release-audit.rIYu3W` 暂留用于紧接着的部署核验，
 其中 kubectl 已用于读取授权集群；未替换全局 kubectl，结束后需定向清理。
+
+### 阻断项：arm64 索引下实际装入 amd64 程序
+
+后续逐字节比对失败：直接使用上述 arm64 **子镜像 digest** 创建未启动容器提取，
+`kube-brain` 与 `kubectl` 的 ELF Machine 均为 X86-64，SHA-256 与 amd64 文件完全相同；
+因此不是多架构索引选择或本机 Docker 缓存误选。提取容器
+`1cbbde8573b95d5e2d7fd348c9431616b7e0415ed9fd0436e6616221439a9d8d` 已删除。
+按相同源码 SHA/构建时间独立编译的正确 arm64 kubectl SHA-256 应为
+`f8317ce642921d9e3f1e7e3d67c92e15773a81857ec206ebc7404b1f7b301c85`。
+
+根因是 Dockerfile 的 `ARG TARGETARCH=amd64` 覆盖了 BuildKit 的自动平台参数。
+[Docker 官方规则](https://docs.docker.com/reference/dockerfile/#automatic-platform-args-in-the-global-scope)
+要求在 stage 内不带默认值地重新声明自动参数。旧静态测试反而要求该错误默认值，
+以往显式 `--build-arg TARGETARCH=arm64` 的局部构建又绕过了此路径；不能用这些测试或
+双架构索引存在证明双架构二进制正确。
+
+**拒绝部署索引 `6ab33dc8…`，保留前述 amd64 扫描 PASS 作为局部证据，不宣称发布门禁通过。**
+CI 同一 run 此时仍 build/push in_progress，待回读最终 Verify/Promote 状态。
+未创建测试集群 KubeBrain StatefulSet 或工作卷，未把支持范围缩为 amd64 来绕过问题。
+
+当前修复去掉 TARGETARCH 默认值及写死的 BUILDPLATFORM；真实 BuildKit 回归从实际 Dockerfile
+提取平台声明，仅用 `--platform` 分别构建最小 Go ELF。旧 Dockerfile 的 arm64 子测试稳定失败
+（expected EM_AARCH64, actual EM_X86_64），修复后两个架构均通过。日志为
+`security-platform-before.log` / `security-platform-after.log`，不需要执行 arm64 程序或注册本机 QEMU。
+镜像 CI 强制运行该测试，发布后还核验两架构主程序运行时平台/源码 SHA、全部 66 个 Go 程序的
+GOARCH 与 ELF Machine，然后才允许提升标签。arm64 运行依赖 CI 的 QEMU，不冒充原生 arm64 验收。
+build 包普通/race 测试、vet、该包 Staticcheck、actionlint 均通过。提交前 verifier 再次确认
+703 项完整分配，四分片全部通过（260.014/459.150/311.928/746.602 秒）。根模块既有
+52 项 Staticcheck 未在这次架构修复中处理，不将 build 包通过扩大为整个根模块通过。
+
+完整根 Dockerfile 的 arm64 **编译 stage** 已成功构建（仅指定 `--platform linux/arm64`，
+未显式覆盖 TARGETARCH），本地索引 `sha256:b5fc2ca84871403302a935f25976ed0991b596699c8db9f2b3a4d04713bcd3b2`。
+测试 metadata 为基线源码 `94c75f93b5290495dfc6642d494f38e24d1b9a91`、dirty 工作树及
+`2026-09-08T19:30:00Z`，不是修复提交的发布镜像。该阶段共 69 个 Go 程序：主运行镜像
+COPY 的 66 个，另有三个用于独立 native full backup/restore stage。等待提取完成后，全量
+69 个均验证 Go 1.26.8、GOARCH=arm64、ELF AArch64，二进制漏洞扫描通过。
+`security-platform-complete-arm64-binary-scan.log` 终态为
+`CORRECTED_BUILD_STAGE_ARM64_GO_BINARIES=69 PASS`，构建日志为 `security-platform-arm64-build.log`。
+此前一次本地汇总只扫描 40 项就计数失败，另一次混合多个 stage 的 COPY 清单重复计数失败；
+这些不完整/范围错误的汇总日志保留，不作为全量 PASS 证据。发布 CI 对实际主运行镜像的
+66 项检查保持不变，不用编译 stage 的 69 项替代实际镜像核验。
+
+原 CI `34264830428` 最终为 failure：Verify published test image 失败，Promote 步骤 skipped；
+失败日志 `security-release-ci-failed.log`。本地错误候选镜像、提取程序及 arm64 编译 stage
+镜像/产物均已定向清理，提取容器也已删除；暂留单个已扫描 amd64 kubectl 用于本次调试。
+仍未在本机执行 arm64 程序，也未更改宿主机 QEMU/binfmt；完整修复发布镜像仍须重新构建验证。

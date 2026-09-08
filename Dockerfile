@@ -1,7 +1,6 @@
 ARG KUBEBRAIN_VERSION
 ARG KUBEBRAIN_GIT_SHA
 ARG KUBEBRAIN_BUILD_DATE
-ARG BUILDPLATFORM=linux/amd64
 
 FROM --platform=${BUILDPLATFORM} golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 AS build
 
@@ -17,7 +16,8 @@ RUN cd hack/backup/objectstore && go mod download
 COPY hack/kubectl/go.mod hack/kubectl/go.sum ./hack/kubectl/
 RUN cd hack/kubectl && go mod download && go mod verify
 
-ARG TARGETARCH=amd64
+# Inherit BuildKit's automatic target; a default here overrides --platform.
+ARG TARGETARCH
 ENV GOOS=linux GOARCH=${TARGETARCH}
 RUN mkdir -p /src/bin \
     && case "$TARGETARCH" in \
