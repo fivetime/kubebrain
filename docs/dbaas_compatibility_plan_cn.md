@@ -73886,6 +73886,59 @@ Running/Ready，PD API 报告三个 store 全部 Up；六个 listener、候选 w
 `/root/.local/share/Trash/files/kubebrain-a5781-20260908T024240Z`。为预留构建空间，A5772 实体暂移至
 `/tmp/kubebrain-a5772-20260907T140411Z`，原 Trash 路径保留指向实体的符号链接；最终根盘可用约 11 GiB。
 
+### A5782：绑定 Ready 容器与实际 running 状态
+
+A5781 已把 Pod `Ready=True` 与 `ContainersReady=True` 绑定，但旧 gate 仍会接受目标容器同时
+`ready=true` 且处于 waiting/terminated，或显式 `started=false`；独立 RED 用例在 0.22 秒内证明旧脚本错误整体 GREEN。提交
+`d7db039053ffb033a666deeab1cd4e1576bfa66f` 新增目标容器 runtime-state 围栏，并在 initial、HashKV post、final
+三阶段执行：对非删除且 Ready 的 Pod，恰好一个目标容器一旦报告 `ready=true`，可选非空 `started` 必须为 true，`state`
+必须是只含 `running` 的对象，且 `running.startedAt` 必须是非空字符串。目标容器缺失或未 ready 仍由既有 image-digest
+围栏先行诊断，避免改变无关错误顺序。六类新负例覆盖 initial waiting、`started=false`、terminated、缺失 startedAt，以及
+post waiting 和 final `started=false` 漂移；三项既有 runtime identity 用例更新为更早、更精确的新诊断。
+
+九类相关用例连续 `count=10` 为 34.942 秒；完整 production probe 普通/race 为 304.537/306.805 秒，gofmt、
+`go vet`、bash syntax、diff check 与固定 ShellCheck warning 级别全部 GREEN；ShellCheck 仅显式排除目标脚本既有
+SC2071/SC2055，没有新增或掩盖本项告警。提交前 verifier 为 703=`170/193/180/160`，四分片
+252.245/446.071/302.443/707.630 秒 GREEN；提交后 verifier 不变，分片 0/1 为 266.620/459.321 秒，分片 2/3
+因后台完成边界未保留可读退出码而不作通过推断，分别原样重跑 297.296/703.957 秒并 GREEN。`/root/etcd` 仍为干净
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`，没有新增上游提交。
+
+候选 `docker.io/library/kubebrain@sha256:39422bd14dc3f26af661c343a11a93ab8db4ede086406942d7269b7b3eec6b06`
+内嵌版本 `0.0.0-d7db0390`、完整 commit、build time `2026-09-08T04:48:46Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`；镜像内 kubectl 为 v1.36.2。OCI archive 为 914,849,792 bytes，SHA-256
+`e58a3aa05d6ad07b4c78a796ac1c7769f1adf4b34a8705a81fccb0dbcc8b1a90`；顶层 `index.json` SHA-256、nested index、
+platform manifest、config、attestation manifest 分别为
+`2969306a57e49f65a79b5b6f3b579f56f6d8b29f040e42ccc8ab22db43415932`、
+`sha256:39422bd14dc3f26af661c343a11a93ab8db4ede086406942d7269b7b3eec6b06`、
+`sha256:6af2d47eb8b63c5b301967f7545c00febf5b4414c2318016d620e3cd1379d36c`、
+`sha256:a886e1b94d224c5100c4097942f464fbb87fa8288590e6b44c77529fa5019a38`、
+`sha256:941fcb52667d90dd2da8c5c147a1c133743f8b5e3d466c5b704afe41da9e8d12`。78/78 descriptor edges、
+78/78 可达 blobs、0 orphan、71/71 diff IDs 均成立；镜像为 `65532:65532` 和正确入口。SPDX
+`sha256:321dc31cd1b58f24f85dab1b363a098eb77f72ad6fc3e1789c1aef8ab4f764fc` 含 2,592 packages、381 files、
+8,096 relationships；SLSA `sha256:a62d6112f6b4ccfbb3905726d163efc5842786c7a83cdbe07ff4d73d68583eec`
+含 3 项固定 materials 与四项精确 build args，两份 statement 都只有一个 subject 并绑定 platform manifest。本轮 BuildKit
+记录 `hfeywk1sov1cwghprfa7pwvri` 已按精确 ID 删除，没有执行全局 prune。
+
+Kind import 后在工作负载变更前即为同一已审计镜像补齐 nested-index digest 别名。候选从 generation 998/RV `9035251`
+以 UID/resourceVersion/generation/container/current image/full 22 args 六类 JSON test 原子投放到 generation 999/RV
+`9048171`，最终候选 RV `9048590`、3/3 Ready、restart 0；Ready/ContainersReady 均恰一个 True 且 observedGeneration
+与 Pod generation 1 相等，目标容器均 `started=true`、仅有 running 状态和非空 startedAt，runtime imageID 全部为顶层
+`sha256:2969306a57e49f65a79b5b6f3b579f56f6d8b29f040e42ccc8ab22db43415932`。首次启用全部适用 HEAD 合同的
+10 秒 readonly gate 在 `POST /v3/maintenance/hash` 冷态达到 10 秒超时；Pod、restart、转发与 metrics 均稳定，随后该请求连续
+三次成功但为 8.849/8.845/8.918 秒，说明真实余量很窄。保持 10 秒不放宽并在已预热状态原样重跑，完整 gate GREEN；Auth
+disabled、Alarm 为空、runtime identity 三阶段稳定。本项如实保留冷态性能边界，不把首次失败改写为绿色。
+
+随后先停止六个 port-forward，并以新鲜六类 JSON test 从候选 generation 999/RV `9048590` 精确回滚稳定 digest；patch
+生成 generation 1000/RV `9049868`，终态 generation/observed `1000/1000`、RV `9050230`、3/3 Ready、restart 0、
+22 参数，Ready/ContainersReady generation 与新增 runtime-state 围栏全部成立，runtime 恢复稳定
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。省略未来
+`EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS` 的 60 秒稳定适用 gate GREEN；Auth disabled、Alarm 为空，revision `75044`、
+HashKV `1984703050` 保持一致，正常回滚选主后 term 为 `868`。最终 PD/TiKV 3+3 Running/Ready，PD API 报告三个 store
+全部 Up；候选 workload、CRI container、四个 Kind/containerd image 名称和六个 listener 均为 0，稳定镜像和数据卷未删除。
+OCI archive 与展开审计目录保存在可恢复实体 `/tmp/kubebrain-a5782-20260908T052547Z`，系统回收站路径
+`/root/.local/share/Trash/files/kubebrain-a5782-20260908T052547Z` 保留符号链接。为预留空间，A5771 实体也暂移至
+`/tmp/kubebrain-a5771-20260907T125818Z` 并保留原回收站符号链接；最终根盘可用约 7.4 GiB。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
