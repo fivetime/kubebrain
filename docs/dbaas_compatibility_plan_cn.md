@@ -74043,6 +74043,57 @@ config ID/repoDigest 删除后仍枚举一条 unpinned、无底层名称/content
 `/tmp/kubebrain-a5784-20260908T085000Z`，回收站路径
 `/root/.local/share/Trash/files/kubebrain-a5784-20260908T085000Z` 保留链接；最终根盘可用约 6.6 GiB。
 
+### A5785：把容器 restartCount 收紧到 Kubernetes int32 取值域
+
+A5784 已对 Ready 容器的 running 状态与 `startedAt` 做真实性围栏，但旧 gate 只要求 `restartCount` 是非负 JSON
+整数，仍会接受 `2147483648` 以及更大的精度碰撞值。Kubernetes `core/v1.ContainerStatus.RestartCount` 的权威类型为
+`int32`。目标容器 `restartCount:2147483648` 的独立 RED 在 0.266 秒内证明旧脚本会把畸形对象整体判为 GREEN；另加
+sidecar 超界用例，保证完整 runtime identity baseline 同样 fail closed。提交
+`7432d6b5ea8108bc62c6cf57621a87de25a5c50b` 增加共用 `nonnegative_int32` jq 谓词，并将普通、init、
+ephemeral 容器的 restartCount 全部限制在 `0..2147483647`；目标容器超界保留精确
+`target-restart-count=<原值>` 诊断。
+
+目标与畸形值 focused 连续 10 次为 1.571 秒，目标与 sidecar 连续 10 次为 10.269 秒，二者 race 连续 10 次为
+12.752 秒；完整 readonly probe 为 286.251 秒，`go vet`、bash syntax 和 diff check 全部 GREEN。提交前 verifier
+为 703=`170/193/180/160`，四分片 259.199/454.233/310.484/714.530 秒 GREEN；提交后 verifier 不变，
+四分片 255.790/446.532/306.757/711.115 秒 GREEN。`/root/etcd` 仍为干净
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`，没有新增上游提交；本项只收紧 Kubernetes 运行时证据真实性，
+不改变 etcd 客户端语义。
+
+候选 `docker.io/library/kubebrain@sha256:84874b7891ea082ee254880eb9d526ee392b1b53ac4d16336883f230b2736267`
+内嵌版本 `0.0.0-7432d6b5`、完整 commit、build time `2026-09-08T09:35:23Z`、Go `1.26.5`、TiKV 与
+`linux/amd64`；镜像内门禁脚本 SHA-256 为 `c8b3f7ae447ea1463e1756c0b3dc52d3eb89733fb4056476bcc4e624b7a5cea4`，
+与提交内容逐字节一致。OCI archive 为 914,849,280 bytes，SHA-256
+`13bce3fe9a305c539dbe200aa03c692b3f899c03076c54f9ac75df000dbf707a`；顶层 `index.json` SHA-256、nested index、
+platform manifest、config、attestation manifest 分别为
+`33dc72f3bac677157fc7c93ac753ed10ffbf3bd203cff63d92b968bed4eb9f18`、
+`sha256:84874b7891ea082ee254880eb9d526ee392b1b53ac4d16336883f230b2736267`、
+`sha256:aab542efbc8095125d6d634d0569369b392bf27ee699d66b9b9cedcf4a6cd3c2`、
+`sha256:28215f13572e17a05ec4f0bc18e983212b7605371a110cf79f66fb87531109aa`、
+`sha256:98885013d4065fae6cf88b472509fc7ad712fd3fd975f4227dde6821812e6d48`。78/78 descriptor edges、
+78/78 可达 blobs、0 orphan、71/71 唯一 diff IDs 均成立，镜像为 `65532:65532` 和正确入口。SPDX
+`sha256:72e94d4d7fdc0f53e32dd65d2ef7f4d7b407a68a32966d5934d5879bf262254d` 含 2,592 packages、381 files、
+8,096 relationships；SLSA `sha256:20a91169b7ef33e77356e5ceb686a294cc10a96067e2f0d81e2d2bdd3fee9068`
+含 3 项固定 materials 与四项精确 build args，两份 statement 均只有一个 subject 并绑定 platform manifest。
+BuildKit 记录 `9805s1hm7olk04xhu3v1bhlax` 与本轮 4.145 GB 编译挂载
+`imfxcquhcmqtpz0aj6o5v9baq` 已分别按精确 ID 删除，没有全局 prune。
+
+候选投放前 Kind 控制面发生一次与候选无关的容器级重启，旧稳定 Pod 因而已有 restart 1；API `/readyz`、节点、
+三份稳定 Pod 与 PD/TiKV 均健康。候选从 generation 1004 经 UID/resourceVersion/generation/container/current image/full
+22 args 六类 JSON test 原子投放，patch 生成 generation 1005/RV `9086050`；最终候选 RV `9086372`、3/3、
+restart 0，Ready/ContainersReady generation、running-only 状态、规范 `startedAt` 和 runtime imageID
+`sha256:84874b7891ea082ee254880eb9d526ee392b1b53ac4d16336883f230b2736267` 全部成立。全部适用 HEAD 合同的
+10 秒 readonly gate 首次 GREEN；Auth disabled，revision/HashKV/term 为 `75044/1984703050/877`。
+
+停止六转发后，以新鲜六类 JSON test 从候选 generation 1005 精确回滚；patch 生成 generation 1006/RV `9086871`，
+终态 generation/observed `1006/1006`、RV `9087226`、3/3 Ready、restart 0、22 参数，runtime 恢复稳定
+`sha256:bc6b443ff3508482908155bfaf234d924305f1dce215fd8f7de14093e83d899b`。省略未来
+`EXPECTED_INFO_METRICS_CHECKS/INFO_ENDPOINTS` 的 60 秒稳定适用 gate GREEN；revision/HashKV 保持
+`75044/1984703050`，正常回滚选主后 term `879`。PD/TiKV 3+3 Running/Ready，三个 TiKV store 全部 Up；六 listener、
+候选 workload、CRI container/image、containerd 候选名称、关键 content 与 snapshot 引用均为 0，稳定镜像和数据卷保留。
+OCI 与审计材料位于可恢复实体 `/tmp/kubebrain-a5785-20260908T100823Z`，回收站路径
+`/root/.local/share/Trash/files/kubebrain-a5785-20260908T100823Z` 保留链接；最终根盘可用约 5.4 GiB。
+
 ## 提交规则
 
 每个兼容性提交必须同时包含：
