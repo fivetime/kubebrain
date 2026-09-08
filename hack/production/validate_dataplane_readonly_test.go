@@ -189,6 +189,42 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "KubeBrain Pod Ready condition mismatch: kubebrain-0:ready-condition-count=2",
 		},
 		{
+			name: "rejects stale Ready condition generation",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":1}]}},
+				{"metadata":{"name":"kubebrain-1","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-2","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain Pod Ready condition mismatch: kubebrain-0:ready-observed-generation=1,current-generation=2",
+		},
+		{
+			name: "rejects non-numeric Ready condition generation",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":"2"}]}},
+				{"metadata":{"name":"kubebrain-1","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-2","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain Pod Ready condition mismatch: kubebrain-0:ready-observed-generation=\"2\"",
+		},
+		{
+			name: "rejects invalid current Pod generation for observed Ready",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","generation":"2"},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-1","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-2","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7},"dbSize":99}}]`,
+			wantOutput: "KubeBrain Pod Ready condition mismatch: kubebrain-0:current-generation=\"2\"",
+		},
+		{
 			name: "rejects non-running Pod with Ready true",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0"},"status":{"phase":"Failed","conditions":[{"type":"Ready","status":"True"}]}},
@@ -4337,6 +4373,27 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 			wantOutput: "KubeBrain Pod lifecycle mismatch after HashKV cache probes: kubebrain-0:phase=\"Pending\"",
 		},
 		{
+			name: "rejects Ready condition generation drift after hashkv cache probes",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}}
+			]}`,
+			postPodsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0","generation":3},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_HASHKV_HASH=111", "EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "KubeBrain Pod Ready condition mismatch after HashKV cache probes: kubebrain-0:ready-observed-generation=2,current-generation=3",
+		},
+		{
 			name: "rejects duplicate Ready conditions after post hashkv evidence collection",
 			podsJSON: `{"items":[
 				{"metadata":{"name":"kubebrain-0","uid":"uid-0"},"status":{"conditions":[{"type":"Ready","status":"True"}]}},
@@ -4387,6 +4444,32 @@ func TestValidateDataplaneReadonlyProbe(t *testing.T) {
 				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
 			},
 			wantOutput: "KubeBrain Pod lifecycle mismatch after post HashKV evidence collection: kubebrain-1:phase=\"Succeeded\"",
+		},
+		{
+			name: "rejects Ready condition generation drift after post hashkv evidence collection",
+			podsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}}
+			]}`,
+			postPodsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}}
+			]}`,
+			finalPodsJSON: `{"items":[
+				{"metadata":{"name":"kubebrain-0","uid":"uid-0","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-1","uid":"uid-1","generation":3},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}},
+				{"metadata":{"name":"kubebrain-2","uid":"uid-2","generation":2},"status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":2}]}}
+			]}`,
+			readyz:     "ok",
+			count:      "4",
+			statusJSON: `[{"Endpoint":"http://127.0.0.1:2379","Status":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"version":"3.7.0","dbSize":99,"storageVersion":"3.7.0","dbSizeInUse":88,"leader":456,"raftTerm":8,"raftIndex":7,"raftAppliedIndex":7,"downgradeInfo":{}}}]`,
+			extraEnv: []string{
+				"EXPECTED_STATUS_CLUSTER_ID=123", "EXPECTED_STATUS_VERSION=3.7.0", "EXPECTED_HASHKV_HASH=111", "EXPECTED_INFO_METRICS_CHECKS=1",
+				`FAKE_HASHKV_JSON=[{"Endpoint":"http://127.0.0.1:2379","HashKV":{"header":{"cluster_id":123,"member_id":456,"revision":7,"raft_term":8},"hash":111,"compact_revision":3,"hash_revision":7}}]`,
+			},
+			wantOutput: "KubeBrain Pod Ready condition mismatch after post HashKV evidence collection: kubebrain-1:ready-observed-generation=2,current-generation=3",
 		},
 		{
 			name: "rejects native sidecar restart during hashkv cache probes",
@@ -8033,6 +8116,9 @@ func podJSONWithDefaultRuntimeIdentities(t *testing.T, value string) string {
 		if _, exists := metadata["uid"]; !exists {
 			metadata["uid"] = "uid-" + name
 		}
+		if _, exists := metadata["generation"]; !exists {
+			metadata["generation"] = float64(1)
+		}
 		if _, exists := metadata["ownerReferences"]; !exists {
 			metadata["ownerReferences"] = []any{map[string]any{
 				"apiVersion": "apps/v1",
@@ -8046,6 +8132,17 @@ func podJSONWithDefaultRuntimeIdentities(t *testing.T, value string) string {
 		require.True(t, ok)
 		if _, exists := status["phase"]; !exists {
 			status["phase"] = "Running"
+		}
+		if conditions, ok := status["conditions"].([]any); ok {
+			for _, conditionValue := range conditions {
+				condition, ok := conditionValue.(map[string]any)
+				if !ok || condition["type"] != "Ready" {
+					continue
+				}
+				if _, exists := condition["observedGeneration"]; !exists {
+					condition["observedGeneration"] = metadata["generation"]
+				}
+			}
 		}
 		if _, exists := status["containerStatuses"]; !exists {
 			status["containerStatuses"] = []any{map[string]any{

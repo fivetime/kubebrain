@@ -1149,9 +1149,12 @@ validate_unambiguous_pod_ready_conditions() {
 	local condition_errors
 
 	condition_errors="$(printf '%s' "$source_pods_json" | "$JQ" -r '
+		def valid_generation:
+			type == "number" and . == floor and . > 0 and . <= 9007199254740991;
 		[
 			.items[]
 			| select(.metadata.deletionTimestamp == null)
+			| . as $pod
 			| (if (.metadata.name | type) == "string" and .metadata.name != "" then .metadata.name else "<invalid>" end) as $pod_name
 			| (.status.conditions // []) as $conditions
 			| if ($conditions | type) != "array" then
@@ -1166,6 +1169,15 @@ validate_unambiguous_pod_ready_conditions() {
 					  $ready_conditions[0].status != "False" and
 					  $ready_conditions[0].status != "Unknown")) then
 					"\($pod_name):ready-status=\($ready_conditions[0].status | tojson)"
+				  elif ($ready_conditions | length) == 1 and ($ready_conditions[0] | has("observedGeneration")) and
+					(($pod.metadata.generation | valid_generation) | not) then
+					"\($pod_name):current-generation=\($pod.metadata.generation | tojson)"
+				  elif ($ready_conditions | length) == 1 and ($ready_conditions[0] | has("observedGeneration")) and
+					(($ready_conditions[0].observedGeneration | valid_generation) | not) then
+					"\($pod_name):ready-observed-generation=\($ready_conditions[0].observedGeneration | tojson)"
+				  elif ($ready_conditions | length) == 1 and ($ready_conditions[0] | has("observedGeneration")) and
+					$ready_conditions[0].observedGeneration != $pod.metadata.generation then
+					"\($pod_name):ready-observed-generation=\($ready_conditions[0].observedGeneration),current-generation=\($pod.metadata.generation)"
 				  else empty
 				  end
 			  end
