@@ -1161,6 +1161,7 @@ validate_unambiguous_pod_ready_conditions() {
 				"\($pod_name):conditions-not-array"
 			  else
 				([$conditions[] | select(.type == "Ready")]) as $ready_conditions
+				| ([$conditions[] | select(.type == "ContainersReady")]) as $containers_ready_conditions
 				| if ($ready_conditions | length) > 1 then
 					"\($pod_name):ready-condition-count=\($ready_conditions | length)"
 				  elif ($ready_conditions | length) == 1 and
@@ -1178,6 +1179,29 @@ validate_unambiguous_pod_ready_conditions() {
 				  elif ($ready_conditions | length) == 1 and ($ready_conditions[0] | has("observedGeneration")) and
 					$ready_conditions[0].observedGeneration != $pod.metadata.generation then
 					"\($pod_name):ready-observed-generation=\($ready_conditions[0].observedGeneration),current-generation=\($pod.metadata.generation)"
+				  elif ($containers_ready_conditions | length) > 1 then
+					"\($pod_name):containers-ready-condition-count=\($containers_ready_conditions | length)"
+				  elif ($ready_conditions | length) == 1 and $ready_conditions[0].status == "True" and
+					($containers_ready_conditions | length) != 1 then
+					"\($pod_name):containers-ready-condition-count=\($containers_ready_conditions | length)"
+				  elif ($containers_ready_conditions | length) == 1 and
+					(($containers_ready_conditions[0].status | type) != "string" or
+					 ($containers_ready_conditions[0].status != "True" and
+					  $containers_ready_conditions[0].status != "False" and
+					  $containers_ready_conditions[0].status != "Unknown")) then
+					"\($pod_name):containers-ready-status=\($containers_ready_conditions[0].status | tojson)"
+				  elif ($ready_conditions | length) == 1 and $ready_conditions[0].status == "True" and
+					$containers_ready_conditions[0].status != "True" then
+					"\($pod_name):containers-ready-status=\($containers_ready_conditions[0].status | tojson)"
+				  elif ($containers_ready_conditions | length) == 1 and ($containers_ready_conditions[0] | has("observedGeneration")) and
+					(($pod.metadata.generation | valid_generation) | not) then
+					"\($pod_name):current-generation=\($pod.metadata.generation | tojson)"
+				  elif ($containers_ready_conditions | length) == 1 and ($containers_ready_conditions[0] | has("observedGeneration")) and
+					(($containers_ready_conditions[0].observedGeneration | valid_generation) | not) then
+					"\($pod_name):containers-ready-observed-generation=\($containers_ready_conditions[0].observedGeneration | tojson)"
+				  elif ($containers_ready_conditions | length) == 1 and ($containers_ready_conditions[0] | has("observedGeneration")) and
+					$containers_ready_conditions[0].observedGeneration != $pod.metadata.generation then
+					"\($pod_name):containers-ready-observed-generation=\($containers_ready_conditions[0].observedGeneration),current-generation=\($pod.metadata.generation)"
 				  else empty
 				  end
 			  end
