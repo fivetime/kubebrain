@@ -2335,3 +2335,46 @@ shard 2，也不以旧提交的门禁结果替代它们。
 
 接下来提交同一测试文件及累计交接文档，并立即按相同调度顺序执行提交后 inventory、完整 shard 2、
 其余三个分片和组件检查；提交后完整通过前不推送、不触发新的 CI。两次失败 CI 的日志继续保留。
+
+### a98b6db1 已提交，提交后门禁运行中（2026-09-09 16:58 UTC 起）
+
+已创建本地提交 **a98b6db1a5ff2d186bb8730d1b59f0558ec60d9d**，仅修改同一测试文件及两份
+累计状态文档，尚未推送。与 b48bef18 排除 docs 和测试文件后的 diff 为空，生产执行逻辑未变化。
+二十二文件新摘要为 `security-prepull-fixture-create-boundary-component-code.sha256`，旧摘要保留。
+
+立即启动的提交后 inventory **63365 exit 0**，仍为720=`174/197/184/165`；三包 race
+**69350 exit 0**，imageprepull 4.980s、CLI 6.492s、build 1.589s。日志分别为
+`security-prepull-fixture-create-boundary-post-inventory.log` 和
+`security-prepull-fixture-create-boundary-post-race.log`。
+
+完整 shard 2 原句柄 **58950** 当前运行中，日志
+`security-prepull-fixture-create-boundary-post-shard-2.log`。它终态后才启动 post shard 0/1/3；
+后面三片尚未启动，不能把 inventory/组件小组通过当成完整门禁完成。测试子进程仍为 022，日志
+由外层 077 创建，源代码保持冻结；进行中只更新本交接文档与验收状态，不改产品/测试输入。
+当前仍没有新 CI、新镜像回执或任何真实部署操作，继续原句柄即可。
+
+提交后完整 shard 2 已由原句柄 **58950 exit 0 / 392.047s** 通过；之后才启动剩余 post
+shard 0 → **91732**、shard 1 → **6952**、shard 3 → **59666**，日志
+`security-prepull-fixture-create-boundary-post-shard-{0,1,3}.log`。这三个原会话当前仍运行，
+不能提前记作通过；其终态全部成功后再保存新回执、推送并跟踪新 CI。源码和测试未变化，
+没有重复运行已完成的 shard 2，也没有更改任何生产 SLO 或真实集群状态。
+
+### a98b6db1 完整提交后门禁通过（2026-09-09 17:19 UTC）
+
+原剩余三个句柄均已终态通过：post shard 0 **91732 exit 0 / 468.364s**，shard 1 **6952
+exit 0 / 527.826s**，shard 3 **59666 exit 0 / 758.091s**；加上先前独立通过的 shard 2
+**58950 exit 0 / 392.047s**，本轮前后各 720 项完整检查全部通过，没有失败分片或失败后复跑。
+63365 inventory 与 69350 三包 race 结果仍有效，源码/测试始终冻结。
+
+机器回执为 `security-prepull-fixture-create-boundary-post-complete.json`，绑定 a98b6db1、两组
+源码摘要、前后各四片的原句柄/时间及调度/umask 边界；保留对旧提交/旧 CI 失败历史的提示，不
+将本轮本地通过解释为镜像发布或真实升级成功。摘要再核对通过，非 docs 工作树无差异，未跟踪
+产品文件为空。
+
+恢复工具 `prepull-b48bef18-tools/` 的摘要仍匹配。当前 a98b6db1 与该工具编译提交 b48bef18
+排除 docs/测试文件后的差异为空，因此生产 Go 源码、依赖及脚本均相同；可以保留其真实 b48bef18
+buildinfo 并复用已验证工具，不伪称它们由 a98b6db1 重编译。新入口须额外检查这项非测试源码
+一致性，未来若工具或依赖发生变化则必须停止复用并重新构建。
+
+接下来以 docs-only 提交保存本节，普通推送新源码触发新 CI；新 run ID 以实际返回为准。此前
+34344914914、34376521384 均为失败历史，旧入口保持不可执行状态，不建立任何虚假镜像回执。
