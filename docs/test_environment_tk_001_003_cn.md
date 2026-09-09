@@ -2262,3 +2262,76 @@ shard 3 **97273 exit 0 / 773.275s**。shard 2 **29189 exit 1 / 397.301s**：
 接下来以 docs-only 提交保存本节及累计提交后证据，再普通 fast-forward 推送 dbaas。该文档提交
 不改变被验证的非 docs 路径；新 CI 必须绑定推送后的精确源码，而生产/测试门禁仍绑定 b48bef18。
 新 CI 创建后再记录 run ID；不重新执行已经失败的 34344914914，不使用其旧绑定部署入口。
+
+### 新源码推送与新 CI（2026-09-09 16:24 UTC 起）
+
+提交后完整记录已保存为 docs-only **998b977eb5c2435012ba2e8113bfd3a3a6a7bad5**，与已验证的
+产品/测试提交 b48bef18 的非 docs 路径无差异。普通 fast-forward push 会话 **60715 exit 0**，
+origin/dbaas 从 4f9a3eb1 前进到 998b977e，没有 force push，也没有重跑失败的旧 CI。
+
+push 自动创建 **34376521384**，createdAt=`2026-09-09T16:24:26Z`，完整 headSha 为上述
+998b977e，URL：<https://github.com/fivetime/kubebrain/actions/runs/34376521384>。首次 queued，
+随后实际 in_progress，Runner **raas-1561 / id52 / online / busy=true**。正在跟踪原会话
+**6591**，日志 `security-prepull-998b977e-ci-watch.log`，只读快照
+`security-prepull-998b977e-ci-current.json`。此刻没有完成/镜像发布证明，不能生成成功回执。
+
+新私有入口 `run-prepull-998b977e-upgrade.sh` 独立绑定新源码、新 run、b48bef18 的完整本地门禁
+与预编译工具、新组件摘要、当前既定服务/存储身份和 6000 次探针。旧入口全部保留不改。它要求
+实际生成的 `security-prepull-998b977e-image-verified.json`；当前缺失时 verify 返回预期 exit 1，
+并明确“no cluster access performed”。Bash 语法与固定摘要 ShellCheck 均通过，日志
+`security-prepull-998b977e-entry-shellcheck.log` / `security-prepull-998b977e-entry-missing-image.log`，
+入口摘要 `security-prepull-998b977e-entry.sha256`。
+
+本节为推送后进行中状态，暂不再次 push 以免 cancel-in-progress 取消新 CI。新 CI 成功后仍需核对
+实际 index/双平台镜像、源码标签/运行版本和工具身份，再执行入口 verify 与真实准备/升级。本轮未
+创建 holder/探针、未切换业务镜像、未重启后端；生产就绪目标仍未完成。
+
+### 34376521384 失败：短期限回归对 CREATE 时点的错误假设（2026-09-09 16:32 UTC）
+
+原 CI 与 watch **6591 exit 1**，run 终态 failure；安全扫描、kubectl 双架构构建扫描、架构和
+manifest 检查通过，镜像构建/发布步骤 skipped。日志 `security-prepull-998b977e-ci-failed.log`：
+唯一失败为新增 `explicit_short_deadline_remains_enforced`，executor_test.go:175 期望一个 DELETE，
+实际为零。该用例约 0.08s 结束，短于 CREATE 回调中的 0.1s 延迟；准备阶段 50ms 期限可在日志/
+计划检查期间、到达 CREATE 前耗尽。此时返回 DeadlineExceeded 且不删除任何对象是正确行为，
+先前“必然已 CREATE”的断言是本次新增测试的错误，不是生产实现缺陷，也不归责于 Runner。
+
+仅继续修改同一个 executor_test.go：记录是否到达会成功创建 fake Job 的回调；已到达时仍严格
+要求一次补偿删除，未到达时严格要求零删除，两条路径都必须无 Session/无残留 Job/Pod。新增
+明确已过期的父 context 用例，确定性覆盖 CREATE 前拒绝；原 50ms 期限及 100ms 延迟不变，
+1.1s 慢成功场景也保留，不扩大生产预算或降低 SLO。聚焦 race 十次通过，**31867 exit 0 / 13.468s**，
+日志 `security-prepull-fixture-create-boundary-focused.log`。
+
+组件/CLI/build 十轮 race 加 vet 正在执行，原句柄 **7685**，日志
+`security-prepull-fixture-create-boundary-all-race.log`。修复源码摘要为
+`security-prepull-fixture-create-boundary-code.sha256`。开始新提交前门禁后源码再次冻结；先单独
+执行完整 shard 2（保持原 10s runner 断言不变），随后运行其余三片，避免上一轮已观察到的分片
+并行资源敏感性；不能把旧提交的通过记录套用到本轮工作树。当前尚未提交/推送新修正。
+
+998b977e 的私有入口和失败 CI 继续保留且不得运行；新成功镜像回执仍不存在。本轮没有任何真实
+集群操作、业务切换或存储变更，目标继续 active。
+
+本轮组件/CLI/build 十轮 race 加 vet 已终态通过（**7685 exit 0**），Go 时间分别为
+37.701/54.948/6.279s；inventory **70021 exit 0**，720=`174/197/184/165`。
+完整 shard 2 原句柄 **87187** 仍运行，日志
+`security-prepull-fixture-create-boundary-pre-shard-2.log`；其余 shard 0/1/3 尚未启动，须在它
+终态后继续，不能把当前小组通过写成完整提交前门禁通过。修复文件摘要仍匹配，产品和测试冻结。
+
+### 创建时点回归修正：提交前分片继续（2026-09-09）
+
+继续等待原 shard 2 句柄，**87187 exit 0 / 387.732s**，184 项完整通过，未修改该分片中的
+10s runner 断言或测试内容。其终态后才启动其余分片：shard 0 → **26493**，shard 1 →
+**35637**，shard 3 → **9763**；各自日志为
+`security-prepull-fixture-create-boundary-pre-shard-{0,1,3}.log`，当前运行中。所有日志由外层
+077 创建，测试子进程沿用 022。源码摘要与 diff check 再次匹配，当前仍只有同一测试文件及
+两份状态文档未提交；尚未创建新提交、新 CI 或镜像回执。后续继续原三个句柄，不重启已完成的
+shard 2，也不以旧提交的门禁结果替代它们。
+
+### 创建时点回归修正：提交前完整通过（2026-09-09 16:57 UTC）
+
+四个原句柄全部终态通过：shard 0 **26493 exit 0 / 462.739s**，shard 1 **35637 exit 0 /
+518.674s**，shard 2 **87187 exit 0 / 387.732s**，shard 3 **9763 exit 0 / 748.459s**。
+本轮没有失败分片、没有改动测试断言后复用旧结果。结合 70021 inventory、7685 十轮三包 race/vet，
+当前修正具备完整提交前证据。冻结文件摘要匹配，其他非 docs 路径与 HEAD 无差异，diff check 通过。
+
+接下来提交同一测试文件及累计交接文档，并立即按相同调度顺序执行提交后 inventory、完整 shard 2、
+其余三个分片和组件检查；提交后完整通过前不推送、不触发新的 CI。两次失败 CI 的日志继续保留。

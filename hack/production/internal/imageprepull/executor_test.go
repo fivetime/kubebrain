@@ -141,20 +141,31 @@ func TestExecutorFixtureAllowsSlowSuccessfulPreparationButHonorsExplicitDeadline
 		timeout  time.Duration
 		delay    time.Duration
 		deadline bool
+		expired  bool
 	}{
 		{name: "successful setup beyond former one second fixture limit", delay: 1100 * time.Millisecond},
 		{name: "explicit short deadline remains enforced", timeout: 50 * time.Millisecond, delay: 100 * time.Millisecond, deadline: true},
+		{name: "deadline before creation must not delete", deadline: true, expired: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newExecutorFixture(t, 1)
 			_, journal := journalFixture(t, f)
+			ctx := t.Context()
+			if tc.expired {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithDeadline(ctx, time.Now().Add(-time.Second))
+				defer cancel()
+			}
 			if tc.timeout != 0 {
 				f.executor.PrepareTimeout = tc.timeout
 			}
 			// Model a slow but successful API response without imposing a host
 			// speed requirement on unrelated identity/policy assertions. The
-			// explicit-deadline case still requires compensation after CREATE.
+			// A short deadline can also expire during journal/plan work before
+			// CREATE. Compensation is required only if CREATE was reached.
+			createReached := false
 			f.beforeCreate = func(*batchv1.Job) error {
+				createReached = true
 				select {
 				case <-time.After(tc.delay):
 					return nil
@@ -162,7 +173,7 @@ func TestExecutorFixtureAllowsSlowSuccessfulPreparationButHonorsExplicitDeadline
 					return t.Context().Err()
 				}
 			}
-			session, err := f.executor.Prepare(t.Context(), f.requests, f.approved)
+			session, err := f.executor.Prepare(ctx, f.requests, f.approved)
 			if tc.deadline {
 				require.ErrorIs(t, err, context.DeadlineExceeded)
 				require.Nil(t, session)
@@ -172,7 +183,14 @@ func TestExecutorFixtureAllowsSlowSuccessfulPreparationButHonorsExplicitDeadline
 				require.NoError(t, f.executor.Verify(t.Context(), session))
 				require.NoError(t, f.executor.Cleanup(t.Context(), session))
 			}
-			require.Len(t, f.deletes, 1)
+			if tc.expired {
+				require.False(t, createReached)
+			}
+			if createReached {
+				require.Len(t, f.deletes, 1)
+			} else {
+				require.Empty(t, f.deletes, "do not delete anything when preparation never created a Job")
+			}
 			f.assertEmpty(t)
 		})
 	}
