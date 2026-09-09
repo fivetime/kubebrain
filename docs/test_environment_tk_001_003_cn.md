@@ -1066,3 +1066,68 @@ API v1 `EncodeRequest` 只附加 context，而服务端 `StoreMeta.search_region
 3=63756；后续先轮询这些会话，只有四片终态均 exit 0 才能生成完成回执及 FF push。
 当前没有提交后全量通过声明，也未推送或启动在线升级。本段为文档追加，不改变冻结
 源码，不应中断或替换当前测试。
+
+### Retain 门禁完整通过，发现并修复客户端范围编码缺陷（2026-09-09）
+
+`e83d95b2` post verifier 与四分片全部 exit 0：709 项，171/194/181/163，耗时
+459.841/467.934/310.912/744.853s。四个冻结文件摘要再次全部匹配；据终态才创建
+`security-retention-post-complete.json`。这轮完成 Retain 门禁前后验证，但不撤销
+之前 cache post shard 1 的失败记录。暂缓 KubeBrain push/在线升级，先纳入以下
+新确认的一致性边界修复；没有启动会被后续推送取消的 image CI。
+
+在独立 `/root/tikv-client-go`（原基线 `b5b63af1`）新增 codec 最小回归，验证 API v1
+raw/txn 与 API v2 raw/txn：v1 txn 和 v2 两种模式真实 RED，编码后的请求会漏掉请求
+范围对应的 Region。原 KVStore mock 位于 RPC codec 之前，旧测试未覆盖这一层。
+进而使用真实 loopback gRPC server、按 TiKV v8.5.3 半开 Region 交集规则取最小非零
+safe-ts，在独立 baseline worktree 上复现：目标 Region 水位 50，旧请求却得到相邻
+Region 的 900（三种模式均 FAIL，v1 raw 保持 identity 编码）。证据
+`security-client-safets-codec-before.log`、`security-client-safets-transport-before.log`。
+这不是已经在真实 TiKV 多 Region 集群上完成的回归；也尚未证明它是早前冷启动延迟
+的直接原因。基线 worktree 只增加同一回归测试，结束后比对并删除，测试保留在 fork。
+
+修复只作用于 StoreSafeTS 请求：使用 Region memcomparable 编码，v1 空/空继续保留
+store-wide 语义，v2 空或 nil 范围限制在自身 keyspace；克隆结构，保持重试不修改或
+重复编码原请求。新增 nil/空边界、单边范围、二进制键、8 字节边界回归，gRPC 还验证
+不会误纳入安全水位更低的相邻 keyspace。完整 codec 测试 PASS（0.031s），相关
+codec/transport race 十轮 PASS（1.138/1.752s）；完整模块普通/race（`-p 2`、无过滤）、
+build/vet/mod verify 全部 PASS，govulncheck v1.6.0 为 No vulnerabilities found。
+日志前缀 `security-client-safets-`，四个文件摘要为 `security-client-safets-code.sha256`。
+
+独立 fork 的修复已本地提交 `9fe67f4`，立即执行完整提交后普通及 race，日志
+`security-client-safets-post-{unit,race}.log`，串行工具会话 48172；此刻尚无两轮完整
+终态，也未 push fork。KubeBrain go.mod 仍固定远端 `b5b63af1` 的 pseudo-version，
+没有改为本地 replace。下一步先完成 fork 复验/快进推送/CI，随后更新远端不可变模块
+版本并执行 KubeBrain 依赖变更的完整前后门禁，最后再触发镜像发布与真实升级验证。
+新问题修复前不得以此前 HA PASS 代替范围编码验收；当前服务镜像仍未由本轮更换。
+
+客户端 `9fe67f4344a00be3c05aeefed14e618c15ebb0e9` 首次 post 普通测试 PASS，但
+完整 race FAIL：既有 `TestBackoffErrorType` 在 witness 随机退避累计 996ms 成为最长
+时仍硬编码期待 txnNotFound 错误。生产 `longestSleepCfg` 返回 witness 错误符合规则，
+该失败不是 race detector 数据竞争报告。原测试十轮单项 race PASS（34.890s），
+`security-client-safets-backoff-recheck.log`，不撤销首次 full race 失败。
+
+新增测试层确定性修订：只向 Backoffer 注入固定 sleep 返回值，保留生产累计、排除
+server-busy、预算判定与错误选择逻辑，分别断言 transaction/witness 为最长时的正确
+错误；不改生产随机 jitter、超时或重试参数。完整 retry 包 100 轮 race PASS（3.294s），
+日志 `security-client-safets-backoff-fixed.log`。当前重跑完整模块普通/race 提交前检查，
+日志 `security-client-safets-final-pre-{unit,race}.log`，原会话 43103。五个 Go 文件
+摘要为 `security-client-safets-release-code.sha256`；独立 fork 只有这份测试修订及
+维护文档未提交，尚未 push。下一步全量通过后提交该测试修订、立即完整 post 复验，
+再发布 fork 和核验 CI。KubeBrain 的 709 项前后门禁已完成，但依赖仍未更新。
+
+确定性测试修订已提交为 `832b70fd622f20d39a82ce6b50d3938a94b8bbd3`，不改
+`9fe67f4` 的运行代码。最终完整 pre 和 post 普通/race 两轮均 PASS；post 日志
+`security-client-safets-final-post-{unit,race}.log`，原会话 28258 已 exit 0。
+五个文件摘要再次全部匹配，vet 复核 PASS。此前随机测试失败仍保留，未使用单项
+结果替代最终完整回归。然后将两个提交从 `b5b63af1` 快进推送到
+`fivetime/tikv-client-go: kubebrain-v2.0.7`，没有 force push 或上游 PR。
+
+自动触发 fork CI [34303780336](https://github.com/fivetime/tikv-client-go/actions/runs/34303780336)，
+head SHA 精确为 `832b70fd...`。目前 in_progress，test job `102316096965` 与 security
+job `102316097209` 均在 Set up Go 阶段，不能先登记 CI success；不要重复推送取消该 run。
+Go 实际解析远端 commit 返回
+`v2.0.8-0.20260909023231-832b70fd622f`，Origin.Hash 与上述完整 SHA 一致。
+KubeBrain go.mod/go.sum 此刻未改变，仍锁定 `b5b63af1`；下一步先读取原 CI 终态，
+成功后更新远端 replace 至此不可变版本、核验模块摘要与应用测试，并重新执行依赖
+变更的 709 项提交前后门禁，之后再发布新 KubeBrain 镜像。服务端/后端均未因本轮
+客户端修复而部署或重启。
