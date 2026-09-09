@@ -2378,3 +2378,154 @@ buildinfo 并复用已验证工具，不伪称它们由 a98b6db1 重编译。新
 
 接下来以 docs-only 提交保存本节，普通推送新源码触发新 CI；新 run ID 以实际返回为准。此前
 34344914914、34376521384 均为失败历史，旧入口保持不可执行状态，不建立任何虚假镜像回执。
+
+### a98b6db1 已推送，新 CI 接手（2026-09-09 17:20 UTC 起）
+
+提交后记录保存为 docs-only **84d22dcc424245128f05802a424ee598e7a20364**，与 a98b6db1 的
+非 docs 路径无差异。普通 fast-forward push **30339 exit 0**，origin/dbaas 从 998b977e
+前进到 84d22dcc。自动创建新 run **34382354317**，createdAt=`2026-09-09T17:20:58Z`，
+完整 headSha 为上述 84d22dcc；URL：<https://github.com/fivetime/kubebrain/actions/runs/34382354317>。
+初始 queued，随后 in_progress，Runner **raas-1562 / id53 / online / busy=true**。
+
+原跟踪句柄 **19841**，日志 `security-prepull-84d22dcc-ci-watch.log`，当前快照
+`security-prepull-84d22dcc-ci-current.json`。尚无完成或发布证明，后续继续查询同一 run/句柄，
+不为状态文档再 push 取消本次 CI，也不重触发旧失败 run。
+
+新私有入口 `run-prepull-84d22dcc-upgrade.sh` 绑定 84d22dcc、新 CI、a98b6db1 的完整前后门禁
+和新组件摘要，沿用精确当前集群/旧服务镜像/rook-ceph 消费者 PV 身份与 6000 次探针。保留
+b48bef18 工具的真实编译身份；新增显式非 docs/测试源比较，只有依赖/生产源完全一致时才允许
+复用。这项 Git 比较与工具摘要已单独复核通过，不修改旧入口或旧回执。
+
+Bash 语法与固定摘要 ShellCheck 通过；缺少
+`security-prepull-84d22dcc-image-verified.json` 的默认 verify 返回预期 exit 1，确认未访问集群。
+日志 `security-prepull-84d22dcc-entry-shellcheck.log`、
+`security-prepull-84d22dcc-entry-missing-image.log`，入口摘要
+`security-prepull-84d22dcc-entry.sha256`。当前没有实际 holder/探针或候选部署，等待真实 CI 与
+镜像核验后再运行新入口；整体生产就绪仍未完成。
+
+### 34382354317 预拉取检查已通过，进入镜像构建
+
+继续跟踪原 run/句柄，GitHub 实际步骤结果确认 `Verify isolated image preparation contracts`
+为 success；之前的安全扫描、双平台 kubectl 构建扫描、目标架构与 manifest selection 也已通过。
+当前 `Build and push TiKV test image` 为 in_progress，完整源码仍为 84d22dcc。该轮已在 CI
+环境验证两次测试修正，但不能因此标记整个 CI 或镜像发布成功。
+
+最新结构化证据保存在 `security-prepull-84d22dcc-ci-current.json`。原 watch **19841** 仍运行；
+下一步等待同一 run 的镜像构建、实际发布镜像核验和 promotion 全部终态，再独立审查镜像字节/
+平台摘要/源码身份，之后才能建立镜像回执并进行集群验收。未重复 dispatch、未 push 进行中
+状态文档、未创建 holder 或切换业务镜像。
+
+### 34382354317 发布成功，开始独立镜像复核
+
+同一 CI 的 job 已于 2026-09-09 17:52:59Z 完成，整体 success；原 watch 19841 exit 0。
+完整结果和日志保存在 `security-prepull-84d22dcc-ci-completed.{json,log}`。
+本轮未出现旧 run 的 Buildx 删除超时；仍有 action 的 Node 20 迁移及 Node API 弃用警告，
+不将其隐藏为无警告构建。安全扫描、双架构实际发布核验及 promotion 均通过。
+
+独立从 registry 取得的候选索引为
+`sha256:b3b5c25ac815f5b9388be6aa3f987a3dd6c602e3378f4fb142b6fa1f822ca725`，
+amd64 为 `sha256:705c7500b44cbd656172f626e26b552c66aac6b963aa5012db7a4d2e372d60b1`，
+arm64 为 `sha256:ab8455575aa40b55dd883af911271b45ba78f834f599262d3ed063cebfbad371`。
+原始索引 `security-prepull-84d22dcc-index-observed.json` 已通过本地 verify-release，
+仅证明索引/平台身份，不是部署成功。开始本地 amd64 拉取（句柄 37460，日志
+`security-prepull-84d22dcc-amd64-pull.log`）以检查实际二进制；镜像成功回执仍未建立，
+尚未创建 holder/探针或切换业务镜像。
+
+独立复核后续：本地拉取 37460、实际 `--version`/配置检查 48717、抽取主二进制 buildinfo
+68214 均 exit 0，临时检查容器已删除。版本/源码/构建时间、UID 65532:65532、fork 模块
+`v2.0.8-0.20260909023231-832b70fd622f` 及 module sum 与预期一致；promoted tag 摘要一致。
+据此建立私有 0600 `security-prepull-84d22dcc-image-verified.json`，不是部署回执。
+精确入口摘要通过后，启动默认只读 verify，句柄 **97098**，日志
+`security-prepull-84d22dcc-entry-verify.log`，证据目录
+`prepull-84d22dcc-verify.BmZScfajzDiH`；继续等待同一进程完成，再做新候选 dry-run 准入。
+
+只读 verify 97098 已 exit 0，输出 `CANDIDATE_UPGRADE_GUARDS_PASSED`、
+`cluster_mutations=0`。精确资源/旧服务镜像/消费集群存储和后端健康检查通过；下一步为
+新候选 Job/Pod 的 DryRunAll 准入核验，然后才是实际隔离准备与受控在线升级。
+
+### 新候选准入通过，启动受控升级
+
+新候选 DryRunAll 检查句柄 34519 exit 0，输出
+`PREPULL_ADMISSION_CONFIRMED dryRun=All containersExecuted=false`；
+`security-prepull-84d22dcc-admission-{before,after}.json` 的 Job/Pod 名称和 UID 比较 exit 0。
+日志 `security-prepull-84d22dcc-admission.log`，私有 journal `admission-84d22dcc-01`。
+使用 hold 11618s、minimum remaining 10958s，与正式入口预算一致；dry-run 不证明实际容器运行。
+
+入口摘要再次通过后，启动 `run-prepull-84d22dcc-upgrade.sh execute`，活跃句柄 **93250**，
+日志 `security-prepull-84d22dcc-upgrade.log`。入口会重新验证 CI/清单及精确集群身份/后端健康，
+然后先做隔离镜像准备，再启动 6000 次探针并滚动业务镜像。此处仅记录已启动，不声明成功；
+继续跟踪同一进程及失败时的回滚/UID 定界清理，不因观察超时重复启动。
+
+实际准备已取得 `PREPULL_READY` 和升级前 `PREPULL_VERIFIED`。三个 holder 分别在三个
+worker Running/Ready，CRI 实际 imageID 均为已审核的 amd64 子摘要。恢复 journal 为
+`prepull.YczW7ofYlsNf/attempt`，执行证据目录 `prepull-84d22dcc-execute.Cj8orsCQAss0`。
+探针 `prepull-upgrade-84d22dcc` 已 Running/Ready。最近读取 StatefulSet generation/observed
+4/4、Ready 3、updated 2，目标 revision `kubebrain-59884d79b9`，目标镜像已改为本次索引。
+升级正在执行，93250 仍活跃；上述是中间状态，不是全部副本完成或 6000 次探针通过。
+
+后续只读观察：StatefulSet generation/observed 4/4、Ready/updated 3/3，current/update
+revision 均为 `kubebrain-59884d79b9`；runner 输出 `ROLLOUT_PROBE_COVERAGE_CONFIRMED`，
+探针 UID `14c0b2bd-b80b-4896-ac0c-29b194791f56` 仍 Running、restart 0。探针有连接切换
+期间 Unavailable 重试警告；未取得最终 summary 前不能声明零失败或 SLO 通过。
+
+已保存实际 holder 事件 `security-prepull-84d22dcc-holder-events.json`：三个节点的新索引
+实际拉取耗时依次 39.065s、38.76s、34.873s，镜像大小 2049486220 bytes；不是仅把旧镜像
+热缓存重跑视为预拉取修复。新业务 Pod 的精确 UID 清单和对应事件保存于
+`security-prepull-84d22dcc-updated-pods-observed.json`、
+`security-prepull-84d22dcc-updated-pod-events.json`；三个业务 Pod 均报告镜像已在节点本地。
+这证明本轮拉取发生在隔离准备阶段，不证明所有镜像层此前均不存在，也不替代完整业务探针。
+
+### 本次升级验收失败：探针完成超时，回滚与清理完成
+
+原进程 **93250 exit 1**。第一条失败为 `availability probe did not complete within 900s`，
+随后自动恢复原镜像；没有延长完成窗口或重复启动测试。最终日志同时包含
+`FIXTURE_CLEANUP_OK status=absent ... keys=0 users=0 roles=0 leases=0` 和
+`PREPULL_CLEANUP_CONFIRMED`。新鲜查询确认 generation/observed 5/5、Ready/updated 3/3，
+current/update revision 均回到 `kubebrain-696c87f8f9`，镜像恢复原 a245c95f 摘要；
+namespace 内名称含 prepull 的 Job/Pod 列表为空。journal 保留，不把清理成功视为升级成功。
+
+清理前独立保留 `security-prepull-84d22dcc-probe-timeout.log`，最终错误为
+`PROBE_FAIL iteration=4844: direct watch recovery exceeded 28.116701467s: context deadline exceeded`。
+但不能倒置因果：`security-prepull-84d22dcc-rollback-events.json` 中候选 Pod kubebrain-2
+于 18:21:46Z 开始被停止，kubebrain-1 于 18:22:42Z；该探针错误直到 18:23:43Z 才出现，
+因此发生在回滚期间，而不是导致 runner 首次回滚的错误。没有完整 6000 次成功 summary。
+下一步分析探针完成预算、实际逐次耗时及回滚期间 direct-watch 恢复问题；本次失败原样保留，
+不得直接调大时限或把热缓存重跑当作冷拉取修复的全部证明。
+
+后续源码检查确认每次迭代串行包含后端 TSO/Region/周期性 PD 检查、Put/public watch、
+direct watch 验证，最后才 Sleep(interval)。6000×0.1s 只是间隔下界，不是总运行时长预测。
+现有失败日志没有完成时限到达瞬间的迭代数和阶段累计耗时，无法据此认定某个具体后端变慢。
+
+正在本地补充 `PROBE_PROGRESS` 诊断：最多 100 条中途记录加一条退出记录，含 UTC 时间、
+已完成数、总耗时和已结束阶段的 backend/public/direct-wait/pacing 累计耗时；标记
+`scope=diagnostic_only`，不替代成功 summary，不改变既有次数、间隔或 SLO 配置。
+失败中的未完成阶段不会计入阶段累计，因此这些累计不必等于 elapsed。
+`TestProbeProgressBoundedAndDiagnosticOnly` 定向测试 44703 exit 0；完整探针包 race
+句柄 **47798**，日志 `security-probe-progress-package-race.log`，仍需核对终态。
+当前修改未提交，完整提交前/后生产门禁尚未执行；不得用该工作树直接复用旧镜像发布入口。
+
+诊断改动的提交前 inventory 88688 exit 0，仍为 720 项，四分片 174/197/184/165，
+日志 `security-probe-progress-pre-inventory.log`；三个源码/测试文件摘要固定于
+`security-probe-progress-code.sha256`。race 47798 已确认实际测试二进制仍在执行，
+不是只有旧日志文件；待其终态再执行生产分片。冻结上述产品/测试文件，不能在门禁过程中改写。
+
+完整探针包 race **47798 exit 0**，Go 用时 274.132s。源码摘要再次一致后，启动提交前
+生产分片 2/4，句柄 **91163**，日志 `security-probe-progress-pre-shard-2.log`。
+该时间敏感分片单独运行；其后再跑分片 0/1/3，全部终态成功之前不提交。
+
+提交前分片 2 **91163 exit 0**，184 项、Go 用时 393.477s，源码摘要再次一致。
+随后启动剩余分片 0 **1168**、1 **71019**、3 **24876**；对应日志
+`security-probe-progress-pre-shard-{0,1,3}.log`。这些仍为运行句柄，不是成功证明，
+待三个终态及摘要复核后才允许提交，随后立即执行完整提交后门禁。
+
+提交前分片 0 **1168 exit 0**，174 项、Go 用时 467.099s；分片 1 **71019** 和
+分片 3 **24876** 仍在原进程执行。尚不满足完整提交前门禁，不提交。
+
+随后分片 1 **71019 exit 0**，197 项、Go 用时 523.054s。仅剩分片 3 **24876**
+尚未结束；代码仍保持冻结。
+
+提交前最后分片 3 **24876 exit 0**，165 项、Go 用时 755.754s。至此四分片全过，
+耗时按 0/1/2/3 为 467.099/523.054/393.477/755.754s，inventory 720、174/197/184/165。
+完整探针包 race 274.132s、go vet、git diff --check 及三个源文件摘要均通过。
+该改动只增加诊断，不宣称已修复真实探针超时；提交后须立即执行完整四分片和 inventory，
+全部成功前不推送触发 CI 或部署。

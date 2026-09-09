@@ -1504,12 +1504,17 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	}()
 
 	fmt.Println("PROBE_STARTED")
+	progress := newProbeProgress(time.Now(), cfg.iterations)
+	defer func() {
+		retErr = errors.Join(retErr, progress.write(os.Stdout, time.Now(), true))
+	}()
 	var maxLatency time.Duration
 	var maxPutLatency time.Duration
 	var maxWatchResumeLatency time.Duration
 	var maxDirectLatency time.Duration
 	lastPDCheck := time.Now()
 	for i := 1; i <= cfg.iterations; i++ {
+		iterationStarted := time.Now()
 		if streamErr := streamProbe.err(); streamErr != nil {
 			return fmt.Errorf("iteration=%d: %w", i, streamErr)
 		}
@@ -1549,6 +1554,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			lastPDCheck = time.Now()
 		}
 		started := time.Now()
+		progress.backend += started.Sub(iterationStarted)
 		publicRPCAttempts.reset()
 		publicAttemptEvidence := func(ended time.Time) string {
 			return publicRPCAttempts.formatEvidence(started, ended, publicRPCAttemptOutputLimit)
@@ -1616,6 +1622,8 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 
 		directRemaining := time.Until(started.Add(cfg.maxDirectLatency))
+		progress.public += watchReceived.Sub(started)
+		directWaitStarted := time.Now()
 		if directRemaining <= 0 {
 			return fmt.Errorf("iteration=%d direct watch recovery exceeded %s", i, cfg.maxDirectLatency)
 		}
@@ -1637,6 +1645,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		if directErr := validateDirectWatchLatency(directObservations, cfg.maxLatency, cfg.maxDirectLatency); directErr != nil {
 			return fmt.Errorf("iteration=%d: %w", i, directErr)
 		}
+		progress.direct += time.Since(directWaitStarted)
 
 		if keepAliveErr := publicKeepAlive.err(); keepAliveErr != nil {
 			return fmt.Errorf("iteration=%d: %w", i, keepAliveErr)
@@ -1646,7 +1655,13 @@ func run(ctx context.Context, cfg config) (retErr error) {
 				return fmt.Errorf("iteration=%d: %w", i, keepAliveErr)
 			}
 		}
+		pacingStarted := time.Now()
 		time.Sleep(cfg.interval)
+		progress.pacing += time.Since(pacingStarted)
+		progress.completed = i
+		if err := progress.write(os.Stdout, time.Now(), false); err != nil {
+			return fmt.Errorf("write probe progress: %w", err)
+		}
 	}
 	if err := streamProbe.waitForMinimum(ctx, streamMinimumCompletionTimeout(cfg.streamTimeout, cfg.streamMaxBackoff)); err != nil {
 		return err
