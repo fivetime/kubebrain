@@ -212,6 +212,64 @@ func TestDBaaSImageWorkflowUsesSelfHostedAndIsolatesTestTags(t *testing.T) {
 		strings.Index(content, "Promote verified image to dbaas"))
 }
 
+func TestDBaaSImageWorkflowSeparatesRegistryCacheFromRelease(t *testing.T) {
+	data, err := os.ReadFile("../.github/workflows/image.yml")
+	require.NoError(t, err)
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name, Uses      string
+				With            map[string]any
+				ContinueOnError any `json:"continue-on-error"`
+			}
+		}
+	}
+	require.NoError(t, yaml.Unmarshal(data, &workflow))
+	const cacheRef = "${{ steps.vars.outputs.image }}:buildcache-dbaas"
+	login, build, verify, promote := -1, -1, -1, -1
+	for i, step := range workflow.Jobs["build-and-push"].Steps {
+		if strings.HasPrefix(step.Uses, "docker/login-action@") {
+			login = i
+		}
+		if strings.HasPrefix(step.Uses, "docker/build-push-action@") {
+			build = i
+			require.Nil(t, step.ContinueOnError, "cache migration must not suppress build/publish failures")
+			export, ok := step.With["cache-to"].(string)
+			require.True(t, ok)
+			fields := map[string]string{}
+			for _, field := range strings.Split(export, ",") {
+				pair := strings.SplitN(strings.TrimSpace(field), "=", 2)
+				require.Len(t, pair, 2)
+				require.NotContains(t, fields, pair[0], "cache options must not be duplicated")
+				fields[pair[0]] = pair[1]
+			}
+			require.Equal(t, map[string]string{
+				"type": "registry", "ref": cacheRef, "mode": "max", "oci-mediatypes": "true", "image-manifest": "true",
+			}, fields)
+			imports, ok := step.With["cache-from"].(string)
+			require.True(t, ok)
+			require.Equal(t, []string{"type=registry,ref=" + cacheRef, "type=gha,scope=kubebrain-dbaas"},
+				strings.Split(strings.TrimSpace(imports), "\n"), "legacy GHA cache is read-only during migration")
+			tags, ok := step.With["tags"].(string)
+			require.True(t, ok)
+			require.Equal(t, "${{ steps.vars.outputs.image }}:dbaas-${{ steps.vars.outputs.revision }}", strings.TrimSpace(tags))
+			require.NotContains(t, tags, cacheRef, "build cache must never overwrite a release tag")
+		}
+		switch step.Name {
+		case "Verify published test image":
+			verify = i
+			require.Nil(t, step.ContinueOnError)
+		case "Promote verified image to dbaas":
+			promote = i
+			require.Nil(t, step.ContinueOnError)
+		}
+	}
+	require.GreaterOrEqual(t, login, 0)
+	require.Greater(t, build, login)
+	require.Greater(t, verify, build)
+	require.Greater(t, promote, verify)
+}
+
 func TestIntegrationToolDownloadsAreVersionedAndVerified(t *testing.T) {
 	workflow, err := os.ReadFile("../.github/workflows/integration.yml")
 	require.NoError(t, err)

@@ -887,3 +887,66 @@ export 步骤 `#170` 从 23:54:04 到 00:54:09，耗时 3606.3s（准备 404.0s�
 3202.3s），随后才进入镜像验收。这是缓存导出瓶颈的直接日志证据，而非推断编译
 耗时一小时。先检查更合适的缓存后端，再与已有修复一起推送；不能为提速移除镜像
 安全扫描、双架构检查或发布验收。
+
+### 受控 leader Pod 故障通过与 PD 卷策略修复（2026-09-09）
+
+`security-controlled-ha-60137eb3.log` 已终止且 exit 0。使用已验收的 `60137eb3`
+探针镜像及本机 `4fd0d599` runner，对仍运行 `339381af` 的三副本进行受控删除。
+动态确认的 leader `kubebrain-2`（旧 UID `fcec128c-edce-4689-9576-8fd85c820864`）
+被 UID/resourceVersion 限定删除；继任 leader 为 `kubebrain-1`，member ID
+`1284742340`。StatefulSet 重建的 Pod UID 为 `334eae03-1f53-4eb5-93c7-e230bec2b50b`，
+01:03:50 创建，01:04:08 Ready；这约 18 秒是 Pod 初始化时间，不是公共客户端中断时间。
+
+完整结果：900/900 操作成功，public watch 900、三个 direct watch 各 900；public
+最大延迟 1908ms、Put 786ms、Put 后 watch 1122ms，direct 最大延迟 13363ms。
+public lease 一直存活且重连 0；direct lease 存活、重连 3 次、最大恢复 7550ms。
+Range stream 170、snapshot/官方 etcdutl restore 验证 1，stream retries 3，其中 partial
+retry 1。5 秒 public SLO、30 秒 direct 上界和 5 秒 lease TTL 未放宽。早期三次 Put
+Unavailable 重试保留在日志中，`fail=0` 不表示底层没有瞬时错误。
+
+故障前后 fixture cleanup 均为 absent，keys/users/roles/leases 全零；探针 Pod、清理
+Pod 和 owner ConfigMap 已自动清理。旧 Pod 的两份 ephemeral scratch PVC/PV 随控制器
+回收并重建，不是后端数据卷；没有手工删除 PD/TiKV 卷。服务镜像、runtime digest 与
+StatefulSet revision 均未变化。最终九个前后端 Pod Ready/restart 0，PD/TiKV Pod UID
+保持不变；Region gate 再次连续三样本通过，3 PD/3 stores/0 abnormal regions。
+证据另见 `security-controlled-ha-final-{pods,pvc,pv}.json` 和
+`security-controlled-ha-final-region-gate.log`（仓库外测试状态目录）。
+
+这仅证明受控 leader Pod 删除场景。未获得旧进程是否主动释放租约的证据，不能等同于
+无清理机会的 SIGKILL、节点失联、网络分区或跨可用区故障；也不能替代包含 `4fd0d599`
+的新镜像在线升级验证。当前服务仍为 `339381af`。
+
+存储复核发现既有配置偏差：TidbCluster `kb` 已声明 `pvReclaimPolicy: Retain`，但三份
+PD PVC/PV 仍带旧 instance 标签 `kubebrain-test`，实际 PV 策略为 Delete；三份 TiKV PV
+已经为 Retain。这不是本次 HA 引入的偏差。TiDB Operator v1.6.5 的
+[reclaim policy manager](https://github.com/pingcap/tidb-operator/blob/v1.6.5/pkg/manager/meta/reclaim_policy_manager.go)
+按集群名 `kb` 选择 PVC，旧标签使其遗漏这些 PD 卷。
+
+在核对 namespace/TidbCluster/Pod/PVC/PV UID、绑定关系及 consumer rook-ceph 身份后，
+仅对 `pd-kb-pd-{0,1,2}` 及其三个绑定 PV 的 instance 标签实施 UID/RV/旧值限定 patch，
+由 Operator 自行收敛策略；没有手工覆盖 reclaim policy、修改 StorageClass 或重启后端。
+`security-pd-volume-label-repair.log` exit 0，终态
+`PD_PV_RETENTION_RECONCILED retained=3 source=operator unchanged_volume_identity=true`。
+三份 PV 前后除 reclaim policy 外的完整 spec 与 UID 均相等（包括 CSI volumeHandle、
+claimRef、容量与 StorageClass），仍为 Bound；九个服务 Pod 再读均 Ready/restart 0，
+后端 UID 不变。证据 `security-pd-label-{0,1,2}-{pvc,pv}-before.json`、patched 回执及
+`security-pd-label-{0,1,2}-pv-after.json`。此结果不改变 scratch 卷的 Delete 策略。
+
+### CI 缓存迁移验证（2026-09-09）
+
+针对 run `34290666105` 的 3606.3s GHA cache export，image workflow 改为向同一 GHCR
+仓库的独立 `buildcache-dbaas` tag 导出 registry max-mode cache；保留旧 GHA cache
+只读导入作为迁移回退。缓存 tag 与不可变源码镜像及正式 dbaas tag 分离，保留双架构、
+provenance、SBOM、安全检查、镜像验证和验证后 promotion；不忽略缓存或构建错误。
+
+新增结构化 YAML 回归锁定缓存参数、独立 tag、登录/构建/验收/晋升顺序与不可吞错。
+原 workflow 上测试 RED，迁移后完整 `go test ./build -count=1 -timeout=5m` PASS
+（0.392s），actionlint v1.7.12 与 diff 检查 PASS；日志
+`security-registry-cache-{before,build-tests,actionlint}.log`。实际提速尚待新 CI 实测，
+不能把配置改动当成性能验收成功。提交前后生产四分片结果另行登记。
+
+本轮提交前 verifier 确认 708 项、分桶 170/194/181/163；四个并行分片均 exit 0，
+耗时 270.010/487.354/336.249/771.301s，日志
+`security-registry-cache-pre-verify.log`、`security-registry-cache-pre-{0,1,2,3}.log`。
+这些结果未借用上一产品提交的分片；本轮仅修改 workflow 与对应 build 回归测试，
+未修改已通过真实 HA 的 runner/probe。提交后须再次执行完整 verifier 与四分片。

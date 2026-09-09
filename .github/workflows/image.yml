@@ -110,8 +110,13 @@ jobs:
             KUBEBRAIN_GIT_SHA=${{ steps.vars.outputs.revision }}
             KUBEBRAIN_BUILD_DATE=${{ steps.vars.outputs.created }}
           tags: ${{ steps.vars.outputs.image }}:dbaas-${{ steps.vars.outputs.revision }}
-          cache-from: type=gha,scope=kubebrain-dbaas
-          cache-to: type=gha,scope=kubebrain-dbaas,mode=max
+          # Export the multi-stage cache next to the image: GHA max-mode
+          # export took 60 minutes in run 34290666105. Keep the old cache
+          # read-only as a migration fallback, never as a release tag.
+          cache-from: |
+            type=registry,ref=${{ steps.vars.outputs.image }}:buildcache-dbaas
+            type=gha,scope=kubebrain-dbaas
+          cache-to: type=registry,ref=${{ steps.vars.outputs.image }}:buildcache-dbaas,mode=max,oci-mediatypes=true,image-manifest=true
           provenance: mode=max
           sbom: true
 

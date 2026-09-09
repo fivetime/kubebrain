@@ -4,6 +4,15 @@
 
 ## 验证边界
 
+2026-09-09 独立 TiKV/PD 测试环境补充：`339381af` 三副本通过受控 leader Pod 删除
+门禁，900/900 操作、public watch 900、三个 direct watch 各 900；public 最大延迟
+1908ms、direct 13363ms，lease 存活，snapshot/官方 etcdutl restore 验证通过。
+使用已发布 `60137eb3` 探针与本机 `4fd0d599` runner，服务镜像并未升级。此证据不覆盖
+节点失联、无主动释放的进程故障、网络分区或跨区故障，也不代表生产就绪完成。
+精确镜像/UID、重试、自动清理和 PD 卷 Retain 策略修复见
+[测试环境记录](test_environment_tk_001_003_cn.md)。新 info trust 修复的真实在线升级、
+后端 TLS/轮换、监控和长期稳定性等验收仍未完成。
+
 - 本地 kind、standalone kube-apiserver、临时 in-cluster kube-apiserver 只能证明一部分 API 行为。
 - 判断能否替代 etcd，最终必须把真实 Kubernetes/k3s apiserver 的 `--etcd-servers` 指向 KubeBrain，在真实 TiKV/PD 后端上跑对象生命周期、list/watch、lease、compact、apiserver 重启和 KubeBrain leader 切换验证。
 - `deploy/dev` 只用于本地验证；`deploy/production` 是经过结构化测试的高可用基线，但
