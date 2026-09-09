@@ -2719,3 +2719,216 @@ KubeBrain 原 TiKV 适配器没有该调用，而 /metrics 使用 Prometheus 默
 各容器 restartCount=0。此证据仅代表采样时点，不替代连续后端健康及后续发布前检查。
 下一步推送后核对新 CI 的完整 headSha、镜像摘要和实际导出；旧 34057ee8 升级入口
 绑定旧源码，不可直接复用。原 900s 超时失败继续保持开放，不以指标修复宣称关闭。
+
+### 4f2d2402 发布进行中及新验证入口
+
+文档后继 `4f2d24020d8121c888a978f6d905e87e29b2d439` 已推送 dbaas，
+触发 CI [34407926007](https://github.com/fivetime/kubebrain/actions/runs/34407926007)。
+已由 Runner 接走，最近查询运行到 Verify automatic target architecture；尚无成功发布终态。
+同一 watch 进程句柄 42319，私有日志 `security-client-metrics-4f2d2402-ci-watch.log`。
+运行状态更新暂不 push，以免打断当前构建。
+
+私有 `run-prepull-4f2d2402-upgrade.sh` 绑定上述完整源码、产品 826fd14c、CI ID
+及 `security-client-metrics-post-complete.json`，仍须待实际镜像回执才能继续。
+新工具目录 `client-metrics-4f2d2402-tools` 包含重编译的 image-prepull、uid-delete
+及固定 kubeconfig 包装器；两个二进制 buildinfo 均为 Go 1.26.8、上述完整源码、
+vcs.modified=false。没有扩大旧工具的源码差异豁免；工具及入口摘要分别保存在
+`security-client-metrics-4f2d2402-tools.sha256` 和 `security-client-metrics-4f2d2402-entry.sha256`。
+
+入口 bash -n 与固定摘要 ShellCheck 镜像检查通过，后者仅只读挂载两个脚本、禁用网络，
+未挂载 kubeconfig。缺少镜像回执的负例 exit 1，明确输出
+`verified candidate image receipt is absent; no cluster access performed`。
+日志为 `security-client-metrics-4f2d2402-entry-{shellcheck,missing-image}.log`。
+未创建占位成功回执，未执行部署；6000 次/100ms 间隔及原 SLO、900s 完成窗口仍未更改。
+
+后续同一 CI 查询已进入 Build and push TiKV test image，前序隔离准备合同检查成功；
+尚未取得发布终态。新增私有只读采样入口 `capture-client-metrics-4f2d2402.sh`：
+要求真实镜像回执及固定 namespace UID，逐个检查候选 Pod image、Ready、UID、containerID、
+imageID、restartCount 和启动时间，在采样前后核对身份相等；探针同样做前后身份核对。
+从探针用固定 info CA/serverName、connect-to 目标 Pod IP 获取 /metrics，保持 TLS 校验，
+每次命令有外层 20s 超时、curl 10s 超时、4MiB+1 有界捕获，空响应或超限拒绝。
+每份样本要求 request_seconds、txn_cmd_duration_seconds、backoff_seconds 的客户端
+count 序列存在；只输出 diagnostic_only，不产生部署验收成功回执。不同 Pod 的采样是
+顺序执行，不是全局原子快照；后续增量分析仍须检查同一 Pod 进程启动时间与计数单调。
+
+该入口 bash -n、固定摘要 ShellCheck 通过；缺少镜像回执时 exit 1 且在集群访问前停止，
+日志 `security-client-metrics-4f2d2402-capture-{shellcheck,missing-image}.log`。
+尚未运行真实采样，也未使用占位回执测试可执行路径；实际采样能力仍待发布后的证据。
+
+### 4f2d2402 发布成功与只读部署前检查启动
+
+CI 34407926007 于 **2026-09-09T22:08:00Z** 全部成功结束，watch 42319 exit 0，
+包括双平台发布验证、dbaas promotion 及清理步骤；Node.js 20 弃用警告保留。
+独立取得的原始索引 SHA-256 与 registry 摘要一致：
+`sha256:0f16988bc838506cb42652aa52f6e7077142e845e4f707c8aa5788975bcd0dce`；
+amd64 为 `sha256:05928200d84c718612844a06bb958d8fa251d898cc44bd8107025a71fdf7a58a`，
+arm64 为 `sha256:4c78f29b524040ffcddc9770d8a668d0dea62f45ea439e1d1071519b0f1b58fd`。
+本地新 image-prepull 的 verify-release 通过；独立读取 dbaas 标签也指向同一索引。
+
+按 amd64 摘要拉取成功（62209 exit 0），本地 network-none/read-only/drop-capabilities
+运行实际镜像 version：源码 4f2d2402 全 SHA、版本 0.0.0-dbaas-4f2d24020d81、
+Go 1.26.8、linux/amd64、BuildTime 21:37:52Z。OCI 标签匹配，运行用户 65532:65532。
+提取主程序的 Go buildinfo 核对 fork 模块版本与 go.mod 一致，sum 为
+`h1:xmTt2n1e/Yy8Tq5cCn4MqQsTtzTQWMuKX2GAqDkJuJg=`；临时提取容器已删除。
+实际成功镜像回执 `security-prepull-4f2d2402-image-verified.json` 已建立，权限 0600，
+明确仅证明发布身份、不证明部署验收。相关证据均为 security-client-metrics-4f2d2402 前缀。
+
+新入口 verify 已启动，句柄 13790，日志 `security-client-metrics-4f2d2402-entry-verify.log`，
+证据目录 `prepull-4f2d2402-verify.wqqpzMli3nsU`。仍为只读检查，尚未启动 execute，
+不以发布成功覆盖旧的升级完成超时失败。
+
+随后同一 verify 13790 exit 0，输出 `CANDIDATE_UPGRADE_GUARDS_PASSED`，
+源码及镜像索引与上述回执一致，`cluster_mutations=0`。尚未进行实际隔离准备或升级。
+
+### 4f2d2402 准入通过与受控升级启动
+
+新候选 check-admission exit 0，输出 `PREPULL_ADMISSION_CONFIRMED dryRun=All containersExecuted=false`。
+全部 Job/Pod 名称+UID 的 before/after 投影 cmp exit 0，未创建实际容器；
+日志 `security-client-metrics-4f2d2402-admission.log`，journal `admission-4f2d2402-01`。
+hold 11618s、minimum remaining 10958s，与原 runner 预算一致。
+
+随后仅启动一次新入口 execute，进程句柄 **5877**，日志
+`security-client-metrics-4f2d2402-upgrade.log`，证据目录
+`prepull-4f2d2402-execute.EnZ8F8j9cvg3`，恢复 journal `prepull.zPmp0ZJqqAuy/attempt`。
+原 6000 次/100ms、public 5s/direct 30s、900s 完成窗口均未调整；本次取得客户端
+阶段指标是诊断目的，不能预设升级验收通过。失败仍须跟踪原流程回滚与 UID 范围清理终态。
+
+当前已取得 `PREPULL_READY`，holder nonce `e65be03c844ad8a673c2bd636469c7d8`，
+三个 Pod 分别为 -00-sq8p2/-01-hqztv/-02-f89df，UID 分别为
+fd3af2fe-6a4e-4e2d-aef4-18af6385fb7b、dd09f944-9a49-4fa7-b5c7-31928e49c6ea、
+5bd03a97-1e22-41ef-a18d-1136be95313e，放置在 worker1/2/3。
+流程仍运行，正在准备探针，尚无完整升级或指标采样结论。不要重复 execute。
+
+### 4f2d2402 早期 direct watch 失败及恢复终态
+
+原 execute 5877 已 **exit 1**，不再运行。首次 runner 失败为
+`availability probe failed during rollout`，探针最终报告
+`PROBE_FAIL iteration=116: direct watch recovery exceeded 28.07110831s: context deadline exceeded`。
+这是滚动期间的早期恢复失败，不是此前 900s 完成窗口超时，也没有完整成功 summary。
+实际采样入口未能执行，新客户端耗时样本尚未取得。
+
+证据 `security-client-metrics-4f2d2402-events.json` 与升级日志显示：
+旧 kubebrain-2（UID c9c25ac0-7b49-4b4e-8587-3c7452100270）22:17:12Z Killing；
+候选 UID 16403130-ff9b-4317-b13d-76299a1d761a 在 22:17:55Z 因两个 generic ephemeral
+PVC 仍属旧 Pod/正在删除出现 FailedBinding、FailedScheduling，22:17:56Z 调度并报告
+两卷 attach 成功，直到 22:18:08Z 才 Pulled/Created/Started。Pulled 明确为镜像已缓存，
+不是业务 Pod 重新下载镜像。22:18:07.442Z 探针已输出 final 进度（仅完成 115 次），
+早于候选容器启动；随后客户端日志含 direct Pod DNS no such host。
+22:18:17Z 候选 Killing 属回滚阶段，不是首次失败原因。
+
+这些事件支持优先检查 Pod 替换、旧卷清理及新卷挂载/容器创建的整体间隔，不能把所有
+延迟归因于 PVC 创建（调度阻塞事件仅约一秒），也不能归因于新指标注册或候选启动后的
+业务逻辑。28.071s 是该阶段剩余等待耗时，原 direct 恢复上限仍为 30s，未改门限。
+
+执行日志末尾已有 fixture keys/users/roles/leases 全零及 `PREPULL_CLEANUP_CONFIRMED`。
+新鲜只读查询确认 StatefulSet generation/observed 9/9、Ready/updated 3/3，
+current/update 均为 kubebrain-696c87f8f9，回到原 a245c95f 完整镜像；名称含 prepull
+的 Job/Pod 集合为空。首轮复核 updated=2 为中间状态，已被本次终态取代。
+未重跑 upgrade，也未降低负载或超时标准；旧 900s 完成超时与本次 Pod 替换恢复失败均保持开放。
+
+### 退出路径复核：证据与待验证假设
+
+本次 source.json 确认实际 preStop 为 sleep 25 后 POST /drain（curl 上限 10s），
+terminationGracePeriodSeconds=45，两个 4Gi rook-ceph 工作卷均为 generic ephemeral。
+源码 cmd/main.go 的 SIGTERM 后进程强制退出上限为 15s；preStop 属于信号前阶段，
+这些预算不能直接相加解释实际耗时，也不能将 Killing 事件等同于进程已经退出。
+
+退出代码依次等待 endpoint transport、server、backend workers、checkpoint release 和
+storage close。实际参数 --tikv-client-num=16，pkg/storage/tikv/tikv.go 的 closeClient
+逐个关闭池内客户端；fork KVStore.Close 会先 cancel 并等待自己的后台任务，然后关闭
+oracle、PD、lock resolver、RPC 和 Region cache 等。由此得到一个可验证假设：串行关闭
+可能累积等待时间，但当前缺少已删除旧 Pod 的完整退出日志/最终容器状态，不能声称它
+造成了此次超时，也不能把剩余时间全部归因于 CSI 卸载。
+
+后续诊断应在任何新的受控替换之前开始保存旧 Pod 的日志及 UID 对应的容器终止状态，
+区分 /drain、SIGTERM、shutdown complete/force exit、卷卸载及新容器启动。没有为验证
+假设重启 worker/PD/TiKV，没有把工作卷改成 node-root emptyDir，也没有缩短保护预算。
+
+### 按 Pod 身份绑定的退出状态观察器
+
+新增私有 `observe-kubebrain-2-exit.sh EXPECTED_POD_UID SECONDS`，只读固定测试
+namespace/kubeconfig/context 和 kubebrain-2，启动前核对 namespace UID 与 Pod UID。
+观察时长限制 5..900s，kubectl watch 由外层 timeout 收敛，投影仅含事件时间、UID、
+resourceVersion、删除时间、conditions、containerID、restartCount、state/lastState，
+不保存 Pod 环境变量或 Secret。跨同名 Pod 替换保留不同 UID，不把后继当作旧进程。
+输出上限 32MiB；分别记录 watch/解析/捕获退出码，空或超限数据拒绝，原始片段保留。
+结束时再次验证 namespace UID，并明确 termination_not_assumed=true。
+
+bash -n 与固定摘要 ShellCheck 通过；对当前 UID
+69fb75b9-6fde-49e7-b0e7-878a625e1e4e 执行 5s 无变更试运行，exit 0，
+证据目录 `pod-exit-observation.FMFv4JArYe03`：watch_exit=124（预期到时停止），
+parse_exit=0、capture_exit=0，实际 ADDED 事件为该 UID 的 Running/Ready 状态。
+错误 UID 负例在观察开始前拒绝，exit 1。此测试只证明采样通路和边界，尚未观察真实退出。
+后续受控替换还需同时启动该旧 UID 对应的有界日志跟随，才能区分正常 shutdown 与强制退出；
+本轮未执行新升级或删除 Pod。
+
+### 带旧进程观察的第二次 4f2d2402 诊断运行
+
+在确认上轮已终态且回滚完成后，启动状态观察 61217（900s，上限到时停止），目录
+`pod-exit-observation.cod2n83PDDjv`，以及旧 Pod 日志跟随 16333（900s/32MiB 上限），
+文件 `security-4f2d2402-retry-old-pod.log`。二者均在替换前取得旧 UID
+69fb75b9-6fde-49e7-b0e7-878a625e1e4e 的实际数据，再次核对 UID 未改变后，启动一次
+有观察的新 execute 26159。日志 `security-client-metrics-4f2d2402-upgrade-observed-retry.log`，
+证据目录 `prepull-4f2d2402-execute.zKkaHEtrPEq6`，恢复 journal `prepull.n0QMNi5yVFvq/attempt`。
+本轮目的为补齐退出因果证据，非重新证明冷拉取；负载、超时及部署参数均未调整。
+已取得 PREPULL_READY/VERIFIED，execute 仍运行，不得重复启动。
+
+关键新证据：22:33:16.401Z 日志记录 info TLS/root port 8080 shutdown，随后在
+22:33:31.401Z 明确 `force exit due to graceful exit timeout`。Pod watch 中同一旧 UID
+的 terminated.finishedAt=22:33:31Z、exitCode=1、reason=Error，22:33:32Z DELETED。
+日志跟随 16333 已 exit 0，log_exit=0/capture_exit=0。这证实进程耗尽了 15s 退出窗口，
+不是仅由卷创建耗时推测。当前只见 info 端口完成，无 client/peer root shutdown 或
+shutdown complete；结合 Endpoint.Run 在全部端口退出后才进入 server/backend Close，
+应优先定位传输层等待，而不是先修改 TiKV 客户端串行关闭。具体阻塞位置尚待复现证明。
+
+随后同一 execute 26159 已 exit 1，`PROBE_FAIL iteration=389: direct watch recovery
+exceeded 28.093769862s: context deadline exceeded`，fixture 全零及 PREPULL_CLEANUP_CONFIRMED
+已输出。最新 StatefulSet generation/observed=11/11、Ready=3，但 updatedReplicas 尚缺，
+不可仅凭 Ready 宣称回滚终态；继续核对实际 Pod 镜像。状态观察 61217 仍按原 900s 上限运行。
+
+后续回滚终态已确认：三个实际 Pod 全部为原 a245c95f 镜像、无 deletionTimestamp、Ready；
+StatefulSet generation/observed=11/11、Ready/updated=3/3、current/update 均为旧 revision。
+
+### 本地复现 TLS quiesce 最终关闭循环
+
+检查 pkg/endpoint/security.go 发现 secureServer.serve 为内部 cmux runners 创建独立
+Background context，只在 Serve 返回的 defer 取消；而 runSubServer 对成功 quiesce
+会等待 ctx.Done 后再返回。secureServer.close 原先只关闭内部服务、未取消该 context，
+造成“等待 Serve 结束才取消，而 Serve 等待取消才结束”的生命周期循环。
+
+新增真实 loopback TLS 测试 TestSecureQuiescedServerFinalCloseReturns，先确认实际 HTTPS
+请求可用，再 quiesce，证明 quiesce 本身不结束服务，最后要求最终 Close 释放 Serve。
+首轮测试夹具误传 nil identity registry 导致 panic，修正夹具后取得有效 RED：1.143s，
+明确失败于 final TLS close did not release quiesced inner runners（并非证书或启动失败）。
+
+待提交修复让最终 close 在加入内部服务之前取消包装层 context，用 mutex 保护
+close/serve 交错；close 先发生时，后续 serve 不再启动内部 runners。补充 close-before-serve
+与重复 close 测试。三个相关测试（含原错误聚合测试）race/count=10 通过，2.237s。
+尚未完成整个 endpoint 包及提交前后生产门禁，未提交/推送/部署；不据此宣称线上失败关闭。
+
+随后完整 endpoint race 第一轮通过（15.470s）。进一步补充原生 gRPC/TLS 的实际 Health
+Watch：quiesce 必须保留已接入长流，最终 Close 必须在有界窗口内终止长流并释放包装层；
+补充 20 次 Serve/Close 交错测试。所有 TestSecure* 在 race/count=10 下通过（2.921s）。
+接下来冻结代码，对包含新覆盖的 endpoint 全包再次复验，并执行提交前四分片；仍未提交。
+
+### TLS 最终关闭修复：本地门禁完成，准备恢复 CI
+
+产品提交 `12b4aedc6c23f5a958e94779177b10917ac49bd4` 已完成提交前后门禁：
+两次 inventory 均确认 720 项、四分片 174/197/184/165，所有分片 exit 0。
+提交前耗时依次 474.376/539.381/394.116/770.466s，提交后
+491.440/556.584/393.676/785.897s；扩展覆盖后的 endpoint 全包 race
+提交前 15.593s、提交后 15.758s，vet 均 exit 0。源码校验和复核一致。
+私有回执为 `security-tls-final-close-{pre,post}-complete.json`，日志使用同名前缀。
+仅本地验证完成，未推送或部署；不能据此认定实际升级失败已关闭。
+
+补齐上一轮观察终态：状态观察 61217 已 exit 0，所有旧观察/升级进程均已结束。
+重读第二次 4f2 升级完整日志，第 8–10 行已有 `CRITICAL: candidate rollback Pod runtime
+identity mismatch`，所以执行器并未把当时尚未收敛的实际 Pod 状态误报为回滚成功。
+后续独立查询才确认最终恢复；本轮新鲜只读查询再次取得 StatefulSet 原 UID、
+generation/observed 11/11、Ready/updated 3/3，模板仍为 a245c95f 原镜像。
+若以后改善回滚等待，应保留实际 Pod 身份校验，不将这次诊断误写成“缺少校验”。
+
+用户通知 Runner 机器恢复后，已核对上一轮 CI 34407926007 全部成功；仓库 Runner
+查询暂返回 total_count=0，尚不能确认新任务接单。下一步推送本修复及 docs-only 交接记录，
+以新 run 的 headSha、排队/接单结果确认。旧服务仍未包含本 TLS 修复，首次替换旧 Pod
+仍可能遇到旧退出缺陷；不降低现有 SLO，不把预热镜像重跑视为完整冷升级证明。
