@@ -2202,3 +2202,63 @@ shard 3 **29055 exit 0 / 783.810s**。结合 2029 inventory 与 2513 十轮 race
 
 接下来提交本轮唯一测试代码改动及累计交接文档，并立即跑提交后 inventory/四片；完整通过后再
 普通推送 dbaas 触发新 CI。原 CI 34344914914 已失败，不会重写其结果或为它生成镜像成功回执。
+
+### b48bef18 已提交，提交后检查运行中
+
+本地提交 **b48bef184958f3abb817b79e6a5dcde5d148e6d5** 已创建，包含一个测试文件及两份累计状态
+文档。与 4f9a3eb1 排除 docs/测试文件后的 diff 为空，即没有生产执行逻辑变化。远端仍为 4f9a3eb1，
+新提交尚未推送，不存在新 CI ID；必须等当前提交后门禁完整通过再推送。
+
+立即启动提交后检查，所有 Go 测试子进程使用原始 umask 022，日志由外层 077 创建：
+
+- inventory **14682 exit 0**，720=`174/197/184/165`，日志 `security-prepull-ci-fixture-post-inventory.log`。
+- 组件/CLI race 与 build 检查 **17407 exit 0**，4.968/6.499/0.010s，日志
+  `security-prepull-ci-fixture-post-race-build.log`。
+- 四个完整分片仍运行，原句柄 **49222/83112/29189/97273**；日志
+  `security-prepull-ci-fixture-post-shard-{0,1,2,3}.log`。必须查询原句柄终态，不因观察中断而重启。
+
+二十二文件组件源码新摘要为 `security-prepull-ci-fixture-component-code.sha256`，保留旧版本摘要
+不覆盖。恢复工具在干净的 b48bef18 源码下重新编译（**52891 exit 0**），保存到私有
+`prepull-b48bef18-tools/`；两二进制的 buildinfo 均为该完整 SHA 且 vcs.modified=false。
+新 UID wrapper 保留强制 kubeconfig 加载、禁止覆盖的作用域限制。工具及相关 wrapper/健康脚本
+摘要为 `security-prepull-b48bef18-tools.sha256`，buildinfo 为
+`security-prepull-b48bef18-tools-buildinfo.log`。旧工具未删除，新工具尚未用于任何集群操作。
+
+旧 `run-prepull-candidate-upgrade.sh` 仍绑定 4f9a3eb1/失败 CI/旧组件摘要，当前必须拒绝运行，不能
+绕过它执行。新提交后门禁和新 CI 都通过后，才为新源码/新 run/新工具/实际镜像建立独立升级入口。
+整体目标保持 active，真实候选发布与部署验收仍未完成。
+
+### b48bef18 提交后分片超时调查（2026-09-09 16:13 UTC）
+
+提交后 shard 0 **49222 exit 0 / 471.716s**、shard 1 **83112 exit 0 / 547.074s**、
+shard 3 **97273 exit 0 / 773.275s**。shard 2 **29189 exit 1 / 397.301s**：
+`TestRolloutAvailabilityRunnerKeepsProbeActiveThroughRollout/completed_at_rollout_boundary`
+触发原有测试辅助程序的 10s 整命令上限。输出已包含 probe 提前完成拒绝及候选回滚、部分 fixture
+清理信息，但不能由这些部分输出证明全部清理完成。没有推送，也没有改动被测源码或提高超时。
+
+该单用例十次复验仍与其余分片并行时，出现两次相同 10s 超时（**32499 exit 1 / 73.769s**，
+`security-prepull-ci-fixture-post-boundary-repeat.log`）。不能将第一次失败直接视为已消失。
+待其他所有分片结束后，以私有 BASH_ENV 时间戳跟踪同一个纯 fake-client 用例，十次全部通过
+（**27762 exit 0 / 63.524s**，`security-prepull-ci-fixture-post-boundary-isolated-trace.log`）。
+十份 `rollout-boundary-trace.<pid>.log` 显示整条预检查、预拉取模拟、拒绝、回滚及清理返回约
+6.332–6.361s，最后为 runner 预期的 exit 1，Go 用例正常通过；没有观察到清理卡住。跟踪仅用于
+本机模拟测试，不涉及真实凭据或集群。并行资源争用是可能解释，尚未证明具体 CPU/IO 根因。
+
+保持同一 b48bef18 源码与 10s 断言，在没有其他分片并行的条件下完整复跑 shard 2；日志
+`security-prepull-ci-fixture-post-shard-2-isolated.log`。原失败日志不覆盖，只有完整分片终态成功
+才能作为提交后通过证据；不得以十次聚焦用例替代 184 项分片。该环境敏感的测试超时记录仍保留。
+
+### b48bef18 提交后检查完成，允许推送（2026-09-09 16:22 UTC）
+
+原独立重跑句柄 **73507 exit 0 / 394.668s**，完整 184 项 shard 2 通过，日志
+`security-prepull-ci-fixture-post-shard-2-isolated.log`。与 shard 0/1/3 的原成功结果一起，四片
+均已取得终态通过；原并行失败及两次聚焦失败保留，不改写为成功，也不宣称已证明争用的具体根因。
+
+补充完整组件/CLI/build 三包 race **71865 exit 0**，4.949/6.521/1.577s，日志
+`security-prepull-ci-fixture-post-all-race.log`。两组源码摘要重新匹配，非 docs 工作树无差异、无未
+跟踪产品文件。机器可读本地回执 `security-prepull-ci-fixture-post-complete.json` 绑定 b48bef18、
+720 项、各次原句柄/时间、新旧两组失败警示与固定源码摘要；不证明新 CI、镜像或真实升级通过。
+
+接下来以 docs-only 提交保存本节及累计提交后证据，再普通 fast-forward 推送 dbaas。该文档提交
+不改变被验证的非 docs 路径；新 CI 必须绑定推送后的精确源码，而生产/测试门禁仍绑定 b48bef18。
+新 CI 创建后再记录 run ID；不重新执行已经失败的 34344914914，不使用其旧绑定部署入口。

@@ -13,14 +13,14 @@
 
 | 验收项 | 已取得的证据 | 仍未证明的范围/下一步 |
 | --- | --- | --- |
-| 分支与源码对标 | `dbaas` HEAD 为 `4f9a3eb19e2dc42278d37b6af938246d68e269f1`；产品提交 `05032758`；本地只读 etcd 基线仍为 `5cd9f4ee13801e18825d661e5005ae599460bc3a`，工作树干净；当前 go.mod 的 etcd API/client/server 为 v3.7.1 | 这些是本地固定版本，不表示已跟踪远端最新版本或完成支持版本矩阵 |
+| 分支与源码对标 | 本轮待发布的产品/测试提交为 `b48bef184958f3abb817b79e6a5dcde5d148e6d5`；推送前远端为 4f9a3eb1，生产逻辑仍与 05032758 相同；本地只读 etcd 基线仍为 `5cd9f4ee13801e18825d661e5005ae599460bc3a`，etcd 工作树干净；当前 go.mod 的 etcd API/client/server 为 v3.7.1 | 发布源码以随后新 CI 的完整 headSha 为准（可含后续 docs-only 记录）；固定对标版本不表示已跟踪远端最新版本或完成支持版本矩阵 |
 | 实际服务版本 | KubeBrain 三副本已部署，当前仍使用 `339381af` 的不可变镜像 `sha256:a245c95fea36c387358d86e3808a9d29073a327028d5a4e3a80e4d272663e865`；StatefulSet generation/observed 为 3/3、current/update revision 均为 `kubebrain-696c87f8f9` | 尚未部署本次 05032758 产品候选，不能将本地修复视为线上已生效 |
 | 副本与放置 | 新鲜只读查询：KubeBrain/PD/TiKV 各 3/3 Ready、各容器 restart 0，同组件三副本分布在 `k8s3-worker1/2/3` | 节点无 topology zone/region 标签；物理宿主机及跨可用区独立性未证明，节点/网络故障须先确认授权范围 |
 | 数据卷与后端健康 | 六个 PD/TiKV 数据 PVC 均 Bound，使用 `nvme-rep3-rbd-pool`；driver 为 `rook-ceph.rbd.csi.ceph.com`、clusterID 为 `rook-ceph`；本轮原样后端健康门禁 exit 0，含六卷实际 CSI 身份/容量隔离/Retain 与连续三次无异常 Region 检查 | StorageClass 默认 reclaimPolicy 仍为 Delete，不能与六个现存数据 PV 的 Retain 混为一谈；新增数据卷仍需逐卷验证保留策略；瞬时健康不等于故障恢复和长期稳定性 |
 | 已有受控可用性验收 | 当前服务版本此前通过受控 leader Pod 删除：900/900 操作、public watch 900、三个 direct watch 各 900、lease 存活、官方 etcdutl restore 校验 | 不覆盖无主动释放的崩溃、节点失联、网络分区，也不是新候选升级验收 |
 | 冷镜像在线升级 | de8a9e1f 的真实冷升级曾因 direct watch 超过 30s 门限失败并回滚；镜像拉取约 36.973s | 失败仍未关闭。05032758 增加隔离预拉取、运行时摘要核验与失败清理，但尚需新候选真实准备及完整升级验证，不能仅以缓存已热的重跑证明修复 |
 | 当前候选本地门禁 | 05032758 提交前/后各 720 项四分片及 inventory 均通过，组件/CLI/build race 通过；已预编译恢复工具并验证缺少镜像回执时入口停止 | 本地测试不替代实际控制器、CRI 拉取、真实业务探针和回滚清理证据 |
-| 当前镜像发布 | 用户恢复 Runner 后，原 CI [34344914914](https://github.com/fivetime/kubebrain/actions/runs/34344914914) 已执行，但在预拉取组件测试阶段 failure：两个成功场景的准备过程超过共用测试配置的 1s 上限；安全扫描及架构检查已通过，镜像构建步骤未执行 | 本地已复现并调整测试预算，保留显式短超时/补偿清理断言，10 轮 race 通过；完整提交门禁执行中。之后需要新提交的新 CI、精确镜像核验和升级验收，不能继续使用绑定旧失败 CI 的部署入口 |
+| 当前镜像发布 | 用户恢复 Runner 后，原 CI [34344914914](https://github.com/fivetime/kubebrain/actions/runs/34344914914) 已执行，但在预拉取组件测试阶段 failure：两个成功场景的准备过程超过共用测试配置的 1s 上限；安全扫描及架构检查已通过，镜像构建步骤未执行 | b48bef18 本地修复、十轮 race 及提交前后完整分片现已通过，原 umask/并行超时失败及独立复验仍保留。下一步推送触发新 CI、核验精确镜像并验收升级，不能继续使用绑定旧失败 CI 的部署入口 |
 | 总体验收 | 原环境的兼容性、恢复和压力实验仍作为各自范围的历史证据 | 新环境真实 apiserver 路径、新版本在线升级、后端 TLS/轮换、数天级 watch/故障恢复 soak、生产规模/版本矩阵，以及管理面、计量和外部系统验收仍开放；以完整兼容性计划逐项验收 |
 
 本轮只读证据位于私有交接目录的 `security-prepull-acceptance-{serving-state,pods,storageclass,nodes}.json`；
