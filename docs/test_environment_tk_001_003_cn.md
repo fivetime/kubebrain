@@ -1955,7 +1955,7 @@ lifetime 为 **11618 秒**；超出 24 小时的配置在乘加前拒绝。该�
   `security-image-prepull-runner-integrated-v2-pre-shard-N.log`。后续必须先续查这些原句柄和日志，不能把
   暂时无输出或观察超时当作终态，也不能因跨会话而重启重复任务。
 - 冻结九个接入/打包文件的清单为 `security-image-prepull-runner-integrated-v2-code.sha256`；执行期间
-  不修改产品源/测试/脚本，终态后逐项核对。组件二十二文件清单单独保留；文档更新不修改测试输入。
+  不修改产品源/测试/脚本，终态后逐项核对。组件二十二文件清单单独保留；文档变更另行记录。
 
 当前仍在 dbaas，HEAD 5c05e037，未做本轮产品提交、push 或镜像 CI。只有全部新门禁终态通过且源摘要
 不变后才能提交，提交后还必须再跑 verifier 和四片；然后才准备新 CI 镜像和真实预拉取/全窗口升级验收。
@@ -1975,3 +1975,57 @@ sha256sum 检查，diff check 通过。此前主动中止的 v1 四片仍为 exi
 远端只读复核确认 origin/dbaas 仍是 de8a9e1f2ce9f5c0a0de802a98d79af871a12e20；最新镜像 CI 仍为
 34307884732 的历史成功结果，本轮尚未 push 或触发新构建。本节记录允许准备本地产品提交，不是发布、
 真实预拉取或全窗口升级通过；产品提交后必须立即重新执行 verifier 和四个完整分片。
+
+### 本地产品提交与提交后门禁（2026-09-09 11:05 UTC）
+
+在上一节全部 pre gates 终态通过、31 个产品/测试/构建文件摘要一致后，已创建本地提交
+**05032758792028c2b78d190fd8fb703eba787df1**：
+`production: gate candidate rollouts on verified isolated image preparation`。
+包含 33 个文件（含两份文档）；提交当时工作树干净，dbaas 比 origin/dbaas 超前 4 个提交。
+没有 amend/force-push，没有创建上游 PR。root@kubebrain.cloud.local 是本地既有提交身份，不代表已满足
+TiKV 上游的贡献者身份或 DCO 要求。
+
+产品提交后已立即重新启动要求的完整门禁，源文件再次匹配 v2 九文件清单及二十二文件组件清单：
+
+- `hack/production/test-shard.sh --verify 4`：89789 **exit 0**，720 项，174/197/184/165，日志
+  `security-image-prepull-runner-integrated-v2-post-inventory.log`。
+- 四个完整 post shards 同时运行：0 → **46664**；1 → **96254**；2 → **44209**；3 → **14551**。
+  命令分别为精确的 `hack/production/test-shard.sh N 4`，日志
+  `security-image-prepull-runner-integrated-v2-post-shard-N.log`。本节写入时尚未终态，不计为通过；下轮
+  必须续查这些原会话及日志，不能仅凭没有输出重启，也不能复用 pre gate 结果冒充 post gate。
+- 提交后组件/CLI/build race 小组已通过（81031 **exit 0**，3.811/6.505/1.618s），日志
+  `security-image-prepull-runner-integrated-v2-post-go-race.log`。
+
+已核对部分 production 测试会读取 `docs/production_readiness_cn.md`，因此不能泛称所有文档都不是测试
+输入。该说明文档在 05032758 提交后的门禁期间保持固定；提交后只向本测试状态文档追加结果和句柄，
+不修改产品文件、测试或被上述断言读取的 production_readiness 文档。
+
+本轮只有本地 Git 提交与验证；远端仍为 de8a9e1f，未 push、未触发新镜像 CI、未创建实际 holder 或
+切换业务镜像。待全部 post shards 终态通过、摘要仍一致后，才保存最终回执并推送 dbaas、跟踪新 CI，
+随后重新核对测试集群健康/存储保留策略并开展真实预拉取和完整可用性升级验收。总体生产就绪目标保持未完成。
+
+### 05032758 提交后完整门禁通过（2026-09-09 11:17 UTC）
+
+本轮继续等待原 post 会话，全部终态通过，没有复用 pre 结果，也没有在等待时修改产品代码：
+
+- shard 0 / 174 项：46664 **exit 0**，Go 470.570s。
+- shard 1 / 197 项：96254 **exit 0**，Go 531.398s。
+- shard 2 / 184 项：44209 **exit 0**，Go 401.189s。
+- shard 3 / 165 项：14551 **exit 0**，Go 758.523s。
+
+与 89789 的 post verifier、81031 的 post race 结果一起，05032758 的规定提交前/后门禁现已完整通过。
+再次核对九文件 v2 清单与二十二文件组件清单全部匹配；与 HEAD 的非 docs 路径无差异、无未跟踪产品
+文件，diff check 通过。私有机器可读回执为
+`security-image-prepull-runner-integrated-v2-post-complete.json`；它只证明本地提交源验证，不是 CI/镜像/
+实际准备或升级通过。
+
+等待期间执行一次只读后台健康检查（68604 exit 0），日志
+`security-image-prepull-post-wait-backend-health.log`：显式既定 kubeconfig/context/namespace，经已审核
+PD diagnostic UID 的 wrapper 执行 GET 和 Pod 内只读 curl/df；3 PD、3 TiKV、连续三次 Region 样本无
+异常，六个 PD/TiKV 数据 PVC/PV 绑定、CSI 身份不重复、Retain 策略、容量隔离和磁盘阈值检查通过。
+未重启或修改任何组件/存储。此为当时状态证据，正式执行升级前须再检查，不能拿旧健康结果长期放行。
+
+旧 `run-security-watch-client-upgrade.sh` 保持未修改；它绑定 de8a9e1f/旧门禁及 3600 次探针，不可绕过
+其 checksum guard 复用。新的演练入口必须绑定新 CI 的精确源码、已核对 index/平台摘要、预拉取回执
+与 6000 次探针，并预先构建恢复工具，不能在关键清理窗口隐式下载/编译。保存本节文档后即可推送 dbaas
+并跟踪 self-hosted 镜像构建；在新 CI 和镜像核验通过前不执行真实候选升级。
