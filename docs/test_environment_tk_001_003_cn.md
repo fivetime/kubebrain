@@ -862,3 +862,28 @@ consumer `rook-ceph` CSI/clusterID/Secret namespace 以及 Region 健康；UID �
 但不含新 info CA 参数；hard-failover 模式不请求在线镜像升级，也不传 source info
 参数，因此这不能替代新版本在线升级门禁验证。真正在线升级仍须等待包含 `4fd0d599`
 的完整镜像发布。当前服务仍固定 `339381af`，尚未执行 HA；不推送打断现有构建。
+
+### 60137eb3 镜像验收完成，开始限定范围的 HA（2026-09-09）
+
+CI `34290666105` 于 00:56:59 UTC completed/success，job 用时 89m54s。
+镜像验收 00:54:11–00:56:23 成功，promotion 00:56:23–00:56:29 成功。
+最终不可变索引与两种架构 digest 均与上述 pending 记录一致；成功日志中的镜像
+reference、实际 linux/amd64 与 linux/arm64 `Git SHA: 60137eb3...`、Go 1.26.8、
+版本 `0.0.0-dbaas-60137eb36ee7` 以及 registry 回读已核对。
+`dbaas` 标签回读也指向 `sha256:86ba2d77...ae64f060`，但实际测试仍只使用完整不可变 digest。
+证据为 `security-60137eb3-image-ci-completed.{json,log}`、
+`security-60137eb3-image-manifest-verified.json`、`security-60137eb3-promoted-image.json`；
+据这些终态与镜像证据才生成 `security-60137eb3-image-verified.json`。
+
+现在使用上述已验收 `60137eb3` 探针镜像与本机 `4fd0d599` runner，测试仍在运行的
+`339381af` 三副本。由 launcher 再次读取 namespace/StatefulSet/TidbCluster/StorageClass
+身份与 Region 健康，runner 动态重复确认 leader 后，以 UID/resourceVersion 限定删除
+该单一 Pod。此测试不更换 KubeBrain 服务镜像，不请求 worker 重启或网络隔离，也不
+修改 PD/TiKV。主日志预留 `security-controlled-ha-60137eb3.log`；此登记不代表故障已经
+触发或测试已经成功，必须以实际 `HARD_FAILOVER_STARTED`、summary、恢复及清理终态为准。
+
+完整 CI 日志还解释了本轮长等待：镜像于 23:55:29 已推送，GitHub Actions cache
+export 步骤 `#170` 从 23:54:04 到 00:54:09，耗时 3606.3s（准备 404.0s、发送
+3202.3s），随后才进入镜像验收。这是缓存导出瓶颈的直接日志证据，而非推断编译
+耗时一小时。先检查更合适的缓存后端，再与已有修复一起推送；不能为提速移除镜像
+安全扫描、双架构检查或发布验收。
