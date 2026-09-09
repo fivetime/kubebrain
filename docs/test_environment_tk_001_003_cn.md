@@ -1479,3 +1479,39 @@ capabilities，并使用正常调度约束。Kubernetes 文档指出直接设置
 另以 hostname label selector 查询整个候选节点集合，而非仅按预期名称读取：结果精确为已记录的三个 Node UID，
 没有额外匹配节点，证据 `security-rollout-prewarm-pool-readonly.json`。未来执行前仍须重新验证集合及 UID，
 不能长期复用本次只读快照作为节点预拉取完成凭证。
+
+本地产品提交已完成：`d85a68812e8d2a2746010da630c18966110fabc2`
+（`production: abort rollouts when availability coverage fails`）。提交后立即执行 verifier，exit 0，仍为
+711 tests / 171/194/183/163；日志 `security-rollout-observer-v2-post-verify.log`。紧接着启动提交后四片，
+片 0/1/2/3 原会话为 2494/33818/60943/28698，日志 `security-rollout-observer-v2-post-{0,1,2,3}.log`。
+此条记录时四片均运行中，没有完整提交后通过回执，不能把提交前通过当作提交后通过。继续时保持产品源码冻结，
+读取上述原会话终态并校验 `security-rollout-observer-v2-code.sha256`，不要重复启动同一轮测试。
+本次没有 push、触发镜像 CI 或执行集群升级；冷镜像预拉取、CRI-O digest 约束及真实升级验收仍待后续实施。
+
+05:36 UTC，提交后片 0/1/2 已 exit 0，分别 473.170/487.222/385.151s；最后片 3 原会话 28698 仍在运行。
+以下只是等待期间的实现设计，没有修改冻结产品代码、没有创建集群对象：
+
+- 预拉取临时对象不得复制业务 Pod 的标签集合，否则可能匹配 client/headless Service 的 selector。需对实际
+  Service selector 检查，而非仅假定标签名称；临时进程不监听业务端口，不挂载业务证书、数据卷或 API token。
+- 单次 version Job 完成不能证明缓存持续可用。kubelet 会回收未使用镜像，因此拟由候选镜像的 init container
+  运行 `/usr/local/bin/kube-brain --version`，随后由同镜像的有期限等待容器保持使用；验证 init exit=0、实际
+  Node/Job/Pod UID、Running/Ready、runtime imageID 和已批准的平台。可执行路径已从实际 Dockerfile 核对，
+  不是 `/kubebrain`。依据 [镜像垃圾回收说明](https://kubernetes.io/docs/concepts/architecture/garbage-collection/#containers-images)。
+- 拟用 batch/v1 Job 的 activeDeadlineSeconds 限制最长活动时间，并设 ttlSecondsAfterFinished 作为异常退出后的
+  补充回收机制；正常路径仍主动执行 UID/resourceVersion 约束的删除并确认子 Pod 消失。TTL 不是即时清理证明，
+  也不能替代活动期限或最终状态查询。现有 `uid-delete` 已支持 batch/v1/jobs 与 Foreground propagation，无需
+  放宽其删除前置条件；它的 grace-period override 仍只允许 core/v1 Pods。依据
+  [Job 活动期限](https://kubernetes.io/docs/concepts/workloads/controllers/job/#job-termination-and-cleanup)及
+  [已结束 Job 的 TTL 清理](https://kubernetes.io/docs/concepts/workloads/controllers/ttlafterfinished/)。
+- 准备阶段须在 probe 的业务计数窗口之前完成，不能让冷镜像拉取消耗已启动探针的整个生命周期。正式 mutation 前
+  再验证源 StatefulSet spec/UID、完整可调度节点集合、Node UID、已预热对象身份及剩余活动预算；任一证据缺失、
+  超时、过期或身份漂移都必须在替换业务 Pod 前失败。准备阶段部分创建失败必须补偿清理已确认自有的 Job。
+- 通用实现需保留源 imagePullSecrets、ServiceAccount 与 RuntimeClass 的拉取环境，但禁用 token 自动挂载，
+  不读取或复制 Secret 内容；必须测试源调度约束、多架构映射、创建响应丢失、对象替换、Job 提前结束、清理失败、
+  Service 误匹配和冷拉取失败。已有热缓存不能代替这些故障路径及最终真实升级的验证。
+
+05:41 UTC，提交后最后片 3 原会话 28698 已 exit 0（764.310s），完整 711 项提交后门禁全部通过。
+四片 0/1/2/3 用时为 473.170/487.222/385.151/764.310s；verifier、四片终态、四个源码校验和及与
+产品提交 d85a6881 的非文档 diff 均已核对。审计回执为 `security-rollout-observer-v2-post-complete.json`，
+明确限定为本地产品验证，不是镜像发布、预拉取完成或真实升级验收。提交前后测试会话均已终态，没有需要继续
+等待的旧会话；后续可以开始新的预拉取实现，但新修改不能沿用这份回执作为其完整测试证明。
