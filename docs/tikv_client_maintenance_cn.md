@@ -44,7 +44,7 @@
 
 ## 分仓后的安全升级
 
-当前固定客户端为 `v2.0.8-0.20260908172918-b5b63af11282`，commit
+安全升级阶段固定客户端为 `v2.0.8-0.20260908172918-b5b63af11282`，commit
 `b5b63af1128266a51c1ee63a8abbcf6f23ef5a6b`；前述 c29 版本及 RED 扫描保留为迁移历史。
 新模块校验和 `h1:VNhN3wjFEMGhJ2CBwKV3vehCWkEDBcXM/pqBiL4/MSk=`，go.mod 校验和
 `h1:V4mVPYUvt3A19cV1MoZtZdy3LrQ+xdzAnSbWXEz9wCI=`，已通过远端下载及模块验证。
@@ -55,6 +55,30 @@
 [CI 34257592017](https://github.com/fivetime/tikv-client-go/actions/runs/34257592017)
 的 test/security 两个 job 均 success。真实 TiKV 大 key 复测 1.45 秒 PASS。
 产品自己的依赖升级、检查边界及未完成项见[安全升级记录](security_baseline_20260908_cn.md)。
+
+## 范围安全水位编码修复（2026-09-09）
+
+当前工作树的远端固定版本更新为 `v2.0.8-0.20260909023231-832b70fd622f`，完整 commit
+`832b70fd622f20d39a82ce6b50d3938a94b8bbd3`；没有本地 replace，也未升级上游 v2.0.7 基线。
+模块校验和为 `h1:xmTt2n1e/Yy8Tq5cCn4MqQsTtzTQWMuKX2GAqDkJuJg=`，go.mod 校验和
+仍为 `h1:V4mVPYUvt3A19cV1MoZtZdy3LrQ+xdzAnSbWXEz9wCI=`，远端下载及 `go mod verify` 通过。
+客户端完整 pre/post 普通/race 通过，远端
+[CI 34303780336](https://github.com/fivetime/tikv-client-go/actions/runs/34303780336)
+已 completed/success，test/security 两个 job 均 success，head SHA 与上述 commit 一致。
+
+`9fe67f4` 修复 StoreSafeTS 的 Region 范围编码及重试请求所有权；`832b70fd` 是随机退避
+错误选择测试的确定性修订，不修改生产退避规则。产品新增 `safe_ts_codec_test.go`，
+使用产品实际 protobuf codec 和固定远端客户端经 loopback gRPC 验证：旧依赖在 API v1/v2
+事务模式下错误得到相邻 Region 的 900，修复后得到目标 Region 的 50，race 20 次通过。
+
+在授权测试集群只读调用真实 TiKV v8.5.3，5 Region × 3 Store 共 15 组校正请求均与
+直接使用 PD Region 边界的参考请求一致；旧编码有 3 组结果不同，本次实际均为更低水位。
+这证明真实后端交互中的编码差异，不把模拟用例的乐观水位冒充线上观测，也不证明历史
+10m26s 冷启动延迟的根因。未写数据、拆分 Region 或重启后端；临时端口转发全部结束。
+
+产品完整服务端回归另发现 Watch 拒绝响应与 generation 取消的发送竞争，正在单独修复、
+验证。上述客户端 CI 和只读验证不能替代产品自己的完整门禁、镜像发布或在线升级。
+详细日志与失败记录见[测试环境记录](test_environment_tk_001_003_cn.md)。
 
 ## 后续客户端或 TiKV 升级流程
 

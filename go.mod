@@ -3,7 +3,7 @@ module github.com/kubewharf/kubebrain
 // The maintained fork preserves KubeBrain's large-key, cancellation and
 // protected-checkpoint contracts. Pin a reviewed remote commit; see
 // docs/tikv_client_maintenance_cn.md for the patch inventory and upgrade gates.
-replace github.com/tikv/client-go/v2 => github.com/fivetime/tikv-client-go/v2 v2.0.8-0.20260908172918-b5b63af11282
+replace github.com/tikv/client-go/v2 => github.com/fivetime/tikv-client-go/v2 v2.0.8-0.20260909023231-832b70fd622f
 
 go 1.26.0
 

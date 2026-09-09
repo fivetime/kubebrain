@@ -1131,3 +1131,96 @@ KubeBrain go.mod/go.sum 此刻未改变，仍锁定 `b5b63af1`；下一步先读
 成功后更新远端 replace 至此不可变版本、核验模块摘要与应用测试，并重新执行依赖
 变更的 709 项提交前后门禁，之后再发布新 KubeBrain 镜像。服务端/后端均未因本轮
 客户端修复而部署或重启。
+
+### 远端客户端验收及产品 Watch 竞争复现（2026-09-09）
+
+fork CI `34303780336` 已 completed/success：head
+`832b70fd622f20d39a82ce6b50d3938a94b8bbd3`，test/security 均 success。
+产品工作树 go.mod/go.sum 更新至 Go 实际解析的远端不可变版本
+`v2.0.8-0.20260909023231-832b70fd622f`；下载模块五个改动文件逐个与 fork commit 比对
+一致，`go mod verify` 通过。模块及 go.mod 摘要分别为
+`h1:xmTt2n1e/Yy8Tq5cCn4MqQsTtzTQWMuKX2GAqDkJuJg=`、
+`h1:V4mVPYUvt3A19cV1MoZtZdy3LrQ+xdzAnSbWXEz9wCI=`。不是本地 replace。
+
+产品新增 `TestTiKVClientSafeTSUsesEncodedRegionRanges`，真实 NewRPCClient 结合产品
+`newTiKVProtoCodec()` 经 loopback gRPC 验证 v1/v2 txn，重试两次并检查输入不变。
+同一测试用仓库外旧依赖 modfile 得到 RED（两模式 expected 50 / actual 900），
+固定新依赖 race 20 次 PASS（1.531s）。日志
+`security-client-safets-application-before.log` 与 `...-application-targeted.log`。
+完整 storage/backend/build 普通测试 PASS（0.218/51.377/0.397s），storage/backend race
+PASS（1.665/72.882s）；日志 `...-application-full-{unit,race}.log`。全产品 build 和
+storage/backend/server vet PASS。实际 cmd 与 rollout probe 依赖图 govulncheck v1.6.0
+为 0 reachable、0 imported-package、1 module-only，不能称所有模块漏洞均为零；日志
+`...-application-vulnerability.log`。这些结果尚不能代替此次依赖变更的生产前后门禁。
+
+真实后端验证先按已有权威 Pod JSON 逐一检查 PD0/TiKV0..2 UID、Ready 和无删除时间戳，
+再读 PD Region 清单。仓库外 `safets-region-readonly.go` 仅调用 GetStoreSafeTS RPC：
+每个 Region/Store 先读 PD 原始 Region 边界参考值，再读校正后的逻辑范围请求，最后
+复读参考值；仅在参考值稳定且非零时比较，变化则有界重试。5 个 Region（2002/2006/
+2008/2010/2012）、3 个 voter Store（2001/2004/2005），15 组全部一致。旧逻辑范围
+直传有 3 组与稳定参考值不同，本次均为更低水位，不是线上复现 50→900。
+`security-client-safets-real-region-readonly.log` 最终为
+`READONLY_SAFE_TS_CHECK_PASSED regions=5 stores=3 comparisons=15 legacy_differences=3 writes=0`。
+Region 清单前后 count/ID/bounds/peers 投影一致；JSON 为
+`security-client-safets-real-regions{,-after}.json`。全程没有数据写入、Region split、
+后端重启或 Pod 创建；三个 loopback 转发已结束，3659/32001/14499 均无监听。
+这不是新镜像在线升级验收，也不证明历史冷启动根因。
+
+首次完整 server/probe 普通测试 FAIL：
+`TestFollowerWatchRejectsInvalidProxyHeaderBeforeAuthoritativeCreate` 等待拒绝响应超时，
+probe 包独立 PASS（185.324s），etcd 包 FAIL（143.267s），日志
+`security-client-safets-server-probe-unit.log`。串行命令因该失败终止，后续 race 没有启动。
+原 Watch 测试单项普通 20 次与 race 200 次复测均 PASS（0.296/10.094s），不撤销完整失败。
+
+核对 `/root/etcd/server/etcdserver/api/v3rpc/watch.go`，创建失败必须发送
+Created=true、Canceled=true、WatchId=-1 的响应。KubeBrain 的
+`rejectAuthoritativeCreate` 先发布响应/关闭 ready，再取消 generation；`sendControls`
+直接 select ready/cancel，二者同时关闭时可能随机选择取消并丢弃已发布的拒绝。
+新增四状态回归每种预排队 64 个 control 后才启动 sender，覆盖已就绪拒绝+取消、未就绪
+取消、已过期成功创建、正常成功创建，并核验完成通知和 barrier 全部释放。旧生产代码
+立即 RED：`security-client-safets-watch-control-before.log`（0.042s，拒绝误返回 context canceled）。
+
+修复取消分支先非阻塞复核 ready；只在确实未发布时丢弃，读取响应前保持 channel 同步。
+过期成功创建仍由 closing/generation 检查抑制，不放宽响应顺序或取消隔离。
+当前已启动修复后两用例 race 100 次及完整 server/probe 普通/race，日志
+`security-client-safets-watch-control-fixed.log`、`security-client-safets-watch-fixed-full-{unit,race}.log`；
+尚待终态，不登记完整 PASS。产品改动仍未提交或推送，没有触发新的镜像构建/部署。
+
+修复后的两项 Watch 回归 race 100 次已 PASS（6.502s，原会话 95622 exit 0），
+完整 server/probe 普通测试 PASS（etcd 142.957s、probe 180.338s，原会话 22892 exit 0）。
+相关 vet 与全产品 build 复核 PASS。verbose 安全复查明确剩余 module-only 为
+GO-2026-5932（x/crypto/openpgp 未维护），实际产品入口没有导入或调用；结果仍为
+0 reachable、0 imported-package、1 module-only，日志
+`security-client-safets-watch-vulnerability-verbose.log`，原会话 60273 exit 0。
+
+五个产品 Go/模块文件冻结摘要为 `security-client-safets-watch-release-code.sha256`，
+复核全部匹配。此次 pre verifier PASS（709，171/194/181/163），日志
+`security-client-safets-watch-pre-verify.log`；四个并行分片日志
+`security-client-safets-watch-pre-{0,1,2,3}.log`，原会话依次 76136/82494/73682/3273。
+完整 server/probe race 原会话 18097，根模块除 `hack/production` 单包以外的全量普通
+测试原会话 5612（`security-client-safets-watch-all-nonproduction-unit.log`）；后者只把
+生产单包交给上述精确分片，未排除其它目录或用例。03:12 UTC 时这些检查仍运行，
+先轮询原会话取得终态，不因观察超时重新启动；未产生 pre 全量完成回执，更无 post 结果。
+
+只读重查实例仍是 StatefulSet UID `2650ad15-1d37-41c4-836c-d40dd4502720`，
+3/3 Ready，current/update revision 均 `kubebrain-696c87f8f9`，镜像 digest
+`a245c95fea36c387358d86e3808a9d29073a327028d5a4e3a80e4d272663e865`。此次未变更部署。
+下一步在本轮所有前置测试成功后提交，立即执行同一 verifier/四分片 post，再正常
+FF push 并核验新镜像 CI。在线升级需要新的目标镜像/runtime digests、独立客户端
+TLS Secret 与 info CA/SAN；不得复用旧 `run-security-controlled-ha.sh` 冒充升级入口，
+它固定旧证据并执行 leader 删除，不是此次候选镜像升级流程。
+
+完整 server/probe race 已 exit 0（etcd 438.531s、probe 267.116s），除生产单包以外
+的全部根模块普通测试也已 exit 0；不是仅跑新增 Watch 用例。全根模块
+`govulncheck v1.6.0 ./...` 再检查 exit 0，仍为 0 reachable、0 imported-package、
+1 module-only，日志 `security-client-safets-watch-all-vulnerability.log`。
+只读真实后端门禁 exit 0：3 PD、3 TiKV、异常 Region=0、连续三次样本通过；同一门禁
+也检查真实数据 PV 的 Retain 和消费者 CSI 身份。日志
+`security-client-safets-watch-backend-readonly.log`。没有通过此检查调整存储或重启后端。
+
+本轮 pre verifier 及四分片全部 exit 0：709 项，171/194/181/163，四片耗时分别
+487.684/496.804/335.870/769.632s；五个冻结文件摘要再次全部匹配，`git diff --check`
+通过。全根模块 `go vet ./...` 亦 exit 0，日志 `security-client-safets-watch-all-vet.log`。
+此次提交包含远端客户端固定版本、产品线协议回归及 Watch 拒绝响应竞争修复，旧失败
+日志保留。提交后立即执行相同 verifier/四分片，只有 post 全部成功才允许正常 FF push；
+此处尚未声明 post 完成，也未运行新的镜像 CI 或在线升级。

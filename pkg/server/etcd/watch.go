@@ -1381,13 +1381,21 @@ func (w *watcher) sendControls() {
 			select {
 			case <-control.ready:
 			case <-control.cancel:
-				if control.done != nil {
-					control.done <- context.Canceled
+				// Rejection publishes its response before canceling the generation.
+				// When both channels are ready, select may choose cancellation;
+				// still deliver that published Created+Canceled response. Receive
+				// readiness before inspecting resp to synchronize its publication.
+				select {
+				case <-control.ready:
+				default:
+					if control.done != nil {
+						control.done <- context.Canceled
+					}
+					if control.generation != nil && control.generation.authoritativeSent != nil {
+						close(control.generation.authoritativeSent)
+					}
+					continue
 				}
-				if control.generation != nil && control.generation.authoritativeSent != nil {
-					close(control.generation.authoritativeSent)
-				}
-				continue
 			}
 			if control.generation != nil && !control.resp.Canceled && control.generation.closing.Load() {
 				if control.done != nil {

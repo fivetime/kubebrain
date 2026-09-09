@@ -276,6 +276,105 @@ func TestWatchControlSendDoesNotBlockBehindSlowEventSend(t *testing.T) {
 	require.True(t, responses[1].Canceled)
 }
 
+func TestWatchControlsResolveAuthoritativeReadinessBeforeCancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ready    bool
+		canceled bool
+		rejected bool
+		wantSent bool
+	}{
+		{name: "ready rejection survives generation cancellation", ready: true, canceled: true, rejected: true, wantSent: true},
+		{name: "unpublished control is released by cancellation", canceled: true},
+		{name: "stale successful create remains suppressed", ready: true, canceled: true},
+		{name: "active successful create is delivered", ready: true, wantSent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Queue before starting the sender so readiness and cancellation are
+			// simultaneously observable, independent of goroutine scheduling. A
+			// single select between the two loses roughly half the rejections.
+			const attempts = 64
+			stream := &fakeWatchServer{}
+			w := &watcher{
+				watchServer: stream,
+				controlCh:   make(chan watchControlResponse, attempts),
+				watches:     make(map[int64]*watch),
+			}
+			completed := make(chan error, attempts)
+			generations := make([]*watch, 0, attempts)
+			for i := range attempts {
+				id := int64(i)
+				ctx, cancel := context.WithCancel(context.Background())
+				t.Cleanup(cancel)
+				ready := make(chan struct{})
+				generation := &watch{authoritativeSent: make(chan struct{})}
+				generation.closing.Store(tc.canceled)
+				generations = append(generations, generation)
+				w.watches[id] = generation
+				resp := &etcdserverpb.WatchResponse{}
+				if tc.ready {
+					if tc.rejected {
+						resp = canceledWatchCreateResponse(50, "foreign cluster")
+					} else {
+						resp = &etcdserverpb.WatchResponse{Created: true, WatchId: id}
+					}
+					close(ready)
+				}
+				if tc.canceled {
+					cancel()
+				}
+				w.controlCh <- watchControlResponse{
+					resp: resp, done: completed, ready: ready, cancel: ctx.Done(), generation: generation,
+				}
+			}
+			close(w.controlCh)
+			w.controlWG.Add(1)
+			senderDone := make(chan struct{})
+			go func() {
+				w.sendControls()
+				close(senderDone)
+			}()
+			select {
+			case <-senderDone:
+			case <-time.After(5 * time.Second):
+				t.Fatal("control sender did not release the authoritative queue")
+			}
+			w.controlWG.Wait()
+			require.Len(t, completed, attempts)
+			for _, generation := range generations {
+				select {
+				case <-generation.authoritativeSent:
+				default:
+					t.Fatal("authoritative completion barrier was not released")
+				}
+				if tc.wantSent {
+					require.NoError(t, <-completed)
+				} else {
+					require.ErrorIs(t, <-completed, context.Canceled)
+				}
+			}
+			responses := stream.sentResponses()
+			if !tc.wantSent {
+				require.Empty(t, responses)
+				return
+			}
+			require.Len(t, responses, attempts)
+			for i, resp := range responses {
+				require.True(t, resp.Created)
+				require.Equal(t, tc.rejected, resp.Canceled)
+				if tc.rejected {
+					require.Equal(t, int64(-1), resp.WatchId)
+					require.Equal(t, "foreign cluster", resp.CancelReason)
+					require.Equal(t, int64(50), resp.Header.Revision)
+				} else {
+					require.Equal(t, int64(i), resp.WatchId)
+				}
+				require.Empty(t, resp.Events)
+			}
+		})
+	}
+}
+
 func TestWatchCreatedSendDoesNotBlockReceivingCancel(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
