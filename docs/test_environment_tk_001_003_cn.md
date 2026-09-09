@@ -1224,3 +1224,10 @@ TLS Secret 与 info CA/SAN；不得复用旧 `run-security-controlled-ha.sh` 冒
 此次提交包含远端客户端固定版本、产品线协议回归及 Watch 拒绝响应竞争修复，旧失败
 日志保留。提交后立即执行相同 verifier/四分片，只有 post 全部成功才允许正常 FF push；
 此处尚未声明 post 完成，也未运行新的镜像 CI 或在线升级。
+
+产品提交为 `03480da7e168c6888e11ac51dfc4bd46ad88d07a`，提交后工作树干净。
+立即执行 post verifier 已 PASS（709，171/194/181/163），四片已并行启动：
+`security-client-safets-watch-post-{0,1,2,3}.log`，原会话分别
+60483/83867/88336/44673；verifier 为 `security-client-safets-watch-post-verify.log`。
+先轮询这四个原会话，只有终态全部 exit 0 且冻结摘要匹配后才登记完成、快进推送。
+本段只登记提交后复验入口，不改变产品源码，不把正在运行写成已经通过。
