@@ -830,3 +830,35 @@ in_progress / Build and push，本机提交不会取消它，暂不 push。真�
 `security-rollout-trust-post-{0,1,2,3}.log`，verifier 为 `security-rollout-trust-post-verify.log`。
 目前尚无四分片完整终态，不得先宣称提交后全量 PASS。此登记为文档追加，不改产品
 源码或中断测试；尚未 push，也未触发另一条会取消 `34290666105` 的 image run。
+
+### rollout trust 提交后全量通过，等待发布验收（2026-09-09 00:49 UTC）
+
+产品提交 `4fd0d599` 的提交后 verifier/四分片全部 exit 0：708 项、分桶
+170/194/181/163，耗时 270.004/480.024/320.514/751.929s。五个源码/测试文件
+摘要再次匹配；正式前后两轮均完整通过。中间草稿失败、计时断言修正和一次额外
+probe full race 超时记录仍保留，不能把历史记录改成从未失败。
+确认所有工具会话终止后才生成 `security-rollout-trust-post-complete.json`，包含
+产品 SHA、分片编号/项数/耗时及日志路径，供本环境后续测试前置检查使用。
+
+CI `34290666105` 仍为 in_progress / Build and push。不可变源码标签
+`dbaas-60137eb36ee7e4a8f61251a6f91b36ae1135aa23` 已能读到 OCI 索引：
+`sha256:86ba2d77e6235f2e6b2596c1134f2613328dd40eff068458dd469d27ae64f060`，
+amd64 `sha256:8908cce0403450742306d661679a978a307d4fa809166825dd643788768b2f5b`，
+arm64 `sha256:23c0b1191fef2056d7375044213a929287c8b2d52f9e7b21d1095889535e7398`。
+已通过本地平台解析 helper 排除 attestation 描述符，但还没有 CI 发布验证成功终态，
+不得使用它进行部署/HA，不能当作当前服务镜像。证据
+`security-60137eb3-image-{manifest,index}-pending.json`。
+
+在仓库外准备 `run-security-controlled-ha.sh` 与 `uid-delete-test-cluster.sh`，但未
+执行任何故障注入。入口要求本次完整 post 回执、CI success、已核验的精确镜像回执，
+并核对 namespace/StatefulSet/TidbCluster/StorageClass UID、当前服务镜像/Ready/revision、
+consumer `rook-ceph` CSI/clusterID/Secret namespace 以及 Region 健康；UID 删除 helper
+固定显式 kubeconfig，不依赖本机默认 context。脚本保留 5 秒 public SLO、30 秒 direct
+恢复上界与 5 秒 lease TTL，只针对动态确认的 KubeBrain leader Pod，不改变服务镜像、
+后端或共享 worker。post 回执尚缺时已实际验证入口 exit 1，并在集群修改之前停止，
+日志 `security-controlled-ha-guard-before-ready.log`。镜像回执尚未创建。
+
+后续若使用 `60137eb3` 镜像运行该 hard-failover probe，它已经包含 restore TLS 修复，
+但不含新 info CA 参数；hard-failover 模式不请求在线镜像升级，也不传 source info
+参数，因此这不能替代新版本在线升级门禁验证。真正在线升级仍须等待包含 `4fd0d599`
+的完整镜像发布。当前服务仍固定 `339381af`，尚未执行 HA；不推送打断现有构建。
