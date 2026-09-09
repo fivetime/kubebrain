@@ -1515,3 +1515,463 @@ capabilities，并使用正常调度约束。Kubernetes 文档指出直接设置
 产品提交 d85a6881 的非文档 diff 均已核对。审计回执为 `security-rollout-observer-v2-post-complete.json`，
 明确限定为本地产品验证，不是镜像发布、预拉取完成或真实升级验收。提交前后测试会话均已终态，没有需要继续
 等待的旧会话；后续可以开始新的预拉取实现，但新修改不能沿用这份回执作为其完整测试证明。
+
+### 预拉取 Job 生成组件草稿（未接入 runner，未提交产品）
+
+完整提交后门禁结束后，在 `hack/production/internal/imageprepull` 新增纯 Go Job 生成器及测试，不调用 API、
+不创建 Kubernetes 对象。生成器绑定源 StatefulSet UID/spec digest 与目标 Node UID，要求不可变候选镜像、
+Linux amd64/arm64 标签与 NodeInfo 一致、Ready 且无 DiskPressure。要求 client/headless Service 都在同一
+命名空间的输入清单内，并拒绝任何清单内 Service 会选中预拉取 Pod 的情况；完整清单获取仍是后续执行器责任。
+
+输出为一个 init version 容器及一个同镜像的定时等待容器，带活动期限、TTL、零重试、最小资源请求/限制，
+非 root、read-only rootfs、drop ALL、RuntimeDefault seccomp、禁用 API token；不复制业务环境变量、端口、
+卷和证书。保留源 imagePullSecrets、ServiceAccount、RuntimeClass、scheduler、nodeSelector、tolerations 及
+node affinity，并在 required affinity 的每个有效 OR 分支中增加精确 metadata.name 条件，保持正常调度。
+业务 Pod anti-affinity 不复制到 holder，以允许它与服务 Pod 共处同一节点。
+
+初稿测试发现并修正了自定义 scheduler 丢失、源固定 nodeName 不一致未拒绝、空 required affinity 分支被
+错误变为有效分支三项问题；RED 日志为 `security-image-prepull-builder-before.log`。后续测试覆盖全部六个
+label 操作符、字段约束、空/非法分支、超过 float64 精确范围的 int64 比较、平台/期限边界、对象删除状态、
+Service 误匹配及输入深拷贝隔离。最终 `go test -race ./hack/production/internal/imageprepull -count=3 -cover`
+exit 0（1.155s），语句覆盖率 98.9%，日志 `security-image-prepull-builder-final.log`；`go vet`、gofmt 与
+diff 检查通过。两个新文件的校验清单为 `security-image-prepull-builder-code.sha256`。
+
+当前两个新文件尚未提交，runner 未引用该包，也没有 CLI 或实际预拉取回执。下一步仍需实现完整候选节点清单、
+创建/观察/补偿清理、实际 Job/Pod/runtime 身份校验和升级脚本接入；再跑相关及完整门禁，并完成真实升级验收。
+不要将此处纯生成器单测、98.9% 覆盖率或先前 d85a6881 的 711 项回执冒充整条预拉取流程已通过。
+
+### 预拉取执行器与完整硬调度节点池（2026-09-09，仍未接入 runner）
+
+随后继续实现同一包；当前为七个未提交文件，不再是上述两个文件的纯生成器版本。先前生成器校验清单和
+98.9% 覆盖率只属于当时的源码，不适用于本节版本。没有修改既有 rollout/health 脚本，没有 push、触发 CI、
+创建真实集群 Job 或替换业务 Pod。
+
+执行器现在支持先核对全部目标名称、逐一创建、轮询就绪、升级前再验证和有期限补偿清理。准备失败时使用
+独立清理上下文，取消准备不能自动取消清理。CREATE 响应丢失时，仅通过随机 attempt 标记和精确源 owner
+识别该次尝试；成功 CREATE 返回的具体 UID 在策略校验之前记录，因此 admission 修改 owner/标记导致拒绝
+时也不会遗漏自有对象。清理仅删除已确认 UID，使用 UID/resourceVersion 前置条件与 Foreground，冲突后
+重新读取 RV，且必须确认 Job 及其自有 Pod 都消失；DELETE 被接受、活动期限和 TTL 都不能代替最终清理证据。
+
+实际 Job/Pod 验证覆盖身份、策略、Service selector 隔离、init version 成功、holder Running/Ready、容器
+重启/失败、目标节点与经批准的平台 imageID。支持 CRI-O 等明确身份形式，但不会仅凭任意字符串的 digest
+后缀接受镜像。最后证据读取后再次检查取消状态及最早 holder 的剩余生命周期，避免读取其他节点期间
+消耗完前面节点的活动预算。源 StatefulSet 必须在单一稳定 revision、完整 Ready、generation 已被观察，
+且 UID/spec 未改变。生成的 Pod 额外禁用 ServiceLinks 和抢占。
+
+本轮补齐 `DiscoverPlacement` 和执行器内节点池复核：
+
+- 对所有 Node 做不带 label/field selector 的 LIST，Limit 257；有 continuation 或超过 256 项即拒绝，
+  不把截断列表当完整证据。名称/UID 必须有效且唯一，硬条件匹配的目标总数限定 1..32。
+- 按源 nodeName、nodeSelector、required node affinity 与 RuntimeClass 的 nodeSelector 交集确定池。
+  不按当前业务 Pod 位置、暂时资源余量、软约束、Ready、cordon 或 taint 缩小池；这些可变条件可能在升级
+  期间改变。池内节点必须健康并真正运行 holder 才能继续。因此不可容忍污点或自定义 scheduler 可以阻止
+  准备完成，但不能静默把相关节点排除后声称覆盖完整。此处是保守硬调度覆盖，不是完整 scheduler 仿真。
+- RuntimeClass 必须有正确名称、UID/RV、handler 且未删除；合并 nodeSelector（冲突拒绝）、toleration
+  并集/冗余消除和固定 overhead，保留源快照不变。overhead 冲突按资源数量语义比较。暂不猜测 Gt/Lt
+  toleration 的集群 feature gate，遇到这类 RuntimeClass 合并输入明确拒绝。实现依据
+  [Kubernetes v1.36.2 RuntimeClass admission](https://raw.githubusercontent.com/kubernetes/kubernetes/v1.36.2/plugin/pkg/admission/runtimeclass/admission.go)
+  及对应 toleration union 行为；尚未经过真实 apiserver admission 的端到端验证。
+- 创建任何 Job 前、各次创建前、观察开始和最终证据边界均复核完整池及 RuntimeClass。新增/遗漏/替换
+  Node、平台/runtime 变化、RuntimeClass 实质变化均拒绝；仅 RuntimeClass RV/标签更新不误判为策略漂移。
+  这不构成后续业务镜像修改的原子围栏，runner 接入时仍须立即复核并对源修改使用 UID/RV/spec 约束。
+
+测试证据均在仓库外既定审计目录：
+
+- `security-image-prepull-executor-ownership-before.log` 记录 CREATE 成功但 admission 改 owner/标记时
+  两项漏清理 RED；`security-image-prepull-executor-cancel-before.log` 记录最终读取取消仍返回成功的 RED。
+  修复后的旧版执行器日志 `security-image-prepull-executor-verified.log` 为 race count=3 通过，4.061s，
+  87.6%；本次开始已核对该日志，并确认没有遗留测试进程，没有重启旧会话。
+- `security-image-prepull-placement-before.log` 在测试编译问题修正后，记录缺少 RuntimeClass 合并/
+  身份检查、遗漏节点仍成功、最终 Pod 读取中节点池扩大仍成功等真实断言失败。原会话 45759 exit 1。
+- 初次全包 race `security-image-prepull-placement-final.log` exit 1：30ms 清理期限到达时，错误既可能
+  从等待点也可能从下一循环入口返回，原测试只接受某一文案。已改为检查 `context.DeadlineExceeded`、
+  恰好一次已接受删除及仍存在的依赖 Pod；没有放宽清理期限或以删除请求成功代替清理成功。
+- 最终 `go test -race ./hack/production/internal/imageprepull -count=3 -cover` exit 0，4.926s，语句
+  覆盖率 89.2%；日志 `security-image-prepull-placement-verified.log`，原会话 74028 已终态。覆盖
+  RuntimeClass/Node 身份漂移、创建间池扩大并补偿、完整清单边界/错误/取消、硬 affinity 空分支、
+  RuntimeClass 合并/深拷贝、手工给定的 admission 后策略及真实 JSON 往返序列化。`go vet` 和 diff
+  检查通过，七个文件校验清单 `security-image-prepull-placement-code.sha256` 已逐项验证。
+
+仍未完成且不能据此宣布升级可用：API transport 请求时间/响应字节上限、OCI index 与每个平台 digest
+的独立发布证据校验、变更前持久化 attempt/所有权回执和进程崩溃恢复、CLI/runner 接入、真实 admission
+验证、全窗口探针预算及新的完整提交前后门禁/镜像 CI/真实升级验收。Session 当前仍仅在内存中；失败路径
+返回 nil，即使补偿失败也没有持久化恢复凭证，不能把 deadline/TTL 当作解决该缺口。源码仍未提交；此包的
+单测也不属于既有 711 项顶层分片清单，后续产品提交必须同时执行本包测试和完整规定门禁。
+
+### 预拉取清理回执与进程状态丢失后的恢复（2026-09-09，未提交/未部署）
+
+本轮从七文件版本校验和全部匹配、无旧测试进程的状态继续，新增 `recovery.go` / `recovery_test.go`，
+并修改执行器接入；目前为九个未提交文件。上一节列出的“仅内存清理记录”缺口已有以下组件级实现，但
+CLI/runner 仍未接入，不能把它视为部署恢复能力已经交付。
+
+- `RecoveryJournal` 是清理专用回执，只记录版本、Namespace 名称/UID、源 StatefulSet 名称/UID、随机
+  attempt、各 Job 名称、创建意图、已确认 UID 和已确认清理状态。不保存 kubeconfig、密码、Secret
+  内容、业务 env/卷配置，亦不保存可直接授权升级的准备成功状态。
+- 调用方提供当前用户拥有的 0700 私有本地目录，回执和稳定锁文件均为 0600。创建拒绝覆盖已有回执；
+  使用非阻塞独占 flock，更新采用同目录独有临时文件、文件 Sync、rename、目录 Sync。关闭只释放锁，
+  保留回执和锁文件。依赖本地文件系统的持久化语义，不宣称已验证 NFS 或真实断电恢复。
+- 加载限制 64 KiB，拒绝未知字段、重复字段/非规范 JSON、截断、非法状态/身份、软/硬链接、特殊文件及
+  不安全权限。源码核对与测试发现 `os.Root` 会解析目录内软链接，因此不能仅依赖路径不逃逸保证；现在
+  在打开前 Lstat 拒绝非普通文件，并核对打开后的身份。固定锁不随 JSON 文件替换而更换。
+- `Prepare` 在任何 CREATE 前持久化该目标的意图，成功返回具体 UID 后立即持久化 UID，再检查 admission
+  策略。已绑定回执不能复用于新尝试；旧 Session 与另一回执混用时，在 Verify/Cleanup 的 API 变更前
+  拒绝。创建、验证和清理都检查回执绑定的 Namespace UID；清理仍使用 Job UID/RV 的删除前置条件。
+- `RecoverCleanup` 不依赖原内存 Session，也不恢复或继续滚动升级。已确认 UID 的对象按 UID 清理；仅有
+  创建意图时，必须重新查到带本次随机标记和精确源 owner 的 Job，持久化恢复出的 UID 后再删除。当前
+  NotFound 不足以排除延迟 CREATE，因此返回明确未解决错误、保留回执，后续可对同一回执再次恢复。
+  测试覆盖第一次恢复时缺失、原对象稍后出现、第二次恢复完成清理，未用新尝试掩盖旧创建的不确定性。
+- 一个目标被替换/无法清理时，继续处理其他独立自有目标并汇总错误。Job DELETE 成功仍须等待依赖 Pod
+  消失，之后才持久化已清理状态。回执失败/关闭不算成功；没有 UID 且 admission 又改掉所有权证据的
+  不确定对象仍拒绝猜测删除。空 Journal 仍允许用于非持久化组件测试，未来部署 CLI 必须强制配置回执。
+
+本轮验证与回执（仓库外既定审计目录）：
+
+- 初次恢复测试被测试临时目录权限不满足 0700 拦住；修正 fixture 权限，未放宽产品目录要求。
+- `security-image-prepull-recovery-binding-before.log` 为混用另一轮回执的 RED（原会话 18373 exit 1）：
+  原先先清理对象再因目标不属于回执报错。现在先检查 attempt/目标/源/已知 UID 绑定，不发生任一轮的删除。
+- `security-image-prepull-recovery-verified.log` 为软链接加载被错误接受的 RED；修复后加入锁软链接、
+  硬链接、FIFO、目录越界、大小/格式/权限、状态回退和 UID 变更拒绝覆盖。
+- `security-image-prepull-recovery-namespace-before.log` 为 Verify 未检查 Namespace incarnation 的 RED
+  （原会话 26091 exit 1）；现在与创建/清理一样使用回执绑定的命名空间身份检查。
+- 最终 `go test -race ./hack/production/internal/imageprepull -count=3 -cover` exit 0，5.580s，语句
+  覆盖率 88.5%，日志 `security-image-prepull-recovery-final-verified.log`，原会话 7102 已终态。
+  覆盖磁盘中的精确目标意图先于 API CREATE、UID 回执写入失败后重新打开恢复、进程内 Session 丢失、
+  取消后的独立补偿、已确认 UID 在 admission 改 owner 后仍被清理、替换对象保留及其他目标继续清理。
+- `go vet ./hack/production/internal/imageprepull`、`GOARCH=arm64 go build ./hack/production/internal/imageprepull`、
+  gofmt/diff 检查通过；arm64 是交叉编译，不是 arm64 运行测试，也没有生成仓库内独立二进制。
+  九文件源码清单 `security-image-prepull-recovery-code.sha256` 已逐项核对。
+
+没有运行真实集群变更、push、镜像 CI 或新的产品提交。上述测试使用 fake Kubernetes API 与真实本地文件
+操作，不是实际进程 SIGKILL/主机断电/真实 admission 的端到端证据。下一步继续补有界 API transport、
+OCI 多架构发布证据、CLI/runner 中回执强制使用及准备状态即时复核、探针完整窗口，随后执行规定的完整
+提交前后门禁和真实升级验收。不得将清理回执当作升级成功凭证，或复用旧 711 项回执覆盖本轮源码。
+
+### 有界 API、OCI 平台映射和两个 CLI 入口（2026-09-09，未提交/未部署）
+
+继续前已核对上一轮九文件校验和全部匹配且无旧测试进程。本轮新增有界客户端、发布索引验证器及
+`hack/production/cmd/image-prepull`，目前组件十三文件、命令两文件，均未提交；没有修改 go.mod/go.sum、
+Dockerfile、镜像 CI 或既有升级脚本。命令尚未打包进产品镜像。
+
+`NewBoundedClient` 要求经过证书校验的 HTTPS，拒绝 URL 凭据/query/fragment、跳转和跳过 TLS 校验；
+不接受无法保证遵循取消语义的外部认证插件、自定义 transport/dial/proxy 回调。支持原生证书、token/
+token-file 和 in-cluster 配置。HTTP 尝试的超时上限 30s，完整响应体上限可设 1..32 MiB，在 Kubernetes
+解码之前读取并核对上限，不能用合法 JSON 前缀掩盖超大尾部数据。关闭压缩请求，收到非预期编码则拒绝。
+这里限制的是每次 HTTP 尝试和有限响应体，**不是整个 SDK 多次重试/退避的总时间**；后者仍须由操作/阶段
+context 限定，执行器已有阶段期限。也不将此客户端用于 watch/log/exec 流，不宣称任意插件/文件系统调用
+能被它强制中断。
+
+`ApprovedRuntimeDigests` 校验原始索引字节的 SHA-256 必须等于批准的固定 image digest，再与独立审核的
+CI amd64/arm64 子 manifest digest 逐项比较，要求两平台唯一且完整。允许明确关联到批准平台的 BuildKit
+unknown/unknown attestation descriptor，但它们永不进入可运行 digest 清单。拒绝重复/大小写别名字段、
+截断/尾部 JSON、过深嵌套、嵌套 index、额外架构、未知 CPU/OS 要求及混淆描述符。该组件实现本项目双平台
+发布策略，不是通用 OCI resolver；依据 [OCI index](https://raw.githubusercontent.com/opencontainers/image-spec/v1.1.1/image-index.md)
+和 [descriptor](https://raw.githubusercontent.com/opencontainers/image-spec/v1.1.1/descriptor.md) 的索引引用、
+原始字节 digest/size 语义。**不下载或验证子 manifest/layer、不验证签名/attestation，也不认证任意输入
+JSON 声称的 CI 结论或源 revision**；调用方仍必须从已核对的发布证据提供固定 image 和平台 digest。
+
+CLI 现有模式与边界：
+
+- `--mode=verify-release --index-file=<absolute raw index path> --image=<approved index image>`，配合
+  `--amd64-digest` / `--arm64-digest` 输出每个平台的 child+index runtime digest 列表，并明确标记仅为
+  身份验证，不是 CI 授权或升级成功。输入保留原始字节，不能先经 jq 重新排版后沿用原 digest。
+- `--mode=recover-cleanup` 强制显式绝对 kubeconfig 路径、context、0700 回执目录/名称、Namespace
+  名称/UID 和源 StatefulSet 名称/UID。先比较回执 scope，再读取 0600 的有界普通 kubeconfig 文件，
+  正常解析其相对证书路径，使用有界 HTTPS 客户端执行清理；不用默认 context，不修改本机 kubeconfig。
+  Scope 不符、Namespace UID 变化、上下文缺失、权限/输入异常都不能输出清理成功。所有出口释放回执锁。
+- 尚未暴露 prepare/rollout 模式，也没有持久化“准备成功”凭证或升级前跨进程验证接口。清理回执不能
+  被当作重启后继续升级的授权。这些入口没有在真实集群执行过恢复删除。
+
+验证证据（仓库外既定审计目录）：
+
+- 首轮有界客户端测试 `security-image-prepull-client-first.log` exit 0；覆盖 TLS、有限响应精确边界、
+  已知长度/分块超限、合法 JSON 后超大尾部、响应头/正文超时、重定向不转发认证信息和非预期编码。
+- 最终 `go test -race ./hack/production/internal/imageprepull ./hack/production/cmd/image-prepull -count=3 -cover`
+  exit 0，日志 `security-image-prepull-client-release-command-final.log`，原会话 6761 已终态。
+  组件 6.908s / 88.5%，命令 1.290s / 82.8%。CLI 使用真实本地 HTTPS 测试服务验证显式 context、
+  Namespace incarnation、回执 scope、输入文件/权限、锁释放和成功/失败输出；恢复测试使用空清理回执，
+  并断言仅发 Namespace GET，不将其冒充真实多 Job 的 CLI 端到端删除证明。
+- `go vet` 两包通过；`GOARCH=arm64 go build -o /dev/null ./hack/production/cmd/image-prepull` exit 0，
+  原会话 35922 已终态。这是交叉编译，不是 arm64 执行测试，没有在仓库生成二进制。
+- 对历史 `security-de8a9e1f-image-manifest-by-digest.json` 执行新 CLI 的 verify-release：原始文件的
+  SHA-256 精确为 `0044f89deef94bc6cebae6e548f3715152a35a5b83e63ed895575eccd3dc28c6`，对应已记录的
+  amd64 `a83111ee...` / arm64 `50f47075...` 平台子 digest。命令 exit 0，原会话 35892 已终态，输出
+  `security-image-prepull-existing-release-cli.json`。该步骤只读取历史本地发布证据，未访问集群、未重新
+  触发 CI、未把 de8 镜像当作含有本轮新代码的镜像，更未关闭此前真实冷拉取升级失败。
+- gofmt/diff 检查通过，十五文件源码清单 `security-image-prepull-client-release-command-code.sha256`
+  已逐项验证。当前无需继续等待的本轮测试/编译会话。
+
+下一步仍是准备状态跨进程即时复核、CLI prepare/verify 与 runner/镜像打包接入、全窗口探针预算及真实
+admission/升级验收。完成集成后须运行新包/命令测试和规定的完整提交前后门禁，再推送构建镜像；旧门禁
+回执不覆盖这些未提交源码。当前目标保持未完成，没有集群变更。
+
+### 跨进程准备验证与 prepare/verify 命令（2026-09-09，未提交/未部署）
+
+继续前已核对上一轮十五文件校验和全部匹配、无旧测试进程。新增准备快照、只读规划及 CLI 生命周期
+测试，本轮组件十六文件、命令三文件，共十九个未提交文件；既有 runner、Dockerfile 和 CI 尚未修改。
+
+回执现在可带可选 `preparation` 字段，不能再将当前格式描述为只含 cleanup 信息；旧的仅清理回执仍可
+读取，但不能用于 Verify。该字段仍不是独立升级授权：
+
+- 只保存固定目标镜像、源 spec/revision、RuntimeClass 和完整 Service 清单的摘要，以及节点身份/
+  架构/runtime、原 Pod UID、重建 Job 的策略摘要、期限和经审核的 runtime digest。Job UID/attempt
+  继续沿用同一持久化记录。不保存源 StatefulSet 原始配置、业务 env、证书/Secret 内容或拉取凭据。
+- 准备阶段确认 holder 就绪后才持久化快照；落盘后再次做 live Verify，防止写盘耗时用尽活动窗口或
+  期间已取消。Node runtime 版本现在必须非空且有界，不能用未知 runtime 身份制作准备快照。
+- `RestoreVerified` 要求调用方重新提供批准的 image/platform digest，读取当前 Namespace、源对象、
+  RuntimeClass、完整硬调度池和 Service 清单，比对摘要并重建 Job 策略；然后重新验证原 Job/Pod UID、
+  Running/Ready、init 成功、imageID、源稳定 revision 和剩余持有期限。只发 GET/LIST，不能补建 Job、
+  重跑准备或凭旧“ready”字段跳过即时检查。后续业务镜像修改仍须由 runner 做 UID/RV/spec 围栏。
+- RuntimeClass 的无关标签/RV、Service 列表顺序和无关 metadata 不影响摘要；替换 UID、相关策略/selector
+  变化、节点池变化及重建策略不一致都拒绝。进入清理时先持久化使准备快照失效，部分清理失败也不能把
+  原尝试重新当作准备成功。该限制同时适用于重新打开回执和仍保留原 Session 的同一进程。
+
+新增只读 `Plan` 从显式回执 scope 读取源对象和完整节点/Service 清单，生成有界随机 Job 名称并预先验证
+每个请求；实际 CREATE 前执行器仍重新检查。CLI 现有四个模式，原 verify-release/recover-cleanup 保留：
+
+- `--mode=prepare` 强制 `--confirm-create-isolated-jobs`、完整显式 namespace/source UID、kubeconfig/
+  context、私有回执路径及经重新核对的原始 OCI index/两个平台 digest。只创建隔离 holder，不修改业务
+  StatefulSet/Pod。成功持久化并再次验证后输出 `PREPULL_READY`，留下 holder 供升级流程使用；若输出
+  成功标记失败，则在回执关闭前用独立上下文补偿清理。
+- `--mode=verify` 重新打开相同回执并重新核对发布索引，再执行 RestoreVerified；只有即时检查通过才
+  输出 `PREPULL_VERIFIED`。无确认创建参数也不会创建/替换对象。仅清理回执、失效快照、替换 Pod 或
+  任何相关证据漂移均失败且不输出成功标记。
+- 参数默认 planning/preparation 总预算 10m、单次 fresh verification 总预算 30s、holder 3600s、
+  最小剩余持有时间 30m、TTL 300s；值都有边界验证。**这些默认值不代替 runner 的完整时长核算**：
+  接入时需覆盖 probe 启动/完成、rollout/rollback、查询和清理预算。prepare/verify 并不自动触发升级，
+  runner 还必须在所有出口调用恢复清理，不能假定 SIGKILL、进程崩溃或文件关闭异常能执行 Go defer。
+
+测试及源码证据（仓库外既定审计目录）：
+
+- `security-image-prepull-preparation-verified.log` 首批跨进程测试通过，涵盖源 spec/revision、runtime、
+  Service selector、节点集合/身份、Job/Pod UID、过期窗口、目标镜像/approval 和策略摘要变化的拒绝，
+  并检查全部 Kubernetes action 都为 GET/LIST。检查持久化内容不含业务配置/凭据名称等测试私有数据。
+- `security-image-prepull-preparation-invalidation-before.log` 记录一个实际 RED（原会话 8042 exit 1）：
+  清理使快照失效后，DELETE 不可用、holder 仍健康，原内存 Session 的 Verify 仍会成功。已增加活跃
+  准备快照检查，禁止同进程绕过该失效状态；不是只修正文件重开路径。
+- `TestCommandPrepareVerifyAndCleanupLifecycle` 使用本机真实 HTTPS 连接和 Kubernetes JSON/protobuf
+  序列化，跨独立命令调用走通 prepare → verify → 拒绝被替换 Pod → recover-cleanup → 拒绝再验证。
+  模拟服务端验证 DELETE 的 UID/RV/Foreground，断言全程只允许一次 Job CREATE、一次 Job DELETE，
+  不得对业务资源写入；另验证缺少确认时零变更、输出错误时补偿清理。该服务模拟 admission、Job 运行
+  和 GC，不是实际 apiserver/镜像拉取/真实控制器的证据。
+- 最终 `go test -race ./hack/production/internal/imageprepull ./hack/production/cmd/image-prepull -count=3 -cover`
+  exit 0，日志 `security-image-prepull-preparation-command-final.log`，原会话 79413 已终态。
+  组件 8.360s / 85.1%，CLI 17.263s / 84.6%；这些分别是各包自身覆盖率，不是全系统覆盖率或生产验收。
+- 两包 `go vet` 通过；arm64 命令交叉编译到 `/dev/null` exit 0（原会话 19933 已终态），无仓库二进制
+  残留。gofmt/diff 检查通过，十九文件清单 `security-image-prepull-preparation-command-code.sha256`
+  已逐项核对。本轮测试/编译均已终态，无旧进程待续。
+
+本轮未访问或修改真实测试集群、未 push、未提交产品、未触发镜像 CI。下一步是用受控 scope 验证真实
+admission/defaulting（不能将本地模拟结果视为已通过）、接入 runner 的准备/即时验证/EXIT 清理与完整
+探针窗口，再完成镜像打包、规定的完整提交前后门禁、构建和真实升级验收。整体生产就绪目标仍未完成。
+
+### 真实服务器端 dry-run 与 PriorityClass 修复（2026-09-09，未提交/未部署）
+
+本轮先核对十九文件版本校验和，再增加 `check-admission` 模式。它使用完整只读 Plan，对每个节点依次
+提交 Job 和 Pod 的 `CreateOptions{DryRun:["All"], FieldValidation:"Strict"}`，比较服务端返回的策略，
+最后重查节点池。只检查 Job template 不足以覆盖 Pod admission，因此两类对象分别检查。该模式仅留下
+本机私有目录内的空清理回执/锁文件，不绑定真实 CREATE attempt、不写准备成功快照、不执行容器。
+
+使用显式既定 kubeconfig/context、Namespace UID `6c57c242-912b-41bb-9020-f4fdb3225ef3`、StatefulSet UID
+`2650ad15-1d37-41c4-836c-d40dd4502720`，client Service `kubebrain-client`，对历史已核对的 de8 镜像索引
+执行服务器端检查。操作只含 GET/LIST 和 DryRunAll CREATE；没有持久 Job/Pod 创建、镜像拉取、业务
+镜像修改、worker/PD/TiKV 重启或存储类变更。
+
+第一次真实检查 `security-image-prepull-admission-live-first.log` exit 1（原会话 92922），本机回执
+`admission-check-01`。服务器拒绝 Pod：直接指定 `PreemptionPolicy=Never` 与默认 PriorityClass 计算出的
+PreemptLowerPriority 不一致。源码生成器遗漏了源 Pod template 的 PriorityClassName；此前模拟测试没有
+实现 Priority admission，因此未发现这个真实错误。依据
+[Kubernetes v1.36.0 Priority admission](https://raw.githubusercontent.com/kubernetes/kubernetes/v1.36.0/plugin/pkg/admission/priority/admission.go)，
+Pod 的 Priority/PreemptionPolicy 必须与具名类计算结果一致，不能仅写 Never 就改变类的策略。
+
+只读检查确认源已经配置 `kubebrain-dbaas-critical`，无需创建或修改任何集群级 PriorityClass：
+
+- UID `2b5d406a-0ae0-4e38-bcfc-9f34e7c18037`，观察到 RV `12439368`；Value `1000000`，PreemptionPolicy
+  `Never`，不是 global default。完整只读证据 `security-image-prepull-admission-priorityclass.json`。
+- 现在要求源明确使用已有、身份有效、未删除、用户优先级范围内的非抢占 PriorityClass，生成 Job 保留
+  类名和匹配的优先级值。没有具名非抢占类、缺少 UID/RV、预留系统优先级、源 Priority/PreemptionPolicy
+  冲突时明确拒绝；不自动改成抢占策略、不选择其他高优先级类、不自动创建集群资源。
+- Plan/节点池复核会读取该类；Prepare 深拷贝并拒绝混合类快照，准备凭证新增 PriorityClass 摘要，跨
+  进程 Verify 重查 UID、数值、抢占策略等。仅描述/RV 等无关 metadata 改动不误判为调度策略漂移。
+  旧草稿中没有该摘要的 preparation 快照不能被新代码拿来继续升级；仅清理回执仍可用于恢复清理。
+
+修复后的第二次真实检查 `security-image-prepull-admission-live-second.log` exit 0（原会话 76959），
+本机回执 `admission-check-02`，输出 `PREPULL_ADMISSION_CONFIRMED dryRun=All containersExecuted=false`。
+当前完整硬调度池的 Job/Pod admission 都通过；不表示容器能启动、镜像能拉取或滚动升级可用。
+
+检查前、第一次失败后和第二次通过后的 namespace Job/Pod 名称+UID 清单分别为
+`security-image-prepull-admission-inventory-before.json`、`...-after-first.json`、`...-after-second.json`，
+两次 cmp 都 exit 0，清单完全一致。`security-image-prepull-admission-source-after.json` 确认源仍为 generation
+3/observed 3、3 Ready、current/update revision 同为 `kubebrain-696c87f8f9`，继续运行旧镜像
+`ghcr.io/fivetime/kubebrain@sha256:a245c95fea36c387358d86e3808a9d29073a327028d5a4e3a80e4d272663e865`。
+
+本地验证：
+
+- `security-image-prepull-admission-contract.log` 通过，逐个断言 Job/Pod 请求都有 DryRunAll/Strict，
+  注入 Job/Pod 策略改变和最终取消均拒绝，tracker 不保存对象，回执没有 targets/attempt/preparation。
+- PriorityClass 回归覆盖完整身份、名称/数值/策略保留、输入不别名、缺失/删除/抢占/系统优先级/冲突
+  拒绝，以及准备后 UID/value/preemption 改变时拒绝恢复验证、仅 metadata 更新允许。旧默认值测试
+  中人为写入 Priority=0 已修正为该测试类实际值 1000000，未放宽策略比较。
+- 最终两包 `go test -race ... -count=3 -cover` exit 0，日志
+  `security-image-prepull-admission-priority-final.log`，原会话 72125 已终态；组件 8.720s / 84.8%，
+  CLI 17.288s / 82.3%。`go vet`（原会话 1520）与 arm64 编译到 `/dev/null`（原会话 40296）均 exit 0，
+  gofmt/diff 检查通过；二十二文件清单 `security-image-prepull-admission-priority-code.sha256` 已核对。
+
+本轮确实访问了真实测试 API，但仅进行了上述非持久 dry-run/只读检查；没有 push、产品提交、镜像 CI
+或部署。真实 admission 缺口已对当前配置获得证据，仍需把准备、即时验证、EXIT 清理和完整探针窗口接入
+runner，打包新命令，运行规定的完整提交前后门禁，再进行真实预拉取/升级验收。整体目标仍未完成。
+
+### 预拉取命令打包与滚动探针窗口（2026-09-09，工作树未提交）
+
+本轮继续推进发布流程，未创建上游 PR。二十二个预拉取组件/CLI 文件仍逐项匹配
+`security-image-prepull-admission-priority-code.sha256`；没有更改此前已验证的 admission/准备/清理实现。
+
+新增打包与门禁配置：
+
+- Dockerfile 编译并在最终数据面镜像复制 `/usr/local/bin/kubebrain-image-prepull`。Go 二进制清单从
+  66 增至 67；新增 build 测试检查最终 stage 中的清单、重复目标和非 root 用户，不把中间 BR 镜像混入。
+- self-hosted image workflow 在发布前执行预拉取两包 race 测试及打包契约测试。发布后的检查配置为逐个
+  amd64/arm64 子镜像运行实际 helper 的 `verify-release`，使用无网络、只读 rootfs、drop ALL capabilities、
+  no-new-privileges 和只读原始 OCI index 挂载；比较精确 index/双平台 runtime digest 结果，再允许 promote。
+  index 是公开元数据，设为 0444 供镜像内 65532 用户读取；没有挂载 kubeconfig/令牌或执行 prepare。
+  此处仅新增 CI 配置，尚未触发构建，不能称为新镜像已验证。
+
+runner 新增访问 Kubernetes 前的窗口校验：
+
+- 默认 `PROBE_ITERATIONS=6000`、`PROBE_INTERVAL=0.1`，成功计数循环至少持续 600 秒；完成等待默认
+  `PROBE_COMPLETE_TIMEOUT=900s`。原有单操作 5 秒、direct stream 30 秒、lease 5 秒等指标未放宽。
+- 非 observe 模式要求 iterations × interval 严格大于 Ready wrapper、启动屏障等待、mutation wrapper、
+  rollout/观察 wrapper 中的较大者，再加 2 秒余量。默认 70+90+15+310+2=487 秒。不能遗漏外层 310 秒，
+  也不能依赖慢 RPC/冷拉取延长探针寿命。HardFailover 额外计入两次 leader exec、一次 Pod GET、UID 删除
+  及其 kill grace，默认合计 596 秒；本轮只做本地模拟测试，没有执行真实硬故障。
+- 正整数/十进制参数先按 Go Duration 精确值域验证，求和逐项防溢出，覆盖判断用除法而非溢出的乘积。
+  单项 duration 合法但合计超过 int64 纳秒时拒绝。仅 observe 模式无升级窗口要求；运行期原 UID/phase
+  覆盖检查和失败即回滚逻辑保持，不把配置通过视为可用性通过。
+- runner 模拟 fixture 的计数由 3 改为 6000，summary 断言同步，仍不运行真实 6000 次业务操作；原有
+  回滚、UID/RV、fixture 清理和故障断言未删除。历史真实 launcher 的 3600 次配置将被新校验拒绝，需要
+  在下一次发布评审中重新配置，不能绕过 source checksum 直接复用。
+
+截至本段写入的验证证据：
+
+- `security-image-prepull-packaging-build.log`：完整 build 包通过（0.392s，真实 BuildKit 测试按既有开关未启用）。
+- `security-image-prepull-packaging-race.log`：两包和 build 三轮 race 通过；组件 8.769s / 84.8%，CLI
+  17.259s / 82.3%，build 2.690s；覆盖率不是全系统验收。对应会话 57741 已 exit 0。
+- 两包/build 的 vet 和 arm64 helper 编译到 `/dev/null` 通过（会话 45371 exit 0）；没有仓库二进制残留。
+- actionlint v1.7.12 通过，日志 `security-image-prepull-packaging-actionlint.log`；与 CI 相同 digest 的
+  ShellCheck v0.11.0 容器只读检查脚本通过，日志 `security-image-prepull-window-shellcheck.log`（25162 exit 0）。
+- 窗口边界与合计溢出测试三轮通过（55875 exit 0，1.725s），日志
+  `security-image-prepull-window-boundaries-final.log`；覆盖短窗口、精确边界、纳秒小数、各阶段预算、
+  大乘积、最大合法 interval、hard-failover 附加成本与 observe 模式。
+- inventory verifier 通过（47517 exit 0）：712 项，四片 `171/195/183/163`。这只是分片清单验证，
+  不是四片测试运行通过。本轮未执行完整提交前/后门禁，也未做产品提交。
+- 首轮 runner 开发测试 85235 exit 1（553.774s），日志 `security-image-prepull-window-runner.log`。
+  该轮启动后仍修改了脚本/测试，产生旧测试边界与新预算不一致，并有 Bash 运行中读到改动后文件偏移的
+  syntax error；不是冻结输入的有效验收，失败记录保留。随后固定七文件
+  `security-image-prepull-packaging-window-code.sha256`，重新启动完整 102 个 `TestRolloutAvailabilityRunner*`
+  回归组：会话 **31040**，日志 `security-image-prepull-window-runner-final.log`，当前待终态确认。
+- 未改动的实际探针包已通过：会话 **7740 exit 0**，日志 `security-image-prepull-window-probe.log`，
+  163.012s。runner 31040 仍在运行；后续必须复核该原句柄/日志和冻结校验和，不因观察超时重启测试，
+  也不把待运行结果写为通过。
+
+本轮没有访问真实集群、push、CI 发布、镜像切换、PD/TiKV/worker 重启或存储变更。仍待把 prepare 放到
+probe/fixture 生命周期之前，把 fresh verify 放到业务 patch 前，并在成功、失败和回滚 EXIT 中恢复清理。
+接入 verify 后必须继续增加相应窗口预算；holder 的整个准备后运行/回滚/清理剩余寿命还需独立计入，当前
+487/596 秒仅是现有探针覆盖窗口，不是 holder 生存期证明。之后仍须完整提交前后门禁、新 CI 镜像和真实
+预拉取/升级验收；整体生产就绪目标仍未完成。
+
+### 预拉取接入 runner 与完整提交前门禁（2026-09-09 10:48 UTC，未提交/未发布）
+
+上一轮会话 31040 已确认 exit 0：冻结输入上的完整 102 个 `TestRolloutAvailabilityRunner*` 通过，
+556.635s，日志 `security-image-prepull-window-runner-final.log`。该结果证明上一轮窗口/打包版本，不能
+替代本轮新增 runner 接入的验证。此前 7740 的 probe 包结果仍为通过（163.012s）。
+
+本轮新增 `hack/production/rollout-image-prepull.sh`，由 runner source，最终镜像的既有 `*.sh` COPY
+包含它；新增 `rollout_image_prepull_test.go`。生产接入点为：
+
+1. 候选发布在 Kubernetes 调用前检查显式单一 0600 kubeconfig/context、namespace UID、私有 0700
+   目录、已构建绝对 helper 路径和双平台/index 证据。offline verify-release 使用有界输出/进程，
+   `TARGET_RUNTIME_DIGESTS` 必须与已核对双平台和 index 的集合完全一致；不把任意 CI JSON 当作授权。
+2. 在任何 fixture/probe 创建前生成独占私有子目录并打印回执位置，再调用 prepare。Go helper 接收
+   绑定的 Namespace/StatefulSet UID、原始 index/独立平台摘要和保守 lifetime；未完成准备则不启动
+   业务探针、不修改 StatefulSet。目录/receipt 不重用、不在退出时删除，供审计和死亡后恢复清理。
+3. 探针启动屏障后、业务 patch 前调用 fresh verify，再 GET StatefulSet 确认初始 UID、完整 spec、
+   revision、Ready 数仍一致，允许只改变 status 的 RV 并将新 RV 用于条件 JSON Patch。新增候选窗口
+   为 539 秒（restart 487、hard-failover 596 不变）；仍保留运行中的 UID/phase 覆盖检查和原 SLO。
+4. 成功时先清理 holder 再宣告 gate 成功；失败时先在拥有观察器的父进程终止并回收它，再隔离运行
+   原回滚/fixture 清理，最后独立 recover-cleanup。清理不确定返回非零、打印 CRITICAL，保留回执。
+   SIGKILL/断电不承诺自动补偿；需从打印的私有子目录、receipt-name=attempt 和原作用域显式恢复清理。
+
+预算按当前 runner 有界调用/循环保守计入 probe 完成与三轮 fixture、rollout/rollback、UID 删除循环
+及单次调用超期、剩余 API 调用和 replica inventory。默认 minimum remaining 为 **10958 秒**，总 holder
+lifetime 为 **11618 秒**；超出 24 小时的配置在乘加前拒绝。该计算假设本地主机调度能进展，不是停机/
+断电等任意 wall-clock 延迟的保证；真实 fresh verification 和在线探针仍必需。
+
+本轮保留的失败与修正证据：
+
+- 接入首轮小组会话 51584 exit 1，仅 offline helper 模拟调用错误地写入 Kubernetes 日志，导致“预检
+  无 API 调用”断言失败；日志 `security-image-prepull-runner-integration-first.log`。已将模拟 release
+  日志单列，保留 no-Kubernetes 断言，而非删除断言。
+- 第一个 lifecycle 小组 98980 exit 0（58.281s）；随后代码审查发现旧 cleanup 被隔离到子 shell 后，
+  无法回收父进程的 rollout observer。四个已启动但未完成的 718 项 pre shards 因该已确认设计缺口
+  主动终止：22726/85073/94501/3846 均 exit 143。终止前解析并核对了这些本地测试的进程树/进程组；
+  终止后已核对原进程、后代与运行中 runner 均不存在。没有操作真实集群进程。这批日志
+  `security-image-prepull-runner-integrated-pre-shard-{0,1,2,3}.log` 保留，不作通过或正式提交门禁证据。
+- 新父进程回收测试先 RED（85192 exit 1，`security-image-prepull-runner-parent-reap-before.log`），
+  明确输出 `OBSERVER_NOT_REAPED_IN_PARENT` / `OBSERVER_STILL_LIVE`；修复为父进程先 stop/wait 后，
+  回收和 EXIT containment 测试连续十轮通过（64058 exit 0，0.204s，`...-parent-reap-after.log`）。
+- 关闭 runner stdout 的回归先 RED（80623 exit 1，`security-image-prepull-runner-receipt-output-before.log`）：
+  receipt echo 失败却仍调用 prepare。现在显式检查输出返回值，成功输出后才标记已开始准备；失败时
+  不调用 prepare，也不把不存在的准备尝试误报为需要恢复清理。
+- 修正后完整 `TestRolloutImagePrepull*` 小组通过（7561 exit 0，59.623s），日志
+  `security-image-prepull-runner-lifecycle-final.log`。涵盖正确阶段顺序、准备/复核失败、假成功 marker、
+  源 spec 漂移、status-only RV 刷新、清理失败后的回滚、作用域/摘要/预算缺失、有界挂起、输出失败、
+  原错误码保留以及父进程回收。这里的生命周期是本地模拟 Kubernetes/helper，非实际创建 holder 证据。
+
+其他验证及真实 API 范围：
+
+- 用临时构建的真实 helper 和已核对的历史 de8 index 执行 runner `PREFLIGHT_ONLY=true`，会话 14066
+  exit 0，日志 `security-image-prepull-runner-real-offline-preflight.log`。仅离线 release/作用域文件/
+  timing 检查，没有 API 调用、没有准备回执或 holder 创建。
+- 使用新预算在显式测试 scope 执行真实 `check-admission`，日志 `security-image-prepull-runner-admission.log`
+  exit 0，`PREPULL_ADMISSION_CONFIRMED dryRun=All containersExecuted=false`。本机空回执
+  `admission-runner-budget-01` 保留。所有 Job/Pod 名称+UID 投影的 before/after JSON cmp exit 0；无持久
+  Kubernetes 对象新增、无容器运行。源仍为 UID `2650ad15-1d37-41c4-836c-d40dd4502720`，generation/observed
+  3、3 Ready、revision `kubebrain-696c87f8f9`、原 a245c95f… 镜像，没有业务镜像切换。
+- 临时 helper `/root/.local/state/kubebrain/tk-001-003/prepull-runner-check.axCcqedJ/kubebrain-image-prepull`
+  已在确认该精确普通文件后删除，空临时编译目录也用 rmdir 移除；可从源码重新编译。未清理共享 Go 缓存，
+  未删除私有证据、回执或任何业务数据。
+- 组件/CLI/build 三轮 race 通过（49675 exit 0）：9.002s / 84.7%、17.348s / 82.3%、2.677s，日志
+  `security-image-prepull-runner-integrated-go-race.log`；root production、两新包、build 的 vet 通过。
+  二十二个 Go 文件仍匹配 `security-image-prepull-admission-priority-code.sha256`。
+- ShellCheck 起初仅报告 source 文件跨文件变量的作用域/未使用提示；用显式参数断言和返回变量明确
+  helper 接口，并只对交由 caller 消费的单个返回值标注 SC2034。最终相同 CI digest 的 v0.11.0 检查
+  通过（`security-image-prepull-runner-shellcheck-v2.log`），Bash syntax/diff check 通过。
+
+**当前正在运行、尚未计作通过的完整提交前门禁：**
+
+- 精确 `hack/production/test-shard.sh --verify 4` 已通过（95875 exit 0），720 项，分片
+  **174/197/184/165**，日志 `security-image-prepull-runner-integrated-v2-pre-inventory.log`。
+- 四片已同时启动：shard 0 → **89292**，shard 1 → **75783**，shard 2 → **75047**，shard 3 → **63999**。
+  各自运行精确 `hack/production/test-shard.sh N 4`，日志
+  `security-image-prepull-runner-integrated-v2-pre-shard-N.log`。后续必须先续查这些原句柄和日志，不能把
+  暂时无输出或观察超时当作终态，也不能因跨会话而重启重复任务。
+- 冻结九个接入/打包文件的清单为 `security-image-prepull-runner-integrated-v2-code.sha256`；执行期间
+  不修改产品源/测试/脚本，终态后逐项核对。组件二十二文件清单单独保留；文档更新不修改测试输入。
+
+当前仍在 dbaas，HEAD 5c05e037，未做本轮产品提交、push 或镜像 CI。只有全部新门禁终态通过且源摘要
+不变后才能提交，提交后还必须再跑 verifier 和四片；然后才准备新 CI 镜像和真实预拉取/全窗口升级验收。
+本轮没有 PD/TiKV/worker 重启，没有操作 rook-ceph-secondary，也没有把 dry-run 或模拟成功当作生产就绪。
+
+### 接入版本完整提交前门禁终态（2026-09-09 11:01 UTC）
+
+本轮从原句柄继续确认上一节的 v2 pre gates，没有重新启动重复测试：
+
+- shard 0 / 174 项：89292 **exit 0**，Go 469.375s。
+- shard 1 / 197 项：75783 **exit 0**，Go 532.791s。
+- shard 2 / 184 项：75047 **exit 0**，Go 397.942s。
+- shard 3 / 165 项：63999 **exit 0**，Go 761.466s。
+
+720 项 verifier 及全部四片现在均为终态通过；九文件 v2 接入清单与二十二文件组件清单再次逐项通过
+sha256sum 检查，diff check 通过。此前主动中止的 v1 四片仍为 exit 143，不参与本次通过判定。
+远端只读复核确认 origin/dbaas 仍是 de8a9e1f2ce9f5c0a0de802a98d79af871a12e20；最新镜像 CI 仍为
+34307884732 的历史成功结果，本轮尚未 push 或触发新构建。本节记录允许准备本地产品提交，不是发布、
+真实预拉取或全窗口升级通过；产品提交后必须立即重新执行 verifier 和四个完整分片。

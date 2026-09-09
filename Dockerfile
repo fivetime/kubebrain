@@ -108,6 +108,7 @@ RUN test -n "$KUBEBRAIN_VERSION" \
     && go build -trimpath -o /src/bin/kubebrain-native-pitr-task-ready ./hack/backup/cmd/native-pitr-task-ready \
     && go build -trimpath -o /src/bin/kubebrain-etcd-audit-probe ./hack/production/cmd/etcd-audit-probe \
     && go build -trimpath -o /src/bin/kubebrain-uid-delete ./hack/production/cmd/uid-delete \
+    && go build -trimpath -o /src/bin/kubebrain-image-prepull ./hack/production/cmd/image-prepull \
     && cd /src/hack/backup/objectstore \
     && go build -trimpath -o /src/bin/kubebrain-logical-object ./cmd/logical-object
 
@@ -259,6 +260,7 @@ COPY --from=build /src/bin/kubebrain-logical-verify /usr/local/bin/kubebrain-log
 COPY --from=build /src/bin/kubebrain-logical-etcd-snapshot /usr/local/bin/kubebrain-logical-etcd-snapshot
 COPY --from=build /src/bin/kubebrain-etcd-audit-probe /usr/local/bin/kubebrain-etcd-audit-probe
 COPY --from=build /src/bin/kubebrain-uid-delete /usr/local/bin/kubebrain-uid-delete
+COPY --from=build /src/bin/kubebrain-image-prepull /usr/local/bin/kubebrain-image-prepull
 COPY --from=build /src/bin/kubectl /usr/local/bin/kubectl
 COPY hack/backup/logical-export.sh hack/backup/logical-status.sh hack/backup/logical-verify.sh hack/backup/cold-snapshot-preflight.sh hack/backup/cold-snapshot-execute.sh hack/backup/cold-restore-execute.sh /opt/kubebrain/hack/backup/
 COPY hack/production/*.sh /opt/kubebrain/hack/production/

@@ -89,6 +89,12 @@ jobs:
       - name: Verify runtime manifest selection
         run: go test ./build -run '^TestImagePlatform' -count=1 -v
 
+      - name: Verify isolated image preparation contracts
+        run: |
+          set -euo pipefail
+          go test -race ./hack/production/internal/imageprepull ./hack/production/cmd/image-prepull -count=1 -timeout=5m
+          go test ./build -run '^TestImagePrepull' -count=1 -v
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
@@ -128,6 +134,10 @@ jobs:
           docker buildx imagetools inspect --raw "$reference" > "$manifest"
           jq -e '[.manifests[].platform | select(.os == "linux") | .architecture] | sort == ["amd64", "arm64"]' "$manifest"
           amd64_digest="$(bash build/image-platform-digest.sh "$manifest" amd64)"
+          arm64_digest="$(bash build/image-platform-digest.sh "$manifest" arm64)"
+          # The index is public release metadata, not a credential. The shipped
+          # non-root helper reads these exact bytes from a read-only bind mount.
+          chmod 0444 "$manifest"
           amd64_reference="${{ steps.vars.outputs.image }}@$amd64_digest"
           docker pull --platform linux/amd64 "$amd64_reference"
           version_output="$(docker run --rm --platform linux/amd64 \
@@ -166,6 +176,17 @@ jobs:
             platform_version="$(docker run --rm --platform "linux/$arch" --entrypoint /usr/local/bin/kube-brain "$platform_reference" version)"
             printf '%s\n' "$platform_version" | grep -F 'Go OS/Arch:' | grep -F "linux/$arch"
             printf '%s\n' "$platform_version" | grep -F 'Git SHA:' | grep -F '${{ steps.vars.outputs.revision }}'
+            prepull_identity="$(docker run --rm --platform "linux/$arch" --network=none --read-only \
+              --cap-drop=ALL --security-opt=no-new-privileges \
+              --mount "type=bind,src=$manifest,dst=/release-index.json,readonly" \
+              --entrypoint /usr/local/bin/kubebrain-image-prepull "$platform_reference" \
+              --mode=verify-release --index-file=/release-index.json --image="$reference" \
+              --amd64-digest="$amd64_digest" --arm64-digest="$arm64_digest")"
+            jq -e --arg image "$reference" --arg amd64 "$amd64_digest" --arg arm64 "$arm64_digest" '
+              .image == $image and
+              .runtimeDigests == {"linux/amd64":[$amd64,($image | split("@")[1])],
+                                 "linux/arm64":[$arm64,($image | split("@")[1])]}
+            ' <<<"$prepull_identity"
             container_id="$(docker create --platform "linux/$arch" --entrypoint /usr/local/bin/kubectl "$platform_reference" version --client)"
             docker cp "$container_id:/usr/local/bin" "$artifact_dir/shipped-bin-$arch"
             cmp "$artifact_dir/kubectl-$arch" "$artifact_dir/shipped-bin-$arch/kubectl"
@@ -181,7 +202,7 @@ jobs:
                 go_binaries=$((go_binaries + 1))
               fi
             done
-            test "$go_binaries" -eq 66
+            test "$go_binaries" -eq 67
             docker rm "$container_id"
             container_id=''
           done

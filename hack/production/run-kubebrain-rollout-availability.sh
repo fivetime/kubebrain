@@ -4,6 +4,7 @@ set -euo pipefail
 PRODUCTION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "${PRODUCTION_DIR}/../.." && pwd -P)"
 . "${PRODUCTION_DIR}/operation-time-validation.sh"
+. "${PRODUCTION_DIR}/rollout-image-prepull.sh"
 
 KUBECTL_BIN="${KUBECTL_BIN:-kubectl}"
 TIMEOUT_BIN="${TIMEOUT_BIN:-timeout}"
@@ -18,7 +19,7 @@ EXPECTED_LEADER_RETRY_PERIOD="${EXPECTED_LEADER_RETRY_PERIOD:-500ms}"
 EXPECTED_GRPC_MAX_CONNECTION_AGE="${EXPECTED_GRPC_MAX_CONNECTION_AGE:-1h}"
 EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE="${EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE:-5m}"
 MIN_TERMINATION_GRACE_PERIOD_SECONDS=45
-PROBE_ITERATIONS="${PROBE_ITERATIONS:-900}"
+PROBE_ITERATIONS="${PROBE_ITERATIONS:-6000}"
 PROBE_INTERVAL="${PROBE_INTERVAL:-0.1}"
 PROBE_COMMAND_TIMEOUT="${PROBE_COMMAND_TIMEOUT:-10s}"
 PROBE_DIAL_TIMEOUT="${PROBE_DIAL_TIMEOUT:-1s}"
@@ -38,11 +39,10 @@ PROBE_LEASE_TTL="${PROBE_LEASE_TTL:-5}"
 PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 # The probe publishes its barrier only after seeding and validating the
 # bounded 16 MiB Snapshot scale fixture. Each seed Txn remains under the
-# command timeout; this aggregate budget stays below the two-minute Snapshot
-# attempt and three-minute completion budgets without changing the 5-second
-# online operation SLO.
+# command timeout. Seeding is separate from the online observation window;
+# neither budget changes the 5-second online operation SLO.
 PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-90s}"
-PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-600s}"
+PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-900s}"
 PROBE_DELETE_TIMEOUT="${PROBE_DELETE_TIMEOUT:-60s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KUBECTL_EVIDENCE_REQUEST_TIMEOUT="${KUBECTL_EVIDENCE_REQUEST_TIMEOUT:-10s}"
@@ -256,12 +256,65 @@ for digest in "${target_runtime_digest_items[@]}"; do
   seen_runtime_digests[$digest]=true
 done
 
+image_prepull_configure
+
+# The probe publishes PROBE_STARTED before its counted loop and sleeps after
+# every successful iteration. Its minimum lifetime must cover even an early
+# barrier hidden by the Ready wait, the entire barrier polling budget, the
+# mutation command and the full rollout observation window. Do not rely on
+# slow RPCs or image pulls to make an undersized probe last long enough.
+# Compare by division, not iterations*interval (which can overflow int64).
+# Runtime UID/phase checks remain mandatory: sufficient configuration is not
+# proof that the probe actually stayed healthy through this rollout.
+if [[ "$OBSERVE_ONLY" != true ]]; then
+  probe_coverage_ns=2000000000 # GNU timeout kill grace + SECONDS rounding
+  rollout_coverage_timeout="$ROLLOUT_TIMEOUT"
+  if (( $(go_duration_nanoseconds "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT") > $(go_duration_nanoseconds "$ROLLOUT_TIMEOUT") )); then
+    rollout_coverage_timeout="$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT"
+  fi
+  probe_coverage_budgets=("$KUBECTL_READY_WAIT_COMMAND_TIMEOUT" "$PROBE_START_TIMEOUT"
+    "$KUBECTL_MUTATION_COMMAND_TIMEOUT" "$rollout_coverage_timeout")
+  if [[ -n "$TARGET_IMAGE" ]]; then
+    # Fresh helper verification and the subsequent source UID/spec/RV fence.
+    # The helper wrapper reserves five seconds beyond its context deadline.
+    probe_coverage_budgets+=("$IMAGE_PREPULL_VERIFY_TIMEOUT" "$KUBECTL_EVIDENCE_COMMAND_TIMEOUT" 7s)
+  fi
+  if [[ "$HARD_FAILOVER" == true ]]; then
+    # Two leader-target execs, one Pod identity GET, UID-fenced deletion and
+    # their timeout kill grace. Counting the unused image mutation is safe.
+    probe_coverage_budgets+=("$KUBECTL_EVIDENCE_COMMAND_TIMEOUT" "$KUBECTL_EVIDENCE_COMMAND_TIMEOUT"
+      "$KUBECTL_EVIDENCE_COMMAND_TIMEOUT" "$UID_DELETE_COMMAND_TIMEOUT" 4s)
+  fi
+  for budget in "${probe_coverage_budgets[@]}"; do
+    budget_ns="$(go_duration_nanoseconds "$budget")"
+    if (( budget_ns > OPERATION_MAX_INT64 - probe_coverage_ns )); then
+      echo "aggregate rollout probe coverage budget exceeds int64 nanoseconds" >&2
+      exit 2
+    fi
+    probe_coverage_ns=$((probe_coverage_ns + budget_ns))
+  done
+  interval_whole="${PROBE_INTERVAL%%.*}"
+  interval_fraction=0
+  if [[ "$PROBE_INTERVAL" == *.* ]]; then
+    interval_fraction="${PROBE_INTERVAL#*.}000000000"
+    interval_fraction="${interval_fraction:0:9}"
+  fi
+  probe_interval_ns=$((interval_whole * 1000000000 + 10#$interval_fraction))
+  if (( PROBE_ITERATIONS <= probe_coverage_ns / probe_interval_ns )); then
+    echo "PROBE_ITERATIONS and PROBE_INTERVAL do not cover the full Ready/start/mutation/rollout window" >&2
+    exit 2
+  fi
+fi
+
 if [[ "$PREFLIGHT_ONLY" == true ]]; then
   echo "rollout availability preflight passed"
   exit 0
 fi
 
 kubectl_command=("$KUBECTL_BIN")
+if [[ -n "$TARGET_IMAGE" ]]; then
+  kubectl_command+=(--kubeconfig "$KUBECONFIG")
+fi
 if [[ -n "$KUBECTL_CONTEXT" ]]; then
   kubectl_command+=(--context "$KUBECTL_CONTEXT")
 fi
@@ -1076,7 +1129,36 @@ cleanup() {
   fi
   rm -rf -- "$runtime_evidence_dir"
 }
-trap cleanup EXIT
+rollout_exit() {
+  local status=$? cleanup_status
+  trap - EXIT
+  # Contain even an explicit exit from legacy fixture diagnostics/cleanup so
+  # it cannot skip independently receipted image-holder cleanup. Do not put
+  # the subshell in an if/|| list: that would disable its errexit semantics.
+  set +e
+  # Only this parent owns the background observer and can wait/reap it. A
+  # subshell inherits the PID value but cannot wait for that non-child.
+  stop_rollout_observer
+  (set -e; cleanup)
+  cleanup_status=$?
+  (( cleanup_status == 0 )) || status=1
+  if ! image_prepull_cleanup; then
+    echo "CRITICAL: image-holder cleanup unconfirmed; retain receipt ${image_prepull_receipt_directory:-unavailable}" >&2
+    status=1
+  fi
+  exit "$status"
+}
+trap rollout_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Finish all cold image work before fixture cleanup or probe creation starts
+# consuming the online observation window. A failed prepare only cleans its
+# own private receipt; it never patches the business StatefulSet.
+image_prepull_prepare || {
+  echo "isolated candidate image preparation failed" >&2
+  exit 1
+}
 
 endpoint="${endpoint_scheme}://${KUBEBRAIN_CLIENT_SERVICE}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
 direct_endpoints=""
@@ -1576,6 +1658,11 @@ fi
 
 expected_final_image="$image"
 if [[ -n "$TARGET_IMAGE" ]]; then
+  image_prepull_verify || {
+    echo "candidate image preparation is no longer valid; refusing StatefulSet mutation" >&2
+    exit 1
+  }
+  statefulset_resource_version="$IMAGE_PREPULL_SOURCE_RESOURCE_VERSION"
   candidate_rollout_started=true
   expected_final_image="$TARGET_IMAGE"
   if [[ "$full_spec_migration" == true ]]; then
@@ -1822,6 +1909,10 @@ delete_fixture_cleanup_pod || {
   exit 1
 }
 fixture_cleanup_verified=true
+image_prepull_cleanup || {
+  echo "candidate image-holder cleanup failed" >&2
+  exit 1
+}
 [[ -z "$TARGET_IMAGE" ]] || candidate_rollout_succeeded=true
 [[ "$HARD_FAILOVER" != true ]] || hard_failover_succeeded=true
 

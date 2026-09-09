@@ -109,10 +109,13 @@ func TestImagePlatformWorkflowUsesChildDigests(t *testing.T) {
 	require.Contains(t, verify, `docker pull --platform "linux/$arch" "$platform_reference"`)
 	require.Contains(t, verify, `--entrypoint /usr/local/bin/kube-brain "$platform_reference" version`)
 	require.Contains(t, verify, `--entrypoint /usr/local/bin/kubectl "$platform_reference" version --client`)
-	// The only verification-time index use must be the read-only registry query.
+	// Containers execute child manifests. The index is only queried or passed
+	// as data to the offline identity checker, never used to select an image.
 	for _, line := range strings.Split(verify, "\n") {
 		if strings.Contains(line, `"$reference"`) {
-			require.Contains(t, line, `docker buildx imagetools inspect --raw "$reference"`)
+			require.True(t, strings.Contains(line, `docker buildx imagetools inspect --raw "$reference"`) ||
+				strings.Contains(line, `--mode=verify-release --index-file=/release-index.json --image="$reference"`) ||
+				strings.Contains(line, `jq -e --arg image "$reference"`), "unexpected index use: %s", line)
 		}
 	}
 	require.Contains(t, promote, `reference="${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}"`)

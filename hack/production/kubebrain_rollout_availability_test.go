@@ -63,7 +63,7 @@ func TestRolloutAvailabilityRunnerAcceptsActualProductionHealthContracts(t *test
 			require.NoError(t, err)
 			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
-				"FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+				"FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
 				"FAKE_RUNTIME_HEALTH_CONTAINER="+string(encoded))
 			if filename == "kubebrain-tls.yaml" {
 				command.Env = append(command.Env, "FAKE_TLS_STATE=true")
@@ -106,7 +106,7 @@ func TestRolloutAvailabilityRunnerRejectsProductionHealthContractDrift(t *testin
 			require.NoError(t, err)
 			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
-				"FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+				"FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
 				"FAKE_RUNTIME_HEALTH_CONTAINER="+string(encoded))
 			output, err := command.CombinedOutput()
 			require.Error(t, err, string(output))
@@ -125,7 +125,7 @@ func TestRolloutAvailabilityRunnerRequiresDedicatedClientTLSSecret(t *testing.T)
 			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
 				"FAKE_KUBECTL_STATE="+statePath, "FAKE_TLS_STATE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-				"PROBE_ITERATIONS=3")
+				"PROBE_ITERATIONS=6000")
 			output, err := command.CombinedOutput()
 			require.Error(t, err)
 			require.Contains(t, string(output), "PROBE_CLIENT_TLS_SECRET")
@@ -144,7 +144,7 @@ func TestRolloutAvailabilityRunnerBindsIndependentInfoTrust(t *testing.T) {
 			require.NoError(t, err)
 			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
-				"FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+				"FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
 				"FAKE_RUNTIME_HEALTH_CONTAINER="+string(encoded),
 				"PROBE_INFO_TLS_SERVER_NAME=info.kubebrain.example",
 				"TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("e", 64),
@@ -176,7 +176,7 @@ func TestRolloutAvailabilityRunnerRequiresExplicitInfoTrust(t *testing.T) {
 			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
 				"FAKE_KUBECTL_STATE="+statePath, "FAKE_TLS_STATE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-				"PROBE_ITERATIONS=3", "TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("e", 64),
+				"PROBE_ITERATIONS=6000", "TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("e", 64),
 				"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64))
 			output, err := command.CombinedOutput()
 			require.Error(t, err)
@@ -282,7 +282,7 @@ func TestRolloutAvailabilityRunnerPinsRecoveredReceiptBeforeCleanup(t *testing.T
 		"FAKE_OWNER_FINALIZER_PATCH_DRIFT=true",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
 		"OBSERVE_ONLY=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -313,7 +313,7 @@ func TestRolloutAvailabilityRunnerPinsAndReleasesRecoveredReceipt(t *testing.T) 
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -333,7 +333,7 @@ func TestRolloutAvailabilityRunnerReconcilesFixtureOwnerUnpinResponseLoss(t *tes
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_OWNER_UNPIN_RESPONSE_LOSS=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -347,7 +347,7 @@ func TestRolloutAvailabilityRunnerRejectsReplacementAfterFixtureOwnerUnpinRespon
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_OWNER_UNPIN_RESPONSE_LOSS=true", "FAKE_OWNER_UNPIN_RESPONSE_LOSS_UID_DRIFT=true",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -378,7 +378,7 @@ func TestRolloutAvailabilityRunnerReleasesReceiptDeletedDuringCleanup(t *testing
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_OWNER_DELETE_DURING_CLEANUP=true",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -409,7 +409,7 @@ func TestRolloutAvailabilityRunnerRecoversPinnedTerminatingReceiptAfterCrash(t *
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -448,7 +448,7 @@ func TestRolloutAvailabilityRunnerJoinsCompletedCleanupForTerminatingReceipt(t *
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_EXISTING_CLEANUP_POD=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -490,7 +490,7 @@ func TestRolloutAvailabilityRunnerRejectsCleanupBoundToDifferentReceipt(t *testi
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_EXISTING_CLEANUP_POD=true", "FAKE_EXISTING_CLEANUP_RECEIPT_DRIFT=true",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -508,7 +508,7 @@ func TestRolloutAvailabilityRunnerReportsProbeFailureBeforeStartBarrier(t *testi
 			"FAKE_KUBECTL_LOG=" + logPath,
 			"FAKE_KUBECTL_STATE=" + statePath,
 			"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-			"PROBE_ITERATIONS=3",
+			"PROBE_ITERATIONS=6000",
 			"PROBE_START_TIMEOUT=60s",
 			"FAKE_PROBE_START_FAIL=true",
 		}, 10*time.Second)
@@ -799,7 +799,7 @@ func TestRolloutAvailabilityRunnerSupportsBoundedMemorySnapshotWorkspace(t *test
 		"FAKE_KUBECTL_LOG="+logPath,
 		"FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 		"PROBE_SNAPSHOT_EMPTY_DIR_MEDIUM=Memory",
 		"PROBE_SNAPSHOT_EMPTY_DIR_SIZE_LIMIT=16Gi",
 	)
@@ -828,7 +828,7 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 			env := []string{
 				"KUBECTL_BIN=" + fake, "FAKE_KUBECTL_LOG=" + logPath, "FAKE_KUBECTL_STATE=" + statePath,
-				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
 				"FAKE_KUBECTL_HANG_TARGET=" + tc.target, tc.timeoutVariable,
 			}
 			env = append(env, tc.extraEnv...)
@@ -888,7 +888,7 @@ func TestRolloutAvailabilityRunnerObserveOnlyDoesNotRollStatefulSet(t *testing.T
 		"FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
 		"OBSERVE_ONLY=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 		"PROBE_MIN_PUBLIC_TCP_DIALS=2",
 		"PROBE_MIN_DIRECT_TCP_DIALS=2",
 	)
@@ -917,7 +917,7 @@ func TestRolloutAvailabilityRunnerDoesNotDeleteUnownedProbeAfterCreateRace(t *te
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"FAKE_PROBE_CREATE_FAIL=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+		"FAKE_PROBE_CREATE_FAIL=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -936,7 +936,7 @@ func TestRolloutAvailabilityRunnerLeavesReplacementProbeUntouched(t *testing.T) 
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_PROBE_REPLACED_BEFORE_DELETE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -956,7 +956,7 @@ func TestRolloutAvailabilityRunnerDeletesOwnedProbeWhenCreateResponseDrifts(t *t
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"FAKE_PROBE_CREATED_SPEC_DRIFT=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+		"FAKE_PROBE_CREATED_SPEC_DRIFT=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -972,7 +972,7 @@ func TestRolloutAvailabilityRunnerRetriesTransientProbeDeleteReadFailure(t *test
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_PROBE_DELETE_GET_FAILURES=2", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=3", "PROBE_DELETE_TIMEOUT=3s",
+		"OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000", "PROBE_DELETE_TIMEOUT=3s",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -991,7 +991,7 @@ func TestRolloutAvailabilityRunnerRetriesTransientFixtureDeleteReadFailures(t *t
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_OWNER_DELETE_GET_FAILURES=2", "FAKE_CLEANUP_DELETE_GET_FAILURES=2",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
 		"PROBE_DELETE_TIMEOUT=3s",
 	)
 	output, err := command.CombinedOutput()
@@ -1016,7 +1016,7 @@ func TestRolloutAvailabilityRunnerRetriesTransientFixtureUIDDeleteFailures(t *te
 	output, err := runProductionScriptCommandWithTimeout(t, "run-kubebrain-rollout-availability.sh", []string{
 		"KUBECTL_BIN=" + fake, "FAKE_KUBECTL_LOG=" + logPath, "FAKE_KUBECTL_STATE=" + statePath,
 		"FAKE_OWNER_UID_DELETE_FAILURES=1", "FAKE_CLEANUP_UID_DELETE_FAILURES=1",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
 		"PROBE_DELETE_TIMEOUT=60s",
 	}, 30*time.Second)
 	require.NoError(t, err, "%s\nkubectl trace:\n%s", output, readOptionalFile(t, logPath))
@@ -1040,7 +1040,7 @@ func TestRolloutAvailabilityRunnerFailsClosedOnMalformedFixtureCleanupEvidence(t
 		"FAKE_FIXTURE_CLEANUP_MALFORMED=true",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
 		"OBSERVE_ONLY=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1061,7 +1061,7 @@ func TestRolloutAvailabilityRunnerDeletesOwnedFailedCleanupWithUIDFence(t *testi
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_CLEANUP_FAILED=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true",
-		"PROBE_ITERATIONS=3", "PROBE_COMPLETE_TIMEOUT=1s", "PROBE_DELETE_TIMEOUT=3s",
+		"PROBE_ITERATIONS=6000", "PROBE_COMPLETE_TIMEOUT=1s", "PROBE_DELETE_TIMEOUT=3s",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1090,7 +1090,7 @@ func TestRolloutAvailabilityRunnerHardFailoverDeletesStableLeaderIdentityAndReco
 		"FAKE_UID_DELETE_LOG="+uidDeleteLog,
 		"FAKE_HARD_FAILOVER_STATE="+hardState,
 		"FAKE_LEADER_DISCOVERY_STATE="+leaderDiscoveryState,
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -1128,7 +1128,7 @@ func TestRolloutAvailabilityRunnerHardFailoverRequiresFinalLeaderEvidence(t *tes
 		"FAKE_HARD_FAILOVER_STATE="+hardState,
 		"FAKE_LEADER_DISCOVERY_STATE="+leaderDiscoveryState,
 		"FAKE_OMIT_FINAL_LEADER_TARGET=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1156,7 +1156,7 @@ func TestRolloutAvailabilityRunnerHardFailoverRefusesLeaderChangeBeforeDelete(t 
 		"FAKE_HARD_FAILOVER_STATE="+hardState,
 		"FAKE_LEADER_DISCOVERY_STATE="+leaderDiscoveryState,
 		"FAKE_LEADER_CHANGES_BEFORE_DELETE=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1176,7 +1176,7 @@ func TestRolloutAvailabilityRunnerRejectsInsufficientTCPDialEvidence(t *testing.
 		"FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
 		"OBSERVE_ONLY=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 		"PROBE_MIN_PUBLIC_TCP_DIALS=3",
 	)
 	output, err := command.CombinedOutput()
@@ -1222,12 +1222,12 @@ func TestRolloutAvailabilityRunnerRequiresCandidateRuntimeDigestsBeforeKubernete
 	require.NoFileExists(t, logPath)
 }
 
-func TestRolloutAvailabilityRunnerAcceptsDurationBoundary(t *testing.T) {
+func TestRolloutAvailabilityRunnerRejectsAggregateDurationOverflow(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
 		"KUBEBRAIN_CLIENT_PORT=65535", "PROBE_INTERVAL=9223372036.854775807", "PROBE_LEASE_TTL=9223372036854775807",
 		"PROBE_COMMAND_TIMEOUT=9223372036854ms", "PROBE_DIAL_TIMEOUT=9223372036s",
 		"PROBE_MAX_OPERATION_LATENCY=153722867m", "PROBE_MAX_PD_TSO_LATENCY=9223372036854ms",
@@ -1238,8 +1238,54 @@ func TestRolloutAvailabilityRunnerAcceptsDurationBoundary(t *testing.T) {
 		"PROBE_START_TIMEOUT=9223372036854ms", "PROBE_COMPLETE_TIMEOUT=153722867m", "ROLLOUT_TIMEOUT=9223372036854ms",
 	)
 	output, err := command.CombinedOutput()
-	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "rollout availability gate passed")
+	require.Error(t, err, string(output))
+	require.Contains(t, string(output), "aggregate rollout probe coverage budget exceeds int64 nanoseconds")
+	require.NoFileExists(t, logPath, "individually valid durations must not overflow their aggregate")
+}
+
+func TestRolloutAvailabilityRunnerRequiresFullProbeWindowBeforeKubernetes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{name: "new defaults"},
+		{name: "old short default", env: []string{"PROBE_ITERATIONS=900"}, want: "do not cover the full"},
+		{name: "exact boundary lacks slack", env: []string{"PROBE_ITERATIONS=4870"}, want: "do not cover the full"},
+		{name: "one iteration beyond boundary", env: []string{"PROBE_ITERATIONS=4871"}},
+		{name: "exact decimal nanos", env: []string{"PROBE_ITERATIONS=4870", "PROBE_INTERVAL=0.100000001"}},
+		{name: "longer rollout", env: []string{"ROLLOUT_TIMEOUT=600s"}, want: "do not cover the full"},
+		{name: "longer rollout wrapper", env: []string{"KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT=600s"}, want: "do not cover the full"},
+		{name: "longer rollout covered", env: []string{"ROLLOUT_TIMEOUT=600s", "PROBE_ITERATIONS=7771"}},
+		{name: "ready wrapper counted", env: []string{"KUBECTL_READY_WAIT_COMMAND_TIMEOUT=300s"}, want: "do not cover the full"},
+		{name: "barrier wait counted", env: []string{"PROBE_START_TIMEOUT=300s"}, want: "do not cover the full"},
+		{name: "mutation wrapper counted", env: []string{"KUBECTL_MUTATION_COMMAND_TIMEOUT=300s"}, want: "do not cover the full"},
+		{name: "subsecond interval", env: []string{"PROBE_INTERVAL=0.001", "PROBE_ITERATIONS=487001"}},
+		{name: "subsecond too short", env: []string{"PROBE_INTERVAL=0.001", "PROBE_ITERATIONS=487000"}, want: "do not cover the full"},
+		{name: "large product does not wrap", env: []string{"PROBE_ITERATIONS=9223372036854775807"}},
+		{name: "largest interval", env: []string{"PROBE_INTERVAL=9223372036.854775807"}},
+		{name: "hard failover boundary", env: []string{"HARD_FAILOVER=true", "CONFIRM_KUBEBRAIN_HARD_FAILOVER=delete-current-leader", "PROBE_ITERATIONS=5960"}, want: "do not cover the full"},
+		{name: "hard failover covered", env: []string{"HARD_FAILOVER=true", "CONFIRM_KUBEBRAIN_HARD_FAILOVER=delete-current-leader", "PROBE_ITERATIONS=5961"}},
+		{name: "hard failover delete budget", env: []string{"HARD_FAILOVER=true", "CONFIRM_KUBEBRAIN_HARD_FAILOVER=delete-current-leader", "UID_DELETE_COMMAND_TIMEOUT=75s"}, want: "do not cover the full"},
+		{name: "observe does not claim a rollout", env: []string{"OBSERVE_ONLY=true", "PROBE_ITERATIONS=3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PREFLIGHT_ONLY=true")
+			command.Env = append(command.Env, tc.env...)
+			output, err := command.CombinedOutput()
+			if tc.want == "" {
+				require.NoError(t, err, string(output))
+				require.Equal(t, "rollout availability preflight passed\n", string(output))
+			} else {
+				require.Error(t, err, string(output))
+				require.Contains(t, string(output), tc.want)
+			}
+			require.NoFileExists(t, logPath, "time coverage admission must precede API access")
+		})
+	}
 }
 
 func TestRolloutAvailabilityRunnerRejectsMissingDrainBeforeMutation(t *testing.T) {
@@ -1305,7 +1351,7 @@ func TestRolloutAvailabilityRunnerAcceptsDrainImmediatelyAfterEndpointPropagatio
 		"FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_DRAIN_AFTER_PROPAGATION_PRESTOP=true",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -1357,7 +1403,7 @@ func TestRolloutAvailabilityRunnerRequiresPublishedHeadlessPodAddressesBeforeMut
 		"FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_HEADLESS_PUBLISH_NOT_READY=false",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1378,7 +1424,7 @@ func TestRolloutAvailabilityRunnerRejectsInvalidHeadlessServiceIdentityBeforeMut
 				"FAKE_KUBECTL_STATE="+statePath,
 				setting,
 				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-				"PROBE_ITERATIONS=3",
+				"PROBE_ITERATIONS=6000",
 			)
 			output, err := command.CombinedOutput()
 			require.Error(t, err)
@@ -1399,7 +1445,7 @@ func TestRolloutAvailabilityRunnerRejectsHeadlessServiceDriftDuringRollout(t *te
 		"FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_HEADLESS_IDENTITY_DRIFT=true",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1414,12 +1460,12 @@ func TestRolloutAvailabilityRunnerBindsProbeAndRevisionPostflight(t *testing.T) 
 		"FAKE_KUBECTL_LOG="+logPath,
 		"FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 		"KUBECTL_EVIDENCE_REQUEST_TIMEOUT=7s",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
-	require.Contains(t, string(output), "PROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 public_lease_restarts=1 max_public_lease_recovery_ms=3210 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_put_latency_ms=45 max_watch_after_put_latency_ms=78 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
+	require.Contains(t, string(output), "PROBE_SUMMARY ok=6000 fail=0 total=6000 watch=6000 direct_watch=6000x3 lease=alive lease_responses=7 public_lease_restarts=1 max_public_lease_recovery_ms=3210 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_put_latency_ms=45 max_watch_after_put_latency_ms=78 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34")
 	require.Contains(t, string(output), "revision=revision-old->revision-new")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, " run kubebrain-rollout-availability-probe ")
@@ -1469,7 +1515,7 @@ func TestRolloutAvailabilityRunnerRejectsKeepAliveQueueOverflow(t *testing.T) {
 		"FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_KEEPALIVE_QUEUE_FULL=true",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1488,7 +1534,7 @@ func TestRolloutAvailabilityRunnerRequiresCompleteRangeStreamAndSnapshot(t *test
 		"FAKE_KUBECTL_LOG="+logPath,
 		"FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1505,7 +1551,7 @@ func TestRolloutAvailabilityRunnerBindsMutualTLSProbeIdentity(t *testing.T) {
 		"FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_TLS_STATE=true",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -1664,7 +1710,7 @@ func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("a", 64),
 		"FAKE_ROLLOUT_PROBE_PHASE=Running", "FAKE_ROLLOUT_DELAY=2",
 	)
@@ -1715,7 +1761,7 @@ func TestRolloutAvailabilityRunnerMigratesTLSConnectionAgingWithCandidate(t *tes
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_TLS_STATE=true", "FAKE_TLS_NO_CONNECTION_AGING=true",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("f", 64),
 		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
 	)
@@ -1735,7 +1781,7 @@ func TestRolloutAvailabilityRunnerMigratesConfiguredTLSConnectionAgingWithCandid
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_TLS_STATE=true", "FAKE_TLS_NO_CONNECTION_AGING=true",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("d", 64),
 		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
 		"EXPECTED_GRPC_MAX_CONNECTION_AGE=5m", "EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=30s",
@@ -1755,7 +1801,7 @@ func TestRolloutAvailabilityRunnerRetunesConfiguredTLSConnectionAgingWithCandida
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_TLS_STATE=true",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("c", 64),
 		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
 		"EXPECTED_GRPC_MAX_CONNECTION_AGE=5m", "EXPECTED_GRPC_MAX_CONNECTION_AGE_GRACE=30s",
@@ -1778,7 +1824,7 @@ func TestRolloutAvailabilityRunnerMigratesSemanticReadinessWithCandidate(t *test
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_TLS_STATE=true", "FAKE_TCP_READINESS=true",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64),
 		"ENABLE_HTTP_READINESS_MIGRATION=true",
 	)
@@ -1798,7 +1844,7 @@ func TestRolloutAvailabilityRunnerRejectsTCPReadinessWithoutMigration(t *testing
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"FAKE_TCP_READINESS=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+		"FAKE_TCP_READINESS=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
 	)
 	output, err := command.CombinedOutput()
 	require.Error(t, err)
@@ -1814,7 +1860,7 @@ func TestRolloutAvailabilityRunnerRejectsHTTPReadinessMigrationWhenAlreadyConfig
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64),
 		"ENABLE_HTTP_READINESS_MIGRATION=true",
 	)
@@ -1833,7 +1879,7 @@ func TestRolloutAvailabilityRunnerRollsBackSemanticReadinessMigrationSpec(t *tes
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_TLS_STATE=true", "FAKE_TCP_READINESS=true", "FAKE_ROLLOUT_FAIL=true",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64),
 		"ENABLE_HTTP_READINESS_MIGRATION=true",
 	)
@@ -1854,7 +1900,7 @@ func TestRolloutAvailabilityRunnerRejectsConnectionAgingMigrationWhenAlreadyConf
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"FAKE_TLS_STATE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+		"FAKE_TLS_STATE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
 		"TARGET_IMAGE="+target, "TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("f", 64),
 		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
 	)
@@ -1873,7 +1919,7 @@ func TestRolloutAvailabilityRunnerRollsBackConnectionAgingMigrationSpec(t *testi
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_TLS_STATE=true", "FAKE_TLS_NO_CONNECTION_AGING=true", "FAKE_ROLLOUT_FAIL=true",
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("f", 64),
 		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
 	)
@@ -1894,7 +1940,7 @@ func TestRolloutAvailabilityRunnerAddsMissingRestartAnnotations(t *testing.T) {
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "FAKE_NO_TEMPLATE_ANNOTATIONS=true",
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "FAKE_NO_TEMPLATE_ANNOTATIONS=true",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -1909,7 +1955,7 @@ func TestRolloutAvailabilityRunnerUsesExplicitImmutableProbeImage(t *testing.T) 
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "PROBE_IMAGE="+probe,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "PROBE_IMAGE="+probe,
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
@@ -1924,7 +1970,7 @@ func TestRolloutAvailabilityRunnerFencesStatefulSetUIDBeforeCandidateMutation(t 
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("4", 64),
 		"FAKE_PATCH_UID_DRIFT=true",
 	)
@@ -1949,7 +1995,7 @@ func TestRolloutAvailabilityRunnerFencesStatefulSetResourceVersionBeforeCandidat
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("3", 64),
 		"FAKE_PATCH_RESOURCE_VERSION_DRIFT=true",
 	)
@@ -1970,7 +2016,7 @@ func TestRolloutAvailabilityRunnerRefusesToOverwriteConcurrentSpecBeforeRollback
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("2", 64),
 		"FAKE_ROLLBACK_SPEC_DRIFT=true",
 	)
@@ -1989,7 +2035,7 @@ func TestRolloutAvailabilityRunnerRestoresOriginalImageWhenCandidateFails(t *tes
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("b", 64),
 		"FAKE_ROLLOUT_FAIL=true",
 	)
@@ -2007,7 +2053,7 @@ func TestRolloutAvailabilityRunnerRollsBackCandidateWhenProbeDeletionFails(t *te
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64),
 		"FAKE_DELETE_FAIL=true", "PROBE_DELETE_TIMEOUT=3s",
 	)
@@ -2028,7 +2074,7 @@ func TestRolloutAvailabilityRunnerRejectsRuntimeDigestDriftAndRestoresOriginalIm
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("d", 64),
 		"FAKE_RUNTIME_DIGEST_DRIFT=true",
 	)
@@ -2046,7 +2092,7 @@ func TestRolloutAvailabilityRunnerRejectsRuntimeDigestSuffixSpoof(t *testing.T) 
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("8", 64),
 		"FAKE_RUNTIME_DIGEST_SUFFIX_SPOOF=true",
 	)
@@ -2065,7 +2111,7 @@ func TestRolloutAvailabilityRunnerRejectsRestartedCandidateContainer(t *testing.
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("6", 64),
 		"FAKE_CANDIDATE_RESTART_COUNT=1",
 	)
@@ -2084,7 +2130,7 @@ func TestRolloutAvailabilityRunnerRejectsCandidatePodReadyConditionDrift(t *test
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("5", 64),
 		"FAKE_CANDIDATE_POD_READY=false",
 	)
@@ -2105,7 +2151,7 @@ func TestRolloutAvailabilityRunnerAcceptsRuntimeDigestIdentityForms(t *testing.T
 			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 			command.Env = append(os.Environ(),
 				"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 				"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("7", 64),
 				"FAKE_RUNTIME_IMAGE_ID_STYLE="+style,
 			)
@@ -2122,7 +2168,7 @@ func TestRolloutAvailabilityRunnerRejectsRollbackIdentityDrift(t *testing.T) {
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("f", 64),
 		"FAKE_RUNTIME_DIGEST_DRIFT=true",
 		"FAKE_ROLLBACK_IDENTITY_DRIFT=true",
@@ -2143,7 +2189,7 @@ func TestRolloutAvailabilityRunnerRejectsRollbackRuntimeDigestDrift(t *testing.T
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(os.Environ(),
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
+		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("9", 64),
 		"FAKE_RUNTIME_DIGEST_DRIFT=true",
 		"FAKE_ROLLBACK_RUNTIME_DRIFT=true",
@@ -2162,7 +2208,7 @@ func TestRolloutAvailabilityRunnerBoundsRuntimeEvidence(t *testing.T) {
 		t.Run(target, func(t *testing.T) {
 			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 			completionPath := filepath.Join(filepath.Dir(statePath), "response-completed")
-			base := append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "FAKE_RUNTIME_RESPONSE_TARGET="+target, "FAKE_RUNTIME_RESPONSE_COMPLETED="+completionPath)
+			base := append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "FAKE_RUNTIME_RESPONSE_TARGET="+target, "FAKE_RUNTIME_RESPONSE_COMPLETED="+completionPath)
 			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 			command.Env = append(base, "FAKE_RUNTIME_RESPONSE_BYTES=67108864")
 			output, err := command.CombinedOutput()
@@ -2183,7 +2229,7 @@ func TestRolloutAvailabilityRunnerBoundsRuntimeEvidence(t *testing.T) {
 func TestRolloutAvailabilityRunnerBoundsProbePhaseResponse(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	phaseState := filepath.Join(filepath.Dir(statePath), "phase-state")
-	base := append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath, "FAKE_PHASE_STATE="+phaseState, "FAKE_PHASE_RESPONSE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3")
+	base := append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath, "FAKE_PHASE_STATE="+phaseState, "FAKE_PHASE_RESPONSE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000")
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 	command.Env = append(base, "FAKE_PHASE_BYTES=4097")
 	output, err := command.CombinedOutput()
@@ -2219,7 +2265,7 @@ func TestRolloutAvailabilityRunnerKeepsProbeActiveThroughRollout(t *testing.T) {
 			target := "registry.example/kubebrain@sha256:" + strings.Repeat("b", 64)
 			env := []string{
 				"KUBECTL_BIN=" + fake, "FAKE_KUBECTL_LOG=" + logPath, "FAKE_KUBECTL_STATE=" + statePath,
-				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE=" + target,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE=" + target,
 				"TARGET_RUNTIME_DIGESTS=sha256:" + strings.Repeat("b", 64),
 				"FAKE_ROLLOUT_PROBE_PHASE=" + tc.phase, "FAKE_ROLLOUT_DELAY=" + tc.delay,
 				"FAKE_ROLLOUT_FAILURE_LOG_FAULT=" + tc.logFault,
@@ -2276,7 +2322,7 @@ func TestRolloutAvailabilityRunnerFailsFastWhenProbeFails(t *testing.T) {
 		"FAKE_KUBECTL_STATE="+statePath,
 		"FAKE_PROBE_FAILED=true",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"PROBE_ITERATIONS=3",
+		"PROBE_ITERATIONS=6000",
 		"PROBE_COMPLETE_TIMEOUT=3m",
 	)
 	output, err := command.CombinedOutput()
@@ -2327,6 +2373,52 @@ if [[ " $* " == *" --resource=pods "* && " $* " == *" --name=kubebrain-rollout-a
 fi
 `), 0o755))
 	t.Setenv("UID_DELETE_BIN", uidDeletePath)
+	prepullDirectory := filepath.Join(dir, "prepull-receipts")
+	require.NoError(t, os.Mkdir(prepullDirectory, 0700))
+	kubeconfig := filepath.Join(dir, "explicit-kubeconfig")
+	require.NoError(t, os.WriteFile(kubeconfig, []byte("mock kubeconfig; never sent to a real API\n"), 0600))
+	prepullBin := filepath.Join(dir, "image-prepull")
+	require.NoError(t, os.WriteFile(prepullBin, []byte(`#!/usr/bin/env bash
+set -euo pipefail
+mode=""
+for arg in "$@"; do
+  [[ "$arg" != --mode=* ]] || mode="${arg#--mode=}"
+done
+if [[ "$mode" == verify-release ]]; then
+  printf '%s\n' "$*" >>"${FAKE_KUBECTL_LOG}.prepull-release"
+else
+  printf ' image-prepull %s\n' "$*" >>"$FAKE_KUBECTL_LOG"
+fi
+[[ "${FAKE_PREPULL_FAIL_MODE:-}" != "$mode" ]] || exit 1
+if [[ "${FAKE_PREPULL_HANG_MODE:-}" == "$mode" ]]; then sleep 30; fi
+case "$mode" in
+  verify-release)
+    jq -cn --arg image "${FAKE_PREPULL_RELEASE_IMAGE:-$TARGET_IMAGE}" --arg digests "${FAKE_PREPULL_RELEASE_DIGESTS:-$TARGET_RUNTIME_DIGESTS}" '
+      {image:$image,runtimeDigests:{"linux/amd64":($digests|split(",")),"linux/arm64":($digests|split(","))}}'
+    ;;
+  prepare)
+    : >"${FAKE_KUBECTL_LOG}.prepull-prepare"
+    printf '%s\n' "${FAKE_PREPULL_PREPARE_MARKER:-PREPULL_READY}"
+    ;;
+  verify)
+    : >"${FAKE_KUBECTL_LOG}.prepull-verify"
+    printf '%s\n' "${FAKE_PREPULL_VERIFY_MARKER:-PREPULL_VERIFIED}"
+    ;;
+  recover-cleanup)
+    : >"${FAKE_KUBECTL_LOG}.prepull-cleanup"
+    printf '%s\n' "${FAKE_PREPULL_CLEANUP_MARKER:-PREPULL_CLEANUP_CONFIRMED}"
+    ;;
+  *) exit 2 ;;
+esac
+`), 0755))
+	t.Setenv("IMAGE_PREPULL_BIN", prepullBin)
+	t.Setenv("IMAGE_PREPULL_RECEIPT_DIRECTORY", prepullDirectory)
+	t.Setenv("IMAGE_PREPULL_NAMESPACE_UID", "test-namespace-uid")
+	t.Setenv("IMAGE_PREPULL_INDEX_FILE", filepath.Join(dir, "mock-index.json"))
+	t.Setenv("IMAGE_PREPULL_AMD64_DIGEST", "sha256:"+strings.Repeat("a", 64))
+	t.Setenv("IMAGE_PREPULL_ARM64_DIGEST", "sha256:"+strings.Repeat("b", 64))
+	t.Setenv("KUBECONFIG", kubeconfig)
+	t.Setenv("KUBECTL_CONTEXT", "prepull-explicit-context")
 	t.Setenv("PROBE_CLIENT_TLS_SECRET", "rollout-probe-client-tls")
 	t.Setenv("PROBE_INFO_CA_CONFIGMAP", "rollout-probe-info-ca")
 	t.Setenv("PROBE_INFO_TLS_SERVER_NAME", "")
@@ -2501,6 +2593,9 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   [[ "${FAKE_STATEFULSET_UID_DRIFT:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || statefulset_uid=statefulset-replacement-uid
   resource_version=resource-version-old
   [[ ! -e "$FAKE_KUBECTL_STATE" ]] || resource_version=resource-version-new
+  if [[ "${FAKE_PREPULL_RV_REFRESH:-false}" == true && -e "${FAKE_KUBECTL_LOG}.prepull-verify" && ! -e "$FAKE_KUBECTL_STATE" ]]; then
+    resource_version=resource-version-refreshed
+  fi
   spec_replicas=3
   [[ "${FAKE_ROLLBACK_SPEC_DRIFT:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]] || spec_replicas=4
   termination_grace=45
@@ -2519,6 +2614,9 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   fi
   if [[ "${FAKE_NO_HEADLESS_SERVICE:-false}" == true ]]; then
     payload="$(jq -c 'del(.spec.serviceName)' <<<"$payload")"
+  fi
+  if [[ "${FAKE_PREPULL_SOURCE_DRIFT:-false}" == true && -e "${FAKE_KUBECTL_LOG}.prepull-verify" ]]; then
+    payload="$(jq -c '.spec.template.metadata.annotations.concurrent="changed"' <<<"$payload")"
   fi
   printf '%s' "$payload"
   if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == statefulset ]]; then
@@ -2696,6 +2794,9 @@ elif [[ " $* " == *" patch statefulset/kubebrain --type=json -p "* ]]; then
   [[ "${FAKE_PATCH_UID_DRIFT:-false}" != true ]] || current_uid=statefulset-replacement-uid
   current_resource_version=resource-version-old
   [[ ! -e "$FAKE_KUBECTL_STATE" ]] || current_resource_version=resource-version-new
+  if [[ "${FAKE_PREPULL_RV_REFRESH:-false}" == true && -e "${FAKE_KUBECTL_LOG}.prepull-verify" && ! -e "$FAKE_KUBECTL_STATE" ]]; then
+    current_resource_version=resource-version-refreshed
+  fi
   [[ "${FAKE_PATCH_RESOURCE_VERSION_DRIFT:-false}" != true ]] || current_resource_version=resource-version-concurrent
   current_image=kubebrain:test
   [[ ! -e "$FAKE_KUBECTL_STATE" || -z "${TARGET_IMAGE:-}" ]] || current_image="$TARGET_IMAGE"
@@ -2760,7 +2861,7 @@ elif [[ " $* " == *" logs kubebrain-rollout-availability-probe-cleanup "* ]]; th
     printf '%s\n' 'FIXTURE_CLEANUP_OK status=absent owner_uid= keys=0 users=0 roles=0 leases=0'
   fi
 elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
-  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=3 fail=0 total=3 watch=3 direct_watch=3x3 lease=alive lease_responses=7 public_lease_restarts=1 max_public_lease_recovery_ms=3210 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_put_latency_ms=45 max_watch_after_put_latency_ms=78 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
+  payload=$'PROBE_STARTED\nPROBE_SUMMARY ok=6000 fail=0 total=6000 watch=6000 direct_watch=6000x3 lease=alive lease_responses=7 public_lease_restarts=1 max_public_lease_recovery_ms=3210 direct_lease=alive direct_lease_responses=19 direct_lease_restarts=3 max_direct_lease_recovery_ms=27123 public_tcp_dials=2 min_direct_tcp_dials=2 direct_endpoints=3 range_stream=17 snapshot=2 stream_retries=4 stream_partial_retries=1 max_latency_ms=123 max_put_latency_ms=45 max_watch_after_put_latency_ms=78 max_direct_latency_ms=456 max_tso_latency_ms=12 max_region_latency_ms=34\n'
   if [[ "${HARD_FAILOVER:-false}" == true && -n "${FAKE_HARD_FAILOVER_STATE:-}" && -e "$FAKE_HARD_FAILOVER_STATE" && "${FAKE_OMIT_FINAL_LEADER_TARGET:-false}" != true ]]; then
     payload+=$'FINAL_LEADER_TARGET {"member_id":13,"pod":"kubebrain-2","peer_url":"https://kubebrain-2.kubebrain-peer.kubebrain-system.svc.cluster.local:3380"}\n'
   fi

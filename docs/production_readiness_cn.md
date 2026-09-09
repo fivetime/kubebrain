@@ -1274,9 +1274,15 @@ rollout runner 的初始/终态 StatefulSet JSON、每次 probe 启动屏障日�
 `ROLLOUT_PROBE_COVERAGE_CONFIRMED` 并等待最终 summary；该标记本身不是完整可用性验收。
 失败退出先终止并回收后台观察进程，再执行既有身份约束的回滚。探针失败日志在回滚处理后、删除探针前
 重新检查 UID 并限时限量读取；诊断失败不得跳过 fixture 清理。每次监控读取的外层 timeout 不超过剩余
-rollout 观察预算。探针迭代次数仍须按实际窗口配置：默认 900 次、0.1 秒间隔并不保证覆盖允许的 300 秒
-滚动；提前结束现在会明确失败，不能把短探针通过当成全窗口证明。此次真实环境入口采用 3600 次，但冷镜像
-预拉取及真实全窗口升级验收仍待完成，不能以这组本地 runner 回归测试代替。
+rollout 观察预算。当前工作树把默认探针改为 6000 次、0.1 秒间隔，完成等待默认 900 秒；保持单次操作
+5 秒、直接连接恢复 30 秒的 SLO 不变。非 observe 模式在访问 Kubernetes 前检查最短计数窗口必须严格
+大于 Ready 命令上限 + 启动屏障等待 + mutation 命令上限 + rollout/外层观察上限二者较大值 + 2 秒余量。
+普通 restart 默认合计 487 秒；候选发布还计入 fresh verify、后续源身份 GET 和 helper 外层余量，默认
+合计 539 秒。HardFailover 另计两次 leader exec、一次 Pod GET、UID 删除及其 kill grace，默认合计
+596 秒。使用精确纳秒和除法比较，不让 iterations × interval 溢出；单个 duration 合法但合计溢出也拒绝。
+这是配置必要条件，不是进程调度、网络或实际可用性的保证；原有运行期 UID/phase 覆盖检查仍不可省略。
+历史失败演练使用的 3600 次配置不满足新的完整窗口要求，不能原样复用。冷镜像预拉取和真实全窗口升级
+验收仍待完成，不能以本地 runner 回归测试或延长探针时间替代。
 runner 的 command/dial timeout、三类最大延迟、probe Ready/completion timeout 和 StatefulSet rollout
 timeout 共八个 duration，必须在第一次 Kubernetes 调用前通过 Go `time.Duration` 可表示域校验；只允许
 正整数加 `ms|s|m`，对应最大 magnitude 为 `9223372036854ms`、`9223372036s`、`153722867m`。
@@ -1290,12 +1296,46 @@ StatefulSet restart 后的等待窗口。
 parser/配置校验才失败，避免产生无效 Pod 和错误的滚动演练窗口。
 
 默认模式继续用 `rollout restart` 验证当前镜像的重启可用性。发布候选镜像时必须额外设置
-`TARGET_IMAGE=<repository>@sha256:<OCI-index-or-manifest-digest>` 和
-`TARGET_RUNTIME_DIGESTS=sha256:<platform-manifest>[,sha256:<platform-manifest>...]`。runner 只接受不可变
-目标引用和无重复、规范小写的 runtime digest 集；探针发布启动屏障后使用 `kubectl set image`，而不是把
-候选误当成当前镜像 restart。滚动和完整 probe summary 通过后，还逐 ordinal 读取 Pod，要求最终 controller
-revision、Running/Ready、spec image 与 runtime `imageID` 分别绑定目标引用和允许的平台 digest。OCI index
-digest 不能替代节点选择后的 platform manifest digest；异构集群应列出本轮批准的所有平台 digest。
+`TARGET_IMAGE=<repository>@sha256:<OCI-index-digest>` 和 `TARGET_RUNTIME_DIGESTS=<本次核对的双平台与索引摘要集合>`。
+候选发布必须提供以下预拉取输入，不能只给可变 tag 或一份未经独立核对的 JSON：
+
+- `KUBECONFIG`：单个绝对路径、regular 0600 文件；`KUBECTL_CONTEXT`：显式 context。runner 的 kubectl
+  和预拉取 helper 使用同一文件/context，UID 删除也继承该文件，不改变操作者的默认 context。
+- `IMAGE_PREPULL_BIN`：已构建 helper 的绝对可执行路径，镜像内默认为 `/usr/local/bin/kubebrain-image-prepull`。
+  本机发布应使用已审核源码/发布产物构建的 helper，不能在关键发布窗口隐式 `go run` 下载或编译。
+- `IMAGE_PREPULL_NAMESPACE_UID`：本次核对的 Namespace UID；StatefulSet UID/spec/revision 由 runner 初始
+  读取绑定。`IMAGE_PREPULL_RECEIPT_DIRECTORY` 必须是当前用户拥有的绝对 0700 私有目录，置于仓库外。
+- `IMAGE_PREPULL_INDEX_FILE`：原始 OCI index 字节的绝对文件路径；`IMAGE_PREPULL_AMD64_DIGEST` 和
+  `IMAGE_PREPULL_ARM64_DIGEST` 是独立核对 CI/注册表后批准的 Linux 子 manifest 摘要。helper 验证原字节
+  SHA-256、平台与 attestation descriptor 关系；`TARGET_RUNTIME_DIGESTS` 必须恰好是两子摘要及 index
+  摘要的无重复集合。允许 CRI-O 返回已核对 index imageID，并不允许用 index 省略平台内容核验。
+
+该 offline release 检查也在 `PREFLIGHT_ONLY=true` 执行，但不会调用 Kubernetes 或创建准备回执。
+它不认证任意调用者提供的 CI 证据，不验证签名/attestation 内容，也不表示真实镜像拉取或升级通过。
+
+准备阶段必须在 probe/fixture 生命周期之前完成：helper 对源的完整硬调度节点池创建隔离 holder Job，
+保留源已有的非抢占 PriorityClass、RuntimeClass 等已验证策略，避免任何 Service 选中其 Pod；不挂载业务
+配置或凭据。每次 runner 用 mktemp 原子创建独占私有子目录并打印 `IMAGE_PREPULL_RECEIPT`，不会重用
+旧尝试的清理回执。默认 Prepare/Verify/Cleanup 预算分别为 600/30/30 秒；三者各有进程上限。
+
+holder 剩余寿命按当前 runner 的 probe 完成、最多三轮 fixture 处理、升级及回滚、UID 删除循环及其单次
+调用超期、其余有界 API 读取/写入、replica inventory 和 helper 清理保守计算，默认至少剩余 10958 秒；
+再加准备预算与余量得到总寿命 11618 秒。每项调用向上取秒并计 kill grace，乘加前拒绝超过 24 小时的
+配置。该计算仍假设本地 shell/jq 调度有进展，不是主机停顿、断电或任意外部 admission 行为的硬时钟保证。
+
+探针发布启动屏障后，runner 再次从持久回执恢复并现场复核 holder；随后读取源 StatefulSet，要求 UID、
+完整 spec、revision 和 Ready 副本数仍与初始一致。只允许 status-only resourceVersion 漂移，通过后刷新
+RV 并进行 UID/RV/镜像（迁移时完整 spec）条件 JSON Patch。任一准备/复核失败都不修改业务 StatefulSet。
+滚动和完整 probe summary 通过后，仍逐 ordinal 核对最终 controller revision、Running/Ready、spec image
+和本次发布批准的 runtime digest；预拉取成功不能替代这些条件。
+
+准备前必须成功输出新尝试的回执位置；输出失败时不调用 prepare、不创建 holder。正常结束必须先清理
+holder，才输出完整 gate 成功；失败和回滚 EXIT 在父进程内终止并 wait/reap 原 rollout 观察器，再隔离
+执行既有回滚/fixture 清理并独立尝试 `recover-cleanup`。子 shell 不能替父进程 wait 其观察器；旧 fixture
+清理显式 exit/触发 errexit 也不能跳过 holder 清理。清理失败返回非零并报告 CRITICAL，
+不把 TTL 到期当成已确认清理。私有回执和锁文件保留；SIGKILL、断电或进程死亡后，应使用原打印目录、
+receipt-name=attempt、相同显式 namespace/source UID 和 kubeconfig/context 调用 helper 的 recover-cleanup，
+只恢复清理，不自动继续旧发布。严禁删除回执后凭 Job 标签批量删除或把新 UID 当作原尝试。
 
 候选 mutation 后任一步失败都会在 EXIT cleanup 中请求恢复原始 StatefulSet image 并等待回滚收敛；请求失败或
 超时会输出 `CRITICAL`，必须按发布事故处置，不能因 runner 已非零退出而忽略。成功的候选 rollout 会保留目标

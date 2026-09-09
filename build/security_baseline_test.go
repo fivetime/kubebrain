@@ -49,7 +49,7 @@ func TestDBaaSImageScansShippedModulesBeforePublishing(t *testing.T) {
 	require.Contains(t, workflow, `cmp "$artifact_dir/kubectl-$arch" "$artifact_dir/shipped-bin-$arch/kubectl"`)
 	require.Contains(t, workflow, `docker cp "$container_id:/usr/local/bin" "$artifact_dir/shipped-bin-$arch"`)
 	require.Contains(t, workflow, `readelf -h "$binary" | grep -E "Machine:.*${machine}"`)
-	require.Contains(t, workflow, `test "$go_binaries" -eq 66`)
+	require.Contains(t, workflow, `test "$go_binaries" -eq 67`)
 	require.Contains(t, workflow, `grep -F 'Go OS/Arch:' | grep -F "linux/$arch"`)
 	require.Less(t, strings.Index(workflow, `cmp "$artifact_dir/kubectl-$arch"`), strings.Index(workflow, "name: Promote verified image to dbaas"))
 	platformCheck := strings.Index(workflow, "name: Verify automatic target architecture")
