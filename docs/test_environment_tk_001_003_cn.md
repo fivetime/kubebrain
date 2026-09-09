@@ -1263,3 +1263,145 @@ UID/Ready，直接使用 immutable `kubebrain-test-info-ca` ConfigMap 的公开 
 包含 `03480da7` 的完整分支，并核对随后 CI 的精确 head SHA、最终状态和不可变镜像。
 当前记录只允许进入构建阶段，不代表镜像已发布或实例已升级。后续不得把旧 `60137eb3`
 镜像用作这次修复的部署证据。
+
+正常快进推送已完成：`60137eb3` → `de8a9e1f2ce9f5c0a0de802a98d79af871a12e20`，
+包含产品提交 `03480da7`；推送后本地与 origin/dbaas 一致。自动触发镜像
+[CI 34307884732](https://github.com/fivetime/kubebrain/actions/runs/34307884732)，
+head SHA 精确为 `de8a9e1f...`，self-hosted job `102328262921` 已 in_progress，当前
+`Scan shipped Go modules`。状态快照为 `security-client-safets-watch-image-ci.json`。
+后续轮询此 run，而不是再次推送/dispatch 取消它；尚无本轮镜像 digest 或 CI success。
+本段在推送后追加，暂不再推送。当前服务镜像仍未改变，在线升级必须等这次精确源提交
+的完整 CI/镜像验证成功后执行。
+
+CI 后续已通过 `Scan shipped Go modules`、双架构 kubectl 构建/扫描及前置架构检查，
+进入 `Build and push TiKV test image`，仍 in_progress。未再次推送或 dispatch。
+为本次候选镜像单独准备仓库外 `run-security-watch-client-upgrade.sh`：默认 `verify`
+只读，只有显式 `execute` 才进入现有 candidate rollout runner；固定本次 CI/head SHA、
+709 项 post 回执、运行中旧镜像、namespace/StatefulSet/TidbCluster/StorageClass UID。
+它还要求后端仍为 PD/TiKV v8.5.3、各三副本，真实卷通过 Retain/消费者 CSI 门禁，
+独立 client TLS Secret 与 info CA ConfigMap 身份吻合。运行源码必须与 `de8a9e1f`
+一致（只允许文档差异），镜像 index 和两个平台 manifest digest 必须与验收回执一致。
+
+执行入口及显式 kubeconfig 的两个辅助脚本摘要固定在
+`security-de8a9e1f-upgrade-tools.sha256`。`bash -n` 通过；没有实际镜像回执时，默认
+verify 在访问 GitHub/registry/集群前退出 1，日志
+`security-de8a9e1f-upgrade-no-image-version-guard.log` 明确拒绝。
+这个负向检查不是完整升级预检成功。当前不存在、也未伪造候选镜像回执。
+
+CI 终态 success 且镜像实际验收通过后，才创建
+`security-de8a9e1f-image-verified.json`，字段遵循既有镜像回执：run_id=34307884732、
+source_commit=de8a9e1f2ce9f5c0a0de802a98d79af871a12e20、image（不可变 index 引用）、
+amd64_digest、arm64_digest、conclusion=success 及 evidence。之后先运行新入口 verify，
+再执行 execute；保持 900 次操作、5s public/30s direct SLO，不附加 leader 删除、后端
+重启或网络故障。回滚、UID/RV fencing、夹具清理和运行时 digest 收敛由现有已测试
+runner 负责，仍须读取真实终态，不能将准备入口等同于部署完成。
+
+为避免重复 dispatch 或以观察超时误判停止，已启动
+`gh run watch 34307884732 --repo fivetime/kubebrain --interval 45 --exit-status`，原会话
+47228，日志 `security-de8a9e1f-image-watch.log`。Runner 为 `raas-1519`，标签
+`self-hosted`；构建步骤自 03:43:34 UTC 起执行。03:53 UTC 再查仍为 in_progress，
+没有终态失败声明。后续先轮询这个 watcher，会话结束后再从 GitHub 独立核验 run/head
+与完整日志；watcher 的连接错误本身不等于 CI 失败。镜像回执仍未创建，未运行 execute。
+
+### 本轮镜像验收完成，进入候选升级预检（2026-09-09）
+
+watcher 47228 已 exit 0，并独立查询 GitHub 确认 run `34307884732` completed/success，
+head 精确为 `de8a9e1f2ce9f5c0a0de802a98d79af871a12e20`。job 从 03:38:36 到
+04:10:33 UTC，31m57s；`Verify published test image` 和 `Promote verified image to dbaas`
+均 success。完整终态/日志为 `security-de8a9e1f-image-ci-completed.{json,log}`。
+
+本轮 OCI index：`sha256:0044f89deef94bc6cebae6e548f3715152a35a5b83e63ed895575eccd3dc28c6`；
+amd64：`sha256:a83111ee126cb402a0bbe44a3944a04b441c7c9f15c45973b9902fc62861de0f`；
+arm64：`sha256:50f47075a56daf1705992953bac7bba45dd6efcf1667cf84cc0dd1e2dce2e767`。
+按 index digest 复读的 manifest 与本轮 immutable tag 完全一致，平台选择器验证通过，
+`dbaas` 标签也指向同一 index。证据 `security-de8a9e1f-image-manifest-by-digest.json`、
+`security-de8a9e1f-promoted-image.json`；初次构建中 tag 未发布和 job log BlobNotFound
+仅为当时观察结果，不是终态失败。
+
+另外拉取 amd64 成品，复制实际 kube-brain 二进制并用 `go version -m` 核对：Go1.26.8，
+上游模块 v2.0.7 replace 为 `v2.0.8-0.20260909023231-832b70fd622f`，模块 h1 与 go.sum
+精确一致。断网、只读、去除 capabilities 的临时容器执行 version，Git SHA/版本与
+OCI labels 一致；日志 `security-de8a9e1f-image-main-build-info.log`、`...-image-version.log`、
+`...-image-labels.json`。首次包含强制删除的组合命令被本机执行策略拒绝，未执行；随后
+分步完成实际审计。临时容器 bdf93afd... 和目录 image-de8-module.DPdeYQ 中的复制二进制
+已按明确对象非强制删除，共享镜像缓存未清理；可从不可变镜像重新取得成品。
+
+registry cache 首轮导入标签尚不存在，保留既定 GHA 只读回退；本轮 cache export
+`#172 DONE 481.1s`，相比此前 GHA export 3606.3s 明显缩短，不能把单次结果当作长期
+性能保证。远端 post Buildx cleanup 对 builder-01f79580-7e70-4195-b443-d2374855a57e
+state volume 删除超时报 warning，整体 job 仍 success；未声称远端残留已清理，也未对
+Runner 主机执行猜测性的 prune/删除。这不改变已经通过的镜像验证结果。
+
+上述证据齐备后才创建 `security-de8a9e1f-image-verified.json`，并保留 cleanup warning。
+现在进入新入口的 verify；此处还没有升级或部署成功声明。产品源码仍与发布提交一致，
+仅此测试文档存在未推送追加，避免再次触发无关镜像构建。
+
+新入口 verify 已 exit 0（原会话 23869），CI/index/平台 digest、源实例身份和后端
+门禁全部通过，明确 `cluster_mutations=0`。执行前进一步核对发现默认 900×0.1s 的
+前台操作只保证约 90 秒，可能先于允许 300 秒的三副本滚动结束。为本次真实验收把
+仓库外 launcher 的 PROBE_ITERATIONS 提高到 3600，明确 ROLLOUT_TIMEOUT=300s；
+探针循环逐次 `time.Sleep(100ms)`，因此操作至少持续 360 秒，覆盖完整滚动预算。
+保留 5s public/30s direct SLO 和 lease TTL=5，不放宽延迟阈值或修改产品运行代码。
+这是对本次测试覆盖范围的补强，不宣称默认 runner 已有持续到 rollout 完成的握手。
+后续应补默认 runner 的覆盖保证，不能对任意耗时滚动只凭 900 次 summary 宣称全程可用。
+
+已重新冻结 launcher/辅助工具摘要、完成 `bash -n`，3600 次配置的只读 verify 再次
+exit 0（原会话 81489），日志 `security-de8a9e1f-upgrade-3600-verify.log`。
+准备以此入口 execute，日志 `security-de8a9e1f-upgrade-execute.log`；此刻尚未记录
+升级完成。没有叠加 HARD_FAILOVER、后端重启、节点或网络故障。
+
+execute 已启动，原会话 61329；后续先轮询这一会话及
+`security-de8a9e1f-upgrade-execute.log`，不要另起第二次 execute。入口重新确认源码、
+辅助脚本、CI、镜像和后端门禁通过后才进入 runner；首次只读观察时探针 Pod 尚未创建，
+会话仍运行，这不是终态失败。只有 runner 的真实终态、候选 Pod digest/revision 收敛、
+3600 次完整 summary 和夹具清理证据均确认后，才能登记本次在线升级通过。
+
+### 候选升级首次真实失败：冷镜像拉取超出直连恢复预算（2026-09-09）
+
+本轮已真实进入候选滚动，不是只做预检。探针 Pod UID
+`5847a191-42b2-460e-b38e-3a68d0dc1070` 在 k8s3-network2 于 04:20:06 启动，
+04:21:17 exit 1：`PROBE_FAIL iteration=110: direct watch recovery exceeded 29.767303589s: context deadline exceeded`。
+没有 3600 项完成 summary，不能登记可用性 PASS。完整失败日志已在自动清理前保存为
+`security-de8a9e1f-upgrade-probe-failed.log`，Pod/events 现场分别为
+`security-de8a9e1f-upgrade-{pods,events}-failure.json`。
+
+首个候选 Pod 2 UID `ec8793a9-ceb1-4372-a395-017291c2c052`：04:20:57 创建，
+04:20:58 调度到 k8s3-worker2，两个临时消费者卷同秒完成 attach；初始存在旧 ephemeral
+PVC owner/删除等待事件。04:21:06 开始拉取候选镜像，04:21:43 完成，kubelet 明确记录
+36.973s、2011990283 bytes；随后启动，04:21:50 Ready。仅镜像拉取就超过 30 秒直连
+恢复预算，因此不能靠下一次恰好已有热缓存就称冷镜像升级已通过；后续应补目标节点的
+候选镜像预拉取保障，保留原 SLO。此证据解释停机窗口的明确组成，不声称排除了所有
+DNS/连接恢复等其它影响，也不是先前 10m26s checkpoint 初始化的根因证明。
+
+runner 当前先等 StatefulSet rollout，再检查 probe 终态；本次 probe 已失败后仍继续
+滚动剩余副本，随后才进入现有回滚。这暴露需要补强的 fail-fast 监控，不能将仅有最终
+回滚等同于及时停止扩散。本轮没有手动 patch 与活跃 runner 竞争，也没有编辑正在执行
+的产品脚本。04:26 UTC 已观察到 `availability probe failed` 和 `restoring original image`，
+StatefulSet desired 已回到旧 index a245c95f...，current revision 仍是候选
+kubebrain-8d5549fff，update 为旧 kubebrain-696c87f8f9；回滚尚未完成。
+原会话 61329 仍运行，继续跟踪回滚与 fixture 清理，不重复 execute。
+
+另一个待核对的运行时兼容边界：本集群 CRI-O 的候选 Pod status.imageID 报告的是
+已验证的 OCI index digest 0044f89d...，而本次 launcher 的 TARGET_RUNTIME_DIGESTS
+目前只列两个平台 manifest digest。本轮在 probe 阶段就失败，尚未执行最终 runtime
+校验，不能将该差异冒充本次失败原因；后续应在固定 index/架构 manifest 证据下适配
+CRI-O 的报告形式，不能为通过检查接受任意 digest。
+
+原执行会话 61329 已 exit 1，失败结果保留；随后独立读取确认回滚已完成：StatefulSet
+UID 未变，generation/observedGeneration 均 3，current/update revision 均
+`kubebrain-696c87f8f9`，3/3 Ready，完整 spec 与执行前 source JSON 相等，三个 runtime
+imageID 均回到旧 a245c95f...。回滚后的 Pod UID：0=a621367f-0f46-42f7-b9d8-74a2dfafe229，
+1=f76014ff-d2b1-4ad4-a697-e308819a27fc，2=bb166062-1064-417d-9fdd-a4a56e77eadf。
+原 HA 后的 frontend UID 清单已过时，后续只读验证应以本次 final-pods 为新的定位依据。
+
+最终日志确认 `FIXTURE_CLEANUP_OK status=absent owner_uid= keys=0 users=0 roles=0 leases=0`，
+独立查询所有以 security-upgrade-de8a9e1f 开头的 Pod/ConfigMap 均不存在。
+`security-de8a9e1f-upgrade-final-{statefulset,pods}.json` 保存回滚终态。再次执行真实后端
+门禁 exit 0：3 PD、3 TiKV、连续三次异常 Region=0、数据卷 Retain/消费者 CSI 通过，
+日志 `security-de8a9e1f-upgrade-final-backend.log`；六个后端 Pod UID 和 restartCount
+与之前权威清单一致，未由此次测试重启。测试残留对象已清理，日志可审计，当前没有
+运行中的升级会话。本轮结果是“镜像 CI 成功、真实升级失败且已回滚”，不是部署成功。
+
+下一步应先实现并验证升级前目标节点镜像预拉取、滚动期间 probe 失败的及时回滚及
+覆盖整个滚动窗口的探针生命周期，再核对 CRI-O index 报告的受限接受条件。不得只因
+三个节点经过此次失败已缓存镜像就直接重试并关闭冷镜像升级缺口。
