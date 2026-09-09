@@ -823,3 +823,10 @@ PASS（258.584s），记录为 `security-rollout-trust-probe-full-race-recheck.l
 同一 verifier 和四个并行分片；此刻尚未有提交后结果。CI `34290666105` 最新仍为
 in_progress / Build and push，本机提交不会取消它，暂不 push。真实集群仍为先前
 `339381af`，没有 HA 注入；已创建的公开 info CA ConfigMap 保留给后续升级测试。
+
+本轮产品代码已提交为 `4fd0d599bf72dad831848ce3b6ceb45a0f3b9515`，工作树提交后干净。
+提交后立即执行 `hack/production/test-shard.sh --verify 4`，仍为 708 项、分桶
+170/194/181/163；四个并行分片已启动，日志为
+`security-rollout-trust-post-{0,1,2,3}.log`，verifier 为 `security-rollout-trust-post-verify.log`。
+目前尚无四分片完整终态，不得先宣称提交后全量 PASS。此登记为文档追加，不改产品
+源码或中断测试；尚未 push，也未触发另一条会取消 `34290666105` 的 image run。
