@@ -2529,3 +2529,31 @@ direct watch 验证，最后才 Sleep(interval)。6000×0.1s 只是间隔下界�
 完整探针包 race 274.132s、go vet、git diff --check 及三个源文件摘要均通过。
 该改动只增加诊断，不宣称已修复真实探针超时；提交后须立即执行完整四分片和 inventory，
 全部成功前不推送触发 CI 或部署。
+
+已提交诊断改动 **36545f8107ca9231db01df54d8f0b7f270679f2b**，未推送。
+同一命令在 commit 后立即执行 inventory（720、174/197/184/165，成功后才继续）并启动
+提交后分片 2，原句柄 **13758**，日志 `security-probe-progress-post-inventory.log`、
+`security-probe-progress-post-shard-2.log`。后续依次完成剩余分片与探针包复核，当前没有
+提交后完整成功回执，不能复用上一候选的发布/部署授权回执。
+
+提交后分片 2 **13758 exit 0**，184 项、Go 用时 392.977s。源码摘要与非 docs 工作树
+核对一致后启动分片 0 **73807**、1 **53421**、3 **79666**，日志
+`security-probe-progress-post-shard-{0,1,3}.log`。三个均尚待终态；后续还须做提交后的
+探针包复核并记录完整回执，不能提前推送或替换测试环境镜像。
+
+提交后分片 0 **73807 exit 0**，174 项、Go 用时 475.650s。分片 1 **53421**、
+分片 3 **79666** 仍在同一进程执行；发布条件尚未满足。
+
+提交后分片 1 **53421 exit 0**，197 项、Go 用时 532.955s。仅剩分片 3 **79666**
+仍在运行；其后执行探针包提交后 race 复核。
+
+提交后最后分片 3 **79666 exit 0**，165 项、Go 用时 764.095s。四分片及 inventory
+全部通过，按 0/1/2/3 的耗时为 475.650/532.955/392.977/764.095s。源码摘要一致后，
+启动提交后完整探针包 race + go vet，句柄 **36555**，日志
+`security-probe-progress-post-package-race.log`；当前仍待终态，尚未创建完整发布回执或推送。
+
+提交后探针包 race + go vet **36555 exit 0**，Go race 用时 262.467s。
+三个源码摘要、非 docs 工作树及差异检查再次通过，建立仓库外 0600 本地门禁回执
+`security-probe-progress-post-complete.json`，绑定产品提交 36545f81、提交前后各 720 项
+全分片、inventory 和探针包 race/vet。准备以 docs-only 提交保存这份终态记录后普通
+fast-forward 推送 dbaas；新 CI 的完整 headSha 另行核对，不复用旧 84d22dcc 的镜像回执。
