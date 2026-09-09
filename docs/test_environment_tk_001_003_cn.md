@@ -2557,3 +2557,165 @@ direct watch 验证，最后才 Sleep(interval)。6000×0.1s 只是间隔下界�
 `security-probe-progress-post-complete.json`，绑定产品提交 36545f81、提交前后各 720 项
 全分片、inventory 和探针包 race/vet。准备以 docs-only 提交保存这份终态记录后普通
 fast-forward 推送 dbaas；新 CI 的完整 headSha 另行核对，不复用旧 84d22dcc 的镜像回执。
+
+普通推送已成功：docs-only HEAD **34057ee8743c28753f9a078268a12783381dbe04**，
+新 CI **34394834203**（https://github.com/fivetime/kubebrain/actions/runs/34394834203），
+GitHub 返回精确相同 headSha，初始 queued。开始跟踪该 run，日志
+`security-probe-progress-34057ee8-ci-watch.log`。当前没有新镜像回执，也未重新部署；
+进行中的状态记录不再 push，避免 cancel-in-progress 取消本次 CI。
+
+原 watch 句柄 **80863**；后续继续等待/查询同一 run，不因观察超时重复 dispatch。
+
+CI 已 in_progress，当前步骤 `Set up Go for security checks`，源码仍精确为 34057ee8。
+准备了私有 `run-prepull-34057ee8-upgrade.sh`，绑定新 run、36545f81 本地完整回执与新
+镜像回执路径；保留旧 84d22dcc 入口和失败证据，不覆盖。原隔离组件/runner 摘要和本次
+诊断三文件摘要共同检查。恢复工具保留 b48bef18 的真实编译身份：非 docs/test 源比较只豁免
+本次另一个 package main 中的 probe main.go/progress.go，其余代码和依赖必须完全一致，
+两个恢复命令不导入该 probe 命令。该比较已通过，没有虚构重新编译的工具身份。
+
+新入口 Bash 语法及固定摘要 ShellCheck 检查通过；默认 verify 因缺少新镜像回执而预期
+exit 1，并输出 `verified candidate image receipt is absent; no cluster access performed`。
+日志 `security-probe-progress-34057ee8-entry-{shellcheck,missing-image}.log`，入口摘要
+`security-probe-progress-34057ee8-entry.sha256`。所有次数、延迟门限、完成窗口保持原值，
+当前尚未执行实际新候选准备或业务变更；完整 CI/新镜像核验后才继续诊断运行。
+
+新 CI 已进入 `Verify published test image`，整体仍在运行。独立读取候选索引为
+`sha256:f4fc874cf18633b2cc65afc52113d1c98f20bf63439929ea95238408cd94b637`，
+amd64 `sha256:aec9ef743242966e3b6406cd7757ecb4900031e4ef573151da9430c9d9c12b60`，
+arm64 `sha256:1cc4ad0aea4a87582c3871fa54daa1d6a8f4396737012d9a9ae234ebe82cc9c5`。
+原始索引和本地 verify-release 结果保存于
+`security-probe-progress-34057ee8-{index-observed,release-identity-observed}.json`。
+开始本地 amd64 拉取，句柄 **43181**，日志 `security-probe-progress-34057ee8-amd64-pull.log`。
+这只是独立清单身份核验，不是整体 CI 或部署成功；watch 80863 继续跟踪原 run。
+
+CI **34394834203 全部步骤 success**，job completedAt 2026-09-09T20:08:16Z，原 watch
+**80863 exit 0**。终态 JSON `security-probe-progress-34057ee8-ci-current.json` 与完整日志
+`security-probe-progress-34057ee8-ci-completed.log` 保留 Node 迁移/API 弃用警告。
+本地拉取 43181 exit 0，实际 --version/OCI 标签/UID 与预期一致，主二进制确认 fork 模块
+版本及 module sum；promotion 标签独立读取也匹配新索引。检查容器已删除，二进制 buildinfo
+和配置保留为 `security-probe-progress-34057ee8-image-*`。据此建立私有 0600
+`security-prepull-34057ee8-image-verified.json`，不代表升级成功。
+
+精确入口摘要通过后，只读 verify **96459 exit 0**，输出
+`CANDIDATE_UPGRADE_GUARDS_PASSED ... cluster_mutations=0`。证据目录
+`prepull-34057ee8-verify.JowrPs4iysVW`，日志 `security-probe-progress-34057ee8-entry-verify.log`。
+下一步新候选 Job/Pod DryRunAll 准入，随后在原门限下取得真实阶段耗时；目前未创建新的
+holder/探针或切换业务镜像。
+
+### 34057ee8 原门限诊断升级已启动
+
+新候选 DryRunAll 准入 exit 0，输出 `PREPULL_ADMISSION_CONFIRMED`、containersExecuted=false；
+`security-probe-progress-34057ee8-admission-{before,after}.json` 的 Job/Pod 身份清单 cmp exit 0。
+日志 `security-probe-progress-34057ee8-admission.log`，journal `admission-34057ee8-01`。
+精确入口摘要通过后，启动 execute，原句柄 **12140**，日志
+`security-probe-progress-34057ee8-upgrade.log`。保持 6000 次、0.1s 间隔、5s public/30s direct
+门限和 900s 完成窗口，目的为取得阶段耗时，不预设本次能通过。继续跟踪同一进程，
+先确认隔离准备，再观察周期性 PROBE_PROGRESS；失败时核对回滚与清理终态。
+
+该进程已取得 `PREPULL_READY` 和 `PREPULL_VERIFIED`，三个 holder 分布于三个 worker，
+探针 UID `0a4b86a5-c2be-415d-a4f0-4c8e870fc5e3` Running/Ready。恢复 journal
+`prepull.xnVQZALLNELZ/attempt`，执行证据目录 `prepull-34057ee8-execute.i1WdMdTXoIDr`。
+首条实际诊断（20:14:21Z）completed=60、elapsed=13668ms、backend=216ms、public=7076ms、
+direct_wait=339ms、pacing=6035ms；已验证发布后的新探针实际输出诊断，非本地模拟。
+短样本不能外推全程瓶颈或成功；日志 `security-probe-progress-34057ee8-probe-observed.log`，
+原进程 12140 仍活跃，继续采集完整运行与回滚前时间线。
+
+本轮 holder 事件已归档 `security-probe-progress-34057ee8-holder-events.json`，三个节点
+实际拉取新索引耗时 41.279/43.081/40.276s。诊断到 300 次时 elapsed=118988ms，
+backend=1151ms、public=33360ms、direct_wait=54291ms、pacing=30180ms，滚动窗口中
+direct 等待累计出现跳升。随后 StatefulSet Ready/updated 3/3，current/update 均为
+`kubebrain-df5f9d748`。这仍是中途数据，不是 6000 次验收通过；继续采集稳定阶段以区分
+固定逐次开销和滚动恢复开销，不能用阶段累计直接替代每次操作 SLO。
+
+稳定阶段短窗口 720→960：elapsed 差 49648ms / 240 次，约 206.9ms/次；public 差
+23985ms（约 99.9ms/次）、pacing 差 24142ms（约 100.6ms/次）、backend 差 903ms、
+direct_wait 差 616ms。runner 已输出 `ROLLOUT_PROBE_COVERAGE_CONFIRMED`。
+该窗口支持“间隔之外仍有显著逐轮 public 路径开销”，但 public 合并了 Put 和 public watch，
+不能直接归因为磁盘、TiKV、commit-wait 或 watch 轮询；也不能将短窗口外推为最终结果。
+继续跟踪原 12140，未修改完成窗口或负载参数。
+
+增加只读服务端指标采样：先校验探针 UID，再从该 Pod 用固定 info CA、TLS serverName 和
+connect-to 指定三个业务 Pod，GET /metrics；不输出证书/私钥，不修改参数。
+文件 `security-probe-progress-34057ee8-server{0,1,2}-metrics.txt`（最多 1MiB+1 捕获）。
+server2 样本成功 Put sum=147.313096653s/count=1764，约 83.5ms/次；
+write_commit_wait sum=33/count=1764，源码确认后者以整数毫秒直接观察（不是秒），
+且 failure 两种原因均为 0。这提示继续细分 Put 路径，不能仅凭 public 约 100ms 就认定
+commit-wait/watch 轮询主导；指标是副本生命周期累计，不是相同窗口的逐请求追踪，不能
+归因为某个 TiKV/磁盘阶段。先前样本 1680 次 elapsed=431643ms，原测试仍运行。
+
+server2 第二份指标保存为 `security-probe-progress-34057ee8-server2-metrics-later.txt`，
+两份 process_start_time_seconds 相同，计数单调。成功 Put 增量 900 次、81.108457672s
+（约 90.1ms/次），对应 apply 增量约 82.6ms/次；存储 commit 增量 1452 次、
+72.459907482s（约 49.9ms/次），commit-wait 增量仅 10ms/900 次。
+源码 `pkg/storage/metrics/store.go` 确认 etcd_disk_backend_commit_duration_seconds
+测量的是 BatchWrite.Commit 调用，不是独立物理 fsync，且包含非 Put 提交；这些阶段嵌套，
+不能直接相加或推断磁盘故障。继续从写入执行路径分析，而不是放宽完成时限。
+探针中途到 2700 次时 elapsed=653597ms，原 12140 仍在执行，尚无完整成功 summary。
+
+### 34057ee8 再次达到完成时限，正在回滚
+
+runner 首次失败仍是 `availability probe did not complete within 900s`，随后自动恢复原镜像。
+事件保存于 `security-probe-progress-34057ee8-rollback-events.json`：首个候选 Pod
+kubebrain-2 于 **20:31:57Z** 开始停止。最后明确早于该事件的周期样本为 **4560 次**，
+20:31:45Z、elapsed=1057451ms，backend=16655ms、public=496336ms、
+direct_wait=85627ms、pacing=458786ms。4620 次与回滚处于同秒，4680 次及之后已经
+在回滚期间，不能归入纯候选稳定阶段。900s 是 rollout 完成后窗口，不是整个探针启动时长。
+
+独立探针日志保存在 `security-probe-progress-34057ee8-probe-timeout.log`；目前仍持续到
+5040 次，没有最终 success summary，不能因后续操作成功覆盖首次超时失败。原进程
+**12140** 仍活跃，generation 已变 7、目标回到旧 revision，继续确认全部恢复和隔离资源清理。
+
+### 34057ee8 最终恢复与清理确认（2026-09-09）
+
+后续复核时原进程句柄 12140 已不可查询，不补造其退出码。执行日志保留首次
+`availability probe did not complete within 900s` 失败，末尾已输出
+`FIXTURE_CLEANUP_OK status=absent owner_uid= keys=0 users=0 roles=0 leases=0`
+及 `PREPULL_CLEANUP_CONFIRMED`。
+使用固定 kubeconfig/context 的新鲜只读查询确认 StatefulSet generation/observed 为 7/7，
+Ready/updated 为 3/3，current/update revision 均为 `kubebrain-696c87f8f9`，
+镜像回到原始 `sha256:a245c95fea36c387358d86e3808a9d29073a327028d5a4e3a80e4d272663e865`。
+同命名空间 Job/Pod 中名称含 prepull 的资源集合为空；没有重复启动升级。
+
+结论：CI 发布成功、隔离预拉取及实际滚动覆盖已验证，但本轮 6000 次在线升级验收失败，
+不能标记兼容性或生产就绪完成。诊断证明 100ms 间隔之外还有显著串行处理耗时，
+不能将 6000×100ms 当作完整运行预算；Put/存储提交耗时的进一步因果定位仍待完成，
+不以直接增加超时或降低负载覆盖失败。私有原始日志继续保留供复核。
+
+### 客户端指标缺失定位与待提交修复
+
+复查上述 server2 两份指标文件分别为 551788/552218 字节，均低于捕获上限，
+末尾为完整 write_responsesize 样本；两份均未出现 tikv_client_go 请求/事务/退避指标。
+当前 fork 的 metrics 包 init 只初始化 collector，RegisterMetrics 由嵌入应用负责调用；
+KubeBrain 原 TiKV 适配器没有该调用，而 /metrics 使用 Prometheus 默认 registry。
+这构成确定的监控缺口，不等于已经定位 Put 慢的根因。
+
+新增 `pkg/storage/tikv/metrics.go`，在包初始化时调用客户端 RegisterMetrics 一次，
+不随池中 client 数或存储实例数重复注册，也不重新初始化已有 observer。
+新增测试观察客户端事务/Get、退避和请求 histogram，并从实际 DefaultGatherer
+核对导出。临时停用注册函数时测试 exit 1（缺失 backoff 指标），恢复 init 后通过。
+完整适配器包 race 通过（1.693s），随后 vet 通过；真实 TiKV 环境依赖测试仍按原条件
+跳过，不能作为集群端到端验证。提交前 inventory 已通过，仍为 720 项、174/197/184/165。
+产品改动尚未提交或发布；四分片及提交后门禁尚待完成。当前线上继续使用回滚版本。
+
+### 826fd14c 指标注册修复：提交前后门禁终态
+
+上述待提交状态已被本节取代。产品提交为
+`826fd14cb5854b9d0da5a8cdc155fdcc9b49b36b`，仅增加指标注册及回归测试两个文件。
+提交前 inventory 与四分片全部 exit 0：174/197/184/165 项，耗时分别为
+478.714/542.370/391.175/768.636s。提交后立即复验 inventory，四分片也全部 exit 0，
+耗时 480.462/541.561/392.339/768.016s；两轮各 720 项，未缩减测试范围。
+提交后完整 TiKV 适配器 race 通过（1.760s），vet exit 0；依赖外部 TiKV 的测试仍按
+原环境条件跳过，不能替代真实集群验收。
+
+私有证据：`security-client-metrics-code.sha256`、
+`security-client-metrics-pre-complete.json`、`security-client-metrics-post-complete.json`，
+以及同前缀的 pre/post inventory、shard-0/1/2/3 和 post-package-race/vet 日志。
+源码摘要在提交前及提交后核对一致。只读 etcd 基线仍为
+`5cd9f4ee13801e18825d661e5005ae599460bc3a`，工作树干净；其 server 指标同样在 init
+注册并通过默认 promhttp handler 导出，但 TiKV 指标本身不是 etcd 协议兼容性证明。
+
+另一次固定 kubeconfig/context 的只读 Pod 快照保存在
+`security-client-metrics-baseline-pods.json`：KubeBrain/PD/TiKV 各三个副本 Ready，
+各容器 restartCount=0。此证据仅代表采样时点，不替代连续后端健康及后续发布前检查。
+下一步推送后核对新 CI 的完整 headSha、镜像摘要和实际导出；旧 34057ee8 升级入口
+绑定旧源码，不可直接复用。原 900s 超时失败继续保持开放，不以指标修复宣称关闭。
