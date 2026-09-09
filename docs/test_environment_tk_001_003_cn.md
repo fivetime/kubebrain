@@ -2029,3 +2029,176 @@ PD diagnostic UID 的 wrapper 执行 GET 和 Pod 内只读 curl/df；3 PD、3 Ti
 其 checksum guard 复用。新的演练入口必须绑定新 CI 的精确源码、已核对 index/平台摘要、预拉取回执
 与 6000 次探针，并预先构建恢复工具，不能在关键清理窗口隐式下载/编译。保存本节文档后即可推送 dbaas
 并跟踪 self-hosted 镜像构建；在新 CI 和镜像核验通过前不执行真实候选升级。
+
+### 推送与新镜像 CI（2026-09-09 11:19 UTC，尚未部署）
+
+已将完整门禁记录保存为 docs-only 提交 **4f9a3eb19e2dc42278d37b6af938246d68e269f1**，与产品提交
+05032758792028c2b78d190fd8fb703eba787df1 的非 docs 路径无差异。检查工作树干净后，以普通 fast-forward
+push 将 origin/dbaas 从 de8a9e1f 推进到 4f9a3eb1（推送会话 12358 exit 0），无 force push。
+
+push 已自动创建新的 self-hosted image workflow：
+
+- run **34344914914**，source **4f9a3eb19e2dc42278d37b6af938246d68e269f1**。
+- URL：<https://github.com/fivetime/kubebrain/actions/runs/34344914914>。
+- 创建时间 `2026-09-09T11:19:12Z`，首次观察状态 queued，尚未获得成功或发布证明。
+- 最新只读快照记录到 `security-prepull-candidate-ci-current.json`；后续应通过原 run ID 查询 authoritative
+  status/jobs，不另触发重复 workflow，不把 queued/in_progress 当作镜像通过。
+
+本节是本地未提交的进行中状态记录；CI 运行期间不再为状态更新 push，避免 cancel-in-progress 取消
+本次正在验证的源码构建。旧升级 launcher 保持不动；待本次 CI 成功且镜像的精确 index/双平台/源码/
+工具核验完成后，再建立新演练回执和执行入口。当前没有实际 holder、候选 Pod、业务镜像变更或后端重启。
+
+### CI 排队时的 Runner 状态（2026-09-09，待确认自动上线策略）
+
+对原 run 34344914914 的只读查询显示 job **102444122834** 仍 queued，runner_id=0、runner_name 为空、
+labels=[self-hosted]，尚未分配执行器。仓库 `actions/runners` 列表当时 total_count=1，列出
+**raas-1534 / id 38 / offline / busy=false**，标签为 raas-ubuntu-24.04、self-hosted、linux、x64。
+这些状态不能被解释为构建失败或永久不可用，也不能假设 Runner 一定会自行上线。
+
+已向用户询问该 Runner 是否自动上线、还是需要用户启动。未修改 runs-on、注册新 Runner、读取注册
+token、重触发 workflow 或自行登录未授权的 Runner 主机；保留原 run，后续继续查询同一 job/run 和
+Runner 的实际状态。本地产品及完整门禁均已完成当前发布步骤，但镜像构建、核验和真实升级尚未完成。
+
+### 候选升级入口与预编译恢复工具（2026-09-09 11:40 UTC，未执行升级）
+
+继续查询同一个 run **34344914914**，状态仍为 queued、源码仍为 4f9a3eb1；本次仓库 Runner 列表
+已变为 **raas-1534-r2 / id 39 / offline / busy=false**。这是执行器记录变化，不是构建开始或成功的
+证据；未自行注册/启动 Runner、重触发 CI 或推送状态文档，保留原任务等待执行。
+
+在私有目录 `/root/.local/state/kubebrain/tk-001-003` 中完成以下发布准备，未改动产品代码：
+
+- 新入口 `run-prepull-candidate-upgrade.sh` 默认 verify，只在显式 execute 且所有检查通过后运行真实
+  rollout。绑定 4f9a3eb1 源码、05032758 的 720 项完整本地门禁、本次 CI ID、精确候选 index/双平台
+  摘要、既定 namespace/source UID、当前服务镜像及 revision、rook-ceph 消费者存储与数据 PV Retain。
+  固定 6000 次探针及现有 5s/30s SLO，不执行 hard failover，不修改旧演练入口。
+- `prepull-candidate-tools/` 中预编译 image-prepull 与 uid-delete（构建会话 70361 exit 0，Go 1.26.8，
+  `-trimpath`）。它们是下一次授权测试使用的恢复工具，不是镜像发布证明，也不放入 Git。
+- 新 UID 删除 wrapper 强制指定测试 kubeconfig，避免原 Go CLI 在未传路径时优先使用环境中的
+  in-cluster identity；拒绝调用方覆盖 kubeconfig。runner 继续传入明确 context 和 UID/RV 条件。
+  工具摘要清单 `security-prepull-candidate-tools.sha256` 同时绑定两个二进制、UID wrapper、既有 PD
+  只读 wrapper 和后端健康脚本；构建信息保存在 `security-prepull-candidate-tools-buildinfo.log`。
+- 两个 CLI race 测试会话 **34437 exit 0**，uid-delete 1.906s、image-prepull 6.506s；日志为
+  `security-prepull-candidate-tools-race.log`。产品源码与本次 CI 源码的非 docs 差异为空，原九文件及
+  二十二文件门禁摘要再次匹配。这些小组检查不替代前述完整门禁。
+- 新入口/UID wrapper 的 Bash 语法检查及固定摘要 ShellCheck v0.11.0 均通过；ShellCheck 容器只读
+  挂载这两个脚本、禁网，不挂载 kubeconfig。日志 `security-prepull-candidate-entry-shellcheck.log`。
+  wrapper 覆盖 kubeconfig 的负向检查返回 2，未调用删除操作。
+- 缺少实际候选镜像回执的 verify 检查返回预期 **exit 1**，提示未访问集群；日志
+  `security-prepull-candidate-entry-missing-image.log`。没有伪造镜像成功回执，也未绕过入口检查。
+  入口摘要保存在 `security-prepull-candidate-entry.sha256`。
+
+另行执行一次显式 kubeconfig/context 的只读 PVC 查询，确认 `pd-kb-pd-0..2` 与 `tikv-kb-tikv-0..2`
+这六个入口使用的实际名称存在，全部 Bound，StorageClass 为 `nvme-rep3-rbd-pool`。这仅确认名称和
+绑定状态，不替代入口执行时的新鲜 PV/CSI 身份、Retain、PD/TiKV/Region 健康检查。
+
+本轮没有创建 holder/探针、切换业务镜像或重启后端。下一步仍需原 CI 实际成功，独立核对新发布镜像
+后才生成 `security-prepull-candidate-image-verified.json`，再运行只读 verify 和真实准备/升级验收。
+当前没有该镜像回执；发布准备完成不代表 DBaaS 的整体生产就绪目标完成。
+
+### 当前验收总览校正与只读复查（2026-09-09，CI 仍排队）
+
+`docs/dbaas_acceptance_status_cn.md` 原先只保存 A5788 的 kind 表格，并混有“KubeBrain 本体尚待部署”
+的旧描述。本轮将 tk-001-003 当前服务版本、候选本地检查、CI 状态与开放验收单独置顶；旧 kind 表格、
+单宿主/hostPath 限制和清理历史原样保留为明确的历史部分，未删除失败证据或宣称生产完成。
+
+本轮显式 kubeconfig/context 的 GET 证据保存在私有目录：
+`security-prepull-acceptance-serving-state.json`、`security-prepull-acceptance-pods.json`、
+`security-prepull-acceptance-storageclass.json`、`security-prepull-acceptance-nodes.json`。
+StatefulSet UID/generation/revision/旧服务镜像未变化；九个业务/后端 Pod 都 Ready，restart 0，
+同组件三副本实际分布在 k8s3-worker1/2/3。三个 worker 均无 zone/region 标签，这不能证明物理故障域
+独立。StorageClass 仍是消费者 rook-ceph driver/clusterID，默认 reclaimPolicy=Delete，不能将它误写为
+Retain；只有经过检查的六个现存数据 PV 具有 Retain，未来新卷还需逐一验收。
+
+原样执行 `validate-tikv-region-health.sh`，会话 **86330 exit 0**；日志
+`security-prepull-acceptance-backend-health.log` 确认 3 PD、3 TiKV、连续三次 Region 检查无异常，
+包含六个数据卷 CSI 身份、绑定、容量隔离、保留策略与磁盘阈值检查。该检查只有显式作用域 GET 和
+既有 PD wrapper 的只读 curl/df，不执行后端重启或数据变更。日志 `max_disk_used_percent=90` 是阈值。
+
+本地 etcd 仍为 `5cd9f4ee13801e18825d661e5005ae599460bc3a` 且工作树干净；KubeBrain go.mod 当前
+etcd API/client/server 依赖均 v3.7.1。这只是固定对标版本的复核，不表示已查询上游最新版本。
+最后查询原 run 34344914914 仍 queued，raas-1534-r2/id39 仍 offline；未重复触发 CI 或 push 文档。
+本轮是当前证据与验收边界的更新，不是候选部署验收；所有产品文件和既有门禁输入代码保持不变。
+
+### 发布执行器阻塞复核（2026-09-09 11:48 UTC）
+
+连续多轮观察同一 CI 执行器不可用。本轮额外查询 workflow 和 job：image.yml 的 workflow 为 active，
+run 34344914914 为 push 事件且源码仍为 4f9a3eb1；job 102444122834 仍 queued、steps 为空、
+runner_id=0、runner_name 为空，尚未实际运行。仓库唯一 Runner 记录已从 id39/r2 变为
+**raas-1534-r4 / id40 / offline / busy=false**，带有匹配的 self-hosted 标签。记录变化不证明上线，
+也不足以判断执行器启动失败的根因；不把 job 的 started_at 字段误当作已执行步骤。
+
+最新快照：`security-prepull-candidate-ci-current.json` 与
+`security-prepull-candidate-runners-current.json`。新入口和预编译工具摘要再次匹配，产品文件无差异，
+当前候选镜像核验回执仍不存在。本地准备、检查和当前环境证据已经就绪；当前发布/真实升级路径需要
+可用执行器和成功发布的精确镜像，不能用旧候选、空回执、另一次重复 dispatch 或降低检查要求替代。
+
+未获执行器运维授权，不注册/启动 Runner，不改 runs-on；等待用户恢复执行器或确认其恢复方式。
+原 run 保留，不取消、不重触发；当前服务与 PD/TiKV 保持不变。恢复后先查询原 run 的实际状态，再
+依据其真实结果继续镜像核验与部署，不假定 queued 已成功，也不因为观察间隔而重启构建。
+
+### 用户恢复 Runner 后继续原 CI（2026-09-09 14:40 UTC 起）
+
+用户确认 Runner 机器恢复后，只读查询证明原 run **34344914914**、原 job **102444122834** 已实际
+进入 in_progress，startedAt=`2026-09-09T14:40:55Z`，源码仍为 4f9a3eb1。仓库 Runner 为
+**raas-1534-r37 / id51 / online / busy=true**。Set up job、Check out source、Compute immutable image
+metadata 已成功，当前 Set up Go for security checks 执行中；未取消或重触发原 workflow。
+
+建立跟踪会话 **40222**，命令为 `gh run watch 34344914914 --repo fivetime/kubebrain --interval 30
+--exit-status`，输出私有日志 `security-prepull-candidate-ci-resumed-watch.log`。会话运行中不表示最终
+成功，后续须观察原句柄终态并读取实际各步骤结果。排队阻塞已经解除，镜像验收与真实升级仍未完成。
+
+重新核对新入口、两个预编译工具、UID wrapper、PD wrapper、后端健康脚本及两组产品源码清单，全部
+摘要匹配；与 CI 源码的非 docs 路径无差异。测试 kubeconfig 仍为 0600，私有证据所在磁盘可用约
+273 GiB。构建期间继续保持产品源码与发布输入不变，状态文档暂不 push，以免 cancel-in-progress。
+
+### 恢复后的 CI 失败与测试等待预算修复（2026-09-09 14:50 UTC 起）
+
+原 watch 会话 **40222 exit 1**，CI 34344914914 终态 failure。失败步骤为
+`Verify isolated image preparation contracts`；两个子测试分别在 admission_test.go:111 和
+preparation_test.go:64 的成功 Prepare 断言处得到 context deadline exceeded。完整失败步骤日志保存在
+`security-prepull-candidate-ci-failed.log`。Go 安全扫描、双平台 kubectl 构建/扫描、目标架构与 manifest
+selection 检查已通过；镜像构建/发布/提升步骤尚未执行，不能为本次源码创建镜像成功回执。
+
+两个失败点均复用 `newExecutorFixture` 的 PrepareTimeout=1s；成功路径包含真实 journal fsync，
+该短预算把共享 CI 调度/IO 延迟误当作被测身份或策略错误。具体 Runner 延迟来自 CPU、磁盘还是其他
+因素未单独测定，不将推测写成基础设施根因。新增受控延迟回归在成功 CREATE 返回前等待 1.1s，原
+配置稳定复现同样错误（会话 **79328 exit 1**，Go 1.332s，日志
+`security-prepull-ci-fixture-budget-before.log`）。
+
+仅修改 `hack/production/internal/imageprepull/executor_test.go`：共用成功路径 Prepare/Cleanup
+测试预算调整为 30s；生产 Executor、CLI/runner 的 600s/30s 参数及 5s/30s 业务 SLO 均不变。新增
+回归还显式配置 50ms 准备期限并延迟返回 100ms，必须得到 DeadlineExceeded、无 Session，且按 UID
+补偿删除已创建 Job/Pod；不是将 deadline 错误改为成功。原有短预算失败用例继续使用自己的显式时限。
+
+修复后组件与 CLI `-race -count=10 -timeout=5m` 会话 **2513 exit 0**，分别 37.679s/55.084s；日志
+`security-prepull-ci-fixture-budget-after.log`。`go test ./build -run '^TestImagePrepull' -count=1 -v`
+通过，日志 `security-prepull-ci-fixture-build.log`。修复文件摘要为 `security-prepull-ci-fixture-code.sha256`。
+
+开始完整提交前门禁后不再修改产品或测试：inventory **2029 exit 0**，仍为
+720=`174/197/184/165`；四片原句柄 **66742/65121/21060/29055**，日志
+`security-prepull-ci-fixture-pre-shard-{0,1,2,3}.log`，当前运行中。新回归位于组件包，不计入 root
+production 分片数量。待全部终态通过再提交，并立即执行规定的提交后门禁；之后新 CI 和入口必须
+绑定新源码/新 run。旧失败 CI 与旧摘要回执保留，不能修改成通过。本轮没有任何集群变更。
+
+提交前分片进展及启动环境校正：shard 1 / 65121 **exit 0**（553.086s），shard 2 / 21060
+**exit 0**（404.661s）。shard 0 / 66742 **exit 1**（476.223s），唯一失败为原有 JWT 权限负向
+测试的 permissive_private_key：本轮为了私有日志设置的 `umask 077` 被测试进程继承，使
+`os.WriteFile(..., 0640)` 创建成 0600，无法触发其预期权限拒绝。未把该失败归因于本次预拉取修复。
+
+对同一未修改用例做启动环境对照：077 再现失败（20031 exit 1，0.410s），022 下 count=3
+通过（exit 0，0.162s），日志 `security-prepull-ci-fixture-umask-{private,default}.log`。不修改
+JWT 产品检查或放宽断言；保留原失败记录，以外层 077 创建私有日志、仅测试子进程恢复本机原始
+022 的方式完整重跑 shard 0，原句柄 **18739**，日志
+`security-prepull-ci-fixture-pre-shard-0-default-umask.log`。其余正在运行的原分片不取消、不重启；
+提交后门禁也将明确区分日志权限与测试进程 umask。当前所有产品及测试仍保持冻结。
+
+### CI 测试预算修复：提交前完整检查通过（2026-09-09 15:57 UTC 复核）
+
+继续查询原句柄后全部终态通过：shard 0 的默认 umask 复跑 **18739 exit 0 / 461.265s**，
+shard 1 **65121 exit 0 / 553.086s**，shard 2 **21060 exit 0 / 404.661s**，
+shard 3 **29055 exit 0 / 783.810s**。结合 2029 inventory 与 2513 十轮 race，当前修复具备
+完整提交前证据；组件/CLI/build 的 `go vet` 也 exit 0，日志 `security-prepull-ci-fixture-vet.log`。
+修复文件摘要匹配，其他非 docs 文件与 4f9a3eb1 无差异，diff check 通过。
+
+接下来提交本轮唯一测试代码改动及累计交接文档，并立即跑提交后 inventory/四片；完整通过后再
+普通推送 dbaas 触发新 CI。原 CI 34344914914 已失败，不会重写其结果或为它生成镜像成功回执。

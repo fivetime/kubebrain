@@ -58,8 +58,11 @@ func newExecutorFixture(t *testing.T, count int) *executorFixture {
 		objects = append(objects, r.Node.DeepCopy())
 	}
 	fixture.client = fake.NewSimpleClientset(objects...)
-	fixture.executor = Executor{Client: fixture.client, PrepareTimeout: time.Second,
-		CleanupTimeout: time.Second, PollInterval: time.Millisecond, MinRemainingHold: time.Minute}
+	// Success-path policy/recovery tests perform real journal fsyncs under
+	// -race. Give them scheduling/I/O headroom on shared CI runners; tests
+	// about timeout behavior set their own short phase budget explicitly.
+	fixture.executor = Executor{Client: fixture.client, PrepareTimeout: 30 * time.Second,
+		CleanupTimeout: 30 * time.Second, PollInterval: time.Millisecond, MinRemainingHold: time.Minute}
 	fixture.client.PrependReactor("create", "jobs", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		job := action.(clienttesting.CreateAction).GetObject().(*batchv1.Job).DeepCopy()
 		if fixture.beforeCreate != nil {
@@ -130,6 +133,49 @@ func (f *executorFixture) assertEmpty(t *testing.T) {
 	pods, err := f.client.CoreV1().Pods("kubebrain-test").List(context.Background(), metav1.ListOptions{})
 	require.NoError(t, err)
 	require.Empty(t, pods.Items)
+}
+
+func TestExecutorFixtureAllowsSlowSuccessfulPreparationButHonorsExplicitDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		timeout  time.Duration
+		delay    time.Duration
+		deadline bool
+	}{
+		{name: "successful setup beyond former one second fixture limit", delay: 1100 * time.Millisecond},
+		{name: "explicit short deadline remains enforced", timeout: 50 * time.Millisecond, delay: 100 * time.Millisecond, deadline: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newExecutorFixture(t, 1)
+			_, journal := journalFixture(t, f)
+			if tc.timeout != 0 {
+				f.executor.PrepareTimeout = tc.timeout
+			}
+			// Model a slow but successful API response without imposing a host
+			// speed requirement on unrelated identity/policy assertions. The
+			// explicit-deadline case still requires compensation after CREATE.
+			f.beforeCreate = func(*batchv1.Job) error {
+				select {
+				case <-time.After(tc.delay):
+					return nil
+				case <-t.Context().Done():
+					return t.Context().Err()
+				}
+			}
+			session, err := f.executor.Prepare(t.Context(), f.requests, f.approved)
+			if tc.deadline {
+				require.ErrorIs(t, err, context.DeadlineExceeded)
+				require.Nil(t, session)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, journal.record.Preparation)
+				require.NoError(t, f.executor.Verify(t.Context(), session))
+				require.NoError(t, f.executor.Cleanup(t.Context(), session))
+			}
+			require.Len(t, f.deletes, 1)
+			f.assertEmpty(t)
+		})
+	}
 }
 
 func TestExecutorPreparesVerifiesAndCleansOwnedJobs(t *testing.T) {

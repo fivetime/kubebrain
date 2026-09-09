@@ -1,11 +1,39 @@
 # DBaaS 验收状态
 
-核验日期：2026-09-08。下表保存 `dbaas` 分支在 A5788 收尾时的 `kind-kubebrain-dbaas` 基线，不代表新环境的状态。
+核验日期：2026-09-09。当前验收环境为 `tk-001-003`；旧 `kind-kubebrain-dbaas` 结果单独保留在本页历史部分，不作为新环境现状。
 产品要求及兼容性矩阵见 [兼容性计划](dbaas_compatibility_plan_cn.md)。本页列出当前证据的边界与下一步验收条件，不能代替完整矩阵。
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-用户现已授权使用 `root@10.32.32.66` 控制的 `tk-001-003` 集群，并明确只使用 rook-ceph 消费者存储、禁止使用 rook-ceph-secondary。连接路径、安全边界、资源 UID 和实时部署结果统一记录于 [tk-001-003 测试环境交接记录](test_environment_tk_001_003_cn.md)。新环境已部署独立 3 PD/3 TiKV，rook-ceph 基本快照恢复通过，Region/存储门禁在固定 Pod exec 传输适配后通过；原 API Service proxy 入口仍受 Cilium 隔离策略限制。镜像分发入口现已通过 self-hosted CI/ghcr 验证，但已构建镜像仍属旧安全基线；KubeBrain 本体尚待新安全基线镜像，不能将后端部署成功当作完整产品部署成功。
+用户授权使用 `root@10.32.32.66` 控制的 `tk-001-003` 集群，并明确只使用 rook-ceph 消费者存储、禁止使用 rook-ceph-secondary。连接路径、安全边界、资源 UID、日志和执行结果统一记录于 [tk-001-003 测试环境交接记录](test_environment_tk_001_003_cn.md)。凭据与验收工具保存在仓库外私有目录，不写入本页。
+
+## 当前环境与发布验收
+
+本表区分正在服务的版本、本地候选验证和真实发布结果；测试通过不能跨版本、拓扑或故障范围外推。
+
+| 验收项 | 已取得的证据 | 仍未证明的范围/下一步 |
+| --- | --- | --- |
+| 分支与源码对标 | `dbaas` HEAD 为 `4f9a3eb19e2dc42278d37b6af938246d68e269f1`；产品提交 `05032758`；本地只读 etcd 基线仍为 `5cd9f4ee13801e18825d661e5005ae599460bc3a`，工作树干净；当前 go.mod 的 etcd API/client/server 为 v3.7.1 | 这些是本地固定版本，不表示已跟踪远端最新版本或完成支持版本矩阵 |
+| 实际服务版本 | KubeBrain 三副本已部署，当前仍使用 `339381af` 的不可变镜像 `sha256:a245c95fea36c387358d86e3808a9d29073a327028d5a4e3a80e4d272663e865`；StatefulSet generation/observed 为 3/3、current/update revision 均为 `kubebrain-696c87f8f9` | 尚未部署本次 05032758 产品候选，不能将本地修复视为线上已生效 |
+| 副本与放置 | 新鲜只读查询：KubeBrain/PD/TiKV 各 3/3 Ready、各容器 restart 0，同组件三副本分布在 `k8s3-worker1/2/3` | 节点无 topology zone/region 标签；物理宿主机及跨可用区独立性未证明，节点/网络故障须先确认授权范围 |
+| 数据卷与后端健康 | 六个 PD/TiKV 数据 PVC 均 Bound，使用 `nvme-rep3-rbd-pool`；driver 为 `rook-ceph.rbd.csi.ceph.com`、clusterID 为 `rook-ceph`；本轮原样后端健康门禁 exit 0，含六卷实际 CSI 身份/容量隔离/Retain 与连续三次无异常 Region 检查 | StorageClass 默认 reclaimPolicy 仍为 Delete，不能与六个现存数据 PV 的 Retain 混为一谈；新增数据卷仍需逐卷验证保留策略；瞬时健康不等于故障恢复和长期稳定性 |
+| 已有受控可用性验收 | 当前服务版本此前通过受控 leader Pod 删除：900/900 操作、public watch 900、三个 direct watch 各 900、lease 存活、官方 etcdutl restore 校验 | 不覆盖无主动释放的崩溃、节点失联、网络分区，也不是新候选升级验收 |
+| 冷镜像在线升级 | de8a9e1f 的真实冷升级曾因 direct watch 超过 30s 门限失败并回滚；镜像拉取约 36.973s | 失败仍未关闭。05032758 增加隔离预拉取、运行时摘要核验与失败清理，但尚需新候选真实准备及完整升级验证，不能仅以缓存已热的重跑证明修复 |
+| 当前候选本地门禁 | 05032758 提交前/后各 720 项四分片及 inventory 均通过，组件/CLI/build race 通过；已预编译恢复工具并验证缺少镜像回执时入口停止 | 本地测试不替代实际控制器、CRI 拉取、真实业务探针和回滚清理证据 |
+| 当前镜像发布 | 用户恢复 Runner 后，原 CI [34344914914](https://github.com/fivetime/kubebrain/actions/runs/34344914914) 已执行，但在预拉取组件测试阶段 failure：两个成功场景的准备过程超过共用测试配置的 1s 上限；安全扫描及架构检查已通过，镜像构建步骤未执行 | 本地已复现并调整测试预算，保留显式短超时/补偿清理断言，10 轮 race 通过；完整提交门禁执行中。之后需要新提交的新 CI、精确镜像核验和升级验收，不能继续使用绑定旧失败 CI 的部署入口 |
+| 总体验收 | 原环境的兼容性、恢复和压力实验仍作为各自范围的历史证据 | 新环境真实 apiserver 路径、新版本在线升级、后端 TLS/轮换、数天级 watch/故障恢复 soak、生产规模/版本矩阵，以及管理面、计量和外部系统验收仍开放；以完整兼容性计划逐项验收 |
+
+本轮只读证据位于私有交接目录的 `security-prepull-acceptance-{serving-state,pods,storageclass,nodes}.json`；
+后端健康日志为 `security-prepull-acceptance-backend-health.log`。该日志的 `max_disk_used_percent=90` 是拒绝阈值，
+不是实际磁盘使用率。当前交接证据不依赖旧 `/tmp` 镜像归档，但仍需按正式发布要求持久归档。
+
+下一步：等待原 CI 获得执行器并成功，独立核验发布镜像，重新验证精确集群/存储/健康身份，执行隔离预拉取和
+6000 次探针的真实在线升级；其后继续完整计划中的恢复、TLS、真实消费者和长时间验收。未获得授权前不操作
+worker、PD/TiKV 重启或网络故障，不使用 secondary Ceph。进行中的状态文档暂不 push，避免取消原 CI。
+
+## 历史基线：A5788 / kind（2026-09-08）
+
+以下表格和收尾记录仅描述当时的 kind 环境，其单节点、hostPath、镜像和部署待办不能套用到当前 tk-001-003。
 
 | 验收项 | 当前证据 | 尚需取得的证据 |
 | --- | --- | --- |
