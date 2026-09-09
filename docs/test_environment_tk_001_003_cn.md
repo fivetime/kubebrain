@@ -950,3 +950,20 @@ provenance、SBOM、安全检查、镜像验证和验证后 promotion；不忽�
 `security-registry-cache-pre-verify.log`、`security-registry-cache-pre-{0,1,2,3}.log`。
 这些结果未借用上一产品提交的分片；本轮仅修改 workflow 与对应 build 回归测试，
 未修改已通过真实 HA 的 runner/probe。提交后须再次执行完整 verifier 与四分片。
+
+缓存迁移产品提交为 `ee490c0f792e4c695bdff9948e8409ac2a12c6b1`。提交后立即运行
+verifier，仍为 708 项、分桶 170/194/181/163；四个并行分片已经启动，日志
+`security-registry-cache-post-{0,1,2,3}.log`，verifier 日志
+`security-registry-cache-post-verify.log`。本次登记时四个工具会话仍在运行，尚未获得
+提交后完整 PASS，也未 push；不可仅因日志文件存在而生成完成回执。
+会话对应关系为 shard 0=28490、1=97582、2=8512、3=23459，后续应先轮询原会话，
+不要因输出间隔长而重复启动。最后一次 image CI 查询仅有 completed/success 的旧 run，
+下一步须等本轮 post 四片全部 exit 0，再 FF push 一次并核验新 run 的精确源码 SHA。
+
+后续存储门禁缺口：`validate-tikv-region-health.sh` 已检查 Ready Pod、Region 健康、
+PVC/PV Bound/claimRef、CSI 唯一身份及容量/磁盘压力，但没有检查
+`persistentVolumeReclaimPolicy` 或控制器所依赖的 PVC instance 标签；对应 fake PV
+甚至省略 reclaim policy 也能通过。故前述修复前 Region PASS 不能证明卷保护策略正确。
+下一轮应增加 PD/TiKV 数据卷 Retain 的负例回归与拒绝逻辑（不应影响可回收 scratch 卷），
+同时考虑旧 PVC 标签漂移诊断。当前真实六份后端 PV 再读均为 Bound/Retain，CSI clusterID
+均为 consumer `rook-ceph`；仍不能把已修复一个环境等同于关闭产品门禁缺口。
