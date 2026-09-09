@@ -967,3 +967,94 @@ PVC/PV Bound/claimRef、CSI 唯一身份及容量/磁盘压力，但没有检查
 下一轮应增加 PD/TiKV 数据卷 Retain 的负例回归与拒绝逻辑（不应影响可回收 scratch 卷），
 同时考虑旧 PVC 标签漂移诊断。当前真实六份后端 PV 再读均为 Bound/Retain，CSI clusterID
 均为 consumer `rook-ceph`；仍不能把已修复一个环境等同于关闭产品门禁缺口。
+
+### 数据卷保留门禁与清理重试回归（2026-09-09）
+
+缓存提交 `ee490c0f` 的 post 四片现已全部终止：0/2/3 PASS，分别为
+285.368/334.389/770.482s；shard 1 FAIL（484.716s）。失败为
+`TestRolloutAvailabilityRunnerRetriesTransientFixtureUIDDeleteFailures`：在测试专用
+3 秒删除预算内报 fixture cleanup Pod still exists，不能把这一轮登记为全量通过。
+原测试不改代码单跑五轮 PASS（26.704s），日志
+`security-registry-cache-fixture-recheck.log`；调度/负载尚未被证明为唯一原因。
+没有生成 cache post 成功回执，未 push，也未重新触发 image CI。
+
+该正例验证一次 UID/RV 删除失败后的重读与精确重试次数，不是 3 秒清理 SLO。
+修订后采用现有生产清理预算 60 秒，同时用共享 helper 对整个测试进程组设 30 秒上限，
+保留两类对象各恰好两次删除的断言，失败时附完整 fake kubectl trace。
+生产 runner、业务 5 秒 SLO、lease TTL 均不变；持续删除失败时 3 秒超时并回滚的既有
+负例不变。修订正例十轮 PASS（56.194s），日志
+`security-retention-fixture-retry-targeted.log`；仍须完整提交前后门禁验证。
+
+为不影响仍在运行的旧 post 分片，在临时 worktree 准备新存储回归。原脚本面对
+`pd-kb-pd-0` 的 Delete PV 返回成功，负例真实 RED（3.310s），日志
+`security-retention-before.log`。新检查要求每个实际绑定的 PD/TiKV 数据 PV 明确为
+Retain，独立于 CSI 绑定/唯一身份/容量检查，错误包含组件、Pod/PVC/PV、期望与实际值。
+回归覆盖两类组件各三个 ordinal，以及 Delete/缺失/null/Recycle/空值/大小写错误/
+数组/对象/bool/number 共 60 个负例。原有完整健康与边界用例保留，repair 集成 fixture
+补齐生产要求的 Retain 字段；没有跳过修复脚本的存储检查。
+
+首次草稿目标组 FAIL（253.210s）：基础健康用例报告 shell unexpected EOF；该轮执行
+期间曾编辑脚本的 local 声明，输入未冻结，不能作为固定版本验收。保留
+`security-retention-targeted.log`，不把草稿错误改记为 PASS。停止全部相关旧会话后，
+四个最终源码/测试文件转回主工作树，并逐字节比对临时副本，再记录
+`security-retention-code.sha256`；临时 worktree 与其空父目录已删除，改动均保留在主仓库。
+固定版本的完整目标组已重新启动，日志 `security-retention-targeted-final.log`，此刻
+尚无终态。bash 语法、diff 与 vet 已 PASS。
+
+相同最终门禁脚本已在真实测试集群只读运行 PASS，日志
+`security-retention-real-region-gate.log`：3 PD/3 stores、连续三个健康 Region 样本，
+六份 Bound/Retain 数据卷通过检查。仍使用固定 kubeconfig 的 PD exec 只读适配器，
+该结果不表示原 API Service proxy 网络路径已修复。没有删除/重启后端、修改卷或
+更换消费者 StorageClass，也没有执行在线服务升级。
+
+固定输入的目标组已终止且 PASS（293.222s），包括 60 个数据卷策略负例、原健康与
+响应边界检查；日志 `security-retention-targeted-final.log`。未改动的删除持续失败回滚
+负例与 release gate 测试 helper 检查一同 PASS（11.481s），日志
+`security-retention-failclosed-targeted.log`。完整 build 包再次 PASS（0.399s），四个
+改动源码/测试文件摘要全部匹配冻结清单。现在启动本轮完整提交前 verifier 与四分片，
+总数 709，分桶 171/194/181/163；日志前缀 `security-retention-final-pre-`。尚未有这轮
+完整结果，不以定向检查替代全量，不与失败的 cache post 轮拼接，也尚未提交新修复。
+
+本轮 pre verifier 已 exit 0；四个原会话对应 shard 0=99536、1=21197、2=92992、
+3=89046。后续先轮询这些会话，不重复启动，不在测试期间编辑已冻结的四个源码/测试
+文件。仅全部 exit 0 且摘要仍匹配后才提交，提交后立即再次 verifier/四分片；通过后
+再 FF push 并跟踪新 image CI。当前 HEAD 仍为 `4e0c6948`，本轮四个代码/测试文件与
+两份文档尚未提交，服务仍是 `339381af`。
+
+### 等待门禁期间的只读冷启动复核（2026-09-09）
+
+本轮未修改冻结源码、后端配置或部署状态。补读实际继任 leader `kubebrain-1` 的日志：
+01:03:51.377727 became leader；compact/quota/lease/event_log 初始化分别为
+1.892289/5.455233/5.963226/43.446209ms，checkpoint 为 81.899223ms，完成于
+01:03:51.980898。证据 `security-controlled-ha-successor-initialization.log`。此前记录
+的约 18 秒是新建 follower Pod 的生命周期，不能替代上述 leader 初始化计时；这里也
+没有证明旧进程是否主动释放租约。本次已有数据集的快速接管不关闭首次创建 watermark
+时的 10m26s 冷启动缺口。
+
+复核 TiKV v8.5.3 的
+[GetStoreSafeTS handler](https://github.com/tikv/tikv/blob/v8.5.3/src/server/service/kv.rs)
+与 [range safe-ts worker](https://github.com/tikv/tikv/blob/v8.5.3/components/raftstore/src/store/worker/check_leader.rs)：
+RPC 读取重叠 Region 的安全水位，不等于请求即时推进水位。本机 fork 的范围查询确实
+逐个请求已筛选 Store，不是直接复用客户端后台 minSafeTS 缓存。当前只读查询 store 0
+配置仍为 resolved-ts.enable=true、advance-ts-interval=20s、hibernate-regions=true、
+peer-stale-state-check-interval=5m；未将这些配置与历史延迟简单等同为因果关系。
+
+三个 Store 的当前 follower safe-ts gap 样本分别为 32048/22740/32984ms，
+concurrency manager min lock ts 均为 0；store 1 累计 fail_advance_count{reason=lock}
+为 945。证据 `security-coldstart-audit-store-{0,1,2}-verified.log`。它们是当前 Store
+级指标，不是历史冷启动时或本项目精确 key range 的水位证据；累计计数不能单独证明
+过去那次延迟由锁导致。最初指标筛选命令因正则转义错误退出，修正筛选后才得到上述
+有效样本，未把工具错误视为 TiKV 故障。
+
+另有待验证的客户端边界：`GetTiKVStoreSafeTSForRange` 将调用方范围直接放入 RPC；
+API v1 `EncodeRequest` 只附加 context，而服务端 `StoreMeta.search_region` 按 Region
+元数据边界查找。现有 mock 在 RPC codec 之前断言原始 start/end，不能代替真实线协议
+编码测试。下一步应以 memcomparable Region 边界建立最小回归，确认是否存在 raw key
+与 Region key 混用，覆盖空边界、API v1/v2 和跨 Region 范围；在证明前不声称它是此次
+冷启动根因，也不跳过 safe-ts/readiness 或放宽一致性契约。
+
+本轮最终提交前四分片全部 exit 0：709 项、171/194/181/163，耗时分别
+458.868/461.802/306.852/734.421s；日志
+`security-retention-final-pre-{0,1,2,3}.log` 与对应 verifier。冻结摘要再次全部匹配，
+不包含其它失败轮的替代分片。现在提交本轮数据卷 Retain 门禁、回归与清理重试正例
+修订，随后立即执行同一 verifier 与四个提交后分片；此刻尚无提交后完整结果。

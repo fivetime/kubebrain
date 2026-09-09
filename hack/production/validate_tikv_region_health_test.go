@@ -9,7 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestValidateTiKVRegionHealth(t *testing.T) {
+func regionHealthTestEnvironment(t *testing.T) []string {
+	t.Helper()
 	tempDir := t.TempDir()
 	fakeKubectl := filepath.Join(tempDir, "kubectl")
 	require.NoError(t, os.WriteFile(fakeKubectl, []byte(`#!/usr/bin/env bash
@@ -50,7 +51,14 @@ elif [[ "$args" == *"get pv pv-"* ]]; then
   else
     handle="volume-$pvc"
     [[ "${FAKE_DUPLICATE_HANDLE:-false}" != "true" ]] || handle="volume-shared"
-    printf -v payload '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"pvc-uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$pv" "$pvc" "$pvc" "$pvc" "$handle"
+    printf -v payload '{"metadata":{"name":"%s","uid":"pv-uid-%s"},"spec":{"persistentVolumeReclaimPolicy":"Retain","claimRef":{"apiVersion":"v1","kind":"PersistentVolumeClaim","namespace":"tidb-cluster","name":"%s","uid":"pvc-uid-%s"},"csi":{"driver":"csi.example.test","volumeHandle":"%s"}},"status":{"phase":"Bound"}}' "$pv" "$pvc" "$pvc" "$pvc" "$handle"
+    if [[ "${FAKE_PV_POLICY_TARGET:-}" == "$pvc" ]]; then
+      if [[ "$FAKE_PV_POLICY_JSON" == omitted ]]; then
+        payload=$(jq 'del(.spec.persistentVolumeReclaimPolicy)' <<<"$payload")
+      else
+        payload=$(jq --argjson policy "$FAKE_PV_POLICY_JSON" '.spec.persistentVolumeReclaimPolicy=$policy' <<<"$payload")
+      fi
+    fi
     printf '%s' "$payload"; [[ "${FAKE_STORAGE_RESPONSE_TARGET:-}" != pv ]] || head -c "$((FAKE_STORAGE_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '
   fi
 elif [[ "$args" == *" exec "* && "$args" == *" df -P "* ]]; then
@@ -68,7 +76,7 @@ else
 fi
 `), 0o755))
 
-	baseEnv := []string{
+	return []string{
 		"KUBECTL=" + fakeKubectl,
 		"KUBE_CONTEXT=test-context",
 		"PROBE_TIMEOUT=1s",
@@ -76,6 +84,10 @@ fi
 		"MAX_REGION_HEALTH_SAMPLES=1",
 		"REGION_HEALTH_INTERVAL_SECONDS=0",
 	}
+}
+
+func TestValidateTiKVRegionHealth(t *testing.T) {
+	baseEnv := regionHealthTestEnvironment(t)
 	runRegionHealth := func(env []string) ([]byte, error) {
 		return runProductionScriptCommandWithTimeout(t, "validate-tikv-region-health.sh", env, 60*time.Second)
 	}
@@ -153,7 +165,7 @@ fi
 	require.Contains(t, string(output), "PD disk pressure: pod=kb-pd-0")
 	require.NotContains(t, string(output), "TiKV disk pressure")
 
-	transientState := filepath.Join(tempDir, "transient-region-seen")
+	transientState := filepath.Join(t.TempDir(), "transient-region-seen")
 	output, err = runRegionHealth(append(baseEnv,
 		"FAKE_TRANSIENT_PENDING=true", "FAKE_REGION_STATE="+transientState,
 		"REQUIRED_HEALTHY_REGION_SAMPLES=3", "MAX_REGION_HEALTH_SAMPLES=4"))
@@ -164,6 +176,33 @@ fi
 		"REQUIRED_HEALTHY_REGION_SAMPLES=4", "MAX_REGION_HEALTH_SAMPLES=3"))
 	require.Error(t, err)
 	require.Contains(t, string(output), "REQUIRED_HEALTHY_REGION_SAMPLES must not exceed MAX_REGION_HEALTH_SAMPLES")
+}
+
+func TestValidateTiKVRegionHealthRejectsUnprotectedDataVolumes(t *testing.T) {
+	baseEnv := regionHealthTestEnvironment(t)
+	for _, component := range []struct{ name, prefix string }{{"PD", "pd-kb-pd-"}, {"TiKV", "tikv-kb-tikv-"}} {
+		for _, ordinal := range []string{"0", "1", "2"} {
+			pvc := component.prefix + ordinal
+			t.Run(pvc, func(t *testing.T) {
+				for _, policy := range []struct{ name, json string }{
+					{"delete", `"Delete"`}, {"missing", "omitted"}, {"null", "null"},
+					{"recycle", `"Recycle"`}, {"empty", `""`}, {"wrong-case", `"retain"`},
+					{"array", `["Retain"]`}, {"object", `{"policy":"Retain"}`},
+					{"bool", "true"}, {"number", "1"},
+				} {
+					t.Run(policy.name, func(t *testing.T) {
+						output, err := runProductionScriptCommandWithTimeout(t, "validate-tikv-region-health.sh",
+							append(baseEnv, "FAKE_PV_POLICY_TARGET="+pvc, "FAKE_PV_POLICY_JSON="+policy.json), 60*time.Second)
+						require.Error(t, err, string(output))
+						require.Contains(t, string(output), component.name+" data volume retention mismatch:")
+						require.Contains(t, string(output), "pvc="+pvc+" pv=pv-"+pvc)
+						require.Contains(t, string(output), "expected=Retain")
+						require.NotContains(t, string(output), "region health gate passed")
+					})
+				}
+			})
+		}
+	}
 }
 
 func TestValidateTiKVRegionHealthRequiresExplicitContext(t *testing.T) {

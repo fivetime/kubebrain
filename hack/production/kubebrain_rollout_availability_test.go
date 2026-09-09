@@ -1010,15 +1010,16 @@ func TestRolloutAvailabilityRunnerRetriesTransientFixtureDeleteReadFailures(t *t
 
 func TestRolloutAvailabilityRunnerRetriesTransientFixtureUIDDeleteFailures(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
-	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
-	command.Env = append(os.Environ(),
-		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+	// This is a retry/identity contract, not a three-second cleanup SLO.
+	// Use the production cleanup budget; bound the entire fake workflow so
+	// a broken retry loop still fails promptly, including its child processes.
+	output, err := runProductionScriptCommandWithTimeout(t, "run-kubebrain-rollout-availability.sh", []string{
+		"KUBECTL_BIN=" + fake, "FAKE_KUBECTL_LOG=" + logPath, "FAKE_KUBECTL_STATE=" + statePath,
 		"FAKE_OWNER_UID_DELETE_FAILURES=1", "FAKE_CLEANUP_UID_DELETE_FAILURES=1",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=3",
-		"PROBE_DELETE_TIMEOUT=3s",
-	)
-	output, err := command.CombinedOutput()
-	require.NoError(t, err, string(output))
+		"PROBE_DELETE_TIMEOUT=60s",
+	}, 30*time.Second)
+	require.NoError(t, err, "%s\nkubectl trace:\n%s", output, readOptionalFile(t, logPath))
 	require.Contains(t, string(output), "KubeBrain rollout availability gate passed")
 	log := readOptionalFile(t, logPath)
 	require.Equal(t, 2, strings.Count(log,

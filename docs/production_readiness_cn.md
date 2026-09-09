@@ -277,6 +277,13 @@ TiKV 与 PD 的 Pod inventory jsonpath 原始响应也分别限制为 1 MiB；�
 后再验证 binding、claimRef、CSI driver/volumeHandle、容量与全局唯一性。超限存储响应不得进入身份或容量判断，
 精确 1 MiB 的语义合法响应仍可完成门禁。
 
+所有被上述 PD/TiKV Pod 实际引用的数据 PV 必须明确为
+`spec.persistentVolumeReclaimPolicy: Retain`；Delete、Recycle、缺失或类型错误都阻止门禁
+通过，并报告组件、Pod、PVC、PV 与实际策略。检查针对绑定 PV 的当前值，不接受仅凭
+StorageClass 默认策略或 TidbCluster 的期望配置证明生效。既有 PVC instance 标签漂移
+可能阻止 Operator 将 Retain 配置应用到旧卷，应核对归属和 UID 后单独处置；门禁本身
+只读，不修改标签或回收策略。KubeBrain ephemeral scratch 卷不在此后端数据卷检查范围。
+
 TiDB Operator 子门禁可独立执行：
 
 ```bash

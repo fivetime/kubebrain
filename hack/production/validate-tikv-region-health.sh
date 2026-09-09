@@ -159,7 +159,7 @@ fi
 validate_storage_component() {
   local component="$1" container="$2" data_dir="$3" rows="$4"
   local pod ready pvc disk_row capacity_kib available_kib used_percent_text used_percent
-  local pvc_json pvc_uid pv pvc_capacity pvc_capacity_kib pv_json pv_uid csi_driver volume_handle volume_identity
+  local pvc_json pvc_uid pv pvc_capacity pvc_capacity_kib pv_json pv_uid csi_driver volume_handle volume_identity reclaim_policy
 while IFS=$'\t' read -r pod ready pvc; do
   [[ -n "$pod" && "$ready" == "True" && -n "$pvc" ]] || continue
   disk_row="$(kctl -n "$TIDB_NAMESPACE" exec "$pod" -c "$container" -- df -P "$data_dir" | awk 'NR == 2 {print $2 "\t" $4 "\t" $5}')"
@@ -187,6 +187,13 @@ while IFS=$'\t' read -r pod ready pvc; do
   fi
   pv_json="$response_dir/${component}-${pod}-pv.json"
   capture_storage_response "$pv_json" get pv "$pv" -o json || die "cannot read ${component} PV response for ${pod}/${pv}"
+  # Check the bound volume, not the StorageClass default or the desired
+  # TidbCluster policy: existing PVC labels can prevent Operator reconciliation.
+  # These inventories contain only PD/TiKV data claims, not disposable scratch.
+  if ! "$JQ" -e '.spec.persistentVolumeReclaimPolicy == "Retain"' "$pv_json" >/dev/null; then
+    reclaim_policy="$("$JQ" -c '.spec.persistentVolumeReclaimPolicy' "$pv_json")"
+    record_health_error "${component} data volume retention mismatch: pod=${pod} pvc=${pvc} pv=${pv} expected=Retain actual=${reclaim_policy}"
+  fi
   if ! "$JQ" -e --arg namespace "$TIDB_NAMESPACE" --arg pvc "$pvc" --arg pvc_uid "$pvc_uid" '
     .status.phase == "Bound" and (.metadata.uid | type == "string" and length > 0) and
     .spec.claimRef.apiVersion == "v1" and .spec.claimRef.kind == "PersistentVolumeClaim" and
