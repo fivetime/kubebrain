@@ -54,6 +54,9 @@ type secureServer struct {
 	internalServers []exposedServer
 	conf            *SecurityConfig
 	identities      *transportidentity.Registry
+	lifecycleMu     sync.Mutex
+	closed          bool
+	serveCancel     context.CancelFunc
 }
 
 func newSecureServer(conf *SecurityConfig, identities *transportidentity.Registry, ss ...exposedServer) exposedServer {
@@ -91,6 +94,15 @@ func (t *secureServer) matchWriters() []cmux.MatchWriter {
 }
 
 func (t *secureServer) serve(listener net.Listener) (err error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	t.lifecycleMu.Lock()
+	if t.closed {
+		t.lifecycleMu.Unlock()
+		return nil
+	}
+	t.serveCancel = cancel
+	t.lifecycleMu.Unlock()
 
 	tlsConf := t.conf.getServerTLSConfig()
 	tlsListener := &identityTLSListener{
@@ -98,7 +110,6 @@ func (t *secureServer) serve(listener net.Listener) (err error) {
 		handshakeTimeout: tlsIdentityHandshakeTimeout,
 	}
 	mux := cmux.New(tlsListener)
-	ctx, cancel := context.WithCancel(context.Background())
 	defer func() {
 		cancel()
 		if err != nil {
@@ -265,6 +276,16 @@ func (c *identityTLSConn) Close() error {
 }
 
 func (t *secureServer) close() error {
+	// Quiesced inner runners deliberately wait for final process shutdown.
+	// Cancel their context here, before joining them: cancelling only in
+	// serve's defer would require those same runners to return first.
+	t.lifecycleMu.Lock()
+	t.closed = true
+	cancel := t.serveCancel
+	t.lifecycleMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	var result error
 	for _, server := range t.internalServers {
 		err := normalizeServeError(server.close())
