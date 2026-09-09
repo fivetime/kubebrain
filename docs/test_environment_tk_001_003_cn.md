@@ -1058,3 +1058,11 @@ API v1 `EncodeRequest` 只附加 context，而服务端 `StoreMeta.search_region
 `security-retention-final-pre-{0,1,2,3}.log` 与对应 verifier。冻结摘要再次全部匹配，
 不包含其它失败轮的替代分片。现在提交本轮数据卷 Retain 门禁、回归与清理重试正例
 修订，随后立即执行同一 verifier 与四个提交后分片；此刻尚无提交后完整结果。
+
+产品提交已完成：`e83d95b276bc965d6eb3ba8dd53eee199dc7481c`，提交后工作树干净。
+立即执行 post verifier 已 PASS（709，171/194/181/163），四个并行分片已启动，日志
+`security-retention-post-{0,1,2,3}.log`，verifier 为
+`security-retention-post-verify.log`。原会话 shard 0=47364、1=61493、2=78420、
+3=63756；后续先轮询这些会话，只有四片终态均 exit 0 才能生成完成回执及 FF push。
+当前没有提交后全量通过声明，也未推送或启动在线升级。本段为文档追加，不改变冻结
+源码，不应中断或替换当前测试。
