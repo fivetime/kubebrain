@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -25,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -34,9 +36,15 @@ import (
 
 const maxSourceCapabilityDocumentBytes = 16 << 10
 
-func validateSourceCapabilityConfig(cfg config, tlsEnabled bool) error {
+func validateSourceCapabilityConfig(cfg config) error {
 	if len(cfg.sourceInfoEndpoints) == 0 && len(cfg.requiredSourceCaps) == 0 {
+		if cfg.sourceInfoCAFile != "" || cfg.sourceInfoServerName != "" {
+			return fmt.Errorf("source info TLS options require source capability preflight")
+		}
 		return nil
+	}
+	if cfg.sourceInfoServerName != "" && cfg.sourceInfoCAFile == "" {
+		return fmt.Errorf("source info TLS server name requires source-info-cacert")
 	}
 	if len(cfg.sourceInfoEndpoints) != len(cfg.directEndpoints) || len(cfg.requiredSourceCaps) == 0 {
 		return fmt.Errorf("source capability preflight requires one info endpoint per direct endpoint and at least one capability")
@@ -57,8 +65,8 @@ func validateSourceCapabilityConfig(cfg config, tlsEnabled bool) error {
 		if portErr != nil || port < 1 || port > 65535 {
 			return fmt.Errorf("source info endpoint must use a port between 1 and 65535: %q", endpoint)
 		}
-		if (parsed.Scheme == "https") != tlsEnabled {
-			return fmt.Errorf("source info endpoint scheme and TLS identity must match: %q", endpoint)
+		if (parsed.Scheme == "https") != (cfg.sourceInfoCAFile != "") {
+			return fmt.Errorf("source info endpoint scheme and source-info-cacert must match: %q", endpoint)
 		}
 		canonical := strings.TrimSuffix(endpoint, "/")
 		if _, duplicate := seen[canonical]; duplicate {
@@ -67,6 +75,26 @@ func validateSourceCapabilityConfig(cfg config, tlsEnabled bool) error {
 		seen[canonical] = struct{}{}
 	}
 	return nil
+}
+
+// Info endpoints have their own server trust domain. Never copy public-client
+// roots, its server-name override, or its privileged mTLS identity here.
+func (cfg config) sourceInfoTLSConfig() (*tls.Config, error) {
+	if err := validateSourceCapabilityConfig(cfg); err != nil {
+		return nil, err
+	}
+	if cfg.sourceInfoCAFile == "" {
+		return nil, nil
+	}
+	pem, err := os.ReadFile(cfg.sourceInfoCAFile)
+	if err != nil {
+		return nil, err
+	}
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("source-info-cacert contains no valid certificates")
+	}
+	return &tls.Config{RootCAs: roots, ServerName: cfg.sourceInfoServerName, MinVersion: tls.VersionTLS12}, nil
 }
 
 func verifySourceCapabilities(parent context.Context, endpoints, required []string, tlsConfig *tls.Config,

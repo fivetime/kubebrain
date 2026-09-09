@@ -16,10 +16,15 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/pem"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,8 +40,8 @@ func TestValidateSourceCapabilityConfig(t *testing.T) {
 		sourceInfoEndpoints: []string{"http://kb-0:8080", "http://kb-1:8080", "http://kb-2:8080"},
 		requiredSourceCaps:  []string{capability.SnapshotDrainPinned},
 	}
-	require.NoError(t, validateSourceCapabilityConfig(valid, false))
-	require.NoError(t, validateSourceCapabilityConfig(config{}, false))
+	require.NoError(t, validateSourceCapabilityConfig(valid))
+	require.NoError(t, validateSourceCapabilityConfig(config{}))
 
 	for name, mutate := range map[string]func(*config){
 		"missing capability": func(cfg *config) { cfg.requiredSourceCaps = nil },
@@ -56,7 +61,7 @@ func TestValidateSourceCapabilityConfig(t *testing.T) {
 			candidate.sourceInfoEndpoints = append([]string(nil), valid.sourceInfoEndpoints...)
 			candidate.requiredSourceCaps = append([]string(nil), valid.requiredSourceCaps...)
 			mutate(&candidate)
-			require.Error(t, validateSourceCapabilityConfig(candidate, false))
+			require.Error(t, validateSourceCapabilityConfig(candidate))
 		})
 	}
 }
@@ -75,6 +80,104 @@ func TestVerifySourceCapabilities(t *testing.T) {
 
 	require.NoError(t, verifySourceCapabilities(t.Context(), []string{server.URL},
 		[]string{capability.SnapshotDrainPinned}, nil, time.Second, time.Second))
+}
+
+func TestSourceInfoTransportIsIndependentOfPublicClient(t *testing.T) {
+	identity := newClientOnlySnapshotTLSFixture(t)
+	for _, infoHTTPS := range []bool{false, true} {
+		for _, publicHTTPS := range []bool{false, true} {
+			t.Run(fmt.Sprintf("infoTLS=%t/publicTLS=%t", infoHTTPS, publicHTTPS), func(t *testing.T) {
+				server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if infoHTTPS && (r.TLS == nil || len(r.TLS.PeerCertificates) != 0) {
+						t.Error("info preflight must not disclose the public client certificate")
+						w.WriteHeader(http.StatusForbidden)
+						return
+					}
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = fmt.Fprintf(w, `{"format":%q,"capabilities":[%q]}`, capability.DocumentFormat, capability.SnapshotDrainPinned)
+				}))
+				if infoHTTPS {
+					// Actively ask for an identity to catch accidental mTLS reuse.
+					server.TLS = &tls.Config{ClientAuth: tls.RequestClientCert, MinVersion: tls.VersionTLS12}
+					server.StartTLS()
+				} else {
+					server.Start()
+				}
+				defer server.Close()
+				cfg := config{
+					directEndpoints: []string{"http://unused:3379"}, sourceInfoEndpoints: []string{server.URL},
+					requiredSourceCaps: []string{capability.SnapshotDrainPinned},
+					pdEndpoints:        []string{"http://127.0.0.1:1"}, dialTimeout: time.Second, commandTimeout: time.Second,
+				}
+				if publicHTTPS {
+					cfg.directEndpoints[0] = "https://unused:3379"
+					cfg.caFile, cfg.certFile, cfg.keyFile, cfg.tlsServerName = identity.caFile, identity.certFile, identity.keyFile, identity.serverName
+				}
+				if infoHTTPS {
+					cfg.sourceInfoCAFile = filepath.Join(t.TempDir(), "info-ca.crt")
+					require.NoError(t, os.WriteFile(cfg.sourceInfoCAFile,
+						pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600))
+				}
+				require.NoError(t, validateSourceCapabilityConfig(cfg))
+				infoTLS, err := cfg.sourceInfoTLSConfig()
+				require.NoError(t, err)
+				if infoHTTPS {
+					require.False(t, infoTLS.InsecureSkipVerify)
+					require.Empty(t, infoTLS.Certificates)
+					require.Nil(t, infoTLS.GetClientCertificate)
+					require.Empty(t, infoTLS.ServerName, "verify each endpoint hostname, not the public service name")
+				}
+				require.NoError(t, verifySourceCapabilities(t.Context(), cfg.sourceInfoEndpoints, cfg.requiredSourceCaps, infoTLS, time.Second, time.Second))
+				// Exercise run's actual wiring: only the deliberately unavailable
+				// backend may fail, after the HTTPS capability preflight succeeds.
+				require.ErrorContains(t, run(t.Context(), cfg), "backend preflight: read PD leader")
+			})
+		}
+	}
+}
+
+func TestSourceInfoTLSFailsClosed(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"format":%q,"capabilities":[%q]}`, capability.DocumentFormat, capability.SnapshotDrainPinned)
+	}))
+	server.Config.ErrorLog = log.New(io.Discard, "", 0)
+	server.StartTLS()
+	defer server.Close()
+	caFile := filepath.Join(t.TempDir(), "info-ca.crt")
+	require.NoError(t, os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0600))
+	valid := config{directEndpoints: []string{"http://unused:3379"}, sourceInfoEndpoints: []string{server.URL},
+		requiredSourceCaps: []string{capability.SnapshotDrainPinned}, sourceInfoCAFile: caFile}
+	unknown := newClientOnlySnapshotTLSFixture(t)
+	for name, mutate := range map[string]func(*config){
+		"missing CA":        func(c *config) { c.sourceInfoCAFile = "" },
+		"missing CA file":   func(c *config) { c.sourceInfoCAFile += ".missing" },
+		"not a certificate": func(c *config) { c.sourceInfoCAFile = unknown.keyFile },
+		"unknown CA":        func(c *config) { c.sourceInfoCAFile = unknown.caFile },
+		"wrong hostname":    func(c *config) { c.sourceInfoServerName = "wrong.example" },
+		"HTTP downgrade":    func(c *config) { c.sourceInfoEndpoints = []string{strings.Replace(server.URL, "https:", "http:", 1)} },
+		"orphan trust":      func(c *config) { c.sourceInfoEndpoints = nil; c.requiredSourceCaps = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := valid
+			mutate(&cfg)
+			infoTLS, err := cfg.sourceInfoTLSConfig()
+			if err == nil {
+				err = verifySourceCapabilities(t.Context(), cfg.sourceInfoEndpoints, cfg.requiredSourceCaps, infoTLS, time.Second, time.Second)
+			}
+			require.Error(t, err)
+		})
+	}
+	infoTLS, err := valid.sourceInfoTLSConfig()
+	require.NoError(t, err)
+	require.NotEmpty(t, server.Certificate().DNSNames)
+	withName := valid
+	withName.sourceInfoServerName = server.Certificate().DNSNames[0]
+	namedTLS, err := withName.sourceInfoTLSConfig()
+	require.NoError(t, err)
+	require.NoError(t, verifySourceCapabilities(t.Context(), valid.sourceInfoEndpoints, valid.requiredSourceCaps, namedTLS, time.Second, time.Second))
+	infoTLS.Time = func() time.Time { return server.Certificate().NotAfter.Add(time.Hour) }
+	require.Error(t, verifySourceCapabilities(t.Context(), valid.sourceInfoEndpoints, valid.requiredSourceCaps, infoTLS, time.Second, time.Second))
 }
 
 func TestVerifySourceCapabilitiesFailsClosed(t *testing.T) {

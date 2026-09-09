@@ -1215,6 +1215,29 @@ Service label/owner、ports 以及每个 endpoint 的 conditions/targetRef/addre
 从门禁网络不可达都会 fail closed。脚本使用可覆盖的 `JQ`（默认 `jq`）结构化解析 JSON，
 不得用文本匹配替代成员身份和 URL 集合检查。
 
+TLS 滚动/故障门禁必须设置 `PROBE_CLIENT_TLS_SECRET`，指向同 namespace 的专用客户端
+Secret（DNS label，最多 63 字符，包含 `ca.crt`、`tls.crt`、`tls.key`）。证书应仅用于
+clientAuth，并具有所需测试权限；不要复制服务端或 CA 私钥。脚本拒绝复用源 StatefulSet
+挂载的任何 Secret，探针、leader 发现与补偿清理都使用该独立只读挂载，mode 0440。
+客户端必须验证正确 CA/SAN；不通过关闭证书校验使测试通过。
+
+滚动门禁的就绪契约与生产清单对齐为 info 端口 `/ready`，initialDelay/period/timeout/
+successThreshold/failureThreshold 分别为 5/5/6/1/3。服务端线性读有 5 秒上界，kubelet
+应允许其返回权威结果；这不改变业务 5 秒延迟 SLO。既有 `/readyz` 1 秒 HTTP profile
+保留兼容，但新的 TCP readiness 迁移使用生产 profile；其他 path/timing 漂移仍拒绝。
+info 端口 TLS 由完整的 `--info-cert-file`/`--info-key-file` 参数对判断，与 public client
+TLS 独立，因此明文 client + HTTPS info 也必须用 HTTPS readiness/preStop/source info URL。
+在线升级（设置 `TARGET_IMAGE`）若源 info 为 HTTPS，还必须设置
+`PROBE_INFO_CA_CONFIGMAP`，指向同 namespace 仅存放公开 CA 的 ConfigMap；探针只投影
+其中的 `ca.crt`，不挂载 info 服务端 Secret。新探针参数 `--source-info-cacert` 单独
+建立 info 信任池，默认逐个验证 Pod DNS SAN，不继承 public client 的 CA、服务名或
+客户端身份；即使 info 服务请求客户端证书，也不发送业务客户端证书。若证书 SAN
+未覆盖短 Pod 域名，runner 可设置 `PROBE_INFO_TLS_SERVER_NAME`（手工探针参数
+`--source-info-tls-server-name`）明确指定受信任的 info 服务名，但不能绕过 CA/SAN 校验。
+错误 CA、无效/过期证书、缺失信任或 HTTP 降级均阻断能力检查；该检查位于后端访问和
+fixture 写入之前。cleanup 与 leader 发现不挂载 info CA。此新参数要求使用包含本次
+改动的探针镜像；旧镜像不支持，不能仅凭宿主机脚本更新认定升级门禁已可运行。
+
 受控滚动期间的 `run-kubebrain-rollout-availability.sh` 还会运行 native availability probe。probe 不把
 clientv3 的 `err=nil` 单独视为成功：首次 prefix cleanup 固定非零 cluster ID，后续 Delete/Grant/Put、
 Put 不确定结果的 linearizable Get、Watch created/event、KeepAlive、TimeToLive、Revoke 与最终 cleanup Get

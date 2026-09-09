@@ -660,3 +660,166 @@ Runner 报告部分固定 action 使用 Node 20 声明并被强制以 Node 24 �
 该镜像尚不包含后来的 checkpoint `67b31c2f` / restore TLS `669ac470` 修复；不替换当前
 已通过诊断测试的 `339381af` 三副本。当前准备将修复及其前后两轮 703 项门禁、真实重测
 和清理记录一起快进推送 `dbaas`，由新 push 自动构建完整新镜像，不重复 workflow_dispatch。
+
+已快进推送到 `60137eb36ee7e4a8f61251a6f91b36ae1135aa23`，远端 dbaas SHA 核验一致。
+新 image run [34290666105](https://github.com/fivetime/kubebrain/actions/runs/34290666105)
+由 23:26:37 UTC 的 push 自动触发，源码精确为该 SHA；当前 queued/in_progress，尚未取得
+成功终态或新发布 digest。元数据保存在 `security-60137eb3-image-ci.json`。不因本条文档
+追加再推送取消该构建；后续先跟踪同一 run，并核对发布产物，再安排使用完整新镜像的
+部署/HA 验证。当前运行实例仍是先前固定 `339381af`，不能宣称已部署 `60137eb3`。
+
+### HA 准备：生产健康契约与探针 TLS 信任隔离（2026-09-08）
+
+准备受控 leader Pod 故障测试时发现，旧 rollout runner 只接受 `/readyz` 的 1 秒
+profile，而实际两个生产清单使用 `/ready`、period 5 秒、timeout 6 秒、failure 3 次；
+后者为服务端 5 秒健康检查预算保留返回时间，并非放宽业务 5 秒延迟 SLO。
+两个生产清单均使用 HTTPS info，即使 public client 为明文；原 runner 从 client TLS
+推导 info 协议也不正确。新增测试直接读取这两份生产 YAML 的健康/TLS 参数，旧实现
+对两者均失败，证据 `security-rollout-contract-before.log`；修正后 targeted 测试通过。
+第一次回归另暴露两个过时断言（旧客户端挂载路径、旧迁移 readiness path），已修正；
+失败日志保留，不能把这两次失败记为成功。
+
+本次改动要求 TLS 探针使用独立 `PROBE_CLIENT_TLS_SECRET`，拒绝复用源 StatefulSet
+挂载的 Secret；本环境应指定现有 `kubebrain-test-client-tls`，而非服务器 TLS Secret。
+probe、leader 发现、补偿 cleanup 都只使用该客户端身份。公开证书检查还确认 info
+与 public client 由不同 CA 签发，原能力检查复用 public client TLS 会失败。
+新增 `PROBE_INFO_CA_CONFIGMAP` / `--source-info-cacert`：仅给主探针挂载独立公开 info
+CA，逐个验证 info endpoint SAN，不发送客户端身份，也不关闭 TLS 验证。
+该 ConfigMap 尚未在真实集群创建；客户端私钥、CA 私钥、kubeconfig 不进入 Git。
+
+四种 public/info HTTP(S) 组合通过本机真实 HTTP/TLS server 验证，测试还实际调用
+探针 `run`，证明能力检查成功后才触达故意不可用的 PD，而非只测 TLS 构造函数。
+info server 主动请求客户端证书时也未收到业务身份。未知 CA、错误主机名、证书
+过期、缺失/无效 CA 文件及 HTTP 降级均拒绝。日志 `security-rollout-info-trust-targeted.log`
+（0.084s PASS）；生产 runner 相关 targeted 日志
+`security-rollout-contract-info-targeted.log`（41.747s PASS）。完整提交前后生产分片、
+probe 全量与 race 检查尚待终态，不能据此声称已完成全量验收。
+
+23:51 UTC 左右只读核验：KubeBrain 三副本及 PD/TiKV 各三副本均 Ready、restart 0。
+未删除 leader Pod、未滚动服务、未改变后端或 StorageClass。本次仍只允许既有
+`rook-ceph` 消费者集群；不得使用 `rook-ceph-secondary`。CI `34290666105` 仍运行，
+不推送取消它；其中源码 `60137eb3` 不含本次新增 info 参数，后续需验证新的完整镜像。
+
+#### 2026-09-09：真实 info 信任验证与最终门禁登记
+
+只读适配器 `rollout-readonly-kubectl.sh` 仅放行本 namespace 的 controller/Service/Pod/
+ConfigMap GET，拒绝 run、patch、delete、exec 及 UID 删除。实际 runner 通过源
+StatefulSet、生产健康契约、headless Service 和三个 Pod 的初始读取后，在第一次
+cleanup Pod 创建时按设计退出 1（`READONLY_AUDIT_DENIED verb=run`）。这只证明初始
+部署契约可被识别，不是完整 rollout PASS；两个 audit Pod 回查均不存在。日志
+`security-rollout-trust-readonly-audit.log`。同期 Region 门禁通过三次连续样本：
+PD/TiKV 3/3、abnormal Regions 0；仍使用已记录的精确 PD Pod UID 只读 GET adapter，
+并非修复了原 API Service proxy 网络路径。日志 `security-rollout-trust-region-gate.log`。
+
+实际 info 证书由 `kubebrain-tk-001-003-info-ca` 签发，有效期
+2026-09-08 18:51:12 至 2026-12-07 18:51:12 UTC。SAN 覆盖
+`kubebrain-peer.kubebrain-dbaas-test.svc` 及完整 Pod 域名的 wildcard，但不覆盖 runner
+拼接的短 Pod 域名，因此增加独立 `PROBE_INFO_TLS_SERVER_NAME`，本环境应设置：
+
+```sh
+PROBE_CLIENT_TLS_SECRET=kubebrain-test-client-tls
+PROBE_INFO_CA_CONFIGMAP=kubebrain-test-info-ca
+PROBE_INFO_TLS_SERVER_NAME=kubebrain-peer.kubebrain-dbaas-test.svc
+```
+
+`verify-info-trust-readonly.sh` 依次对精确 UID 的三个 KubeBrain Pod 建立本机回环
+port-forward，访问 `/capabilities`：错误的 public client CA、短 Pod SAN 均返回
+curl 60；正确独立 info CA + 明确 Service SAN 则三者全部通过，返回
+`snapshot-history-pin-before-write-barrier-release.v1`。未使用客户端证书或私钥，
+未使用 insecure 选项；前后 Pod UID 不变。该验证经过 API port-forward，不证明
+Pod 网络内 DNS/NetworkPolicy 路径或新探针发布镜像已验收。
+证据 `security-info-trust-readonly-result.log`、`security-info-trust-{0,1,2}-capabilities.json`、
+`security-info-trust-short-name.log`、`security-info-trust-wrong-ca.log`。所有 port-forward
+已停止，本机 18880 端口回查无监听；没有临时编译新二进制。
+
+已创建专属 ConfigMap `kubebrain-test-info-ca`，UID
+`d8ae8541-93db-426b-8231-a18cae709990`，immutable=true，仅有 `ca.crt`。
+内容 SHA-256 `3d478abb4ddfd850b7cd6755f6a8c7bd148776e58fcda03550e8dd6b18025d45`，
+与本机公开 CA、源 info Secret 的公开 CA 均相同；回读 UID/键集合/摘要已核验。
+证据 `security-info-trust-configmap-created.json`。本次只新增该公开信任材料，未修改
+任何服务器证书、私钥、StatefulSet、PVC 或后端配置；ConfigMap 留给后续升级测试使用。
+
+probe 全量测试 `security-rollout-trust-probe-suite.log` 为 PASS（175.357s）；初次
+info TLS race 20 轮 PASS（3.259s）。加入显式 info 服务名后，再跑 20 轮 race，
+包括正确 SAN override 成功、错误 override 拒绝，PASS（3.708s，
+`security-rollout-trust-server-name-race.log`）；相应 runner targeted PASS（12.409s）。
+初轮 vet/staticcheck 均 exit 0，最终版检查另记 `security-rollout-trust-final-{vet,staticcheck}.log`。
+
+修改服务名传参前启动的 `security-rollout-trust-pre-{0,1,2,3}.log` 只属于中间草稿，
+不能作为最终提交门禁。最终源码已重新执行 `hack/production/test-shard.sh --verify 4`：
+708 项，分桶 170/194/181/163；四个并行分片运行记录为
+`security-rollout-trust-final-pre-{0,1,2,3}.log`，当前等待完整终态。
+提交前必须全部成功；提交后立即再次 verifier + 四分片。尚未提交或推送本次产品代码，
+也未执行真实 HA。CI `34290666105` 仍在 Build and push 步骤，继续观察同一 run，
+不得另一次 push 将其取消；目标整体仍未生产就绪。
+
+#### 提交前门禁发现启动失败测试的计时范围问题
+
+`security-rollout-trust-final-pre-0.log` 为 FAIL：
+`TestRolloutAvailabilityRunnerReportsProbeFailureBeforeStartBarrier` 的整条 runner 调用耗时
+5.146559108s，超过原测试的 5 秒墙钟断言；正确 `PROBE_FAIL` 和立即中止信息已经
+出现。完整调用还包括准备、两轮所有权约束 cleanup 和多次 Kubernetes mock 子进程，
+并不等于数据面的 Put/Watch 延迟。检查实际 shell 控制流确认，第一次日志读取发现
+终态失败后直接 exit，并非继续等待 60 秒启动屏障。相同源码单项重复五轮 PASS
+（20.198s，`security-rollout-trust-start-failure-timing-recheck.log`），但不能以重跑
+掩盖原失败；并行负载影响只是与证据一致的解释，不作为已证明的唯一原因。
+
+测试改为显式验证只发出一次主 probe 日志请求、保留原失败原因、没有转成等待屏障
+超时、没有 StatefulSet 修改；使用现有进程组 helper 的 10 秒整条测试命令兜底，
+避免超时留下子进程。业务 5 秒延迟 SLO、runner 运行预算及失败处理逻辑均未改动。
+这比用整个 setup/cleanup 耗时判断是否重复轮询更直接。新测试十轮回归记录为
+`security-rollout-trust-start-failure-semantic.log`，随后还需完整重新执行 verifier 与
+四分片；先前 `final-pre` 这一轮不能记为完整 PASS，也不能据它提交产品代码。
+
+十轮语义回归已 PASS（40.479s）。上一轮 `final-pre` 的其余分片 1/2/3 最终
+PASS（493.896/330.835/765.376s），分片 0 仍记录 FAIL，不与另一轮成功结果拼接。
+确认旧分片进程全部终止后，重新启动整轮提交前门禁，日志前缀改为
+`security-rollout-trust-commit-pre-`；五个改动源码/测试文件的 SHA-256 清单保存在
+`security-rollout-trust-commit-code.sha256`，提交前再次核对，防止用旧源码测试结果
+覆盖后续修改。本轮全部成功后才允许提交，随后立即运行提交后 verifier/四分片。
+
+探针 govulncheck v1.6.0 扫描 Go 1.26.8 与 80 个模块：可达漏洞 0、已导入包级
+告警 0；模块层面仍报告 `GO-2026-5932`（`golang.org/x/crypto/openpgp` 无维护且
+unsafe by design，没有修复版本），探针不导入该包。不能将模块告警删除或笼统宣称
+依赖图零告警；原始与详细日志分别为 `security-rollout-trust-probe-vulnerability.log`
+和 `security-rollout-trust-probe-vulnerability-verbose.log`，两次扫描 exit 0。
+
+#### 后续 HA 验收边界：主动释放与无清理故障不同
+
+只读回查真实 StatefulSet 与 production TLS 清单均设置 election lease/renew/retry
+为 30s/25s/500ms。`pkg/server/service/leader/leader.go` 使用 `ReleaseOnCancel`，
+并提供 `EnsureVoluntaryRelease` 与 `WaitForVoluntarySuccessor`；源码明确说明，主动
+释放失败会让继任者等待完整租约。因此即使受控 Pod 删除通过，也不能据此推断真正
+无机会清理的进程故障、节点故障或网络分区可在 5 秒内恢复。具体故障窗口仍需实际
+证据，不能仅从配置推出每次都会等待恰好 30 秒。
+
+本轮不调低选举/自我隔离预算，也不调高业务 SLO 使门禁通过；后续应记录旧进程是否
+执行主动释放、选举 term 变化、客户端完整恢复窗口及新 Pod 初始化耗时。受控 Pod
+删除不替代跨节点/分区验收；共享 worker 重启、隔离或后端变更仍不在本次操作范围。
+选举与资源锁本机 race 检查另记 `security-rollout-trust-election-race.log`，不是实际
+分布式故障证据。当前仍无真实 HA 注入。
+
+leader/resource-lock race 检查已 PASS（2.519s / 1.162s）。额外 probe 全量 race
+首轮 `security-rollout-trust-probe-full-race.log` 为 FAIL（255.448s）：既有
+`TestExternalFixtureCleanupRecoversWithoutPublicOwnershipKey` 在嵌入式官方 etcd
+创建 reader 用户时达到每操作 3 秒 deadline。失败处属于认证 fixture 准备，不是
+本次 info TLS 分支；未发现 race detector 数据竞争报告，但这不使超时结果变成成功。
+不更改 fixture/认证配置或生产超时，原测试单项 race 五轮 PASS（80.204s，
+`security-rollout-trust-fixture-race-recheck.log`）。负载/调度影响尚未被证明为唯一原因，
+因此另外重跑相同完整 race 命令，记录为 `security-rollout-trust-probe-full-race-recheck.log`；
+其终态仍需核验，保留第一次失败作为稳定性证据，不宣称从未失败。
+
+#### 本轮提交前完整门禁通过（2026-09-09 00:35 UTC）
+
+`security-rollout-trust-commit-pre-verify.log` 确认 708 项、四个非空分片
+170/194/181/163；本轮四分片均 exit 0，耗时分别
+268.456/489.163/319.507/767.412s，日志 `security-rollout-trust-commit-pre-{0,1,2,3}.log`。
+五个改动源码/测试文件摘要再次全部匹配开跑清单；没有用旧分片或单项重跑替代这轮全量。
+最终 vet、bash 语法与 diff whitespace 检查通过。完整 probe race 相同命令复测
+PASS（258.584s），记录为 `security-rollout-trust-probe-full-race-recheck.log`；这不
+撤销前述一次认证 fixture deadline 失败，测试稳定性仍须持续观察。
+
+现在准备提交本轮健康契约、客户端身份与独立 info trust 修复及证据。提交后立即执行
+同一 verifier 和四个并行分片；此刻尚未有提交后结果。CI `34290666105` 最新仍为
+in_progress / Build and push，本机提交不会取消它，暂不 push。真实集群仍为先前
+`339381af`，没有 HA 注入；已创建的公开 info CA ConfigMap 保留给后续升级测试。

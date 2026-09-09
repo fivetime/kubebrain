@@ -65,6 +65,9 @@ TARGET_RUNTIME_DIGESTS="${TARGET_RUNTIME_DIGESTS:-}"
 ENABLE_GRPC_CONNECTION_AGING_MIGRATION="${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}"
 ENABLE_HTTP_READINESS_MIGRATION="${ENABLE_HTTP_READINESS_MIGRATION:-false}"
 PROBE_IMAGE="${PROBE_IMAGE:-}"
+PROBE_CLIENT_TLS_SECRET="${PROBE_CLIENT_TLS_SECRET:-}"
+PROBE_INFO_CA_CONFIGMAP="${PROBE_INFO_CA_CONFIGMAP:-}"
+PROBE_INFO_TLS_SERVER_NAME="${PROBE_INFO_TLS_SERVER_NAME:-}"
 PROBE_POD="${PROBE_POD:-kubebrain-rollout-availability-probe}"
 PROBE_MIN_PUBLIC_TCP_DIALS="${PROBE_MIN_PUBLIC_TCP_DIALS:-1}"
 PROBE_MIN_DIRECT_TCP_DIALS="${PROBE_MIN_DIRECT_TCP_DIALS:-1}"
@@ -417,8 +420,8 @@ if [[ -n "$TARGET_IMAGE" ]]; then
       ([.template.spec.containers[$index].args[]? | select(startswith("--info-cert-file="))] |
         if length == 1 then "HTTPS" else "HTTP" end) as $scheme |
       .template.spec.containers[$index].readinessProbe = {
-        httpGet:{path:"/readyz",port:"info",scheme:$scheme},
-        initialDelaySeconds:5,periodSeconds:1,timeoutSeconds:1,successThreshold:1,failureThreshold:1
+        httpGet:{path:"/ready",port:"info",scheme:$scheme},
+        initialDelaySeconds:5,periodSeconds:5,timeoutSeconds:6,successThreshold:1,failureThreshold:3
       }
     else . end
   ' "$statefulset_json")" || exit 1
@@ -480,7 +483,6 @@ tls_marker_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kub
 tls_contract_valid=true
 if (( tls_marker_count > 0 )); then
   endpoint_scheme=https
-  expected_prestop='["/bin/sh","-c","sleep 25 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain"]'
   allow_insecure_false_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--allow-insecure=false")] | length' "$statefulset_json")"
   client_cert_auth_count="$(jq '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == "--client-cert-auth=true")] | length' "$statefulset_json")"
   max_connection_age_count="$(jq --arg expected "$grpc_max_connection_age_arg" '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(. == $expected)] | length' "$statefulset_json")"
@@ -525,14 +527,56 @@ if (( tls_marker_count > 0 )); then
     if [[ -z "$tls_volume_mount" || -z "$tls_volume_name" || -z "$tls_volume" ]]; then
       tls_contract_valid=false
     else
-      probe_tls_args+=(--cacert="$ca_file" --cert="$cert_file" --key="$key_file" --tls-server-name="$tls_server_name")
+      # The workload's serving/peer/info keys are never probe credentials.
+      # Require a dedicated client identity, including for cleanup and leader
+      # discovery, rather than copying any source Secret mount into the probe.
+      if [[ ! "$PROBE_CLIENT_TLS_SECRET" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#PROBE_CLIENT_TLS_SECRET} -gt 63 ]]; then
+        echo "TLS rollout requires PROBE_CLIENT_TLS_SECRET naming a dedicated client Secret" >&2
+        exit 1
+      fi
+      if jq -e --arg name "$PROBE_CLIENT_TLS_SECRET" \
+        'any(.spec.template.spec.volumes[]?; .secret.secretName == $name)' "$statefulset_json" >/dev/null; then
+        echo "PROBE_CLIENT_TLS_SECRET must not reuse a source workload Secret" >&2
+        exit 1
+      fi
+      probe_cert_dir=/etc/kubebrain/probe-client-tls
+      tls_volume_mount="$(jq -cn --arg dir "$probe_cert_dir" '{name:"probe-client-tls",mountPath:$dir,readOnly:true}')"
+      tls_volume="$(jq -cn --arg name "$PROBE_CLIENT_TLS_SECRET" '{name:"probe-client-tls",secret:{secretName:$name,defaultMode:288}}')"
+      probe_tls_args+=(--cacert="$probe_cert_dir/ca.crt" --cert="$probe_cert_dir/tls.crt" --key="$probe_cert_dir/tls.key" --tls-server-name="$tls_server_name")
     fi
   fi
 fi
 
+# Info TLS is independent of public client TLS: both production manifests use
+# HTTPS info endpoints, including the plaintext-client manifest.
+info_cert_files="$(jq -c '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--info-cert-file=")) | sub("^--info-cert-file="; "")]' "$statefulset_json")"
+info_key_files="$(jq -c '[.spec.template.spec.containers[] | select(.name == "kubebrain") | .args[]? | select(startswith("--info-key-file=")) | sub("^--info-key-file="; "")]' "$statefulset_json")"
 readiness_scheme=HTTP
-[[ "$endpoint_scheme" != https ]] || readiness_scheme=HTTPS
+info_endpoint_scheme=http
+if [[ "$info_cert_files" != '[]' || "$info_key_files" != '[]' ]]; then
+  if ! jq -ne --argjson certs "$info_cert_files" --argjson keys "$info_key_files" \
+    '($certs | length) == 1 and ($keys | length) == 1 and ($certs[0] | startswith("/")) and ($keys[0] | startswith("/"))' >/dev/null; then
+    echo "KubeBrain info TLS requires one complete absolute certificate/key pair" >&2
+    exit 1
+  fi
+  readiness_scheme=HTTPS
+  info_endpoint_scheme=https
+  expected_prestop='["/bin/sh","-c","sleep 25 && curl --insecure --fail --silent --show-error --max-time 10 --request POST https://127.0.0.1:8080/drain"]'
+fi
+if [[ -n "$TARGET_IMAGE" && "$info_endpoint_scheme" == https ]]; then
+  if [[ ! "$PROBE_INFO_CA_CONFIGMAP" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ || ${#PROBE_INFO_CA_CONFIGMAP} -gt 63 ]]; then
+    echo "HTTPS info capability preflight requires PROBE_INFO_CA_CONFIGMAP containing public ca.crt" >&2
+    exit 1
+  fi
+fi
 expected_readiness_probe="$(jq -cS -n --arg scheme "$readiness_scheme" '{
+  httpGet:{path:"/ready",port:"info",scheme:$scheme},
+  initialDelaySeconds:5,periodSeconds:5,timeoutSeconds:6,successThreshold:1,failureThreshold:3
+}')" || exit 1
+# Preserve the previously admitted fast HTTP profile for existing deployments;
+# new TCP-to-HTTP migrations use the production profile above. Neither profile
+# admits TCP/ping readiness or arbitrary timing/path drift.
+legacy_http_readiness_probe="$(jq -cS -n --arg scheme "$readiness_scheme" '{
   httpGet:{path:"/readyz",port:"info",scheme:$scheme},
   initialDelaySeconds:5,periodSeconds:1,timeoutSeconds:1,successThreshold:1,failureThreshold:1
 }')" || exit 1
@@ -540,7 +584,7 @@ legacy_tcp_readiness_probe='{"failureThreshold":3,"initialDelaySeconds":5,"perio
 readiness_contract_valid=false
 if [[ "$ENABLE_HTTP_READINESS_MIGRATION" == true && "$readiness_probe" == "$legacy_tcp_readiness_probe" ]]; then
   readiness_contract_valid=true
-elif [[ "$ENABLE_HTTP_READINESS_MIGRATION" != true && "$readiness_probe" == "$expected_readiness_probe" ]]; then
+elif [[ "$ENABLE_HTTP_READINESS_MIGRATION" != true && ( "$readiness_probe" == "$expected_readiness_probe" || "$readiness_probe" == "$legacy_http_readiness_probe" ) ]]; then
   readiness_contract_valid=true
 fi
 
@@ -944,7 +988,7 @@ source_info_endpoints=""
 for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
   direct_endpoint="${endpoint_scheme}://${KUBEBRAIN_STATEFULSET}-${ordinal}.${headless_service}.${KUBEBRAIN_NAMESPACE}.svc:${KUBEBRAIN_CLIENT_PORT}"
   direct_endpoints="${direct_endpoints:+${direct_endpoints},}${direct_endpoint}"
-  source_info_endpoint="${endpoint_scheme}://${KUBEBRAIN_STATEFULSET}-${ordinal}.${headless_service}.${KUBEBRAIN_NAMESPACE}.svc:${EXPECTED_INFO_PORT}"
+  source_info_endpoint="${info_endpoint_scheme}://${KUBEBRAIN_STATEFULSET}-${ordinal}.${headless_service}.${KUBEBRAIN_NAMESPACE}.svc:${EXPECTED_INFO_PORT}"
   source_info_endpoints="${source_info_endpoints:+${source_info_endpoints},}${source_info_endpoint}"
 done
 probe_image="$image"
@@ -990,6 +1034,12 @@ if [[ -n "$TARGET_IMAGE" ]]; then
     --source-info-endpoints="$source_info_endpoints"
     --required-source-capabilities="$SOURCE_SNAPSHOT_DRAIN_CAPABILITY"
   )
+  if [[ "$info_endpoint_scheme" == https ]]; then
+    probe_command+=(--source-info-cacert=/etc/kubebrain/probe-info-ca/ca.crt)
+    if [[ -n "$PROBE_INFO_TLS_SERVER_NAME" ]]; then
+      probe_command+=(--source-info-tls-server-name="$PROBE_INFO_TLS_SERVER_NAME")
+    fi
+  fi
 fi
 if [[ "$HARD_FAILOVER" == true ]]; then
   probe_command+=(
@@ -1042,6 +1092,11 @@ if [[ "$endpoint_scheme" == https ]]; then
 else
   probe_volume_mounts="$(jq -cn --argjson artifact "$snapshot_volume_mount" '[$artifact]')" || exit 1
   probe_volumes="$(jq -cn --argjson artifact "$snapshot_volume" '[$artifact]')" || exit 1
+fi
+if [[ -n "$TARGET_IMAGE" && "$info_endpoint_scheme" == https ]]; then
+  probe_volume_mounts="$(jq -c '. + [{name:"probe-info-ca",mountPath:"/etc/kubebrain/probe-info-ca",readOnly:true}]' <<<"$probe_volume_mounts")"
+  probe_volumes="$(jq -c --arg name "$PROBE_INFO_CA_CONFIGMAP" \
+    '. + [{name:"probe-info-ca",configMap:{name:$name,defaultMode:288,items:[{key:"ca.crt",path:"ca.crt"}]}}]' <<<"$probe_volumes")"
 fi
 probe_overrides="$(jq -cn --arg name "$PROBE_POD" --arg image "$probe_image" --arg command "${probe_command[0]}" \
   --argjson args "$probe_command_args" --argjson mounts "$probe_volume_mounts" --argjson volumes "$probe_volumes" \

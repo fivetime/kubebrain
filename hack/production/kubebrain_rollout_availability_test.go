@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 
 	"github.com/kubewharf/kubebrain/pkg/server/capability"
 )
@@ -24,6 +27,165 @@ func TestRolloutAvailabilityRunnerRequiresExplicitMutationApproval(t *testing.T)
 	require.Contains(t, string(output), "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true")
 	_, statErr := os.Stat(logPath)
 	require.ErrorIs(t, statErr, os.ErrNotExist, "kubectl must not run before mutation approval")
+}
+
+func productionRolloutHealthContainer(t *testing.T, filename string) corev1.Container {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "deploy", "production", filename))
+	require.NoError(t, err)
+	for _, document := range strings.Split(string(data), "\n---\n") {
+		var statefulset appsv1.StatefulSet
+		require.NoError(t, yaml.Unmarshal([]byte(document), &statefulset))
+		if statefulset.Kind != "StatefulSet" || statefulset.Name != "kubebrain" {
+			continue
+		}
+		for _, container := range statefulset.Spec.Template.Spec.Containers {
+			if container.Name == "kubebrain" {
+				require.NotNil(t, container.ReadinessProbe)
+				// The API server defaults this field; source YAML need not repeat it.
+				if container.ReadinessProbe.SuccessThreshold == 0 {
+					container.ReadinessProbe.SuccessThreshold = 1
+				}
+				return container
+			}
+		}
+	}
+	t.Fatal("production manifest has no KubeBrain container")
+	return corev1.Container{}
+}
+
+func TestRolloutAvailabilityRunnerAcceptsActualProductionHealthContracts(t *testing.T) {
+	for _, filename := range []string{"kubebrain.yaml", "kubebrain-tls.yaml"} {
+		t.Run(filename, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			container := productionRolloutHealthContainer(t, filename)
+			encoded, err := json.Marshal(container)
+			require.NoError(t, err)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+				"FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+				"FAKE_RUNTIME_HEALTH_CONTAINER="+string(encoded))
+			if filename == "kubebrain-tls.yaml" {
+				command.Env = append(command.Env, "FAKE_TLS_STATE=true")
+			}
+			output, err := command.CombinedOutput()
+			require.NoError(t, err, string(output))
+			require.Contains(t, string(output), "rollout availability gate passed")
+		})
+	}
+}
+
+func TestRolloutAvailabilityRunnerRejectsProductionHealthContractDrift(t *testing.T) {
+	for name, mutate := range map[string]func(*corev1.Container){
+		"ping is not readiness": func(c *corev1.Container) { c.ReadinessProbe.HTTPGet.Path = "/ping" },
+		"truncated read budget": func(c *corev1.Container) { c.ReadinessProbe.TimeoutSeconds = 5 },
+		"plaintext info probe":  func(c *corev1.Container) { c.ReadinessProbe.HTTPGet.Scheme = corev1.URISchemeHTTP },
+		"missing info key": func(c *corev1.Container) {
+			args := c.Args[:0]
+			for _, arg := range c.Args {
+				if !strings.HasPrefix(arg, "--info-key-file=") {
+					args = append(args, arg)
+				}
+			}
+			c.Args = args
+		},
+		"duplicate info certificate": func(c *corev1.Container) { c.Args = append(c.Args, "--info-cert-file=/another.crt") },
+		"relative info key": func(c *corev1.Container) {
+			for i, arg := range c.Args {
+				if strings.HasPrefix(arg, "--info-key-file=") {
+					c.Args[i] = "--info-key-file=relative.key"
+				}
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			container := productionRolloutHealthContainer(t, "kubebrain.yaml")
+			mutate(&container)
+			encoded, err := json.Marshal(container)
+			require.NoError(t, err)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+				"FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+				"FAKE_RUNTIME_HEALTH_CONTAINER="+string(encoded))
+			output, err := command.CombinedOutput()
+			require.Error(t, err, string(output))
+			require.NotContains(t, readOptionalFile(t, logPath), " run ")
+			require.NotContains(t, readOptionalFile(t, logPath), " patch ")
+			require.NoFileExists(t, statePath)
+		})
+	}
+}
+
+func TestRolloutAvailabilityRunnerRequiresDedicatedClientTLSSecret(t *testing.T) {
+	for _, secret := range []string{"", "kubebrain-client-tls", "../client", strings.Repeat("a", 64)} {
+		t.Run("secret="+secret, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			t.Setenv("PROBE_CLIENT_TLS_SECRET", secret)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+				"FAKE_KUBECTL_STATE="+statePath, "FAKE_TLS_STATE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+				"PROBE_ITERATIONS=3")
+			output, err := command.CombinedOutput()
+			require.Error(t, err)
+			require.Contains(t, string(output), "PROBE_CLIENT_TLS_SECRET")
+			require.NotContains(t, readOptionalFile(t, logPath), " run ")
+			require.NotContains(t, readOptionalFile(t, logPath), " patch ")
+			require.NoFileExists(t, statePath)
+		})
+	}
+}
+
+func TestRolloutAvailabilityRunnerBindsIndependentInfoTrust(t *testing.T) {
+	for _, filename := range []string{"kubebrain.yaml", "kubebrain-tls.yaml"} {
+		t.Run(filename, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			encoded, err := json.Marshal(productionRolloutHealthContainer(t, filename))
+			require.NoError(t, err)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+				"FAKE_KUBECTL_STATE="+statePath, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3",
+				"FAKE_RUNTIME_HEALTH_CONTAINER="+string(encoded),
+				"PROBE_INFO_TLS_SERVER_NAME=info.kubebrain.example",
+				"TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("e", 64),
+				"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64))
+			if filename == "kubebrain-tls.yaml" {
+				command.Env = append(command.Env, "FAKE_TLS_STATE=true")
+			}
+			output, err := command.CombinedOutput()
+			require.NoError(t, err, string(output))
+			log := readOptionalFile(t, logPath)
+			require.Contains(t, log, "--source-info-cacert=/etc/kubebrain/probe-info-ca/ca.crt")
+			require.Contains(t, log, "--source-info-tls-server-name=info.kubebrain.example")
+			require.Contains(t, log, "--source-info-endpoints=https://kubebrain-0.")
+			require.Contains(t, log, `"configMap":{"name":"rollout-probe-info-ca","defaultMode":288,"items":[{"key":"ca.crt","path":"ca.crt"}]}`)
+			for _, line := range strings.Split(log, "\n") {
+				if strings.Contains(line, " run kubebrain-rollout-availability-probe-cleanup ") {
+					require.NotContains(t, line, "probe-info-ca", "cleanup needs no info trust or credentials")
+				}
+			}
+		})
+	}
+}
+
+func TestRolloutAvailabilityRunnerRequiresExplicitInfoTrust(t *testing.T) {
+	for _, name := range []string{"", "../info-ca", strings.Repeat("a", 64)} {
+		t.Run("configmap="+name, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			t.Setenv("PROBE_INFO_CA_CONFIGMAP", name)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+				"FAKE_KUBECTL_STATE="+statePath, "FAKE_TLS_STATE=true", "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+				"PROBE_ITERATIONS=3", "TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("e", 64),
+				"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64))
+			output, err := command.CombinedOutput()
+			require.Error(t, err)
+			require.Contains(t, string(output), "PROBE_INFO_CA_CONFIGMAP")
+			require.NotContains(t, readOptionalFile(t, logPath), " run ")
+			require.NotContains(t, readOptionalFile(t, logPath), " patch ")
+			require.NoFileExists(t, statePath)
+		})
+	}
 }
 
 func TestRolloutAvailabilityRunnerDoesNotBypassBoundedKubectlWrappers(t *testing.T) {
@@ -340,22 +502,31 @@ func TestRolloutAvailabilityRunnerRejectsCleanupBoundToDifferentReceipt(t *testi
 
 func TestRolloutAvailabilityRunnerReportsProbeFailureBeforeStartBarrier(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
-	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
-	command.Env = append(os.Environ(),
-		"KUBECTL_BIN="+fake,
-		"FAKE_KUBECTL_LOG="+logPath,
-		"FAKE_KUBECTL_STATE="+statePath,
-		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
-		"PROBE_ITERATIONS=3",
-		"PROBE_START_TIMEOUT=60s",
-		"FAKE_PROBE_START_FAIL=true",
-	)
-	started := time.Now()
-	output, err := command.CombinedOutput()
+	output, err := runProductionScriptCommandWithTimeout(t,
+		"run-kubebrain-rollout-availability.sh", []string{
+			"KUBECTL_BIN=" + fake,
+			"FAKE_KUBECTL_LOG=" + logPath,
+			"FAKE_KUBECTL_STATE=" + statePath,
+			"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true",
+			"PROBE_ITERATIONS=3",
+			"PROBE_START_TIMEOUT=60s",
+			"FAKE_PROBE_START_FAIL=true",
+		}, 10*time.Second)
 	require.Error(t, err)
 	require.Contains(t, string(output), "PROBE_FAIL invalid Snapshot scale put response")
 	require.Contains(t, string(output), "availability probe failed before publishing its start barrier")
-	require.Less(t, time.Since(started), 5*time.Second)
+	// Abort on the first terminal failure, without another start-barrier poll.
+	// Whole-command time also includes startup and ownership-bound cleanup;
+	// it is not the data plane's five-second operation latency SLO.
+	probeLogCalls := 0
+	for _, line := range strings.Split(readOptionalFile(t, logPath), "\n") {
+		if strings.HasSuffix(line, " logs kubebrain-rollout-availability-probe") ||
+			strings.Contains(line, " logs kubebrain-rollout-availability-probe ") {
+			probeLogCalls++
+		}
+	}
+	require.Equal(t, 1, probeLogCalls, "terminal failure must end start-barrier polling immediately")
+	require.NotContains(t, string(output), "did not publish its start barrier within")
 	require.NoFileExists(t, statePath, "a failed probe must not mutate the StatefulSet")
 }
 
@@ -1341,12 +1512,13 @@ func TestRolloutAvailabilityRunnerBindsMutualTLSProbeIdentity(t *testing.T) {
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, "--endpoint=https://kubebrain-client.kubebrain-system.svc:3379")
 	require.Contains(t, log, "--direct-endpoints=https://kubebrain-0.kubebrain-peer.kubebrain-system.svc:3379,https://kubebrain-1.kubebrain-peer.kubebrain-system.svc:3379,https://kubebrain-2.kubebrain-peer.kubebrain-system.svc:3379")
-	require.Contains(t, log, "--cacert=/etc/kubebrain/client-tls/ca.crt")
-	require.Contains(t, log, "--cert=/etc/kubebrain/client-tls/tls.crt")
-	require.Contains(t, log, "--key=/etc/kubebrain/client-tls/tls.key")
+	require.Contains(t, log, "--cacert=/etc/kubebrain/probe-client-tls/ca.crt")
+	require.Contains(t, log, "--cert=/etc/kubebrain/probe-client-tls/tls.crt")
+	require.Contains(t, log, "--key=/etc/kubebrain/probe-client-tls/tls.key")
 	require.Contains(t, log, "--tls-server-name=kubebrain-client.kubebrain-system.svc")
-	require.Contains(t, log, `"secretName":"kubebrain-client-tls"`)
-	require.Contains(t, log, `"mountPath":"/etc/kubebrain/client-tls"`)
+	require.Contains(t, log, `"secretName":"rollout-probe-client-tls"`)
+	require.Contains(t, log, `"mountPath":"/etc/kubebrain/probe-client-tls"`)
+	require.NotContains(t, log, `"secretName":"kubebrain-client-tls"`)
 	var overrideJSON string
 	for _, line := range strings.Split(log, "\n") {
 		if strings.Contains(line, " run kubebrain-rollout-availability-probe ") {
@@ -1400,7 +1572,7 @@ func TestRolloutAvailabilityRunnerBindsMutualTLSProbeIdentity(t *testing.T) {
 	require.Contains(t, override.Spec.Containers[0].Args, "--endpoint=https://kubebrain-client.kubebrain-system.svc:3379")
 	require.Contains(t, override.Spec.Containers[0].Args, "--snapshot-artifact-dir=/var/run/kubebrain-rollout-availability")
 	require.Len(t, override.Spec.Containers[0].VolumeMounts, 2)
-	require.Equal(t, "/etc/kubebrain/client-tls", override.Spec.Containers[0].VolumeMounts[0].MountPath)
+	require.Equal(t, "/etc/kubebrain/probe-client-tls", override.Spec.Containers[0].VolumeMounts[0].MountPath)
 	require.True(t, override.Spec.Containers[0].VolumeMounts[0].ReadOnly)
 	require.Equal(t, "snapshot-artifact", override.Spec.Containers[0].VolumeMounts[1].Name)
 	require.Equal(t, "/var/run/kubebrain-rollout-availability", override.Spec.Containers[0].VolumeMounts[1].MountPath)
@@ -1611,9 +1783,10 @@ func TestRolloutAvailabilityRunnerMigratesSemanticReadinessWithCandidate(t *test
 	require.Contains(t, string(output), "image=kubebrain:test->"+target)
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, `"path":"/spec"`)
-	require.Contains(t, log, `"httpGet":{"path":"/readyz","port":"info","scheme":"HTTPS"}`)
-	require.Contains(t, log, `"failureThreshold":1`)
-	require.Contains(t, log, `"periodSeconds":1`)
+	require.Contains(t, log, `"httpGet":{"path":"/ready","port":"info","scheme":"HTTPS"}`)
+	require.Contains(t, log, `"failureThreshold":3`)
+	require.Contains(t, log, `"periodSeconds":5`)
+	require.Contains(t, log, `"timeoutSeconds":6`)
 }
 
 func TestRolloutAvailabilityRunnerRejectsTCPReadinessWithoutMigration(t *testing.T) {
@@ -1668,7 +1841,7 @@ func TestRolloutAvailabilityRunnerRollsBackSemanticReadinessMigrationSpec(t *tes
 	require.Equal(t, 2, strings.Count(log, " patch statefulset/kubebrain --type=json -p "))
 	require.Equal(t, 4, strings.Count(log, `"path":"/spec"`))
 	require.Contains(t, log, `"tcpSocket":{"port":"client"}`)
-	require.Contains(t, log, `"httpGet":{"path":"/readyz","port":"info","scheme":"HTTPS"}`)
+	require.Contains(t, log, `"httpGet":{"path":"/ready","port":"info","scheme":"HTTPS"}`)
 }
 
 func TestRolloutAvailabilityRunnerRejectsConnectionAgingMigrationWhenAlreadyConfigured(t *testing.T) {
@@ -2081,6 +2254,9 @@ if [[ " $* " == *" --resource=pods "* && " $* " == *" --name=kubebrain-rollout-a
 fi
 `), 0o755))
 	t.Setenv("UID_DELETE_BIN", uidDeletePath)
+	t.Setenv("PROBE_CLIENT_TLS_SECRET", "rollout-probe-client-tls")
+	t.Setenv("PROBE_INFO_CA_CONFIGMAP", "rollout-probe-info-ca")
+	t.Setenv("PROBE_INFO_TLS_SERVER_NAME", "")
 	script := `#!/usr/bin/env bash
 set -euo pipefail
 printf ' %s' "$@" >>"$FAKE_KUBECTL_LOG"
@@ -2213,7 +2389,17 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   if [[ "${FAKE_TCP_READINESS:-false}" == true ]]; then
     if [[ "${ENABLE_HTTP_READINESS_MIGRATION:-false}" != true || ! -e "$FAKE_KUBECTL_STATE" ]]; then
       readiness_probe='{"failureThreshold":3,"initialDelaySeconds":5,"periodSeconds":5,"successThreshold":1,"tcpSocket":{"port":"client"},"timeoutSeconds":1}'
+    else
+      readiness_probe="$(jq -c '.httpGet.path="/ready" | .periodSeconds=5 | .timeoutSeconds=6 | .failureThreshold=3' <<<"$readiness_probe")"
     fi
+  fi
+  if [[ -n "${FAKE_RUNTIME_HEALTH_CONTAINER:-}" ]]; then
+    readiness_probe="$(jq -c '.readinessProbe' <<<"$FAKE_RUNTIME_HEALTH_CONTAINER")"
+    prestop="$(jq -c '.lifecycle.preStop.exec.command' <<<"$FAKE_RUNTIME_HEALTH_CONTAINER")"
+    args="$(jq -cn --argjson args "$args" --argjson source "$FAKE_RUNTIME_HEALTH_CONTAINER" '
+      [$args[] | select((startswith("--info-cert-file=") or startswith("--info-key-file=")) | not)] +
+      [$source.args[] | select(startswith("--info-cert-file=") or startswith("--info-key-file="))]
+    ')"
   fi
   if [[ "${FAKE_NO_INFO_PORT:-false}" != true ]]; then
     info_port="${FAKE_INFO_PORT:-8080}"

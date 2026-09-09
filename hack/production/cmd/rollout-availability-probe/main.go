@@ -33,43 +33,45 @@ import (
 )
 
 type config struct {
-	endpoint            string
-	directEndpoints     []string
-	sourceInfoEndpoints []string
-	requiredSourceCaps  []string
-	prefix              string
-	iterations          int
-	interval            time.Duration
-	commandTimeout      time.Duration
-	dialTimeout         time.Duration
-	maxLatency          time.Duration
-	maxDirectLatency    time.Duration
-	leaseTTL            int64
-	pdEndpoints         []string
-	expectedStores      int
-	maxHeartbeatAge     time.Duration
-	maxTSOLatency       time.Duration
-	maxRegionLatency    time.Duration
-	rangeInterval       time.Duration
-	snapshotDelay       time.Duration
-	streamTimeout       time.Duration
-	streamBackoff       time.Duration
-	streamMaxBackoff    time.Duration
-	snapshotDir         string
-	caFile              string
-	certFile            string
-	keyFile             string
-	tlsServerName       string
-	minPublicTCPDials   int64
-	minDirectTCPDials   int64
-	leaderTargetOnly    bool
-	reportLeaderTarget  bool
-	leaderStatefulSet   string
-	leaderHeadlessSvc   string
-	leaderNamespace     string
-	cleanupOwnedFixture bool
-	fixtureOwner        fixtureOwnerIdentity
-	fixtureLeaseIDs     []clientv3.LeaseID
+	endpoint             string
+	directEndpoints      []string
+	sourceInfoEndpoints  []string
+	sourceInfoCAFile     string
+	sourceInfoServerName string
+	requiredSourceCaps   []string
+	prefix               string
+	iterations           int
+	interval             time.Duration
+	commandTimeout       time.Duration
+	dialTimeout          time.Duration
+	maxLatency           time.Duration
+	maxDirectLatency     time.Duration
+	leaseTTL             int64
+	pdEndpoints          []string
+	expectedStores       int
+	maxHeartbeatAge      time.Duration
+	maxTSOLatency        time.Duration
+	maxRegionLatency     time.Duration
+	rangeInterval        time.Duration
+	snapshotDelay        time.Duration
+	streamTimeout        time.Duration
+	streamBackoff        time.Duration
+	streamMaxBackoff     time.Duration
+	snapshotDir          string
+	caFile               string
+	certFile             string
+	keyFile              string
+	tlsServerName        string
+	minPublicTCPDials    int64
+	minDirectTCPDials    int64
+	leaderTargetOnly     bool
+	reportLeaderTarget   bool
+	leaderStatefulSet    string
+	leaderHeadlessSvc    string
+	leaderNamespace      string
+	cleanupOwnedFixture  bool
+	fixtureOwner         fixtureOwnerIdentity
+	fixtureLeaseIDs      []clientv3.LeaseID
 }
 
 func classifyCleanupLeaseError(err error) (alreadyAbsent bool, cleanupErr error) {
@@ -86,6 +88,8 @@ func main() {
 	flag.StringVar(&directEndpoints, "direct-endpoints", "", "comma-separated stable direct KubeBrain Pod endpoints")
 	var sourceInfoEndpoints string
 	flag.StringVar(&sourceInfoEndpoints, "source-info-endpoints", "", "comma-separated stable source Pod info endpoints checked before any fixture write")
+	flag.StringVar(&cfg.sourceInfoCAFile, "source-info-cacert", "", "independent trusted CA file for HTTPS source info endpoints; no client identity is sent")
+	flag.StringVar(&cfg.sourceInfoServerName, "source-info-tls-server-name", "", "optional source info TLS server name; defaults to each endpoint hostname")
 	var requiredSourceCapabilities string
 	flag.StringVar(&requiredSourceCapabilities, "required-source-capabilities", "", "comma-separated source data-plane capabilities required before an online rollout")
 	flag.StringVar(&cfg.prefix, "prefix", "/kubebrain-rollout-availability/", "exclusive probe key prefix")
@@ -408,7 +412,7 @@ func (cfg config) validate() error {
 		}
 		seenDirectEndpoints[endpoint] = struct{}{}
 	}
-	if err := validateSourceCapabilityConfig(cfg, tlsEnabled); err != nil {
+	if err := validateSourceCapabilityConfig(cfg); err != nil {
 		return err
 	}
 	for _, endpoint := range cfg.pdEndpoints {
@@ -785,8 +789,12 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		return fmt.Errorf("load KubeBrain TLS identity: %w", err)
 	}
 	if len(cfg.requiredSourceCaps) > 0 {
+		infoTLS, err := cfg.sourceInfoTLSConfig()
+		if err != nil {
+			return fmt.Errorf("load source info TLS trust: %w", err)
+		}
 		if err := verifySourceCapabilities(ctx, cfg.sourceInfoEndpoints, cfg.requiredSourceCaps,
-			tlsConfig, cfg.dialTimeout, cfg.commandTimeout); err != nil {
+			infoTLS, cfg.dialTimeout, cfg.commandTimeout); err != nil {
 			return fmt.Errorf("source capability preflight: %w", err)
 		}
 	}
