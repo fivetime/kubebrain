@@ -1231,3 +1231,35 @@ TLS Secret 与 info CA/SAN；不得复用旧 `run-security-controlled-ha.sh` 冒
 60483/83867/88336/44673；verifier 为 `security-client-safets-watch-post-verify.log`。
 先轮询这四个原会话，只有终态全部 exit 0 且冻结摘要匹配后才登记完成、快进推送。
 本段只登记提交后复验入口，不改变产品源码，不把正在运行写成已经通过。
+
+等待 post 期间补充纯离线冷启动归因核查：使用实际部署的 keyspace
+`kubebrain-dbaas-test`、默认协调前缀 `/kubebrain-internal`，由当前产品 coder 和
+远端 API v1 txn codec 生成 object/durable/compact 三个范围，再与已采集的 5 Region
+元数据按半开区间交集比较。三者旧 raw 请求与修复后编码请求都仅命中 Region 2006。
+日志 `security-client-safets-checkpoint-region-offline.log`，程序
+`checkpoint-region-offline.go` 均在仓库外测试状态目录；exit 0，网络调用/数据写入均为 0。
+
+这收窄了归因：至少在此次采集的拓扑中，编码变化不会让本实例这三个 checkpoint 范围
+选择不同 Region。仍需保留通用编码修复，以应对其它键范围和后续 Region 分裂；但不能
+因此宣称早前 10m26s 首次初始化缺口已关闭。没有取得当时各 Region/Store 的水位、锁和
+拓扑完整时序，不将当前离线映射扩大为对历史根因的证明，也不降低 checkpoint 安全要求。
+
+随后只读复核三个当前源副本的 HTTPS `/capabilities`：按 HA 后权威 Pod 清单逐个校验
+UID/Ready，直接使用 immutable `kubebrain-test-info-ca` ConfigMap 的公开 CA 和
+`kubebrain-peer.kubebrain-dbaas-test.svc` SAN，不带任何客户端私钥。三个副本均提供
+`snapshot-history-pin-before-write-barrier-release.v1`，包括 HA 后新 UID
+`334eae03-1f53-4eb5-93c7-e230bec2b50b` 的 Pod 2。前后 Pod UID 一致，临时 loopback
+转发均停止，18880 已无监听。脚本 `verify-watch-release-info-readonly.sh` 与日志
+`security-client-safets-watch-info-readonly.log` 位于仓库外，原会话 46107 exit 0。
+未执行旧硬编码 Pod 2 UID 的验证脚本，未覆盖旧证据，也没有升级、重启或集群对象写入。
+
+`03480da7` post verifier/四分片均已 exit 0：709 项，171/194/181/163，耗时依次
+463.353/473.811/306.596/753.177s。五个冻结文件摘要全部再次匹配，终态确认后才创建
+`security-client-safets-watch-post-complete.json`。本轮提交前后完整门禁均通过，之前
+服务端拒绝响应失败及客户端随机测试失败仍保留为历史证据，不用单项重试替代完整结果。
+
+推送前远端 dbaas 仍为 `60137eb36ee7e4a8f61251a6f91b36ae1135aa23`，最近镜像 run
+`34290666105` 已 completed/success，没有运行中的镜像构建。现在准备正常 FF push
+包含 `03480da7` 的完整分支，并核对随后 CI 的精确 head SHA、最终状态和不可变镜像。
+当前记录只允许进入构建阶段，不代表镜像已发布或实例已升级。后续不得把旧 `60137eb3`
+镜像用作这次修复的部署证据。
