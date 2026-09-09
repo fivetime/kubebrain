@@ -1666,10 +1666,13 @@ func TestRolloutAvailabilityRunnerDeploysImmutableCandidateImage(t *testing.T) {
 		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE="+target,
 		"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("a", 64),
+		"FAKE_ROLLOUT_PROBE_PHASE=Running", "FAKE_ROLLOUT_DELAY=2",
 	)
 	output, err := command.CombinedOutput()
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(output), "image=kubebrain:test->"+target)
+	require.Contains(t, string(output), "ROLLOUT_PROBE_COVERAGE_CONFIRMED pod=kubebrain-rollout-availability-probe uid=33333333-3333-4333-8333-333333333333 phase=Running")
+	require.FileExists(t, logPath+".rollout-finished")
 	log := readOptionalFile(t, logPath)
 	require.Contains(t, log, "--request-timeout=10s -n kubebrain-system patch statefulset/kubebrain --type=json -p ")
 	require.Contains(t, log, `"value":"`+target+`"`)
@@ -2195,6 +2198,75 @@ func TestRolloutAvailabilityRunnerBoundsProbePhaseResponse(t *testing.T) {
 	require.Contains(t, string(boundaryOutput), "rollout availability gate passed")
 }
 
+func TestRolloutAvailabilityRunnerKeepsProbeActiveThroughRollout(t *testing.T) {
+	for _, tc := range []struct {
+		name, phase, delay, message string
+		replace                     bool
+		logFault                    string
+	}{
+		{name: "failed during rollout", phase: "Failed", delay: "30", message: "availability probe failed during rollout"},
+		{name: "completed before rollout", phase: "Succeeded", delay: "30", message: "availability probe completed before rollout coverage was verified"},
+		{name: "completed at rollout boundary", phase: "Succeeded", delay: "0", message: "availability probe completed before rollout coverage was verified"},
+		{name: "replacement during rollout", phase: "Running", delay: "30", message: "availability probe identity changed during rollout", replace: true},
+		{name: "pending during rollout", phase: "Pending", delay: "30", message: "availability probe is not running during rollout: Pending"},
+		{name: "missing phase during rollout", phase: "missing", delay: "30", message: "availability probe phase is unreadable during rollout"},
+		{name: "hung evidence during rollout", phase: "hang", delay: "30", message: "failed to read availability probe during rollout"},
+		{name: "failed probe with unavailable log", phase: "Failed", delay: "30", message: "availability probe failed during rollout", logFault: "unavailable"},
+		{name: "failed probe with oversized log", phase: "Failed", delay: "30", message: "availability probe failed during rollout", logFault: "oversized"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			target := "registry.example/kubebrain@sha256:" + strings.Repeat("b", 64)
+			env := []string{
+				"KUBECTL_BIN=" + fake, "FAKE_KUBECTL_LOG=" + logPath, "FAKE_KUBECTL_STATE=" + statePath,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=3", "TARGET_IMAGE=" + target,
+				"TARGET_RUNTIME_DIGESTS=sha256:" + strings.Repeat("b", 64),
+				"FAKE_ROLLOUT_PROBE_PHASE=" + tc.phase, "FAKE_ROLLOUT_DELAY=" + tc.delay,
+				"FAKE_ROLLOUT_FAILURE_LOG_FAULT=" + tc.logFault,
+			}
+			if tc.replace {
+				env = append(env, "FAKE_ROLLOUT_REPLACE_PROBE=true")
+			}
+			if tc.phase == "hang" {
+				env = append(env, "KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT=2s")
+			}
+			output, err := runProductionScriptCommandWithTimeout(t,
+				"run-kubebrain-rollout-availability.sh", env, 10*time.Second)
+			require.Error(t, err)
+			require.Contains(t, string(output), tc.message)
+			require.Contains(t, string(output), "candidate rollout failed; restoring original image kubebrain:test")
+			require.NoFileExists(t, statePath, "the original image must be restored before returning")
+			require.NotContains(t, string(output), "ROLLOUT_PROBE_COVERAGE_CONFIRMED")
+			if tc.phase == "Failed" && tc.logFault == "" {
+				require.Contains(t, string(output), "PROBE_FAIL injected during rollout")
+				log := readOptionalFile(t, logPath)
+				rollback := strings.LastIndex(log, `"value":"kubebrain:test"`)
+				failureLog := strings.LastIndex(log, " logs kubebrain-rollout-availability-probe\n")
+				require.Greater(t, failureLog, rollback, "collect diagnostics only after requesting rollback")
+			}
+			if tc.logFault != "" {
+				require.Contains(t, string(output), "failed to collect availability probe failure log after rollback")
+				require.NoFileExists(t, logPath+".probe", "failed diagnostics must not skip owned Pod cleanup")
+				require.NoFileExists(t, logPath+".owner", "failed diagnostics must not skip fixture cleanup")
+				require.NoFileExists(t, logPath+".cleanup")
+				if tc.logFault == "oversized" {
+					require.Contains(t, string(output), "runtime evidence exceeds 1048576 bytes")
+				}
+			}
+			if tc.delay != "0" {
+				require.NoFileExists(t, logPath+".rollout-finished", "do not wait for candidate rollout completion after probe failure")
+				pid := strings.TrimSpace(readOptionalFile(t, logPath+".rollout-pid"))
+				require.Regexp(t, `^[1-9][0-9]*$`, pid)
+				require.Error(t, exec.Command("kill", "-0", pid).Run(), "the canceled rollout observer must not remain alive")
+			}
+			if tc.replace {
+				log := readOptionalFile(t, logPath)
+				require.NotContains(t, log, "--name=kubebrain-rollout-availability-probe --uid=", "leave the replacement Pod untouched")
+			}
+		})
+	}
+}
+
 func TestRolloutAvailabilityRunnerFailsFastWhenProbeFails(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
@@ -2273,6 +2345,12 @@ if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == ready && " $* " == *" wait --for=condit
 fi
 if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == rollout && " $* " == *" rollout status statefulset/kubebrain "* ]]; then
   sleep 30
+fi
+if [[ -n "${FAKE_ROLLOUT_PROBE_PHASE:-}" && -e "$FAKE_KUBECTL_STATE" && " $* " == *" rollout status statefulset/kubebrain "* ]]; then
+  printf '%s' "$BASHPID" >"${FAKE_KUBECTL_LOG}.rollout-pid"
+  : >"${FAKE_KUBECTL_LOG}.rollout-entered"
+  sleep "${FAKE_ROLLOUT_DELAY:-30}"
+  : >"${FAKE_KUBECTL_LOG}.rollout-finished"
 fi
 if [[ "${FAKE_KUBECTL_HANG_TARGET:-}" == phase && " $* " == *" wait --for=jsonpath={.status.phase}=Succeeded pod/kubebrain-rollout-availability-probe "* ]]; then
   sleep 30
@@ -2533,10 +2611,28 @@ elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o json "* ]];
     exit 1
   fi
   [[ -e "$probe_state" ]] || exit 1
+  if [[ -e "${FAKE_KUBECTL_LOG}.rollout-entered" && "${FAKE_ROLLOUT_REPLACE_PROBE:-false}" == true ]]; then
+    jq -c '.metadata.uid="66666666-6666-4666-8666-666666666666"' "$probe_state" >"${probe_state}.next"
+    mv -- "${probe_state}.next" "$probe_state"
+  fi
+  observed_phase=Running
+  if [[ -e "${FAKE_KUBECTL_LOG}.rollout-entered" && -n "${FAKE_ROLLOUT_PROBE_PHASE:-}" ]]; then
+    observed_phase="$FAKE_ROLLOUT_PROBE_PHASE"
+  fi
+  # Inject evidence faults only while observing the candidate, not during
+  # UID-fenced cleanup after restoring the original StatefulSet.
+  if [[ -e "$FAKE_KUBECTL_STATE" ]]; then
+    if [[ "$observed_phase" == missing ]]; then
+      jq -c 'del(.status)' "$probe_state"
+      exit 0
+    elif [[ "$observed_phase" == hang ]]; then
+      sleep 30
+    fi
+  fi
   if [[ "${FAKE_PROBE_REPLACED_BEFORE_DELETE:-false}" == true && " $* " == *" --ignore-not-found "* ]]; then
     jq -c '.metadata.uid="66666666-6666-4666-8666-666666666666" | .metadata.resourceVersion="replacement-rv"' "$probe_state"
   else
-    jq -c . "$probe_state"
+    jq -c --arg phase "$observed_phase" '.status.phase=$phase' "$probe_state"
   fi
 elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o jsonpath={.status.phase} "* ]]; then
   if [[ "${FAKE_PROBE_FAILED:-false}" == true ]]; then printf Failed
@@ -2671,6 +2767,13 @@ elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
   payload="${payload/public_tcp_dials=2/public_tcp_dials=${FAKE_PUBLIC_TCP_DIALS:-2}}"
   payload="${payload/min_direct_tcp_dials=2/min_direct_tcp_dials=${FAKE_MIN_DIRECT_TCP_DIALS:-2}}"
   [[ "${FAKE_PROBE_START_FAIL:-false}" != true ]] || payload=$'PROBE_FAIL invalid Snapshot scale put response\n'
+  if [[ -e "${FAKE_KUBECTL_LOG}.rollout-entered" && "${FAKE_ROLLOUT_PROBE_PHASE:-}" == Failed ]]; then
+    case "${FAKE_ROLLOUT_FAILURE_LOG_FAULT:-}" in
+      unavailable) exit 1 ;;
+      oversized) head -c 1048577 /dev/zero; exit 0 ;;
+    esac
+    payload=$'PROBE_FAIL injected during rollout\n'
+  fi
   [[ "${FAKE_KEEPALIVE_QUEUE_FULL:-false}" != true ]] || payload=$'lease keepalive response queue is full; dropping response send\n'"$payload"
   printf '%s' "$payload"
   if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == probe-log ]]; then

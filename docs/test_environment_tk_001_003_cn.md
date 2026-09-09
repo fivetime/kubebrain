@@ -1405,3 +1405,77 @@ imageID 均回到旧 a245c95f...。回滚后的 Pod UID：0=a621367f-0f46-42f7-b
 下一步应先实现并验证升级前目标节点镜像预拉取、滚动期间 probe 失败的及时回滚及
 覆盖整个滚动窗口的探针生命周期，再核对 CRI-O index 报告的受限接受条件。不得只因
 三个节点经过此次失败已缓存镜像就直接重试并关闭冷镜像升级缺口。
+
+### 2026-09-09 滚动期间探针监控修复（本地验证，未部署）
+
+前一轮升级和回滚均已终态，本轮只修改本地 runner 与其测试，未再次执行集群升级，也未创建上游 PR。
+修复前的 `security-rollout-observer-before.log` 记录四个 RED 场景：失败/提前完成/被替换的探针无法及时
+终止长 rollout 等待；rollout 边界已 Succeeded 的探针还可能错误放行。原测试会话 84628 已不存在，
+日志明确为 FAIL，不据此重复启动真实升级。
+
+新实现让有界 rollout 观察进程与 UID 约束的 probe Running 检查并行，观察结束后再次确认原探针仍运行。
+失败路径先回收观察进程，再进入既有 spec/UID/resourceVersion 约束的回滚；诊断日志留在回滚处理之后读取，
+并隔离超限/读取失败，保证补偿清理仍执行。正常延迟 rollout、异常观察进程退出及原超时/替换/回滚测试
+已通过：`security-rollout-observer-targeted.log` exit 0，91.405s。补齐后的九个异常子场景包括 Pending、
+缺失 phase、卡住的 probe API、不可读/超大失败日志，`security-rollout-observer-final-targeted.log`
+exit 0，54.562s；同时验证恢复原镜像、观察进程不存活、无覆盖通过标记，诊断异常仍删除自有 fixture。
+`bash -n`、`git diff --check` 和 `go vet ./hack/production` 均通过；这些不是实际数据面升级成功证据。
+
+产品源码已冻结，校验清单为私有审计目录的 `security-rollout-observer-code.sha256`。提交前完整门禁已启动：
+`hack/production/test-shard.sh --verify 4` exit 0，710 tests，四片 171/194/182/163；日志
+`security-rollout-observer-pre-verify.log`。四片 0/1/2/3 原会话分别为 71910/72953/99396/49331，
+日志 `security-rollout-observer-pre-{0,1,2,3}.log`；此条记录时仍在运行，尚未记为通过、尚未提交产品代码。
+后续必须读取这四个会话的终态；源码未变且全部通过后才可提交，产品提交后仍须立即重跑 verifier 与四片。
+真实升级失败、冷镜像 36.973s 拉取及 CRI-O index digest 的未闭环状态不因本轮本地修复而改变。
+
+上述首轮完整门禁不能记为通过：片 2 exit 1（364.348s），`TestValidateTiKVRegionHealth` 的磁盘压力
+案例没有输出预期诊断；片 0 exit 1（476.179s），数据卷 retention 两个子案例分别提前报 TiKV PV/PD PVC
+读取失败。片 1 exit 0（495.447s），片 3 此条记录时仍在运行。独立复查原健康检查用例 exit 0（95.297s），
+`security-rollout-observer-region-health-recheck.log`，但单次复查通过不覆盖首轮完整门禁失败。
+
+检查发现该测试的普通 fixture 将每次查询限制为 1 秒，而生产默认为 10 秒；本机当时 load average
+13.11/12.23/7.83，内存和临时盘有余量。由于原失败未保留具体退出码，只能把调度/查询超时视为待确认因素，
+不能断言所有失败都是负载造成。确定的问题是 `df` 查询的命令替换在 `set -e` 下会无诊断退出：新增
+PD/TiKV 各两个明确注入的失败/超时案例，在原脚本上全部 RED（8.603s），输出均为空，日志
+`security-rollout-observer-disk-read-before.log`。后续补诊断并重跑整套门禁，不能只重跑失败断言后提交。
+
+预拉取准备仅做了只读检查，未创建 Pod：三副本 UID 与回滚终态一致，源 StatefulSet 的 required node
+affinity 将 hostname 限制为 k8s3-worker1/2/3，分别有一个副本，容器 imagePullPolicy=IfNotPresent。
+三节点均 linux/amd64、kubelet v1.36.0、CRI-O 1.35.3，Ready=True、DiskPressure=False，无 taint/cordon。
+节点 UID 分别为 215fb73f-6e5c-4bf5-b9e4-63411fdccee0、9658dbb9-583f-40f3-b7e8-9a33508649fb、
+1b181915-819a-43d0-88e8-8d232c67a1f7；完整只读证据为 `security-rollout-prewarm-{pods,nodes}-readonly.json`。
+源模板没有 imagePullSecrets/runtimeClassName；未来通用预拉取实现仍须考虑这两项，不能只按本环境空值处理。
+
+设计约束：预拉取应在业务 Pod 替换前完成，覆盖候选可调度节点，而非仅碰巧当前有副本的节点；绑定 Node UID、
+平台、候选 digest 与临时 Pod UID，失败不得触发 StatefulSet mutation，部分创建后也须身份约束地清理。
+临时 Pod 不需要业务/服务端 TLS、数据卷或 ServiceAccount token，应采用非 root、只读文件系统、drop ALL
+capabilities，并使用正常调度约束。Kubernetes 文档指出直接设置 nodeName 会绕过 scheduler，且自动替换节点
+会影响预拉取可靠性；缓存不能替代候选调度范围与身份复查，也不能绕过私有镜像凭证校验。
+参考 [镜像预拉取与凭证校验](https://kubernetes.io/docs/concepts/containers/images/#pre-pulled-images)、
+[节点分配与 nodeName](https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodename)。
+这部分是基于现场约束的实现准备，不是预拉取已完成或冷启动验收通过的声明。
+
+首轮片 3 已 exit 0（772.141s），四片全部终态；首轮完整门禁的最终结论仍是失败，禁止用两片绿色替代。
+确认最后一片结束后才编辑健康检查脚本，避免改变运行中测试所执行的脚本。现在磁盘查询失败会明确报告
+组件、Pod 和命令退出码；生产 `PROBE_TIMEOUT` 默认仍为 10 秒，磁盘压力/容量/Retain 等验收条件未放宽。
+普通语义 fixture 改用与生产相同的 10 秒查询预算，注入失败/卡住命令的专门测试显式使用 1 秒，外层仍限 10 秒。
+四个明确注入的场景连续三次通过（25.888s），`security-rollout-observer-disk-read-after.log` exit 0；
+分别锁定 exit=17 和 timeout exit=124 的诊断，不能误报 health gate passed。原首轮失败的具体退出码无法追溯，
+该诊断改动不应被描述为已证明原失败全部由超时导致。
+
+05:13 UTC 已冻结本轮四个产品/测试文件，清单 `security-rollout-observer-v2-code.sha256`，`go vet`、
+两个 shell 的 `bash -n`、`git diff --check` 均通过。新 verifier exit 0：711 tests，四片 171/194/183/163，
+日志 `security-rollout-observer-v2-pre-verify.log`。重新启动的片 0/1/2/3 原会话为
+76262/30907/82623/12163，日志 `security-rollout-observer-v2-pre-{0,1,2,3}.log`；当前均运行中，尚无完整
+通过回执、没有产品提交或 push。继续时优先读取这些原会话及对应终态，不以首轮日志代替新源码的门禁。
+只有本轮完整门禁全绿且源码清单仍匹配后，才可提交；产品提交后立即再跑 verifier 和四片完整测试。
+
+05:26 UTC，本轮提交前 verifier 与四片已全部通过，原会话均读到 exit 0。片 0/1/2/3 分别为
+471.885/509.999/396.804/781.826s，覆盖完整 711 tests（171/194/183/163）；四个文件的冻结校验和再次全部
+匹配。额外的进程组工具 race 测试 exit 0（3.145s），日志 `security-rollout-observer-v2-processgroup-race.log`。
+首次 710 项门禁失败记录继续保留，不用新绿色结果覆盖历史失败或声称已追溯其所有具体退出码。
+这组结果允许提交本地修复，但不代表候选镜像已部署，更不代表冷镜像/首次 checkpoint 初始化缺口已关闭。
+
+另以 hostname label selector 查询整个候选节点集合，而非仅按预期名称读取：结果精确为已记录的三个 Node UID，
+没有额外匹配节点，证据 `security-rollout-prewarm-pool-readonly.json`。未来执行前仍须重新验证集合及 UID，
+不能长期复用本次只读快照作为节点预拉取完成凭证。

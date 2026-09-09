@@ -63,11 +63,19 @@ elif [[ "$args" == *"get pv pv-"* ]]; then
   fi
 elif [[ "$args" == *" exec "* && "$args" == *" df -P "* ]]; then
   if [[ "$args" == *"exec kb-pd-"* ]]; then
+    component=PD
     used="${FAKE_PD_DISK_USED_PERCENT:-42}"
     capacity="${FAKE_PD_DISK_CAPACITY_KIB:-5242880}"
   else
+    component=TiKV
     used="${FAKE_DISK_USED_PERCENT:-42}"
     capacity="${FAKE_DISK_CAPACITY_KIB:-5242880}"
+  fi
+  if [[ "${FAKE_DISK_READ_COMPONENT:-}" == "$component" ]]; then
+    case "${FAKE_DISK_READ_MODE:-}" in
+      fail) exit 17 ;;
+      hang) sleep 30 ;;
+    esac
   fi
   printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/test %s 42000 58000 %s%% /var/lib/tikv\n' "$capacity" "$used"
 else
@@ -79,10 +87,29 @@ fi
 	return []string{
 		"KUBECTL=" + fakeKubectl,
 		"KUBE_CONTEXT=test-context",
-		"PROBE_TIMEOUT=1s",
+		// Ordinary semantic fixtures use the production query budget. A
+		// dedicated injected-hang test below checks the one-second timeout;
+		// scheduler contention in four shards must not replace semantic errors.
+		"PROBE_TIMEOUT=10s",
 		"REQUIRED_HEALTHY_REGION_SAMPLES=1",
 		"MAX_REGION_HEALTH_SAMPLES=1",
 		"REGION_HEALTH_INTERVAL_SECONDS=0",
+	}
+}
+
+func TestValidateTiKVRegionHealthReportsDiskReadFailure(t *testing.T) {
+	for _, component := range []struct{ name, pod string }{{"PD", "kb-pd-0"}, {"TiKV", "kb-tikv-0"}} {
+		for _, fault := range []struct{ mode, code string }{{"fail", "17"}, {"hang", "124"}} {
+			t.Run(component.name+"/"+fault.mode, func(t *testing.T) {
+				env := append(regionHealthTestEnvironment(t), "PROBE_TIMEOUT=1s",
+					"FAKE_DISK_READ_COMPONENT="+component.name, "FAKE_DISK_READ_MODE="+fault.mode)
+				output, err := runProductionScriptCommandWithTimeout(t,
+					"validate-tikv-region-health.sh", env, 10*time.Second)
+				require.Error(t, err)
+				require.Contains(t, string(output), "cannot read "+component.name+" disk usage for "+component.pod+": command exit="+fault.code)
+				require.NotContains(t, string(output), "region health gate passed")
+			})
+		}
 	}
 }
 

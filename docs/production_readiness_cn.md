@@ -1268,6 +1268,15 @@ rollout runner 的初始/终态 StatefulSet JSON、每次 probe 启动屏障日�
 报告资源门禁，不能误报为缺少启动屏障，精确 1 MiB 的合法证据仍可完成滚动演练。
 等待 probe 完成时读取的 Pod phase jsonpath 响应还采用独立 4096-byte 上界；每次重试写入独立 0600
 文件后才读入标量，超限 phase 不能借下一次 wait 成功而放行，精确边界仍可继续等待并完成演练。
+滚动等待与探针监控必须并行：有外层 timeout 的 `kubectl rollout status` 在后台观察，runner 每轮读取
+带 UID 的完整 Pod JSON，要求原探针未进入删除且 phase=Running；失败、提前完成、身份替换、不可读
+或其它 phase 都不能继续判定通过。rollout status 成功后还必须再次确认原探针仍 Running，才输出
+`ROLLOUT_PROBE_COVERAGE_CONFIRMED` 并等待最终 summary；该标记本身不是完整可用性验收。
+失败退出先终止并回收后台观察进程，再执行既有身份约束的回滚。探针失败日志在回滚处理后、删除探针前
+重新检查 UID 并限时限量读取；诊断失败不得跳过 fixture 清理。每次监控读取的外层 timeout 不超过剩余
+rollout 观察预算。探针迭代次数仍须按实际窗口配置：默认 900 次、0.1 秒间隔并不保证覆盖允许的 300 秒
+滚动；提前结束现在会明确失败，不能把短探针通过当成全窗口证明。此次真实环境入口采用 3600 次，但冷镜像
+预拉取及真实全窗口升级验收仍待完成，不能以这组本地 runner 回归测试代替。
 runner 的 command/dial timeout、三类最大延迟、probe Ready/completion timeout 和 StatefulSet rollout
 timeout 共八个 duration，必须在第一次 Kubernetes 调用前通过 Go `time.Duration` 可表示域校验；只允许
 正整数加 `ms|s|m`，对应最大 magnitude 为 `9223372036854ms`、`9223372036s`、`153722867m`。

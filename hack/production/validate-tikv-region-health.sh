@@ -158,11 +158,14 @@ fi
 
 validate_storage_component() {
   local component="$1" container="$2" data_dir="$3" rows="$4"
-  local pod ready pvc disk_row capacity_kib available_kib used_percent_text used_percent
+  local pod ready pvc disk_row disk_read_status capacity_kib available_kib used_percent_text used_percent
   local pvc_json pvc_uid pv pvc_capacity pvc_capacity_kib pv_json pv_uid csi_driver volume_handle volume_identity reclaim_policy
 while IFS=$'\t' read -r pod ready pvc; do
   [[ -n "$pod" && "$ready" == "True" && -n "$pvc" ]] || continue
-  disk_row="$(kctl -n "$TIDB_NAMESPACE" exec "$pod" -c "$container" -- df -P "$data_dir" | awk 'NR == 2 {print $2 "\t" $4 "\t" $5}')"
+  disk_row="$(kctl -n "$TIDB_NAMESPACE" exec "$pod" -c "$container" -- df -P "$data_dir" | awk 'NR == 2 {print $2 "\t" $4 "\t" $5}')" || {
+    disk_read_status=$?
+    die "cannot read ${component} disk usage for ${pod}: command exit=${disk_read_status}"
+  }
   IFS=$'\t' read -r capacity_kib available_kib used_percent_text <<<"$disk_row"
   used_percent="${used_percent_text%%%}"
   [[ "$capacity_kib" =~ ^[1-9][0-9]*$ && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+$ ]] || \

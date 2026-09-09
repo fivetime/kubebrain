@@ -670,6 +670,85 @@ fixture_cleanup_pod_uid=""
 fixture_cleanup_evidence_verified=false
 fixture_cleanup_ready=false
 fixture_cleanup_verified=false
+rollout_observer_pid=""
+rollout_probe_failed=false
+
+stop_rollout_observer() {
+  [[ -n "$rollout_observer_pid" ]] || return 0
+  # The PID belongs to timeout itself, which owns and terminates its command
+  # group. Reap it before rollback; never leave an old rollout watch running.
+  kill -TERM "$rollout_observer_pid" 2>/dev/null || true
+  wait "$rollout_observer_pid" 2>/dev/null || true
+  rollout_observer_pid=""
+}
+
+check_rollout_probe_active() {
+  local deadline="$1" remaining phase
+  local evidence="$runtime_evidence_dir/probe-during-rollout.json"
+  remaining=$((deadline - SECONDS))
+  if (( remaining <= 0 )); then
+    echo "KubeBrain rollout did not converge within ${ROLLOUT_TIMEOUT}" >&2
+    return 1
+  fi
+  if ! capture_runtime_evidence "$evidence" kctl_evidence_bounded "${remaining}s" \
+    get pod "$PROBE_POD" -o json; then
+    echo "failed to read availability probe during rollout" >&2
+    return 1
+  fi
+  if ! jq -e --arg uid "$probe_pod_uid" \
+    '.metadata.uid == $uid and .metadata.deletionTimestamp == null' "$evidence" >/dev/null; then
+    echo "availability probe identity changed during rollout" >&2
+    return 1
+  fi
+  phase="$(jq -er '.status.phase | select(type == "string")' "$evidence")" || {
+    echo "availability probe phase is unreadable during rollout" >&2
+    return 1
+  }
+  case "$phase" in
+    Running) ;;
+    Failed)
+      rollout_probe_failed=true
+      echo "availability probe failed during rollout" >&2
+      return 1 ;;
+    Succeeded)
+      echo "availability probe completed before rollout coverage was verified" >&2
+      return 1 ;;
+    *)
+      echo "availability probe is not running during rollout: ${phase}" >&2
+      return 1 ;;
+  esac
+  if (( SECONDS >= deadline )); then
+    echo "KubeBrain rollout did not converge within ${ROLLOUT_TIMEOUT}" >&2
+    return 1
+  fi
+}
+
+wait_for_rollout_with_active_probe() {
+  local deadline
+  deadline=$((SECONDS + $(duration_ceil_seconds "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT")))
+  # exec makes $! the bounded observer, not an intermediate shell. Keep the
+  # original kubectl timeout/error semantics while checking probe health.
+  (
+    exec "$TIMEOUT_BIN" --signal=TERM --kill-after=1s "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
+      "${kubectl_command[@]}" -n "$KUBEBRAIN_NAMESPACE" \
+      rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT"
+  ) >/dev/null 2>&1 &
+  rollout_observer_pid=$!
+  while kill -0 "$rollout_observer_pid" 2>/dev/null; do
+    check_rollout_probe_active "$deadline" || return 1
+    sleep 0.5
+  done
+  if ! wait "$rollout_observer_pid"; then
+    rollout_observer_pid=""
+    echo "KubeBrain rollout did not converge within ${ROLLOUT_TIMEOUT}" >&2
+    return 1
+  fi
+  rollout_observer_pid=""
+  # A successful watch cannot prove availability if the probe had already
+  # completed. This also covers an observer that exits before the first poll.
+  check_rollout_probe_active "$deadline" || return 1
+  echo "ROLLOUT_PROBE_COVERAGE_CONFIRMED pod=${PROBE_POD} uid=${probe_pod_uid} phase=Running"
+}
 
 generate_fixture_lease_ids() {
   local -a ids=()
@@ -888,6 +967,7 @@ delete_probe_pod() {
   return 1
 }
 cleanup() {
+  stop_rollout_observer
   if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
     echo "candidate rollout failed; restoring original image ${image}" >&2
     rollback_current_json="$runtime_evidence_dir/statefulset-rollback-current.json"
@@ -960,6 +1040,22 @@ cleanup() {
       .status.currentRevision == $revision and .status.updateRevision == $revision
     ' "$runtime_evidence_dir/statefulset-hard-failover-recovered.json" >/dev/null; then
       echo "CRITICAL: hard-failover StatefulSet self-healed with identity drift" >&2
+    fi
+  fi
+  if [[ "$rollout_probe_failed" == true ]]; then
+    # Diagnostics must not delay the rollback request. Recheck identity before
+    # collecting logs, and contain evidence failures so fixture cleanup still
+    # runs even if the API or log producer is broken.
+    if (capture_runtime_evidence "$runtime_evidence_dir/probe-failed-identity.json" \
+        kctl_evidence get pod "$PROBE_POD" -o json) &&
+      jq -e --arg uid "$probe_pod_uid" '.metadata.uid == $uid' \
+        "$runtime_evidence_dir/probe-failed-identity.json" >/dev/null; then
+      if (capture_runtime_evidence "$runtime_evidence_dir/probe-failed-during-rollout.log" \
+          kctl_evidence logs "$PROBE_POD"); then
+        cat "$runtime_evidence_dir/probe-failed-during-rollout.log" >&2 || true
+      else
+        echo "failed to collect availability probe failure log after rollback" >&2
+      fi
     fi
   fi
   if [[ "$probe_deleted" != true && -n "$probe_pod_uid" ]] && ! delete_probe_pod; then
@@ -1548,11 +1644,7 @@ elif [[ "$OBSERVE_ONLY" != true ]]; then
   kctl_mutation patch "statefulset/$KUBEBRAIN_STATEFULSET" --type=json -p "$restart_patch" >/dev/null
 fi
 if [[ "$OBSERVE_ONLY" != true ]]; then
-  kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
-    rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null || {
-    echo "KubeBrain rollout did not converge within ${ROLLOUT_TIMEOUT}" >&2
-    exit 1
-  }
+  wait_for_rollout_with_active_probe || exit 1
 fi
 probe_complete_seconds="$(duration_ceil_seconds "$PROBE_COMPLETE_TIMEOUT")"
 probe_complete_deadline=$((SECONDS + probe_complete_seconds))
