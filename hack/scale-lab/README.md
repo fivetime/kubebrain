@@ -1,5 +1,9 @@
 # KubeBrain KWOK Scale Lab
 
+This directory is the authoritative scale-lab source. The retired local
+`/root/kwok-scale-lab` directory is not a supported tool or configuration path.
+See [migration notes](docs/local-tools-migration.md) for the consolidation audit.
+
 Reproducible harness for standing up a very-large single Kubernetes cluster
 (KWOK fake nodes + real control plane) on top of KubeBrain, and driving the
 load/latency/failover tests from the 33M-key campaign.
@@ -12,6 +16,8 @@ Running) · 100k nodes**, on three machines. Full write-up: `../../docs/scale-la
 ```
 hack/scale-lab/
   setup.sh              one-command bring-up (phases: storage|kubebrain|kwok|controlplane|tools)
+  build-tools.sh        local-only build; no lab.env, SSH, or cluster access
+  test-tools.sh         local race tests and vet (including nested modules)
   lab.env.example       machine + tuning config — copy to lab.env and edit
   config/               tiup TiKV topology, KWOK stage config, TiDB scale-out
   loadgen/              client-go object generator (own go.mod): nodes/workload/derive/runpods/storm/cleanup/status
@@ -20,6 +26,8 @@ hack/scale-lab/
     elogprobe/          watch history beyond the ring served from the event log (#45/#52)
     bulk/               bulk key writer for raw keyspace fill
     foload/             failover-under-load: continuous puts, per-3s gap detection (#46)
+    slowwatch/          slow etcd watch consumer; observed ordering, not gap-free proof
+    watchflood/         concurrent Kubernetes pod/node list+watch load
   docs/methodology.md   the full design guide (architecture, walls, staging)
   restest/              single-node functional test: full k8s resource-type coverage (badger backend, no TiKV)
 ```
@@ -43,6 +51,43 @@ Re-run any single phase after a reboot, e.g. `./setup.sh kubebrain`. Teardown:
 `tiup cluster destroy <cluster>`).
 
 ## Running tests
+
+Build and test locally without deployment configuration:
+
+```bash
+bash hack/scale-lab/build-tools.sh
+bash hack/scale-lab/test-tools.sh
+```
+
+`setup.sh tools` delegates to the same build entrypoint without loading `lab.env`.
+Build output defaults to ignored `hack/scale-lab/bin/`; override with an absolute
+`SCALE_LAB_BIN_DIR`. The two imported probes use the root module's dependencies,
+not copies of the old standalone go.mod/go.sum or prebuilt binaries.
+
+Read-only watch diagnostics (they still consume cluster resources; use a test cluster):
+
+```bash
+hack/scale-lab/bin/slowwatch -ep https://TEST-ENDPOINT:3379 \
+  -prefix /dedicated-test-prefix/ -cacert /path/ca.crt \
+  -cert /path/client.crt -key /path/client.key -duration 3m -delay 50ms
+hack/scale-lab/bin/watchflood -allow-load -kubeconfig /path/test.conf \
+  -context TEST-CONTEXT -namespace TEST-NAMESPACE -watchers 10 -node-watchers 0 -duration 5m
+```
+
+`slowwatch` requires concurrent writes from a separately controlled workload;
+zero events fails by default. Equal revisions within a transaction are valid.
+It detects observed revision regression, cancellation and early channel closure;
+it **cannot prove no lost events**, because other prefixes can consume revisions.
+`watchflood` requires an explicit kubeconfig/context and pod namespace (or explicit
+`-all-namespaces`); node watches are always cluster-scoped. Even pod watchers
+follow all list pages; odd pod watchers and node watchers take only the first page
+to obtain a watch revision. Error events are failures, bookmarks are separate
+from data events, reconnects re-list and may miss history: this is load diagnostics,
+not a continuity test. Workers stop before the final counters are printed.
+
+Do not run `setup.sh all` against the existing DBaaS test environment: it deploys
+its own storage and control plane. Adapt endpoints/configuration deliberately;
+local tests above do not perform a Kubernetes or TiKV deployment.
 
 `./setup.sh tools` builds everything into `bin/`:
 

@@ -3,6 +3,7 @@ package build_test
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -41,9 +42,9 @@ func TestScaleLabBuildPhasesCheckGoVersionBeforeBuilding(t *testing.T) {
 	contents, err := os.ReadFile("../hack/scale-lab/setup.sh")
 	require.NoError(t, err)
 	script := string(contents)
-	require.Equal(t, 2, strings.Count(script, `"$HERE/check-go-version.sh"`))
+	require.Equal(t, 1, strings.Count(script, `"$HERE/check-go-version.sh"`))
 
-	for _, phase := range []string{"phase_kubebrain()", "phase_tools()"} {
+	for _, phase := range []string{"phase_kubebrain()"} {
 		start := strings.Index(script, phase)
 		require.NotEqual(t, -1, start, phase)
 		remainder := script[start:]
@@ -53,17 +54,39 @@ func TestScaleLabBuildPhasesCheckGoVersionBeforeBuilding(t *testing.T) {
 		require.NotEqual(t, -1, build, phase)
 		require.Less(t, check, build, phase)
 	}
+	tools, err := os.ReadFile("../hack/scale-lab/build-tools.sh")
+	require.NoError(t, err)
+	check := strings.Index(string(tools), `"$HERE/check-go-version.sh"`)
+	require.Greater(t, strings.Index(string(tools), "go build"), check)
+	require.NotEqual(t, -1, check)
+	require.Contains(t, script, `bash "$HERE/build-tools.sh"`)
 }
 
 func TestScaleLabToolsBuildsAdvertisedIndependentModules(t *testing.T) {
-	contents, err := os.ReadFile("../hack/scale-lab/setup.sh")
+	contents, err := os.ReadFile("../hack/scale-lab/build-tools.sh")
 	require.NoError(t, err)
 	script := string(contents)
-	for _, command := range []string{
-		`( cd "$HERE/loadgen" && go build -o "$HERE/bin/loadgen" . )`,
-		`( cd "$HERE/bigstream" && go build -o "$HERE/bin/bigstream" . )`,
-	} {
-		require.Contains(t, script, command)
+	require.Contains(t, script, "for module in loadgen bigstream")
+	require.Contains(t, script, `cd "$HERE/$module" && go build`)
+	require.Contains(t, script, "for probe in bulk foload elogprobe qlat slowwatch watchflood")
+}
+
+func TestScaleLabLocalToolsNeverLoadDeploymentEnvironment(t *testing.T) {
+	dir := t.TempDir()
+	calls := filepath.Join(dir, "calls")
+	fakeGo := "#!/bin/sh\nprintf '%s\\n' \"$PWD $*\" >> \"$BUILD_CALLS\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go"), []byte(fakeGo), 0700))
+	envFile := filepath.Join(dir, "lab.env")
+	require.NoError(t, os.WriteFile(envFile, []byte("echo deployment-config-must-not-run >&2\nexit 99\n"), 0600))
+	cmd := exec.Command("bash", "../hack/scale-lab/setup.sh", "tools")
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "BUILD_CALLS="+calls,
+		"LAB_ENV="+envFile, "SCALE_LAB_BIN_DIR="+filepath.Join(dir, "bin"), "SCALE_LAB_GO_VERSION_OVERRIDE=go1.26.8")
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+	data, err := os.ReadFile(calls)
+	require.NoError(t, err)
+	require.Len(t, strings.Split(strings.TrimSpace(string(data)), "\n"), 8)
+	for _, tool := range []string{"loadgen", "bigstream", "bulk", "foload", "elogprobe", "qlat", "slowwatch", "watchflood"} {
+		require.Contains(t, string(data), filepath.Join(dir, "bin", tool))
 	}
-	require.Contains(t, script, "bin/bigstream -endpoint")
 }

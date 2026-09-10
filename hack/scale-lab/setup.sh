@@ -16,6 +16,10 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 ENVF="${LAB_ENV:-$HERE/lab.env}"
+# Building local tools must not require or execute deployment configuration.
+if [[ "${1:-}" == tools ]]; then
+  exec bash "$HERE/build-tools.sh"
+fi
 [[ -f "$ENVF" ]] || { echo "missing $ENVF — cp lab.env.example lab.env and edit it"; exit 1; }
 # shellcheck disable=SC1090
 source "$ENVF"
@@ -123,13 +127,7 @@ phase_controlplane() {
 # ---------------------------------------------------------------------------
 phase_tools() {
   log "tools: building loadgen + bigstream + probes into $HERE/bin/"
-  "$HERE/check-go-version.sh"
-  mkdir -p "$HERE/bin"
-  ( cd "$HERE/loadgen" && go build -o "$HERE/bin/loadgen" . )
-  ( cd "$HERE/bigstream" && go build -o "$HERE/bin/bigstream" . )
-  for p in bulk foload elogprobe qlat; do
-    ( cd "$REPO" && go build -o "$HERE/bin/$p" "./hack/scale-lab/probes/$p" )
-  done
+  bash "$HERE/build-tools.sh"
   log "tools: built -> $(find "$HERE/bin" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')"
   cat <<EOF
 
