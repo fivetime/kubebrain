@@ -3028,3 +3028,59 @@ defer 输出，00:09:51.742Z 已记录 completed=116/final=true，早于候选�
 到时结束且解析/捕获成功，并非升级超时。旧/候选终止记录已保存；所有本轮执行与观察
 会话均已终止。最新只读 StatefulSet 核验仍为 generation/observed 13/13、Ready/updated 3/3。
 维护迁移尚待用户明确确认；自动 goal 续行不作为维护迁移批准，不重新部署或更改验收门限。
+
+### 用户批准一次维护迁移（2026-09-10）
+
+用户明确确认该测试集群没有业务、专用于本项目，并同意维护期间短暂连接中断。
+据此建立私有独立入口 `run-maintenance-dd339bc1.sh`，仍绑定已验证 dd339bc1 镜像、
+原集群/存储身份和恢复工具，不修改正式验收入口或产品默认配置。
+本次维护 direct recovery 预算为 120s、完成窗口 1800s；后者容纳此前已观察到的
+6000 次串行写入加 pacing 耗时，不将其视为原 900s 完成验收通过。
+保留 6000 次、public 5s、数据/租约/流校验、原镜像失败回滚和隔离 holder 清理。
+入口显式输出 acceptance_30s=false；即使维护成功，也必须另按原门限完成正式验收。
+语法和固定 ShellCheck 已通过，先执行只读 preflight，不因用户授权跳过镜像或后端检查。
+
+维护 verify 55977 exit 0，证据 `maintenance-dd339bc1-verify.UhpQOOkCvOFI`。
+新鲜旧 Pod2 UID 8d3f5d17-5296-4df7-9eb5-2eb5b30c0bf9 已绑定状态观察 71333，
+900s 目录 `pod-exit-observation.FpVmLP3ubLi2`；随后 execute 83963 已启动，
+证据 `maintenance-dd339bc1-execute.5bChtnFOUlbL`，恢复 journal `prepull.RB6uE9CG6E1m/attempt`。
+日志 `security-maintenance-dd339bc1-execute.log` 已输出维护范围及 PREPULL_READY，仍在执行。
+指标入口 `capture-maintenance-dd339bc1-metrics.sh` 仅将探针名绑定 maintenance-dd339bc1，
+其余镜像和采样身份条件不变，语法与固定 ShellCheck 通过，尚未实际采样。
+不得将进程仍运行当作安装完成，也不得重复 execute。
+
+维护中间进展：PREPULL_VERIFIED 后三个实例已更新，StatefulSet generation/observed
+14/14、Ready/updated 3/3。实际三个 Pod spec/imageID 均为 0ce85e66 完整候选索引，
+Ready、restartCount=0、无 deletionTimestamp；Pod0 UID c42b7073-80fe-46b9-ae73-5d94324501b0，
+Pod1 UID 288b0806-5cdb-4002-97a6-fa2cb5081e9e，Pod2 UID d0366f42-4aef-4529-89fd-12a24f4d1077。
+02:21:08Z 探针 completed=720/6000，仍在执行，无完整维护通过结论，失败回滚仍有效。
+已启动指标采样 38291，日志 `security-maintenance-dd339bc1-metrics-capture.log`。
+
+指标采样 38291 已 exit 0，CLIENT_METRICS_CAPTURE_CONFIRMED；证据目录
+`client-metrics-dd339bc1-sample.X69kCXjvFfyM`。三个实际候选实例均取得 request_seconds、
+txn_cmd_duration_seconds、backoff_seconds 的 count family，采样前后 Pod/进程身份一致。
+这是客户端指标注册修复的实际集群证据，不是升级 SLO 通过，也尚未完成延迟根因分析。
+
+### 维护迁移完成及 scale-lab 整合收尾
+
+维护 execute 83963 已 exit 0，02:39:37Z 前后完成清理，输出
+MAINTENANCE_MIGRATION_FINISHED acceptance_30s=false。6000/6000 操作成功、fail=0，
+public watch 6000、direct watch 6000x3，public/direct lease 均存活，range stream
+1089、snapshot 1；fixture 全零及 PREPULL_CLEANUP_CONFIRMED。最大 public 延迟
+1678ms、direct 延迟 29829ms、direct lease recovery 25447ms。尽管观察最大值低于
+30s，本次配置仍为维护 120s/1800s，不冒充原 30s/900s 正式验收。旧状态观察 71333
+也已 exit 0。本次收尾新鲜查询确认 generation/observed 14/14、Ready/updated 3/3，
+服务镜像为已验证的 0ce85e66 完整索引，而非更早记录中的回滚镜像。
+
+用户要求整合本机独立 scale-lab 后，产品/测试提交
+`0b680bc3c46c3e655d9c873121db15481cdf607e` 已将 slowwatch/watchflood 纳入
+仓库内 hack/scale-lab，统一本地构建/测试入口并保留更完整的仓库 loadgen。
+旧 /root/kwok-scale-lab 已在完整私有归档与比对后删除，无旧路径软链接；
+恢复路径及逐文件去向见 hack/scale-lab/docs/local-tools-migration.md。
+提交前后各 720 项、inventory 和四分片全部通过：前 0/1/2/3 分片耗时
+461.547/518.607/389.265/750.411s，后 464.054/526.357/391.705/755.837s。
+scale-lab（含嵌套模块）及 build race/vet 均通过，十个文件校验和一致。
+私有证据目录 /root/.local/state/scale-lab-consolidation-gates.MzmIyz4A；
+原会话 20754/3658/22689/47325 均已 exit 0。整合未执行集群压测或部署。
+下一步发布整合代码，并在修复版基线上继续原门限滚动复验及已有 Kubernetes/KWOK
+测试的定向回归；不是重新从零开发已有测试，也不将历史大规模结果直接外推到本环境。
