@@ -27,6 +27,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/require"
@@ -2677,28 +2678,32 @@ func TestSlowLocalWatchCompactedWhileReopeningCancelsAtDurableWatermark(t *testi
 }
 
 func TestLocalWatchReopenStopsWhenFreshnessIsLostWithoutPeerProxy(t *testing.T) {
-	server, closeFn := newTestRPCServer(t)
-	defer closeFn()
-	rec := &recordingMetrics{}
-	initWatchGenerationRecoveryMetrics(rec)
-	server.peers = testPeerService{
-		isLeaderFn:   func() bool { return true }, // stale client-go flag
-		epochFn:      func() (uint64, bool) { return 7, false },
-		proxyEnabled: false,
-	}
-	w := &watcher{backend: server.backend, grpcServer: server, metricCli: rec}
+	// This branch rejects before opening storage or a peer stream. Virtual
+	// time tests its retry contract without host scheduler delays under -race.
+	synctest.Test(t, func(t *testing.T) {
+		rec := &recordingMetrics{}
+		initWatchGenerationRecoveryMetrics(rec)
+		freshnessChecks := 0
+		server := &RPCServer{peers: testPeerService{
+			isLeaderFn:   func() bool { return true }, // stale client-go flag
+			epochFn:      func() (uint64, bool) { freshnessChecks++; return 7, false },
+			proxyEnabled: false,
+		}}
+		w := &watcher{grpcServer: server, metricCli: rec}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	started := time.Now()
-	_, _, _, err := w.reopenWatchChannel(ctx, &etcdserverpb.WatchCreateRequest{
-		Key: []byte("/registry/watch/no-source"),
-	}, "/registry/watch/no-source", 10)
-	require.EqualError(t, err, "watch has no fresh local generation and peer proxy is disabled")
-	require.Less(t, time.Since(started), 500*time.Millisecond,
-		"reopen must not retry forever when no authoritative source is reachable")
-	require.Equal(t, []interface{}{int64(0), 1}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryFailed))
-	require.Equal(t, []interface{}{int64(0)}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRetry))
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		started := time.Now()
+		_, _, _, err := w.reopenWatchChannel(ctx, &etcdserverpb.WatchCreateRequest{
+			Key: []byte("/registry/watch/no-source"),
+		}, "/registry/watch/no-source", 10)
+		require.Equal(t, 1, freshnessChecks)
+		require.EqualError(t, err, "watch has no fresh local generation and peer proxy is disabled")
+		require.Less(t, time.Since(started), 500*time.Millisecond,
+			"reopen must not retry forever when no authoritative source is reachable")
+		require.Equal(t, []interface{}{int64(0), 1}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryFailed))
+		require.Equal(t, []interface{}{int64(0)}, recordedWatchGenerationRecoveryValues(rec, watchGenerationRecoveryRetry))
+	})
 }
 
 func TestWatchReopenMetricsRecordRetryAndRecovery(t *testing.T) {

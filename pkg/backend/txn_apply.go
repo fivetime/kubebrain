@@ -411,6 +411,22 @@ func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, p
 	return b.stageTxnWitness(txn, preps, newRevision)
 }
 
+// readTxnPreviousObject reuses the revision index already parsed by preparation.
+// stageTxnAtomic must still compare those index bytes before committing; a
+// concurrent writer invalidates the entire preparation, including this value.
+// Keep the original historical lookup for pinned contexts and missing objects.
+// Metadata validation and corruption witnessing remain with the caller.
+func (b *backend) readTxnPreviousObject(ctx context.Context, key []byte, revision uint64) ([]byte, error) {
+	if _, pinned := storage.SnapshotTimestampFromContext(ctx); !pinned {
+		value, err := b.snapshotGet(ctx, b.coder.EncodeObjectKey(key, revision))
+		if !errors.Is(err, storage.ErrKeyNotFound) {
+			return value, err
+		}
+	}
+	value, _, err := b.getInternalVal(ctx, key, revision)
+	return value, err
+}
+
 func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGuard) (results []TxnWriteResult, newRevision uint64, retry bool, err error) {
 	preps := make([]txnPrep, 0, len(ops))
 	prepByKey := make(map[string]*txnPrep, len(ops))
@@ -467,7 +483,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			// deleting an absent or already-tombstoned key is a no-op
 			p.effective = !p.create
 			if p.effective {
-				val, _, verr := b.getInternalVal(ctx, op.Key, p.curRev)
+				val, verr := b.readTxnPreviousObject(ctx, op.Key, p.curRev)
 				if verr != nil {
 					return nil, 0, false, verr
 				}
@@ -509,7 +525,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		} else {
 			p.effective = true
 			if !p.create {
-				val, _, verr := b.getInternalVal(ctx, op.Key, p.curRev)
+				val, verr := b.readTxnPreviousObject(ctx, op.Key, p.curRev)
 				if verr != nil {
 					return nil, 0, false, verr
 				}
