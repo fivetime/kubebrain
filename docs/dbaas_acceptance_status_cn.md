@@ -25,6 +25,14 @@ Go 模块，不能用根模块 `go test ./integration_tests` 覆盖。进入该�
 且没有断言实际使用 1PC，不能仅凭用例名称宣称覆盖该协议的一致性。
 后续若评估 1PC，需先修复隔离测试依赖/协议断言，再覆盖跨 Region 回退、响应丢失的不确定
 提交及 KubeBrain 持久见证解析，最后做真实环境测量。当前没有启用 1PC 或 async commit。
+隔离诊断补充（2026-09-10）：已复现上述覆盖缺口的 RED/GREEN——给原用例增加
+实际 1PC 断言即失败，改用 `begin1PC()` 并增加提交后新事务的时间戳/读可见性检查后，
+mock-store 用例通过 10 轮。旧 TiDB 测试依赖另有 `runtime.buildVersion` 私有链接问题；
+仅在仓库外副本中改用 `runtime.Version()` 并对齐测试依赖后，默认链接检查及
+`-mod=readonly` 下再次通过 10 轮。没有修改模块缓存、正式 fork 或生产提交协议。
+KubeBrain 原有不确定提交见证/错误分类专项另通过三轮 race；这些证据不覆盖真实 TiKV
+1PC 响应丢失、持久性或性能，不能据此启用 1PC。诊断输入、结果及后续条件见本机
+`/root/.local/state/kubebrain/onepc-review.sQ6wPqWW/REVIEW.md`；副本不作为权威源码。
 以下均为历史阶段记录，集群现状以上述终态为准。
 
 本地进展（历史）：`260d51e17b9b4c3d99ee95978770645d4c299425` 将启用配额时的
