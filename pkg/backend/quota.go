@@ -195,6 +195,70 @@ func (b *backend) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace 
 	return usage, quota, noSpace, nil
 }
 
+// readTxnQuotaState loads preparation metadata only. The usage bytes must still
+// be compared and updated inside stageTxnAtomic; this is not an admission cache.
+func (b *backend) readTxnQuotaState(ctx context.Context, hasPut bool) ([]byte, int64, error) {
+	read := func(key []byte) ([]byte, error) {
+		return b.kv.Get(ctx, b.ks.EncodeInternalKey(key))
+	}
+	// Do not introduce a fresh batch snapshot into caller-pinned operations.
+	// Keep their existing point-read behavior, and preserve engines without the
+	// optional capability. Failed batch reads never fall back to another snapshot.
+	if _, pinned := storage.SnapshotTimestampFromContext(ctx); b.config.QuotaBackendBytes > 0 && !pinned {
+		if getter, ok := storage.FindCapability[storage.BatchGetter](b.kv); ok {
+			keys := [][]byte{b.ks.EncodeInternalKey(quotaTrackingKey), b.ks.EncodeInternalKey(quotaUsageKey)}
+			if hasPut {
+				keys = append(keys, b.ks.EncodeInternalKey(quotaAlarmKey))
+			}
+			values, err := getter.BatchGet(ctx, keys)
+			if err != nil {
+				return nil, 0, err
+			}
+			read = func(key []byte) ([]byte, error) {
+				value, exists := values[string(b.ks.EncodeInternalKey(key))]
+				if !exists {
+					return nil, storage.ErrKeyNotFound
+				}
+				return value, nil
+			}
+		}
+	}
+	// Preserve preparation's validation order: alarm before tracking and usage.
+	// Deletes may reclaim space even while the sticky NOSPACE alarm is active.
+	if hasPut {
+		_, err := read(quotaAlarmKey)
+		switch {
+		case err == nil:
+			return nil, 0, ErrNoSpace
+		case errors.Is(err, storage.ErrKeyNotFound):
+		default:
+			return nil, 0, err
+		}
+	}
+	if b.config.QuotaBackendBytes <= 0 {
+		return nil, 0, nil
+	}
+	tracking, err := read(quotaTrackingKey)
+	if errors.Is(err, storage.ErrKeyNotFound) || (err == nil && !bytes.Equal(tracking, quotaTrackingClean)) {
+		return nil, 0, ErrQuotaUninitialized
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	raw, err := read(quotaUsageKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return nil, 0, ErrQuotaUninitialized
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	usage, err := decodeQuotaUsage(raw)
+	if err != nil {
+		return nil, 0, err
+	}
+	return raw, usage, nil
+}
+
 func (b *backend) EnsureQuotaInitialized(ctx context.Context) error {
 	if b.config.QuotaBackendBytes <= 0 {
 		return b.InternalPut(ctx, quotaTrackingKey, quotaTrackingDirty)

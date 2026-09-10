@@ -21,6 +21,31 @@ race 三轮、backend vet 均通过。私有 overlay 故意保留旧配额使用
 门禁证据：`/root/.local/state/kubebrain/write-cost-quota-gates.Z7ARmxOv/`。
 后续评估准备阶段独立读取的合并；保留事务内配额和损坏告警等原子保护。
 
+事务准备阶段批读实验（工作树，2026-09-10）：在配额开启且未固定快照的路径，通过
+可选 BatchGetter 一次读取 tracking、usage 和写入所需的 NOSPACE alarm；按原顺序
+校验告警及元数据，批读失败不换快照回退，提交事务内 usage 比较与更新保持不变。
+新增 put/delete、脏/缺失元数据、告警优先级、取消/不可用、禁用配额及固定快照回退测试。
+后端全包普通/race、vet 及三轮基准已通过；开启配额时 TxnApply 为
+3 Get / 2 BatchGet / 4 Atomic Get / 1 Commit，GetThenUpdate 为
+5 Get / 2 BatchGet / 4 Atomic Get / 1 Commit，禁用配额场景不变。
+证据：`/root/.local/state/kubebrain/txn-quota-batch.v5jQtJo5/`。服务层配额/Put/Txn/
+损坏告警专项也已通过（44.749 秒）；提交级门禁尚待完成，未提交、未部署。
+上述调用数变化不是集群延迟或 900 秒验收通过证据。
+并发保护补充：新增测试在批读取得旧 usage=0 后模拟其他写入将 usage 改为 40，
+要求本次事务比较失败后重新准备、最终 usage=42，且只分配一个公共修订号；相关
+用例普通及 race 各十轮通过。私有 overlay 移除事务内 usage 比较后，用例明确因
+usage=2 而非 42 失败，确认不能以准备阶段批读代替提交原子保护。正式源码保留比较。
+
+Put 去重读取的否定性验证（2026-09-10）：私有测试 overlay 在启用 etcd 元数据的
+memkv 后端中保留对象、删除其修订索引，比较 Get/Update 与直接无条件 TxnApply。
+正常索引两条路径都通过；旧版孤立对象上，现有 Get/Update 会修复索引、保留创建
+修订号并更新为版本 2，直接 TxnApply 则返回 Created=true、PrevRevision=0，重置
+创建修订号及版本为 1，违反此次替换所要求的等价性。现有路径 race 10 轮通过，
+直接替换的反例在 race 3 轮均复现语义断言失败。因此未采用该捷径；正式产品代码
+未修改。证据：`/root/.local/state/kubebrain/put-orphan-review.zzJss4TS/`。
+这是后端隔离诊断，不是修改后公网 RPC 测试或真实集群损坏证明；后续优化须保留
+旧索引恢复、损坏检查和事务内保护，且不能据此宣称升级耗时已有改善。
+
 真实消费者 watch 补充（2026-09-10）：修复版 `0ce85e66` 基线上，规范入口
 `hack/dev/apiserver-watch-soak.sh` 完成 20 个 ConfigMap、每个 10 次更新，更新前
 空闲 60 秒，禁止脚本重启 watch；执行及清理均 exit 0。保留事件明细后的独立核验

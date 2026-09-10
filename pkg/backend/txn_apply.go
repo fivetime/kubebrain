@@ -676,10 +676,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 		return results, cur, false, nil
 	}
-	var (
-		quotaUsageRaw  []byte
-		nextQuotaUsage int64
-	)
+	var nextQuotaUsage int64
 	hasPut := false
 	for i := range preps {
 		if preps[i].effective && !preps[i].op.Internal && !preps[i].op.Delete {
@@ -687,40 +684,11 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			break
 		}
 	}
-	if hasPut {
-		_, alarmErr := b.kv.Get(ctx, b.ks.EncodeInternalKey(quotaAlarmKey))
-		switch {
-		case alarmErr == nil:
-			return nil, baseRevision, false, ErrNoSpace
-		case errors.Is(alarmErr, storage.ErrKeyNotFound):
-		default:
-			return nil, baseRevision, false, alarmErr
-		}
+	quotaUsageRaw, currentUsage, quotaErr := b.readTxnQuotaState(ctx, hasPut)
+	if quotaErr != nil {
+		return nil, baseRevision, false, quotaErr
 	}
 	if b.config.QuotaBackendBytes > 0 {
-		tracking, trackingErr := b.kv.Get(ctx, b.ks.EncodeInternalKey(quotaTrackingKey))
-		switch {
-		case errors.Is(trackingErr, storage.ErrKeyNotFound):
-			return nil, baseRevision, false, ErrQuotaUninitialized
-		case trackingErr != nil:
-			return nil, baseRevision, false, trackingErr
-		case !bytes.Equal(tracking, quotaTrackingClean):
-			return nil, baseRevision, false, ErrQuotaUninitialized
-		}
-		raw, usageErr := b.kv.Get(ctx, b.ks.EncodeInternalKey(quotaUsageKey))
-		currentUsage := int64(0)
-		switch {
-		case errors.Is(usageErr, storage.ErrKeyNotFound):
-			return nil, baseRevision, false, ErrQuotaUninitialized
-		case usageErr != nil:
-			return nil, baseRevision, false, usageErr
-		default:
-			quotaUsageRaw = raw
-			currentUsage, usageErr = decodeQuotaUsage(raw)
-			if usageErr != nil {
-				return nil, baseRevision, false, usageErr
-			}
-		}
 		delta := int64(0)
 		for i := range preps {
 			p := &preps[i]
