@@ -5,6 +5,15 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+真实消费者 watch 补充（2026-09-10）：修复版 `0ce85e66` 基线上，规范入口
+`hack/dev/apiserver-watch-soak.sh` 完成 20 个 ConfigMap、每个 10 次更新，更新前
+空闲 60 秒，禁止脚本重启 watch；执行及清理均 exit 0。保留事件明细后的独立核验
+确认 20 条初始 ADDED、恰好 200 条 MODIFIED，每个对象版本严格为 1–10、UID 稳定，
+更新修订号全局严格递增。测试前缀为空、租约恢复为 0，临时 PKI、进程和端口已清理。
+证据：`/root/.local/state/kubebrain/consumer-watch.HaIZeNBz/`；逐事件核验目前是私有诊断，
+尚未纳入规范入口或 CI。此次仅为短时持续性回归，不是数天级 soak、KWOK 规模、
+故障重连或升级验收；未部署新镜像，不改变下述 900 秒验收失败结论。
+
 真实消费者补充（2026-09-10）：现有独立 Kubernetes v1.36.1 apiserver smoke 连接
 `tk-001-003` 的真实 KubeBrain/TiKV 修复版基线，TLS 下完成基本读写、ConfigMap watch、
 标签/字段选择器、分页、批量删除、Secret、Lease 和零副本 Deployment 操作，脚本 exit 0。
