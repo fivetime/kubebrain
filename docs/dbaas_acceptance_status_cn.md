@@ -5,13 +5,21 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-当前实际终态：用户批准的维护迁移已成功结束，修复版 dd339bc1 三副本 Ready/updated，
-generation/observed 14/14，镜像为 `sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`。
-6000/6000 操作及 watch/lease 验证通过，临时资源清理完成。但维护使用 120s/1800s
-预算，原 30s/900s 正式复验仍开放。三个实际实例的 TiKV 客户端指标采样已通过。
-scale-lab 整合提交 0b680bc3 已通过提交前后全部本地门禁，待推送发布；现有 Kubernetes
-接入与 KWOK 测试代码应复用并针对本环境回归，不应描述成尚未开发的能力。
-以下“最新/当前”字样均为保留的历史阶段，以上述维护终态及测试环境交接记录为准。
+当前实际终态：scale-lab 整合已推送，发布源码 `3b15bd16` 的 CI
+[34459431691](https://github.com/fivetime/kubebrain/actions/runs/34459431691) 全部成功。
+从维护修复版基线执行的原 30s/900s 正式升级复验失败：候选三副本滚动完成，
+但探针未在滚动完成后的 900s 内完成 6000 次操作。已自动回滚修复版 dd339bc1，
+generation/observed 16/16、Ready/updated 3/3、current/update revision 均为
+`kubebrain-855b5bfb88`，实际三 Pod 镜像及 imageID 均为
+`sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`。
+fixture 全零，探针和本次预拉取 holder 已清理。原正式验收仍未通过，不重复盲跑或放宽预算。
+
+本轮新增局部证据：维护修复版旧 Pod2 同 UID 状态确认 exit 0 Completed，日志包含
+三端口 root server shutdown 与 shutdown complete；真实候选三副本客户端指标采样通过。
+同一进程两次采样间 896 次 Put 的服务端平均耗时约 79.93ms，1402 次批提交约
+41.24ms；这不是尾延迟或根因证明，各层指标不可直接相加。详细证据和边界见测试环境交接记录。
+现有 Kubernetes 接入与 KWOK 测试代码应复用并针对本环境回归，不应描述成尚未开发的能力。
+以下“最新/当前”字样均为保留的历史阶段，以上述正式复验回滚终态及测试环境交接记录为准。
 
 2026-09-10 最新终态：dd339bc1 的 CI 34417282642 和镜像验证全部成功，但真实升级
 在 iteration=117 因 direct watch 恢复超时失败。已确认回滚原 a245c95f 镜像，

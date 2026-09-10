@@ -3084,3 +3084,57 @@ scale-lab（含嵌套模块）及 build race/vet 均通过，十个文件校验�
 原会话 20754/3658/22689/47325 均已 exit 0。整合未执行集群压测或部署。
 下一步发布整合代码，并在修复版基线上继续原门限滚动复验及已有 Kubernetes/KWOK
 测试的定向回归；不是重新从零开发已有测试，也不将历史大规模结果直接外推到本环境。
+
+### 2026-09-10：整合发布成功，修复基线正式升级复验因完成期限失败
+
+发布源码 `3b15bd16d27dc9e5be93a80802ac18b65c42479e`（产品提交 0b680bc3）
+的 CI [34459431691](https://github.com/fivetime/kubebrain/actions/runs/34459431691)
+于 09:46:21Z 全部成功，包含安全扫描、双架构构建、发布验证与 dbaas 标签提升。
+独立验证候选和提升后索引均为
+`sha256:a16fb0ad7cadbec31109e9ccd7198f5d86baf942524ade4ee04d1a45aa89f5fa`；
+amd64 为 `sha256:9e886ebb23cb8ffa728985ccc9d8efe53c09fd0e4ec68add7e1bb2232fae2dbd`，
+arm64 为 `sha256:70ecd50b44c0b244ab3c5ee46fca6f5d6161bab6989c992da9594ccf9bbdd828`。
+实际 amd64 程序版本/Git SHA、Go 1.26.8 和 fork client-go 模块版本均已核验。
+私有 `security-prepull-3b15bd16-image-verified.json` 仅证明发布身份，不证明部署验收。
+
+只读预检 72864 exit 0；正式 execute 14062 最终 exit 1。入口
+`run-prepull-3b15bd16-upgrade.sh` 保持 6000 次、0.1s 间隔、public 5s、direct 30s、
+滚动完成后 900s 完成期限，不使用维护 120s/1800s。证据目录
+`prepull-3b15bd16-execute.SCoemo4uNFJK`、预拉取 journal `prepull.95Tq9glNxRnB/attempt`，
+主日志 `security-prepull-3b15bd16-execute.log` 均在既定私有状态目录下。
+PREPULL_READY、PREPULL_VERIFIED 与 ROLLOUT_PROBE_COVERAGE_CONFIRMED 已取得；
+候选曾为 generation/observed 15/15、Ready/updated 3/3、revision kubebrain-57fd8b6bbf。
+随后明确输出 `availability probe did not complete within 900s` 并自动回滚。
+09:59:33Z 诊断完成 1860/6000，10:09:29Z 完成 4680/6000；回滚期间仍曾推进到
+5100/6000。后者不是截止时刻计数，也不是通过证据；本轮没有完整 PROBE_SUMMARY。
+回滚期有界探针日志保存于 `security-prepull-3b15bd16-probe-during-rollback.log`。
+
+终态新鲜核验 generation/observed 16/16、Ready/updated 3/3，current/update 均为
+kubebrain-855b5bfb88；三个实际 Pod spec/imageID 均恢复维护修复版 0ce85e66 完整索引，
+Running、Ready、restartCount=0、无 deletionTimestamp。Pod0/1/2 UID 分别为
+f22feecb-1119-4e76-838e-5bf6eceec3fd、45257d09-42f5-4965-8cd3-3d1400804244、
+a9402b10-8b4b-4627-a6a8-3b76e79dbcee。实际脱敏 Pod 证据
+`security-prepull-3b15bd16-final-pods.json` 已通过镜像身份与本次临时 Pod 缺席检查。
+主日志末尾 FIXTURE_CLEANUP_OK（keys/users/roles/leases 全零）及
+PREPULL_CLEANUP_CONFIRMED。不能因回滚后 Ready 或此前维护通过而宣称本轮通过。
+
+旧维护修复版 Pod2 UID d0366f42-4aef-4529-89fd-12a24f4d1077 在 09:53:05Z
+实际 exit 0 Completed；同 UID 状态与三端口 root server shutdown、shutdown complete
+日志互证。日志跟随 36875 exit 0、28575 bytes；观察 52747 exit 0，900s 到期 watch=124、
+parse/capture=0、17037 bytes，目录 `pod-exit-observation.TRL7WUgiOOtF`。
+这关闭本样本中的旧关闭循环现象，不外推为全部故障模式都能达标。
+
+候选三副本指标采样 11453、61812 均 exit 0，目录分别为
+`client-metrics-3b15bd16-sample.knfcNLn1or7w` 与 `client-metrics-3b15bd16-sample.IaYiGNIaBeZB`。
+各次前后身份、两次跨样本进程身份一致，三个 TiKV 客户端 count family 均存在。
+Pod1 的两次增量：896 次 Put RPC 平均 79.93ms、Put apply 72.45ms；1402 次批提交
+平均 41.24ms、TiKV Commit RPC 18.96ms、Prewrite RPC 16.76ms。该 Pod 两次导出
+backoff sum/count 均为零。批提交数量包含其他写操作，txn command commit 数量还含
+只读事务；这些分母不同、部分层级重叠，不能相加推断 Put 关键路径，也不是 p99 或物理
+fsync 耗时。计算与原始引用见私有 `security-prepull-3b15bd16-metrics-delta.md`。
+下一步据此定位写路径成本及完成预算风险，不降低次数/间隔/SLO 掩盖失败。
+
+已有真实 apiserver 回归脚本的只读准备发现：本机 kubebrain-dbaas-control-plane
+kind 节点及所需 PKI 存在，但脚本默认节点名与此不同。脚本即使指定 APISERVER_BIN
+仍从 kind 节点复制 PKI，清理还会回收相对基线新增的租约；不得与本轮探针或其他租约
+创建任务并行执行。尚未启动本环境消费者回归，也未使用历史 scale-lab 默认 IP 部署。
