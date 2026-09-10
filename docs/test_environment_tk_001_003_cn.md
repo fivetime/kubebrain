@@ -1,6 +1,39 @@
 # tk-001-003 测试环境交接记录
 
-最后核验：2026-09-08。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
+最后核验：2026-09-10。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
+
+## 最新验收终态：c7d9905e 配额批读候选
+
+发布源码 `c7d9905e57526c4d2868f96805b7e276f37888c0`（产品提交 `260d51e1`）
+CI 34470793561 于 2026-09-10 11:50:24 UTC 成功。独立核验发布索引
+`sha256:19627458c114cd0780351718a7964fa06fbfc6cc0996efa2f7ca1b7a92fb576e`、
+amd64 实际二进制版本/构建信息及非 root 配置；客户端仍为固定 fork `832b70fd622f`。
+候选曾达到 generation 17、Ready/updated 3/3，但正式升级探针未在滚动完成后
+900 秒内完成 6000 次操作，执行会话 2580 已终止 exit 1。public 5s、direct 30s、
+每次操作后 0.1s 间隔未改变；没有完整 PROBE_SUMMARY，正式验收仍失败。
+
+随后自动回滚，实时 API 确认 generation/observed 18/18、Ready/updated 3/3、
+current/update revision `kubebrain-855b5bfb88`；三 Pod spec 镜像和实际 imageID 均为
+`ghcr.io/fivetime/kubebrain@sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`。
+Pod0/1/2 UID 分别为 `690f9743-45db-473a-a7f6-15e24b448e61`、
+`8eb96328-6169-4a29-af34-5a51bbcf61ad`、`e581a277-bb50-43fc-a70b-facf209daf79`，
+全部 Ready、无删除标记、重启数 0。日志确认最终 fixture keys/users/roles/leases 全零、
+PREPULL_CLEANUP_CONFIRMED；API 列表确认探针 `prepull-upgrade-c7d9905e` 及三个
+`kb-prepull-1ab2779498d5f90340c48f0fd1537462-` holder 均不存在。
+
+候选同进程两次指标采样间，603 次 Put 平均 87.17ms，959 次批提交平均 45.77ms；
+store 2001 的 Commit / Prewrite 均值分别约 20.09 / 18.19ms，导出 backoff 计数为零。
+采样顺序执行而非原子快照；不同层级样本数不同、耗时重叠，不可直接相加。
+上一轮涉及 store 2004，不是受控 A/B；不能宣称优化有效或退化，亦不能认定物理存储根因。
+旧修复版 Pod2 同 UID 状态确认 exit 0 Completed；有界观察器自然结束，
+watch_exit=124、parse_exit=0、capture_exit=0，日志跟随和两次指标采样均已结束。
+
+证据位于仓库外 `/root/.local/state/kubebrain/tk-001-003/`：
+`security-prepull-c7d9905e-execute.log`、`security-prepull-c7d9905e-image-verified.json`、
+`security-prepull-c7d9905e-metrics-delta.md`，执行目录
+`prepull-c7d9905e-execute.Ylq761AN8m3y`，预拉取 journal `prepull.8zVnX0NUkTEH/attempt`。
+不要重新轮询旧会话或将历史运行中记录视为当前状态。后续继续定位性能及隔离消费者回归，
+不重复盲跑、不放宽门限、不自动启用 1PC/async commit。以下环境阶段记录需按时间区分。
 
 ## 授权与连接
 

@@ -5,12 +5,34 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-本地后续进展：`260d51e17b9b4c3d99ee95978770645d4c299425` 将启用配额时的
+最新终态（2026-09-10，c7d9905e 正式复验）：配额批读优化的发布源码
+`c7d9905e57526c4d2868f96805b7e276f37888c0` 已通过 CI 34470793561，
+实际镜像身份、两种架构发布及非 root 运行配置已核验。但原 6000 次操作、
+public 5s / direct 30s、滚动完成后 900s 完成窗口的升级测试仍因完成窗口超时失败。
+执行器 exit 1，未取得完整 PROBE_SUMMARY，不认定通过或性能改善。
+已核验自动回滚后的 generation/observed 18/18、Ready/updated 3/3，
+current/update revision 均为 `kubebrain-855b5bfb88`；三 Pod 实际镜像及 imageID
+均为修复版 `sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`，
+无删除标记且重启数为 0。fixture 全零，探针及三个本轮预拉取 holder 已清理。
+同一候选进程两次采样间 603 次 Put 平均约 87.17ms、959 次批提交约 45.77ms；
+与上一轮采样涉及不同 TiKV store，不能据此作受控 A/B 结论或把存储耗时归因于物理盘。
+下一步继续定位串行操作耗时，并开展隔离的真实 Kubernetes 接入回归；不盲目重跑或放宽门限。
+提交协议优化的前置缺口：固定 fork `832b70fd622f` 的 `integration_tests` 是独立
+Go 模块，不能用根模块 `go test ./integration_tests` 覆盖。进入该模块执行
+`go test -mod=readonly . -run '^TestOnePC$' -count=1 -timeout=180s -args -with-tikv=false`
+在测试执行前失败，提示需要更新 go.mod；这不是 1PC 行为测试失败，也不是通过。
+源码中的 `Test1PCLinearizability` 使用 `begin()`，而非显式启用 1PC 的 `begin1PC()`，
+且没有断言实际使用 1PC，不能仅凭用例名称宣称覆盖该协议的一致性。
+后续若评估 1PC，需先修复隔离测试依赖/协议断言，再覆盖跨 Region 回退、响应丢失的不确定
+提交及 KubeBrain 持久见证解析，最后做真实环境测量。当前没有启用 1PC 或 async commit。
+以下均为历史阶段记录，集群现状以上述终态为准。
+
+本地进展（历史）：`260d51e17b9b4c3d99ee95978770645d4c299425` 将启用配额时的
 QuotaStatus 三个元数据点读合并为一次批量读取，固定快照及无批读能力的路径保持原行为。
 提交前后各 720 项生产测试、inventory、专项 race/vet 均已通过；新增基准仅量化
-本地存储 API 调用，不证明 TiKV 延迟改善。发布和真实环境验证尚未完成，以下集群终态不变。
+本地存储 API 调用，不证明 TiKV 延迟改善。当时发布和真实环境验证尚未完成；后续结果见上文。
 
-当前实际终态：scale-lab 整合已推送，发布源码 `3b15bd16` 的 CI
+上一轮实际终态：scale-lab 整合已推送，发布源码 `3b15bd16` 的 CI
 [34459431691](https://github.com/fivetime/kubebrain/actions/runs/34459431691) 全部成功。
 从维护修复版基线执行的原 30s/900s 正式升级复验失败：候选三副本滚动完成，
 但探针未在滚动完成后的 900s 内完成 6000 次操作。已自动回滚修复版 dd339bc1，
