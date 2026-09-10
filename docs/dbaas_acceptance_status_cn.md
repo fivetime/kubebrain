@@ -36,10 +36,26 @@ KubeBrain 产品依赖仍固定在 fork `832b70fd622f`，未启用生产 1PC。
 断言处失败。两次反向测试均未修改实际仓库源码。该原型仍不是正式集成回归、外部 etcd Watch API 验收或真实 TiKV
 持久性证明；尚缺默认重试开启路径和真实环境验证。
 代码/日志在 `/root/.local/state/kubebrain/backend-onepc-integration.HabFHNJ0/`。
-正在将上述原型纳入 [`hack/backend-integration`](../hack/backend-integration/README.md)：
+上述原型已纳入 [`hack/backend-integration`](../hack/backend-integration/README.md)，
+提交 `5768d701ed8804918bd5e4d040de32a09f909cbe` 已推送至 dbaas：
 独立模块使用与产品完全相同的远程客户端固定版本，入口拒绝本机替换、版本漂移和任意
 端点/测试参数，兼容补丁仅用于临时 mock 依赖副本。已增加 self-hosted CI 作业；
-当前尚未完成该仓库变更提交前后完整门禁或新作业的 CI 验证，不认定正式集成验收通过。
+该提交前后均通过入口与非 root 清理契约、专用 mock 普通 10 轮/race 3 轮、
+后端与 TiKV 适配器完整普通/race/vet，以及各 720 项生产工具四分片门禁、最终源码摘要核验。
+新增后端 CI [34498234277](https://github.com/fivetime/kubebrain/actions/runs/34498234277)
+已全部通过，包括非 root 清理、入口契约、普通 10 轮和 race 3 轮。同期镜像 CI
+`34498234203` 尚在运行；未部署此测试变更镜像。以上仍不替代真实 TiKV 验收。门禁证据位于
+`/root/.local/state/kubebrain/backend-onepc-canonical-gates.Y33UuAPw/`。
+默认重试补充诊断（尚未纳入仓库）：unistore 原虚拟地址不能响应真实 gRPC 健康检查，
+首轮两例均只发生一次 RPC 并失败；提供本地健康服务、注册相同 mock StoreID 的可达地址后，
+默认重试确实发生。发送前丢失经重试成功，提交后丢响应经重试仍返回不确定结果并由见证解析。
+两个默认重试场景及原两个禁用重试场景合计通过普通 10 轮/race 3 轮，断言实际健康探测、
+恰好两次提交 RPC、起始时间戳不变，以及原有修订号/watch 批次边界。
+证据：`/root/.local/state/kubebrain/backend-onepc-retry.NV9YlpqB/`；数据 RPC 仍是 mock，
+不是完整真实 TiKV 网络重试或持久性证明，尚待规范化到仓库并通过 CI。
+后续默认重试扩展现已加入仓库待提交测试，补充禁用重试严格一次、默认重试严格两次、
+禁止提交时间戳漂移和成功路径不得走不确定解析等断言；正在执行该变更自己的门禁。
+前述已通过 CI `34498234277` 只覆盖原来两个禁用重试用例，不能作为本扩展通过的证据。
 生产协议、集群配置和下述 900 秒验收失败结论均未改变。
 
 最新终态（2026-09-10，c7d9905e 正式复验）：配额批读优化的发布源码
