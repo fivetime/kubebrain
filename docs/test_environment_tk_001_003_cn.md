@@ -3022,3 +3022,9 @@ defer 输出，00:09:51.742Z 已记录 completed=116/final=true，早于候选�
 下一步决策边界：新镜像无法回溯修复正在退出的旧进程。若先通过维护迁移建立含修复的
 三副本基线，再按原 SLO 验证新基线滚动，需要明确区分“安装修复”与“通过升级验收”；
 不能放宽探针后将其记为原 SLO 通过。当前尚未执行这种不同验收语义的迁移，也未重试。
+
+原 900s 状态观察 59652 已自然结束，exit 0，输出 POD_STATUS_OBSERVATION_FINISHED。
+同目录 result.txt 为 watch_exit=124、parse_exit=0、capture_exit=0，表示有界 watch
+到时结束且解析/捕获成功，并非升级超时。旧/候选终止记录已保存；所有本轮执行与观察
+会话均已终止。最新只读 StatefulSet 核验仍为 generation/observed 13/13、Ready/updated 3/3。
+维护迁移尚待用户明确确认；自动 goal 续行不作为维护迁移批准，不重新部署或更改验收门限。
