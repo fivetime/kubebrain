@@ -5,6 +5,19 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+写入成本测量边界补充（2026-09-10）：现有 `BenchmarkBackendWriteStorageCalls`
+默认关闭配额，不能代表真实集群启用 2 GiB 配额后的调用数。隔离测试 overlay 仅开启
+配额并在计时前初始化，两种配置各运行 100 次、重复 3 轮，均通过；开启后 TxnApply
+为 6 Get / 1 BatchGet / 4 Atomic Get / 1 Commit，GetThenUpdate 为
+8 Get / 1 BatchGet / 4 Atomic Get / 1 Commit。关闭配额仍分别是 4 和 6.01 Get，
+均为 3 Atomic Get，其余两项相同。这些是 memkv 存储 API 调用数，未覆盖完整 RPC
+鉴权/准入，也不是 TiKV 网络次数或集群延迟；不能据此认定升级超时根因。
+证据：`/root/.local/state/kubebrain/write-cost-quota.VR1vfst4/`。规范基准已在工作树补齐
+两种配额模式，并在计时外校验最终配额使用量；四场景普通三轮、配额相关测试与基准
+race 三轮、backend vet 均通过。私有 overlay 故意保留旧配额使用量后，两个开启配额
+场景均在新增记账断言失败，正式产品源码未改动。尚未提交或完成提交级四分片门禁。
+后续评估准备阶段独立读取的合并；保留事务内配额和损坏告警等原子保护。
+
 真实消费者 watch 补充（2026-09-10）：修复版 `0ce85e66` 基线上，规范入口
 `hack/dev/apiserver-watch-soak.sh` 完成 20 个 ConfigMap、每个 10 次更新，更新前
 空闲 60 秒，禁止脚本重启 watch；执行及清理均 exit 0。保留事件明细后的独立核验
@@ -75,7 +88,7 @@ KubeBrain 产品依赖仍固定在 fork `832b70fd622f`，未启用生产 1PC。
 等断言。其提交前后均通过四场景普通 10 轮/race 3 轮、后端完整普通/race/vet、入口/清理
 契约、各 720 项生产工具四分片门禁和最终源码摘要核验。新增后端 CI
 [34505205282](https://github.com/fivetime/kubebrain/actions/runs/34505205282) 全部通过；
-镜像 CI `34505205098` 尚待结果，未部署新镜像。证据位于
+镜像 CI `34505205098` 已全部成功，未部署新镜像。证据位于
 `/root/.local/state/kubebrain/backend-onepc-retry-gates.Xp3gzfnd/`。
 前述已通过 CI `34498234277` 只覆盖原来两个禁用重试用例，不能作为本扩展通过的证据。
 生产协议、集群配置和下述 900 秒验收失败结论均未改变。
