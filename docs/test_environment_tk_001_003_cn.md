@@ -3138,3 +3138,35 @@ fsync 耗时。计算与原始引用见私有 `security-prepull-3b15bd16-metrics
 kind 节点及所需 PKI 存在，但脚本默认节点名与此不同。脚本即使指定 APISERVER_BIN
 仍从 kind 节点复制 PKI，清理还会回收相对基线新增的租约；不得与本轮探针或其他租约
 创建任务并行执行。尚未启动本环境消费者回归，也未使用历史 scale-lab 默认 IP 部署。
+
+### 配额读取批量化：本地提交前后验证通过，部署收益未验证
+
+产品/测试提交 `260d51e17b9b4c3d99ee95978770645d4c299425` 优化 QuotaStatus：
+启用配额且未固定存储快照时，利用已有 BatchGetter 一次读取 tracking、usage、alarm，
+不缓存状态、不省略校验；保留解析顺序、缺失/损坏数据与存储错误处理。固定快照仍通过
+InternalGet/GetAt，缺少批读能力时走原点读，禁用配额时仍只读取 alarm。
+实际 StatefulSet 参数为 `--quota-backend-bytes=2147483648`，所以本环境使用该路径；
+但该提交尚未部署，不能据此宣称 Put 延迟或 900s 完成期限已达标。
+
+新增测试比较批读与点读的结果/错误，检查三物理键、一次 BatchGet/零独立 Get，
+并验证固定 timestamp 不走普通 BatchGet。旧 HEAD quota.go 经 Go overlay 运行新测试
+明确失败，说明测试能检出原逐键读取行为。初版测试包装器替换 live backend 的 kv
+触发 fixture race，已改为无后台任务的独立状态对象；修正后后端配额 race 连续三次通过。
+该初始失败不是产品竞态证据，原失败日志保留，不混作最终通过日志。
+
+新增 BenchmarkBackendWriteStorageCalls 使用 memkv 统计存储 API 调用，逐次核验
+revision 增量并校验最终值；不包含完整 RPC 的 auth/quota/TLS/代理/租约路径。
+计数包装器保留 BatchGetter/Unwrap 能力，避免人为触发降级路径。每 100 次写入基准：
+TxnApply 平均 4 次独立 Get、1 次 BatchGet、3 次事务内 Get、1 次提交；GetThenUpdate
+独立 Get 为 6.01，其余相同，含起始缓存影响。早期未保留 BatchGetter 的 8/10.01
+计数已作废。API 次数不等于网络 RPC 次数，内存耗时不外推为 TiKV 性能或集群 SLO。
+
+本地证据目录 `/root/.local/state/kubebrain/quota-batch-gates.2cIdbgZb`：
+提交前 runner 78422 exit 0，四分片 0/1/2/3 为 465.872/536.571/391.286/760.767s；
+提交后 runner 80983 exit 0，为 470.558/529.794/391.099/761.062s。
+前后 inventory 均为 720 项，分片数量 174/197/184/165，四分片退出码均为 0，
+两阶段分别有 QUOTA_BATCH_PRE_COMMIT_GATES_PASSED 和 QUOTA_BATCH_POST_COMMIT_GATES_PASSED。
+提交前完整 backend 包通过（50.236s），RPC quota race 三次通过（5.874s）；
+提交后 backend quota race（8.515s）、RPC quota race（5.898s）、基准 race 三次
+（1.918s）及 backend/server vet 通过。三个源码文件前后校验和相同，工作树干净。
+这些是本地门禁，不是新镜像身份、真实消费者或在线升级验收；下一步发布后测量实际收益。
