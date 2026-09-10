@@ -2932,3 +2932,93 @@ generation/observed 11/11、Ready/updated 3/3，模板仍为 a245c95f 原镜像�
 查询暂返回 total_count=0，尚不能确认新任务接单。下一步推送本修复及 docs-only 交接记录，
 以新 run 的 headSha、排队/接单结果确认。旧服务仍未包含本 TLS 修复，首次替换旧 Pod
 仍可能遇到旧退出缺陷；不降低现有 SLO，不把预热镜像重跑视为完整冷升级证明。
+
+后续已将 docs-only 后继 `dd339bc1f9586fb77b5743970aea99765012f23c` 推送 dbaas，
+触发 CI [34417282642](https://github.com/fivetime/kubebrain/actions/runs/34417282642)。
+Runner `raas-1567` 已 online/busy，job 102684841419 于 23:31:47Z 开始，
+不再处于等待 Runner 注册状态；CI 尚在执行，不代表已发布镜像。
+
+私有新入口 `run-prepull-dd339bc1-upgrade.sh` 已绑定该 source、产品 12b4aedc、
+CI run 及 TLS 提交前后实际回执，保留既有 SLO/负载/资源身份约束。
+默认 verify；尚无实际镜像回执时负向测试 exit 1，明确在集群访问前停止。
+对应 `tls-final-close-dd339bc1-tools` 下两个恢复工具已重新编译，Go 1.26.8、
+vcs.revision=dd339bc1 完整 SHA、vcs.modified=false，固定 kubeconfig wrapper
+继续拒绝调用方覆盖；工具校验和为 `security-tls-final-close-dd339bc1-tools.sha256`。
+入口和 wrapper 的固定版本 ShellCheck exit 0。以上仅本地准备，未创建集群资源或部署。
+
+指标诊断入口 `capture-client-metrics-dd339bc1.sh` 也已绑定新 source/run/探针名；
+bash 语法与固定 ShellCheck 均通过，缺少真实镜像回执时 exit 1、集群访问前停止。
+尚未实际采样。原 `observe-kubebrain-2-exit.sh` 校验和仍匹配，可在升级前以新鲜 Pod UID
+启动有界观察；目前未启动观察。CI watch 会话 66765 已启动，日志
+`security-tls-final-close-dd339bc1-ci-watch.log`，不得因一次观察超时重复触发构建。
+
+CI 仍执行时，已从候选 tag 独立读取实际 OCI 索引：
+`sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`；
+amd64 为 `sha256:bb11ffc594b2a5e6153ad2fb44174355576415a91a045da9924f0a2da84e762b`，
+arm64 为 `sha256:7c87416101097064adbb8c59fc678e41e4b15aa16a9edba508aad18fc277018d`。
+本地 exact-source verify-release exit 0；原始索引及结构验证输出使用
+`security-tls-final-close-dd339bc1-{index,release-identity}-observed.json`。
+按该不可变索引启动本机 amd64 拉取会话 29672，日志同前缀 `amd64-pull.log`。
+这只是候选字节观察，CI 成功、实际版本/模块与最终 promotion 仍待验证，未创建成功镜像回执。
+
+随后本机 amd64 拉取 29672 exit 0；隔离运行 `--version` 会话 66613 exit 0，
+实际报告 source dd339bc1 完整 SHA、版本 0.0.0-dbaas-dd339bc1f958、Go 1.26.8
+linux/amd64、构建时间 23:31:57Z，与 OCI labels 相符，镜像默认用户 65532:65532。
+从未启动的临时容器提取主二进制，buildinfo 确认实际替换为
+`github.com/fivetime/tikv-client-go/v2 v2.0.8-0.20260909023231-832b70fd622f`，
+sum `h1:xmTt2n1e/Yy8Tq5cCn4MqQsTtzTQWMuKX2GAqDkJuJg=` 与 go.sum 一致。
+临时提取容器已删除，二进制/buildinfo/config/version 证据仍保存在私有同前缀文件中。
+CI 与最终 promotion 尚未完成验证，仍不创建成功镜像回执或启动部署。
+
+2026-09-10 00:03:33Z，CI 34417282642 全部成功（含八项必要发布步骤及清理），
+watch 66765 exit 0；发布后独立读取 dbaas 标签索引，SHA256 与候选 0ce85e66 完整摘要一致。
+已基于实际 CI/索引/版本/模块证据创建私有 0600 回执
+`security-prepull-dd339bc1-image-verified.json`，范围仅 published_image_identity_only。
+完整 CI 结果在 `security-tls-final-close-dd339bc1-ci-completed.json`。
+随后启动只读入口 verify 会话 93413，日志同前缀 `preflight.log`；未 execute，
+尚未创建 holder/探针或切换业务镜像。检查正在进行，需取得真实终态后才能继续。
+
+只读 verify 93413 随后 exit 0，输出 CANDIDATE_UPGRADE_GUARDS_PASSED、cluster_mutations=0，
+证据目录 `prepull-dd339bc1-verify.NE2CEFkxuDGR`。镜像、恢复工具、固定集群身份、
+rook-ceph 数据卷与后端健康前置检查通过；实际隔离准备/受控升级尚未开始。
+
+随后新鲜核验三个旧 Pod 均 Ready、无删除时间且实际 spec 为 a245c95f 镜像；
+旧 kubebrain-2 UID 为 `0e0da27b-a868-4150-9c89-c9c5f50f478a`。
+绑定该 UID 启动 900s 状态观察 59652，目录 `pod-exit-observation.83ufQrAu3Nd0`，
+同范围日志跟随 95605（900s/32MiB+1 捕获上限，完整性仍需结束时核验）。
+再次确认旧 UID 不变后启动 execute 85909，日志
+`security-tls-final-close-dd339bc1-upgrade.log`，证据目录
+`prepull-dd339bc1-execute.irUdLRRi5HBM`。当前执行中，不得重复启动或先行宣称通过。
+SLO、6000 次负载、900s 完成窗口及其他部署配置不变；先隔离镜像准备，再按入口受控升级。
+
+本轮 execute 85909 已 exit 1：PREPULL_READY/VERIFIED 后探针启动，首个失败为
+`availability probe failed during rollout`，`PROBE_FAIL iteration=117: direct watch recovery
+exceeded 27.986725732s: context deadline exceeded`。fixture 全零和 PREPULL_CLEANUP_CONFIRMED
+已输出；回滚早期日志明确 CRITICAL kubebrain-2 runtime identity mismatch，并非回滚成功。
+后续独立核验终态 generation/observed 13/13、Ready/updated 3/3、current/update 均为
+kubebrain-696c87f8f9，三个实际 Pod 全部旧 a245c95f 镜像、Ready、无 deletionTimestamp。
+恢复后的 kubebrain-2 UID 为 `8d3f5d17-5296-4df7-9eb5-2eb5b30c0bf9`。
+
+旧日志跟随 95605 exit 0：00:09:25.331Z 仅 info root port 8080 shutdown，
+00:09:40.331Z 再次 force exit due to graceful exit timeout。旧实例未包含 TLS 修复。
+事件证据同前缀 `events.json`：候选 UID `9fbcf1ed-cea6-4e1c-b82e-1f563ce2dfcf`
+00:09:41Z 完成调度，00:09:42Z 卷 attach，00:09:53Z 使用已缓存镜像启动；
+00:10:01Z 因回滚 Killing，00:10:28Z 已出现恢复 Pod，00:10:34Z 原镜像启动。
+不能把升级失败声明为已修复，也不能从事件间隔单独证明候选进程优雅退出；
+状态观察 59652 仍在原 900s 窗口运行，需继续检查同 UID 的实际终止状态。
+
+已从实时状态记录补齐终止证据：旧 UID exitCode=1/Error、finishedAt=00:09:40Z；
+候选 UID exitCode=0/Completed、finishedAt=00:10:28Z，restartCount=0。
+因此本次候选在回滚时确实正常退出，与旧实例强制失败退出不同；这项局部证据
+不等于整轮升级通过，也不覆盖有长期已接入 watch 的全部退出场景。
+旧日志 12157 字节，未触达 32MiB 截断上限。仍未取得三个候选实例的客户端指标采样。
+
+进一步核对探针源码：directRemaining 从该次 Put 起算的 30s deadline 扣除已消耗时间，
+报错 27.9867s 是剩余 direct wait 预算，不是另设更低门限。final progress 在 run 返回时
+defer 输出，00:09:51.742Z 已记录 completed=116/final=true，早于候选容器
+00:09:53Z Started；00:09:58Z 最终 PROBE_FAIL 打印包含了客户端清理等待，不能误作
+最初故障时刻。状态观察候选首次 Ready=True 为 00:10:01Z。
+
+下一步决策边界：新镜像无法回溯修复正在退出的旧进程。若先通过维护迁移建立含修复的
+三副本基线，再按原 SLO 验证新基线滚动，需要明确区分“安装修复”与“通过升级验收”；
+不能放宽探针后将其记为原 SLO 通过。当前尚未执行这种不同验收语义的迁移，也未重试。
