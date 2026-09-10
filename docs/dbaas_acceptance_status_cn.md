@@ -21,7 +21,7 @@ race 三轮、backend vet 均通过。私有 overlay 故意保留旧配额使用
 门禁证据：`/root/.local/state/kubebrain/write-cost-quota-gates.Z7ARmxOv/`。
 后续评估准备阶段独立读取的合并；保留事务内配额和损坏告警等原子保护。
 
-事务准备阶段批读实验（工作树，2026-09-10）：在配额开启且未固定快照的路径，通过
+事务准备阶段批读（提交 `31c2954f`，2026-09-10）：在配额开启且未固定快照的路径，通过
 可选 BatchGetter 一次读取 tracking、usage 和写入所需的 NOSPACE alarm；按原顺序
 校验告警及元数据，批读失败不换快照回退，提交事务内 usage 比较与更新保持不变。
 新增 put/delete、脏/缺失元数据、告警优先级、取消/不可用、禁用配额及固定快照回退测试。
@@ -29,7 +29,13 @@ race 三轮、backend vet 均通过。私有 overlay 故意保留旧配额使用
 3 Get / 2 BatchGet / 4 Atomic Get / 1 Commit，GetThenUpdate 为
 5 Get / 2 BatchGet / 4 Atomic Get / 1 Commit，禁用配额场景不变。
 证据：`/root/.local/state/kubebrain/txn-quota-batch.v5jQtJo5/`。服务层配额/Put/Txn/
-损坏告警专项也已通过（44.749 秒）；提交级门禁尚待完成，未提交、未部署。
+损坏告警专项也已通过（44.749 秒）。提交前后均通过基准普通/race 各三轮、配额专项
+普通/race 各十轮、backend/server-etcd/storage-tikv 完整普通/race/vet、规范后端
+协议集成普通十轮/race 三轮，以及 720 项生产测试清单与全部四分片；最终源码摘要一致。
+提交后四分片为 468.869/530.909/394.662/761.400 秒。
+门禁证据：`/root/.local/state/kubebrain/txn-quota-batch-gates.qH6NMSd6/`。
+尚未部署本候选。此前已推送 `ed14f2eb` 的后端 CI `34513586370` 和镜像 CI
+`34513586358` 均成功，但不能作为本产品改动的 CI 或真实环境验收证据。
 上述调用数变化不是集群延迟或 900 秒验收通过证据。
 并发保护补充：新增测试在批读取得旧 usage=0 后模拟其他写入将 usage 改为 40，
 要求本次事务比较失败后重新准备、最终 usage=42，且只分配一个公共修订号；相关
