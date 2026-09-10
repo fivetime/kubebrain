@@ -143,14 +143,35 @@ func (b *backend) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace 
 		b.emitQuotaMetrics(0, noSpace)
 		return 0, quota, noSpace, nil
 	}
-	tracking, trackingErr := b.InternalGet(ctx, quotaTrackingKey)
+	read := b.InternalGet
+	// Admission reads need all three records. Fetch them from one snapshot when
+	// possible, without changing validation order or caching mutable quota state.
+	// InternalGet honors caller-pinned snapshots; ordinary BatchGet does not.
+	if _, pinned := storage.SnapshotTimestampFromContext(ctx); !pinned {
+		if getter, ok := storage.FindCapability[storage.BatchGetter](b.kv); ok {
+			keys := [][]byte{b.ks.EncodeInternalKey(quotaTrackingKey),
+				b.ks.EncodeInternalKey(quotaUsageKey), b.ks.EncodeInternalKey(quotaAlarmKey)}
+			values, batchErr := getter.BatchGet(ctx, keys)
+			if batchErr != nil {
+				return 0, quota, false, batchErr
+			}
+			read = func(_ context.Context, key []byte) ([]byte, error) {
+				value, exists := values[string(b.ks.EncodeInternalKey(key))]
+				if !exists {
+					return nil, storage.ErrKeyNotFound
+				}
+				return value, nil
+			}
+		}
+	}
+	tracking, trackingErr := read(ctx, quotaTrackingKey)
 	if trackingErr != nil || !bytes.Equal(tracking, quotaTrackingClean) {
 		if errors.Is(trackingErr, storage.ErrKeyNotFound) || trackingErr == nil {
 			return 0, quota, false, ErrQuotaUninitialized
 		}
 		return 0, quota, false, trackingErr
 	}
-	raw, getErr := b.InternalGet(ctx, quotaUsageKey)
+	raw, getErr := read(ctx, quotaUsageKey)
 	switch {
 	case errors.Is(getErr, storage.ErrKeyNotFound):
 		return 0, quota, false, ErrQuotaUninitialized
@@ -162,7 +183,7 @@ func (b *backend) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace 
 			return 0, quota, false, err
 		}
 	}
-	_, alarmErr := b.InternalGet(ctx, quotaAlarmKey)
+	_, alarmErr := read(ctx, quotaAlarmKey)
 	switch {
 	case alarmErr == nil:
 		noSpace = true
