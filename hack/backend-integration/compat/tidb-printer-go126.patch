@@ -1,0 +1,11 @@
+--- a/util/printer/printer.go
++++ b/util/printer/printer.go
+@@ -21,2 +21,1 @@
+-	_ "runtime" // import link package
+-	_ "unsafe"  // required by go:linkname
++	"runtime"
+@@ -171,2 +170,2 @@
+-//go:linkname buildVersion runtime.buildVersion
+-var buildVersion string
++// Test-only compatibility patch: use the public runtime API.
++var buildVersion = runtime.Version()

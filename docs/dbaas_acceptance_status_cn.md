@@ -36,6 +36,10 @@ KubeBrain 产品依赖仍固定在 fork `832b70fd622f`，未启用生产 1PC。
 断言处失败。两次反向测试均未修改实际仓库源码。该原型仍不是正式集成回归、外部 etcd Watch API 验收或真实 TiKV
 持久性证明；尚缺默认重试开启路径和真实环境验证。
 代码/日志在 `/root/.local/state/kubebrain/backend-onepc-integration.HabFHNJ0/`。
+正在将上述原型纳入 [`hack/backend-integration`](../hack/backend-integration/README.md)：
+独立模块使用与产品完全相同的远程客户端固定版本，入口拒绝本机替换、版本漂移和任意
+端点/测试参数，兼容补丁仅用于临时 mock 依赖副本。已增加 self-hosted CI 作业；
+当前尚未完成该仓库变更提交前后完整门禁或新作业的 CI 验证，不认定正式集成验收通过。
 生产协议、集群配置和下述 900 秒验收失败结论均未改变。
 
 最新终态（2026-09-10，c7d9905e 正式复验）：配额批读优化的发布源码
