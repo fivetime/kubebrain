@@ -5,17 +5,20 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-写入成本测量边界补充（2026-09-10）：现有 `BenchmarkBackendWriteStorageCalls`
-默认关闭配额，不能代表真实集群启用 2 GiB 配额后的调用数。隔离测试 overlay 仅开启
+写入成本测量边界补充（2026-09-10）：原 `BenchmarkBackendWriteStorageCalls`
+仅覆盖关闭配额，不能代表真实集群启用 2 GiB 配额后的调用数。隔离测试 overlay 仅开启
 配额并在计时前初始化，两种配置各运行 100 次、重复 3 轮，均通过；开启后 TxnApply
 为 6 Get / 1 BatchGet / 4 Atomic Get / 1 Commit，GetThenUpdate 为
 8 Get / 1 BatchGet / 4 Atomic Get / 1 Commit。关闭配额仍分别是 4 和 6.01 Get，
 均为 3 Atomic Get，其余两项相同。这些是 memkv 存储 API 调用数，未覆盖完整 RPC
 鉴权/准入，也不是 TiKV 网络次数或集群延迟；不能据此认定升级超时根因。
-证据：`/root/.local/state/kubebrain/write-cost-quota.VR1vfst4/`。规范基准已在工作树补齐
+证据：`/root/.local/state/kubebrain/write-cost-quota.VR1vfst4/`。规范基准已补齐
 两种配额模式，并在计时外校验最终配额使用量；四场景普通三轮、配额相关测试与基准
 race 三轮、backend vet 均通过。私有 overlay 故意保留旧配额使用量后，两个开启配额
-场景均在新增记账断言失败，正式产品源码未改动。尚未提交或完成提交级四分片门禁。
+场景均在新增记账断言失败，正式产品源码未改动。基准提交为 `97bf54d6`；提交前后
+均通过四场景普通/race 各三轮、backend 完整普通/race/vet、720 项生产测试清单及
+全部四分片，最终源码摘要一致。提交后四分片分别为 468.174/531.989/394.055/762.236 秒。
+门禁证据：`/root/.local/state/kubebrain/write-cost-quota-gates.Z7ARmxOv/`。
 后续评估准备阶段独立读取的合并；保留事务内配额和损坏告警等原子保护。
 
 真实消费者 watch 补充（2026-09-10）：修复版 `0ce85e66` 基线上，规范入口
