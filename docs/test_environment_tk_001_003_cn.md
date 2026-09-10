@@ -2,6 +2,27 @@
 
 最后核验：2026-09-10。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
+## 最新升级：事务配额批读候选超时，基线已恢复
+
+2026-09-10，产品 `31c2954f`、发布 `9a0fdd3b`，后端 CI `34522265523` 与镜像
+CI `34522265522` 成功；独立镜像核验和只读集群预检通过。仍使用消费者集群
+`rook-ceph` 的 `nvme-rep3-rbd-pool`，未使用 secondary 集群，未重启 PD/TiKV。
+候选镜像为 `sha256:edeb87ad2353c4f724449e905e2784bee3a2f9dfab95913855c6b3df3f4a1d60`。
+原 6000 次 / 0.1 秒间隔 / 公共 5 秒 / 直连 30 秒参数不变；三个候选副本完成滚动后，
+探针未在原 900 秒完成期限内结束，执行 exit 1，不算验收通过。
+
+自动回滚后 StatefulSet UID 不变，generation/observed 为 20/20，Ready 3，
+current/update revision 均为 `kubebrain-855b5bfb88`。三个 Pod 实际运行的基线镜像均为
+`sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`，重启计数均为 0。
+新 Pod UID：0=`dae210aa-516e-4281-9475-172ad8e2bedc`，
+1=`22f30964-c0a6-4d5e-9f4b-d70cb85076c7`，2=`b3566cfa-2078-4273-bb8d-6ce67d7c5376`。
+本轮 `prepull-upgrade-9a0fdd3b` 探针及 `kb-prepull-60b35ac985d43caeec1be106c6658d57-`
+前缀的 holder Pod 已无残留，日志确认测试数据无残留及 `PREPULL_CLEANUP_CONFIRMED`。
+证据目录：`/root/.local/state/kubebrain/tk-001-003/txn-quota-9a0fdd3b.ewMYJKjv/`，
+含 `execute.log`、镜像核验记录、回滚后对象快照、同进程指标增量。
+该候选已经正式失败，不应在没有新证据或修正的情况下重复执行。
+下文旧 generation 18 及旧 Pod UID 是历史记录，不代表当前状态。
+
 ## 最新消费者接入：独立 apiserver 基础 smoke 通过
 
 2026-09-10，执行仓库内 `hack/dev/apiserver-smoke.sh`（源码 `eddc122c`，脚本摘要

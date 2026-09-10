@@ -34,8 +34,19 @@ race 三轮、backend vet 均通过。私有 overlay 故意保留旧配额使用
 协议集成普通十轮/race 三轮，以及 720 项生产测试清单与全部四分片；最终源码摘要一致。
 提交后四分片为 468.869/530.909/394.662/761.400 秒。
 门禁证据：`/root/.local/state/kubebrain/txn-quota-batch-gates.qH6NMSd6/`。
-尚未部署本候选。此前已推送 `ed14f2eb` 的后端 CI `34513586370` 和镜像 CI
-`34513586358` 均成功，但不能作为本产品改动的 CI 或真实环境验收证据。
+本候选以 `9a0fdd3b` 发布，后端 CI `34522265523` 和镜像 CI `34522265522`
+均成功，实际镜像版本、客户端依赖及双架构摘要独立核验通过。真实滚动升级到
+`sha256:edeb87ad2353c4f724449e905e2784bee3a2f9dfab95913855c6b3df3f4a1d60`
+后，三个副本完成更新，但探针未在滚动完成后的原 900 秒期限内完成 6000 次操作，
+执行 exit 1，**严格验收仍未通过**；没有放宽公共 5 秒、直连 30 秒和 0.1 秒间隔。
+自动恢复修复版 `sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`，
+最终 generation/observed 20/20、Ready 3、current/update revision 均为
+`kubebrain-855b5bfb88`，三个 Pod 实际镜像一致、重启计数为 0；本轮探针及镜像 holder
+均已删除，日志包含测试数据无残留和 `PREPULL_CLEANUP_CONFIRMED`。
+证据：`/root/.local/state/kubebrain/tk-001-003/txn-quota-9a0fdd3b.ewMYJKjv/`。
+同一 server2 进程两组指标增量：533 次 Put apply 平均 74.793 ms，847 次 backend
+commit 平均 43.705 ms；store 2005 的 Prewrite/Commit 平均 17.729/18.883 ms。
+这些是采样区间诊断，既非受控 A/B，也非磁盘根因证明；本次批读尚不足以解决验收超时。
 上述调用数变化不是集群延迟或 900 秒验收通过证据。
 并发保护补充：新增测试在批读取得旧 usage=0 后模拟其他写入将 usage 改为 40，
 要求本次事务比较失败后重新准备、最终 usage=42，且只分配一个公共修订号；相关
