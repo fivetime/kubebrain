@@ -2,7 +2,40 @@
 
 最后核验：2026-09-10。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
-## 最新验收终态：c7d9905e 配额批读候选
+## 最新消费者接入：独立 apiserver 基础 smoke 通过
+
+2026-09-10，执行仓库内 `hack/dev/apiserver-smoke.sh`（源码 `eddc122c`，脚本摘要
+`ebd1f11a1aa92acd7263f090264db7f4307a11ffa79738508eb32b8521de1abc`），
+通过独立 Kubernetes v1.36.1 apiserver 连接本测试集群的真实 KubeBrain/TiKV。
+未滚动升级，实际服务仍为修复版镜像 `sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`，
+StatefulSet UID `2650ad15-1d37-41c4-836c-d40dd4502720`、generation/observed 18/18、Ready 3。
+
+使用显式 kubeconfig/context `kubebrain-test-10.32.32.66`、namespace `kubebrain-dbaas-test`，
+客户端 Service `kubebrain-client` UID `a0fbf77b-010b-4595-a28b-471b73d2d640`。
+仅将该 Service 的 3379 转发到本机 loopback 13379，TLS 验证未跳过，使用已有私有客户端证书；
+连接确认 cluster ID `7683177044639569228`，前置 revision 29346，前端租约数为 0。
+测试专属前缀 `/registry-kubebrain-apiserver-tk001003-20260910-eddc122c` 预检为空，
+独立 apiserver 仅监听 loopback 18443，没有复用默认 kind 节点名或改变本机默认 kubeconfig。
+
+apiserver 来自已有 `kubebrain-dbaas-control-plane`，kind 镜像摘要
+`sha256:3489c7674813ba5d8b1a9977baea8a6e553784dab7b84759d1014dbd78f7ebd5`。
+提取的可执行文件实际版本 v1.36.1，SHA256
+`9b4dba0a5b945f1fe0ce18f47535c5ff0c46ae384f9222047bce39fe91b6023e`。
+etcdctl 来源经现有脚本核验为 `/root/etcd` 提交 `5cd9f4ee13801e18825d661e5005ae599460bc3a`。
+
+执行 exit 0：ConfigMap update/watch 返回 `update ok`/`watch ok`，标签选择器 5、复合选择器 2，
+字段选择器命中 batch-3，chunk-size=2 分页合计 5，批量删除后为 0；Secret、Lease 更新、
+零副本 Deployment 创建/更新均完成。独立 apiserver 没有工作节点或调度控制器，不创建业务容器。
+脚本会回收基线后新增的前端租约，因此本次与其他租约写入/升级探针串行，禁止并行复用此入口。
+
+结束后另行只读核验前缀为空、租约数仍为 0；临时 work/PKI 目录与 apiserver 进程已移除，
+本次端口转发已停止，13379/18443 均无监听。已删除此次提取的二进制及空提取锁/目录，
+可从原 kind 镜像重新提取；预先存在的私有 TLS 材料未删除，也未加入 Git。
+完整日志/来源/清理结果位于私有目录 `/root/.local/state/kubebrain/consumer-smoke.BVGOKrII/`。
+该目录保留证据，不是第二份测试代码权威；运行入口仍以仓库脚本为准。
+本结果只证明基本消费者接入，不证明 KWOK 规模、长时间 watch、故障恢复或 30s/900s 升级达标。
+
+## 最新升级验收终态：c7d9905e 配额批读候选
 
 发布源码 `c7d9905e57526c4d2868f96805b7e276f37888c0`（产品提交 `260d51e1`）
 CI 34470793561 于 2026-09-10 11:50:24 UTC 成功。独立核验发布索引

@@ -5,6 +5,14 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+真实消费者补充（2026-09-10）：现有独立 Kubernetes v1.36.1 apiserver smoke 连接
+`tk-001-003` 的真实 KubeBrain/TiKV 修复版基线，TLS 下完成基本读写、ConfigMap watch、
+标签/字段选择器、分页、批量删除、Secret、Lease 和零副本 Deployment 操作，脚本 exit 0。
+独立复核测试前缀为空、租约恢复为 0、临时 PKI/进程/端口已清理，提取的测试二进制已删除。
+这是基本接入证据，不是 KWOK 规模、长时间 watch、默认重试的真实 TiKV 故障验证，
+也不替代失败的 900 秒升级验收。运行版本仍是修复版 `0ce85e66`，未部署下面的新测试镜像。
+完整作用域和证据见 [测试环境记录](test_environment_tk_001_003_cn.md)。
+
 客户端测试维护进展（2026-09-10）：fork 提交
 `6539bbb040f152980492281148d9d7dd289473b0` 已推送至 `kubebrain-v2.0.7`。
 该提交前后均通过 fork build/vet/unit/race、专用 mock 1PC 普通 10 轮/race 3 轮，
@@ -44,17 +52,22 @@ KubeBrain 产品依赖仍固定在 fork `832b70fd622f`，未启用生产 1PC。
 后端与 TiKV 适配器完整普通/race/vet，以及各 720 项生产工具四分片门禁、最终源码摘要核验。
 新增后端 CI [34498234277](https://github.com/fivetime/kubebrain/actions/runs/34498234277)
 已全部通过，包括非 root 清理、入口契约、普通 10 轮和 race 3 轮。同期镜像 CI
-`34498234203` 尚在运行；未部署此测试变更镜像。以上仍不替代真实 TiKV 验收。门禁证据位于
+`34498234203` 也已全部成功；未部署此测试变更镜像。以上仍不替代真实 TiKV 验收。门禁证据位于
 `/root/.local/state/kubebrain/backend-onepc-canonical-gates.Y33UuAPw/`。
-默认重试补充诊断（尚未纳入仓库）：unistore 原虚拟地址不能响应真实 gRPC 健康检查，
+默认重试补充诊断（历史隔离阶段）：unistore 原虚拟地址不能响应真实 gRPC 健康检查，
 首轮两例均只发生一次 RPC 并失败；提供本地健康服务、注册相同 mock StoreID 的可达地址后，
 默认重试确实发生。发送前丢失经重试成功，提交后丢响应经重试仍返回不确定结果并由见证解析。
 两个默认重试场景及原两个禁用重试场景合计通过普通 10 轮/race 3 轮，断言实际健康探测、
 恰好两次提交 RPC、起始时间戳不变，以及原有修订号/watch 批次边界。
 证据：`/root/.local/state/kubebrain/backend-onepc-retry.NV9YlpqB/`；数据 RPC 仍是 mock，
-不是完整真实 TiKV 网络重试或持久性证明，尚待规范化到仓库并通过 CI。
-后续默认重试扩展现已加入仓库待提交测试，补充禁用重试严格一次、默认重试严格两次、
-禁止提交时间戳漂移和成功路径不得走不确定解析等断言；正在执行该变更自己的门禁。
+不是完整真实 TiKV 网络重试或持久性证明。
+后续默认重试扩展已提交并推送为 `eddc122caea484a9ad7bb933174d963a7cf23c22`，
+补充禁用重试严格一次、默认重试严格两次、禁止提交时间戳漂移和成功路径不得走不确定解析
+等断言。其提交前后均通过四场景普通 10 轮/race 3 轮、后端完整普通/race/vet、入口/清理
+契约、各 720 项生产工具四分片门禁和最终源码摘要核验。新增后端 CI
+[34505205282](https://github.com/fivetime/kubebrain/actions/runs/34505205282) 全部通过；
+镜像 CI `34505205098` 尚待结果，未部署新镜像。证据位于
+`/root/.local/state/kubebrain/backend-onepc-retry-gates.Xp3gzfnd/`。
 前述已通过 CI `34498234277` 只覆盖原来两个禁用重试用例，不能作为本扩展通过的证据。
 生产协议、集群配置和下述 900 秒验收失败结论均未改变。
 
@@ -69,7 +82,8 @@ current/update revision 均为 `kubebrain-855b5bfb88`；三 Pod 实际镜像及 
 无删除标记且重启数为 0。fixture 全零，探针及三个本轮预拉取 holder 已清理。
 同一候选进程两次采样间 603 次 Put 平均约 87.17ms、959 次批提交约 45.77ms；
 与上一轮采样涉及不同 TiKV store，不能据此作受控 A/B 结论或把存储耗时归因于物理盘。
-下一步继续定位串行操作耗时，并开展隔离的真实 Kubernetes 接入回归；不盲目重跑或放宽门限。
+下一步继续定位串行操作耗时，并在已通过基本消费者 smoke 的基础上开展长时/规模回归；
+不盲目重跑或放宽门限。
 提交协议优化的前置缺口：固定 fork `832b70fd622f` 的 `integration_tests` 是独立
 Go 模块，不能用根模块 `go test ./integration_tests` 覆盖。进入该模块执行
 `go test -mod=readonly . -run '^TestOnePC$' -count=1 -timeout=180s -args -with-tikv=false`
