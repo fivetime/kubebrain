@@ -13,14 +13,29 @@ security/test 作业成功，onepc 的普通用例通过后，非 root Runner �
 只读依赖目录，后续 race 未执行。不能将本地 root 下通过等同于 CI 通过。
 当前修复只给私有临时副本的目录恢复所有者写权限、不跟随符号链接；非 root 回归验证了
 成功/失败退出码保留、嵌套只读目录删除及外部链接目标不被修改，并有失败复现和反向测试。
-修复尚未提交或发布，须单独经过门禁；KubeBrain 产品依赖仍固定在 fork `832b70fd622f`。
+清理修复已提交并推送为 `2155365951a870077becc05af4a49c8ed90231bf`。
+该修复提交前后均通过非 root 清理契约、fork build/vet/unit/race、专用 mock 1PC
+普通 10 轮/race 3 轮，以及 KubeBrain 各 720 项四分片门禁和最终源码摘要核验。
+新 CI [34490393381](https://github.com/fivetime/tikv-client-go/actions/runs/34490393381)
+已全部通过：test/security/onepc 三个作业均成功，日志确认非 root 清理契约通过，
+且 onepc 普通与 race 两轮命令都执行成功。这关闭了旧 CI 的临时目录清理问题。
+清理修复门禁证据：`/root/.local/state/kubebrain/onepc-cleanup-gates.WzjzlOOO/`。
+KubeBrain 产品依赖仍固定在 fork `832b70fd622f`，未启用生产 1PC。
 证据目录：`/root/.local/state/kubebrain/onepc-integration-gates.5V2i9vl7/`。
 
 另在仓库外原型中，以真实 KubeBrain 存储适配器/后端连接 unistore，按调用上下文仅对
 用户 1PC 提交丢弃已成功的响应，已验证 `ErrUncertainResult`、已提交见证解析指标、
 两键同修订号及下一次写入只增加一个修订号；普通一次和三轮 race 通过。
-该原型尚缺发送前失败、精确 watch 批次和解析器反向测试，不是正式集成回归或真实 TiKV
-持久性证明。代码/日志在 `/root/.local/state/kubebrain/backend-onepc-integration.HabFHNJ0/`。
+后续补齐发送前失败：解析为未提交、两键均不存在、公共修订号不前进、下一次写入复用
+预留修订号；两种情况普通 10 轮与 race 3 轮通过。进一步注册真实后端 watch，验证已提交
+两键同批同修订号，并以随后一次确认成功的写入作为有序边界，检查此前没有额外事件；
+未送达场景的首个事件只能来自下一次写入。该扩展普通 10 轮/race 3 轮通过。
+初版 watch 断言混淆内部 CREATE 与对外 etcd PUT，失败后按现有适配层映射修正；未改产品代码。
+隔离 overlay 删除已提交解析路径的事件发布后，测试在公共修订号恢复断言处失败，
+说明能够检测该解析回归；另一个 overlay 仅发布两键中的一键，测试明确在“两事件同批”
+断言处失败。两次反向测试均未修改实际仓库源码。该原型仍不是正式集成回归、外部 etcd Watch API 验收或真实 TiKV
+持久性证明；尚缺默认重试开启路径和真实环境验证。
+代码/日志在 `/root/.local/state/kubebrain/backend-onepc-integration.HabFHNJ0/`。
 生产协议、集群配置和下述 900 秒验收失败结论均未改变。
 
 最新终态（2026-09-10，c7d9905e 正式复验）：配额批读优化的发布源码
