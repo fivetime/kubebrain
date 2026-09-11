@@ -813,8 +813,16 @@ func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.C
 
 func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expected restoredSnapshotAuthAccessExpectation,
 	index int, replicationBarrier restoredSnapshotLeaseReplicationBarrier,
-) error {
+) (retErr error) {
+	started := time.Now()
+	stage := "Range"
+	defer func() {
+		// Runs before the caller closes clients or restored members. Cleanup
+		// time must not turn an active request into an apparent deadline failure.
+		retErr = restoredAuthAccessFailure(retErr, stage, time.Since(started), ctx.Err())
+	}()
 	requirePermission := func(label string, allowed bool, operation func() error) error {
+		stage = label
 		err := operation()
 		if allowed && err != nil {
 			return fmt.Errorf("restored auth %s was denied for user=%q key=%q: %w", label, expected.username, expected.key, err)
@@ -830,6 +838,7 @@ func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expe
 	}); err != nil {
 		return err
 	}
+	stage = "Watch"
 	watchCtx, cancelWatch := context.WithCancel(ctx)
 	watch := client.Watch(watchCtx, expected.key, clientv3.WithCreatedNotify())
 	select {
@@ -886,11 +895,13 @@ func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expe
 		return err
 	}
 	if expected.write {
+		stage = "LeaseGrant"
 		lease, err := client.Grant(ctx, 30)
 		if err != nil {
 			return fmt.Errorf("grant restored auth lease for user=%q: %w", expected.username, err)
 		}
 		leasedValue := value + "-leased"
+		stage = "LeasePut"
 		leasedPut, putErr := client.Put(ctx, expected.key, leasedValue, clientv3.WithLease(lease.ID))
 		if putErr != nil {
 			return fmt.Errorf("attach restored auth lease for user=%q key=%q: %w", expected.username, expected.key, putErr)
@@ -898,12 +909,14 @@ func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expe
 		if leasedPut == nil || leasedPut.Header == nil || leasedPut.Header.Revision <= 0 {
 			return fmt.Errorf("attach restored auth lease for user=%q key=%q returned an invalid response", expected.username, expected.key)
 		}
+		stage = "LeaseReplication"
 		if replicationBarrier == nil {
 			return errors.New("restored auth lease replication barrier is required")
 		}
 		if err = replicationBarrier(ctx, expected.key, leasedValue, lease.ID, leasedPut.Header.Revision); err != nil {
 			return fmt.Errorf("replicate restored auth lease for user=%q key=%q: %w", expected.username, expected.key, err)
 		}
+		stage = "LeaseTimeToLive"
 		_, ttlErr := client.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
 		if expected.read && ttlErr != nil {
 			return fmt.Errorf("read restored auth lease keys for user=%q: %w", expected.username, ttlErr)
@@ -911,14 +924,26 @@ func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expe
 		if !expected.read && !errors.Is(ttlErr, rpctypes.ErrPermissionDenied) {
 			return fmt.Errorf("restored auth lease key read returned %v for write-only user=%q", ttlErr, expected.username)
 		}
+		stage = "LeaseKeepAliveOnce"
 		if _, err = client.KeepAliveOnce(ctx, lease.ID); err != nil {
 			return fmt.Errorf("keep restored auth lease alive for user=%q: %w", expected.username, err)
 		}
+		stage = "LeaseRevoke"
 		if _, err = client.Revoke(ctx, lease.ID); err != nil {
 			return fmt.Errorf("revoke restored auth lease for user=%q: %w", expected.username, err)
 		}
 	}
 	return nil
+}
+
+func restoredAuthAccessFailure(err error, stage string, elapsed time.Duration, contextErr error) error {
+	if err == nil {
+		return nil
+	}
+	// stage is selected only from constants above; context causes may contain
+	// arbitrary caller text, so expose flags rather than their error strings.
+	return fmt.Errorf("%w (auth_stage=%q access_elapsed_ms=%d context_done=%t deadline_exceeded=%t)",
+		err, stage, elapsed.Milliseconds(), contextErr != nil, errors.Is(contextErr, context.DeadlineExceeded))
 }
 
 // Only fixed-format envelope metadata is added here: no token, credentials,

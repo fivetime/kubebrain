@@ -16,7 +16,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -57,5 +59,29 @@ func TestRestoredAuthWatchFailureIncludesEvidenceBeforeOwnCancel(t *testing.T) {
 	require.ErrorContains(t, err, "invalid auth token")
 	require.ErrorContains(t, err, "header_present=true cluster_id=11 member_id=12 revision=13 raft_term=14")
 	require.ErrorContains(t, err, "context_done=false")
+	require.ErrorContains(t, err, `auth_stage="Watch"`)
 	require.ErrorIs(t, w.ctx.Err(), context.Canceled, "watch must still be canceled after collecting evidence")
+}
+
+func TestRestoredAuthAccessFailurePreservesOutcome(t *testing.T) {
+	original := errors.New("original authentication failure")
+	for _, tc := range []struct {
+		name       string
+		contextErr error
+		flags      string
+	}{
+		{"active", nil, "context_done=false deadline_exceeded=false"},
+		{"canceled", context.Canceled, "context_done=true deadline_exceeded=false"},
+		{"deadline", context.DeadlineExceeded, "context_done=true deadline_exceeded=true"},
+		{"custom", errors.New("private cancellation detail"), "context_done=true deadline_exceeded=false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := restoredAuthAccessFailure(original, "LeaseKeepAliveOnce", 123*time.Millisecond, tc.contextErr)
+			require.ErrorIs(t, err, original)
+			require.ErrorContains(t, err, `auth_stage="LeaseKeepAliveOnce" access_elapsed_ms=123 `+tc.flags)
+			require.NotContains(t, err.Error(), "private cancellation detail")
+			require.NoError(t, restoredAuthAccessFailure(nil, "LeaseKeepAliveOnce", time.Second, tc.contextErr),
+				"diagnostics must not turn success into failure")
+		})
+	}
 }
