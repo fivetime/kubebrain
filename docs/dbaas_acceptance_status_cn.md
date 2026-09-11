@@ -5,6 +5,22 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+普通 Put 预读优化的否决记录（2026-09-11）：本地尝试直接调用原子
+`TxnApply`，以省去适配层的 Get/条件 Update 循环。已有初始化版本的后端
+测试通过了损坏旧值拒绝、旧格式租约迁移和不确定提交解析；但冷启动适配层
+测试失败：首个普通 Put 已提交 revision=2，提交水位和 collector 游标仍为 0，
+触发原 3 秒提交等待上限，返回不确定结果。进一步核对发现原 Get 还调用
+`safeCurrentRevision` 来初始化空库 revision=1，且其读取/条件更新路径保留
+了缺失索引恢复行为，不能把它视为单纯多余的对象读取。
+未经等价验证的快捷路径及新增后端 API 已撤回，产品代码保持原样；候选补丁
+和失败日志保留在 `/root/.local/state/kubebrain/unconditional-put-*.log`、
+`unconditional-put-proposal-shim.patch` 及 `*.proposal.patch`。
+新增 `TestPlainPutBootstrapsColdBackendWithoutPriorRead` 回归，检查没有预先
+Range/租约写入/手工设置版本时，两个普通 Put 返回 revision=2/3，并立即可读且
+保留正确生命周期。它是后续优化的约束，不是性能优化已完成的证明。
+该回归与既有损坏当前值、Ignore 选项测试合并 `-race -count=20` 通过
+（3.515 秒），vet 通过；证据 `put-bootstrap-regression.log`。
+
 恢复权限校验错误链修复（2026-09-11）：授权 Watch 失败及预期拒绝却收到
 其他错误的 Watch 分支，原先使用 `%v` 将客户端错误降为文本；新增回归在
 旧实现上明确失败。改为 `%w` 保留 `WatchResponse.Err()` 的原始错误链，
