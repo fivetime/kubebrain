@@ -820,8 +820,8 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 		{name: "mutation", target: "mutation", timeoutVariable: "KUBECTL_MUTATION_COMMAND_TIMEOUT=1s", want: "failed to create rollout availability probe Pod"},
 		{name: "ready wait", target: "ready", timeoutVariable: "KUBECTL_READY_WAIT_COMMAND_TIMEOUT=1s", want: "rollout availability probe Pod did not become Ready"},
 		{name: "rollout status", target: "rollout", timeoutVariable: "KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT=1s", want: "KubeBrain rollout did not converge"},
-		{name: "phase wait deadline", target: "phase", timeoutVariable: "KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT=30s", want: "availability probe did not complete within 1s", extraEnv: []string{"PROBE_COMPLETE_TIMEOUT=1s"}, wantProbeLogCalls: 1},
-		{name: "phase evidence deadline", target: "phase-evidence", timeoutVariable: "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=30s", want: "availability probe did not complete within 1s", extraEnv: []string{"PROBE_COMPLETE_TIMEOUT=1s", "FAKE_PROBE_FAILED=true"}, wantProbeLogCalls: 1},
+		{name: "phase wait deadline", target: "phase", timeoutVariable: "KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT=30s", want: "availability probe did not complete within 1s", extraEnv: []string{"PROBE_COMPLETE_TIMEOUT=1s"}, wantProbeLogCalls: 2},
+		{name: "phase evidence deadline", target: "phase-evidence", timeoutVariable: "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=30s", want: "availability probe did not complete within 1s", extraEnv: []string{"PROBE_COMPLETE_TIMEOUT=1s", "FAKE_PROBE_FAILED=true"}, wantProbeLogCalls: 2},
 		{name: "start barrier deadline", target: "start", timeoutVariable: "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=30s", want: "availability probe did not publish its start barrier within 1s", extraEnv: []string{"PROBE_START_TIMEOUT=1s"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -847,7 +847,7 @@ func TestRolloutAvailabilityRunnerBoundsHungKubectlProcesses(t *testing.T) {
 					}
 				}
 				require.Equal(t, tc.wantProbeLogCalls, probeLogCalls,
-					"an expired completion stage must not start a diagnostic log request")
+					"one start-barrier read plus one bounded failure log read during EXIT cleanup")
 			}
 			require.Less(t, time.Since(started), outerObservationBudget,
 				"the outer command timeout must terminate a kubectl process that never reaches HTTP request handling")
@@ -2244,6 +2244,44 @@ func TestRolloutAvailabilityRunnerBoundsProbePhaseResponse(t *testing.T) {
 	require.Contains(t, string(boundaryOutput), "rollout availability gate passed")
 }
 
+func TestRolloutAvailabilityRunnerCapturesCompletionTimeoutAfterRollback(t *testing.T) {
+	for _, fault := range []string{"none", "unavailable", "oversized", "hang"} {
+		t.Run(fault, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			marker := logPath + ".rollback"
+			env := []string{
+				"KUBECTL_BIN=" + fake, "FAKE_KUBECTL_LOG=" + logPath, "FAKE_KUBECTL_STATE=" + statePath,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
+				"TARGET_IMAGE=registry.example/kubebrain@sha256:" + strings.Repeat("b", 64),
+				"TARGET_RUNTIME_DIGESTS=sha256:" + strings.Repeat("b", 64),
+				"PROBE_COMPLETE_TIMEOUT=1s", "FAKE_KUBECTL_HANG_TARGET=phase",
+				"KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT=30s", "KUBECTL_EVIDENCE_COMMAND_TIMEOUT=1s",
+				"FAKE_ROLLBACK_MARKER=" + marker, "FAKE_COMPLETION_FAILURE_LOG_FAULT=" + fault,
+			}
+			output, err := runProductionScriptCommandWithTimeout(t,
+				"run-kubebrain-rollout-availability.sh", env, 20*time.Second)
+			require.Error(t, err)
+			require.Contains(t, string(output), "availability probe did not complete within 1s")
+			require.NotContains(t, string(output), "rollout availability gate passed")
+			require.FileExists(t, marker)
+			require.NoFileExists(t, statePath, "candidate must be rolled back")
+			log := readOptionalFile(t, logPath)
+			rollback := strings.LastIndex(log, `"value":"kubebrain:test"`)
+			failureLog := strings.LastIndex(log, " logs kubebrain-rollout-availability-probe\n")
+			require.GreaterOrEqual(t, rollback, 0)
+			require.Greater(t, failureLog, rollback, "timeout diagnostics must occur after rollback request")
+			if fault == "none" {
+				require.Contains(t, string(output), "PROBE_PROGRESS completion-timeout-diagnostic")
+			} else {
+				require.Contains(t, string(output), "failed to collect availability probe failure log after rollback")
+			}
+			for _, suffix := range []string{".probe", ".owner", ".cleanup"} {
+				require.NoFileExists(t, logPath+suffix, "diagnostic failure must not prevent owned fixture cleanup")
+			}
+		})
+	}
+}
+
 func TestRolloutAvailabilityRunnerKeepsProbeActiveThroughRollout(t *testing.T) {
 	for _, tc := range []struct {
 		name, phase, delay, message string
@@ -2876,6 +2914,14 @@ elif [[ " $* " == *" logs kubebrain-rollout-availability-probe "* ]]; then
     payload=$'PROBE_FAIL injected during rollout\n'
   fi
   [[ "${FAKE_KEEPALIVE_QUEUE_FULL:-false}" != true ]] || payload=$'lease keepalive response queue is full; dropping response send\n'"$payload"
+  if [[ -n "${FAKE_COMPLETION_FAILURE_LOG_FAULT:-}" && -e "${FAKE_ROLLBACK_MARKER:-/nonexistent}" ]]; then
+    case "$FAKE_COMPLETION_FAILURE_LOG_FAULT" in
+      unavailable) exit 1 ;;
+      oversized) head -c 1048577 /dev/zero; exit 0 ;;
+      hang) sleep 30 ;;
+    esac
+    payload=$'PROBE_PROGRESS completion-timeout-diagnostic\n'
+  fi
   printf '%s' "$payload"
   if [[ "${FAKE_RUNTIME_RESPONSE_TARGET:-}" == probe-log ]]; then
     head -c "$((FAKE_RUNTIME_RESPONSE_BYTES-${#payload}))" /dev/zero | tr '\0' ' '

@@ -724,7 +724,7 @@ fixture_cleanup_evidence_verified=false
 fixture_cleanup_ready=false
 fixture_cleanup_verified=false
 rollout_observer_pid=""
-rollout_probe_failed=false
+probe_failure_evidence_needed=false
 
 stop_rollout_observer() {
   [[ -n "$rollout_observer_pid" ]] || return 0
@@ -760,7 +760,7 @@ check_rollout_probe_active() {
   case "$phase" in
     Running) ;;
     Failed)
-      rollout_probe_failed=true
+      probe_failure_evidence_needed=true
       echo "availability probe failed during rollout" >&2
       return 1 ;;
     Succeeded)
@@ -1095,7 +1095,7 @@ cleanup() {
       echo "CRITICAL: hard-failover StatefulSet self-healed with identity drift" >&2
     fi
   fi
-  if [[ "$rollout_probe_failed" == true ]]; then
+  if [[ "$probe_failure_evidence_needed" == true ]]; then
     # Diagnostics must not delay the rollback request. Recheck identity before
     # collecting logs, and contain evidence failures so fixture cleanup still
     # runs even if the API or log producer is broken.
@@ -1103,9 +1103,9 @@ cleanup() {
         kctl_evidence get pod "$PROBE_POD" -o json) &&
       jq -e --arg uid "$probe_pod_uid" '.metadata.uid == $uid' \
         "$runtime_evidence_dir/probe-failed-identity.json" >/dev/null; then
-      if (capture_runtime_evidence "$runtime_evidence_dir/probe-failed-during-rollout.log" \
+      if (capture_runtime_evidence "$runtime_evidence_dir/probe-failed-after-rollback.log" \
           kctl_evidence logs "$PROBE_POD"); then
-        cat "$runtime_evidence_dir/probe-failed-during-rollout.log" >&2 || true
+        cat "$runtime_evidence_dir/probe-failed-after-rollback.log" >&2 || true
       else
         echo "failed to collect availability probe failure log after rollback" >&2
       fi
@@ -1737,6 +1737,10 @@ probe_complete_seconds="$(duration_ceil_seconds "$PROBE_COMPLETE_TIMEOUT")"
 probe_complete_deadline=$((SECONDS + probe_complete_seconds))
 probe_phase_attempt=0
 abort_probe_complete_timeout() {
+  # Do not spend the exhausted completion budget on diagnostics. The EXIT
+  # cleanup requests rollback first, then uses its existing bounded evidence
+  # calls (with Pod UID verification) before deleting the probe.
+  probe_failure_evidence_needed=true
   echo "availability probe did not complete within ${PROBE_COMPLETE_TIMEOUT}" >&2
   exit 1
 }
