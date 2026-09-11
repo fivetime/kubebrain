@@ -5,6 +5,18 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+恢复认证跨成员回归（2026-09-11，仅本地测试）：新增
+`TestRestoredAuthTokensAcrossAllMemberPairs`，将含认证数据的快照恢复为三个
+真实嵌入式 etcd 成员，使用 TLS 和默认 bcrypt 成本。分别向每个成员认证，
+把所得令牌直接用于每个目标成员的 Watch、LeaseKeepAlive，逐轮各覆盖 9 条
+有向组合；校验 Authenticate 和 Watch 响应的成员 ID，避免只验证单一落点。
+使用原始生成的 gRPC 客户端，不经过 etcd 客户端令牌刷新封装；租约场景在
+目标成员 Grant/Put 后 KeepAlive/Revoke，不等同于原探针的完整租约复制屏障。
+三轮 race 均通过（39.623 秒），`go vet` 通过。证据：
+`/root/.local/state/kubebrain/restored-auth-cross-member-pairs-race.log`。
+这补齐固定成员组合的回归覆盖，没有复现原偶发错误，也不是运行时修复；
+未修改或部署产品代码，未改变 Kubernetes、PD/TiKV 或 Ceph。
+
 恢复认证诊断补齐（2026-09-11，仅用于独立观察探针）：为每个恢复后的密码客户端记录
 最近 16 条 RPC 的方法、目标地址和 gRPC 状态码，单独保留最近一次 Authenticate
 结果，仅在权限矩阵验收失败时附加到原错误。诊断不读取请求/响应内容、元数据、
