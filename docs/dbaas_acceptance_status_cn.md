@@ -23,6 +23,13 @@ invalid auth token，测试确认原错误返回且未耗尽上下文，诊断�
 这是显式注入拒绝的传输测试，不是恢复集群故障复现，不验证 token 在 etcd
 成员间的真实有效性，也不改变产品认证或重试逻辑。
 
+随后补齐 `TestRestoredAuthRPCTraceOfficialWatchRefresh`，与 Lease 用例共享
+同一受控服务，确认官方 Watch 建流前再次认证，并通过 Canceled 响应交付
+注入的 invalid token 错误而非静默关闭。两条路径均校验最后一次成功认证与
+失败流的 peer/status；整组诊断测试十轮 race 通过（1.533 秒），日志为
+`/root/.local/state/kubebrain/auth-official-watch-lease-refresh-race.log`。
+同样只验证客户端与诊断路径，不证明恢复场景的 token 错误已定位或修复。
+
 写入响应诊断候选正式验收（2026-09-11）：`11da1003` 镜像构建
 `34640955142` 和协议 CI `34640955159` 成功，后者普通/race 各十一例
 通过，两阶段中断清理通过。核验镜像来源、平台摘要和实际二进制后，部署
