@@ -5,7 +5,26 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-事务内 revision 预取合并（已发布，未部署）：把持久化 revision 分配器的读取与已知
+最新正式复验（2026-09-11，`2352b9bf`）：事务内 revision 预取优化已部署，
+三副本完成滚动更新，探针覆盖滚动过程。保持 6000 次、操作后 100ms、公共
+5s／直连流 30s、滚动完成后 900s 原门限，仍因未在完成窗口内结束而失败，
+执行器退出 1。最后保留的 4380/6000 包含回滚期间操作，不是截止时完成量。
+自动回滚后独立核验原 StatefulSet 完整 spec、三个副本 Ready 与运行镜像一致，
+generation／observedGeneration=34，恢复原 `0ce85e66` 基线；本次探针和预拉取
+Pod／Job 均不存在，测试键／用户／角色／租约清理通过。两个本次编译的清理
+工具已核对摘要后删除，脚本、日志和校验记录保留在
+`/root/.local/state/kubebrain/allocator-prefetch-release.ufJgJZZz/`。
+
+同次验收的两次只读指标采样核对探针和所有服务 Pod 身份未变。活跃副本
+`kubebrain-2` 的 396 个成功 Put 后端样本均值约 106.93ms，提交子样本约
+84.03ms；子阶段不能重复相加。SDK 响应总体不同，包含后台请求与重试：
+1122 个成功 Prewrite 中 271 个、1121 个成功 Commit 中 436 个因异常
+persist_log 时长被标记 invalid_write，其时长样本整体排除，保留成功结果。
+各阶段有效样本数分别为 851／685，证明真实环境中的过滤生效，不证明底层
+异常已修复；过滤后的均值不能直接与旧版未过滤均值比较。详见私有证据中的
+`write-window-analysis.md`。性能完成门限及认证根因仍未关闭。
+
+事务内 revision 预取合并（发布及复验结果见上）：把持久化 revision 分配器的读取与已知
 提交检查键放到同一事务快照预取，后续 Get、revision 边界检查、CAS 及冲突
 保护写入仍执行；不支持预取的存储保留原路径。预取失败不分配 revision，
 新增测试覆盖缺失、已有、损坏、耗尽及失败边界。真实单 Region、2PC、带配额
@@ -14,7 +33,7 @@ Commit=20 不变；修正的是一次读取 RPC，不是减少两阶段提交或
 本地十二项真实协议 race、边界十轮 race、完整后端／存储 race 均通过
 （完整包 81.066／1.886 秒），etcd 接入层 Txn／Quota／Corrupt 筛选竞态回归
 通过（91.270 秒，非整个接入层测试包），临时资源独立核验清理。日志前缀
-`/root/.local/state/kubebrain/allocator-prefetch-`。尚未部署，不宣称正式性能收益。
+`/root/.local/state/kubebrain/allocator-prefetch-`。此时尚未部署，不宣称正式性能收益。
 其前置计数基线 `631fecff` 的协议 CI `34653805839` 已核验普通/race 各十二例
 通过、清理成功、两阶段中断退出 143 且资源不存在；该 CI 不包含本次优化。
 
@@ -26,7 +45,7 @@ Commit=20 不变；修正的是一次读取 RPC，不是减少两阶段提交或
 核验进程退出 0，临时容器和提取的两个二进制均已删除并独立确认不存在；
 证据在 `/root/.local/state/kubebrain/allocator-prefetch-release.ufJgJZZz/`。
 同期只读确认集群仍为原 `0ce85e66` 基线，generation／observedGeneration=32、
-Ready=3。新镜像尚未部署，原 6000 次／900 秒升级验收与认证根因问题仍未关闭。
+Ready=3。此时新镜像尚未部署；后续正式复验失败及恢复状态见本页顶部。
 
 后端资源只读诊断（2026-09-11，非正式负载窗口）：三个 TiKV Pod 均 Ready、
 重启次数为 0，实际容器 CPU 配额为 8 核，自身 cgroup 的 nr_throttled 与
