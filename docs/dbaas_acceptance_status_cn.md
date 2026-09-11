@@ -9,8 +9,21 @@
 `access_elapsed_ms` 是该用户/键的一整项权限检查耗时，不是单个 RPC 时间。
 `context_done` 和 `deadline_exceeded` 在返回上层、关闭恢复集群之前采集，
 避免把清理耗时误判为请求超时。保留原始错误链，不增加重试、不延长期限，
-不输出自定义取消原因中的任意文本。该版本尚未用于真实失败复验，不能据此
-把无效 token 归因为超时。
+不输出自定义取消原因中的任意文本。该版本已用于下述真实集群观测，但未捕获
+新的失败，不能据此把无效 token 归因为超时。
+
+阶段诊断镜像观测（2026-09-11 06:35 UTC）：提交 `17a0afe9` 的镜像 CI
+`34567818026` 成功，独立核验实际二进制版本、fork 依赖和诊断字段通过。
+只使用新探针，服务仍为 `0ce85e66`，300 次 OBSERVE_ONLY 通过，未复现认证错误。
+public watch=300、direct=300×3、Range=66、Snapshot=1，租约存活，无流式重试。
+计数循环 73.952 秒，写入结果确认累计 34.421 秒，随后 Watch 等待 5.836 秒；
+含循环后校验的最终进度为 82.492 秒，两种时间不可混用。public/direct 最大延迟
+600/604 ms；原 5s/30s 门限和 900s 完成窗口未变。
+规范清理后 keys/users/roles/leases 均为 0，独立复核三个服务 Pod UID、容器 ID、
+镜像 ID、重启数、Ready 及 StatefulSet UID/spec/generation/revision 未变，
+本轮探针、清理 Pod 和所有权 ConfigMap 均已删除。此结果不关闭既往两次认证失败，
+也不替代原 6000 次滚动升级验收。证据：
+`/root/.local/state/kubebrain/auth-stage-observe.vC1eolYa/`。
 
 恢复认证环境隔离检查（2026-09-11）：将默认 bcrypt 成本、`CN=root` 客户端证书、
 三成员官方 etcd 恢复测试编译后放入独立非 root Pod，在 `k8s3-network2` 连续运行
