@@ -298,6 +298,16 @@ type AtomicBatch interface {
 	Del(key []byte) error
 }
 
+// AtomicBatchPrefetcher optionally warms reads in the SAME transaction owned
+// by AtomicBatch. It must not obtain a new snapshot, mutate keys, or change
+// Get's read-your-writes behavior. Callers still perform every Get comparison
+// and stage every conflict-protecting mutation after a successful prefetch.
+// Errors abort preparation; implementations must not silently retry using a
+// different transaction. Engines without this capability keep point reads.
+type AtomicBatchPrefetcher interface {
+	Prefetch(ctx context.Context, keys [][]byte) error
+}
+
 // BatchWrite should support atomic batch pack with several operations
 type BatchWrite interface {
 

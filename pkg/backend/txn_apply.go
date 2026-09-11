@@ -280,6 +280,11 @@ func atomicExpect(ctx context.Context, txn storage.AtomicBatch, key, expected []
 // arbitrary AtomicBatch.Get read set. Object/event keys may still be derived
 // from a revision allocated by that transaction.
 func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, preps []txnPrep, guardPreps []txnGuardPrep, newRevision uint64, quotaUsageRaw []byte, nextQuotaUsage int64, corruptGuard corruptAlarmCommitGuard) error {
+	if prefetcher, ok := txn.(storage.AtomicBatchPrefetcher); ok {
+		if err := prefetcher.Prefetch(ctx, b.txnAtomicReadKeys(preps, guardPreps, corruptGuard)); err != nil {
+			return err
+		}
+	}
 	guardKey := b.ks.EncodeInternalKey(corruptGuard.key)
 	if err := atomicExpect(ctx, txn, guardKey, corruptGuard.expected, !corruptGuard.exists); err != nil {
 		return err
@@ -409,6 +414,42 @@ func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, p
 		eventSubRevision++
 	}
 	return b.stageTxnWitness(txn, preps, newRevision)
+}
+
+// Enumerate only reads already required by stageTxnAtomic. Prefetch does not
+// replace comparisons, add read-set conflict assumptions, or cache across
+// attempts. In particular migration objects and absent revision keys still
+// pass their original checks inside the same storage transaction.
+func (b *backend) txnAtomicReadKeys(preps []txnPrep, guards []txnGuardPrep, corruptGuard corruptAlarmCommitGuard) [][]byte {
+	keys := make([][]byte, 0, 2+len(preps)+len(guards))
+	seen := make(map[string]struct{}, cap(keys))
+	add := func(key []byte) {
+		if _, exists := seen[string(key)]; !exists {
+			seen[string(key)] = struct{}{}
+			keys = append(keys, key)
+		}
+	}
+	add(b.ks.EncodeInternalKey(corruptGuard.key))
+	if b.config.QuotaBackendBytes > 0 {
+		add(b.ks.EncodeInternalKey(quotaUsageKey))
+	}
+	for _, guard := range guards {
+		add(guard.key)
+	}
+	for _, p := range preps {
+		if !p.effective {
+			continue
+		}
+		if p.op.Internal {
+			add(b.ks.EncodeInternalKey(p.op.Key))
+			continue
+		}
+		if p.migratePrev {
+			add(b.coder.EncodeObjectKey(p.op.Key, p.curRev))
+		}
+		add(b.coder.EncodeRevisionKey(p.op.Key))
+	}
+	return keys
 }
 
 // readTxnPreviousObject reuses the revision index already parsed by preparation.

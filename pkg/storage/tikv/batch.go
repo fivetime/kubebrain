@@ -145,6 +145,14 @@ func (b *batch) DelCurrent(it storage.Iter) {
 
 type atomicBatch struct{ txn *txnkv.KVTxn }
 
+func (a atomicBatch) Prefetch(ctx context.Context, keys [][]byte) error {
+	// KVTxn.BatchGet reads its own write buffer and snapshot. The snapshot caches
+	// both present and absent keys; subsequent Get still checks the write buffer
+	// first, so later staged Put/Del cannot be hidden by these cached reads.
+	_, err := a.txn.BatchGet(ctx, keys)
+	return err
+}
+
 func (a atomicBatch) Get(ctx context.Context, key []byte) ([]byte, error) {
 	value, err := a.txn.Get(ctx, key)
 	if tikverr.IsErrNotFound(err) {
