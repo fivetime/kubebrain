@@ -2,6 +2,29 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
+## 最新正式升级复验：事务预取版本失败并回滚
+
+2026-09-11 08:24 UTC，提交 `68de51b567581415402430a3583a1286bcb0c9ca`，
+镜像 CI `34573201369`、后端 CI `34573201360` 成功，完整本地发布回归通过。
+镜像独立核验先因 API 限流失败两次，重置后第三次成功，失败日志未覆盖。
+候选索引 `sha256:b1e1c7568d79164e678fc5f0a185872f5f9eee3055ab600d6aa51253cbd67496`，
+amd64 `sha256:aa49c865c37bddf96273c732c5c7ff493e70ff77491e7f375a2d70cbb670d54c`。
+执行会话 `75086` 已终止 exit 1：三个候选副本完成滚动，但 6000 次操作未在滚动
+完成后的原 900 秒期限内结束。探针 `prepull-upgrade-68de51b5-vuwbn6mp`、UID
+`8920b324-9940-44b3-8b7a-e477a48dfe49` 已清理，其前缀不得复用。保留日志的最后
+4560/6000 包含自动回滚时间，不是截止时完成数。
+
+独立回滚复核：StatefulSet UID/spec 与执行前一致，generation/observedGeneration=24，
+Ready=3，current/updateRevision=`kubebrain-855b5bfb88`，三个实际镜像均恢复 `0ce85e66`。
+新的服务 Pod UID：kubebrain-0=`6867d362-531c-4bc2-9a2c-6a198ef2eea0`，
+kubebrain-1=`fe44caed-b435-4177-9b2b-f303e8bc1c44`，
+kubebrain-2=`727c218e-0f01-4986-a4ec-03ae6f94c311`，均 Ready、restart=0。
+keys/users/roles/leases 清理均为 0；本轮探针、清理 Pod、所有权 ConfigMap 和三个
+镜像预拉取 Pod 独立确认不存在。预拉取回执 `prepull.qJxpalHGwwsA` 的三个目标均
+removed=true。两个本地恢复工具二进制已校验后删除，可由源码重建；原始日志、
+工具校验和及前后身份 JSON 保留在 `/root/.local/state/kubebrain/atomic-prefetch-release.vuWbn6mP/`。
+没有活动测试会话；服务协议仍未开启 1PC/async commit。性能门禁和此前偶发认证错误仍未解决。
+
 ## 最新同窗口指标观测：采样成功、整轮失败
 
 2026-09-11，仍使用服务端 `0ce85e66`、探针 `2ef9d266`，不滚动。
