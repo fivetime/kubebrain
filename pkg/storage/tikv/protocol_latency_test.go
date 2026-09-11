@@ -28,8 +28,19 @@ type protocolLatencyStats struct {
 // No fault injection and no process-global success counters.
 type protocolLatencyClient struct {
 	clienttikv.Client
-	mu    sync.Mutex
-	stats protocolLatencyStats
+	mu       sync.Mutex
+	stats    protocolLatencyStats
+	attempts map[string]int
+}
+
+func (c *protocolLatencyClient) requestSnapshot() map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	copy := make(map[string]int, len(c.attempts))
+	for method, count := range c.attempts {
+		copy[method] = count
+	}
+	return copy
 }
 
 func (c *protocolLatencyClient) snapshot() protocolLatencyStats {
@@ -39,6 +50,31 @@ func (c *protocolLatencyClient) snapshot() protocolLatencyStats {
 }
 
 func (c *protocolLatencyClient) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
+	if ctx.Value(protocolLatencyMarker{}) == true {
+		method := "other"
+		switch req.Type {
+		case tikvrpc.CmdGet:
+			method = "get"
+		case tikvrpc.CmdBatchGet:
+			method = "batch_get"
+		case tikvrpc.CmdScan:
+			method = "scan"
+		case tikvrpc.CmdPrewrite:
+			method = "prewrite"
+		case tikvrpc.CmdCommit:
+			method = "commit"
+		case tikvrpc.CmdCheckTxnStatus:
+			method = "check_txn_status"
+		case tikvrpc.CmdResolveLock:
+			method = "resolve_lock"
+		}
+		c.mu.Lock()
+		if c.attempts == nil {
+			c.attempts = make(map[string]int)
+		}
+		c.attempts[method]++
+		c.mu.Unlock()
+	}
 	response, err := c.Client.SendRequest(ctx, addr, req, timeout)
 	if ctx.Value(protocolLatencyMarker{}) != true {
 		return response, err
@@ -76,6 +112,7 @@ func TestProtocolLatencyClientScope(t *testing.T) {
 	_, err := c.SendRequest(context.Background(), "unused", req, time.Second)
 	require.NoError(t, err)
 	require.Equal(t, protocolLatencyStats{}, c.snapshot())
+	require.Empty(t, c.requestSnapshot())
 	ctx := context.WithValue(context.Background(), protocolLatencyMarker{}, true)
 	_, err = c.SendRequest(ctx, "unused", req, time.Second)
 	require.NoError(t, err)
@@ -85,6 +122,12 @@ func TestProtocolLatencyClientScope(t *testing.T) {
 	stub.response = nil
 	_, _ = c.SendRequest(ctx, "unused", req, time.Second)
 	require.Equal(t, protocolLatencyStats{Prewrite: 1, OnePC: 1, Commit: 1, Errors: 1}, c.snapshot())
+	// Requests, including failed ones, are counted independently of response
+	// bodies. This deliberately mismatched stub must not relabel the request.
+	require.Equal(t, map[string]int{"prewrite": 3}, c.requestSnapshot())
+	copy := c.requestSnapshot()
+	copy["prewrite"] = 99
+	require.Equal(t, 3, c.requestSnapshot()["prewrite"])
 }
 
 func TestRealTiKVBackendProtocolLatency(t *testing.T) {
@@ -160,5 +203,9 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 		want = protocolLatencyStats{Prewrite: samples, OnePC: samples}
 	}
 	require.Equal(t, want, stats, "every measured transaction must use the requested single-Region protocol without retries")
+	attempts := client.requestSnapshot()
+	require.Equal(t, samples, attempts["prewrite"], "include unsuccessful RPC attempts, not only successful responses")
+	require.Equal(t, want.Commit, attempts["commit"])
 	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, warmup, samples, len(value), quota, durations, stats)
+	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_foreground_only excludes=background_and_unmarked_work", attempts)
 }
