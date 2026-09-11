@@ -1990,11 +1990,13 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	// so backend.Update can provenance-upgrade an old raw/v1 current row without
 	// bypassing the established single-write/auth-guard path.
 	var response *etcdserverpb.PutResponse
+	backendStart := time.Now()
 	if prevLease := s.leaseIDForKey(string(put.Key)); put.Lease != 0 || prevLease != 0 {
 		response, err = s.putLeasedAtomic(ctx, put, prevLease)
 	} else {
 		response, err = s.backend.Put(backend.WithPreviousLease(ctx, 0), put)
 	}
+	emitPutBackendPhaseDurations(s.metricCli, backendStart.Sub(startTime), time.Since(backendStart), err)
 	if err == nil {
 		s.recordEtcdMVCCPutSize(put.Key, put.Value)
 	}
