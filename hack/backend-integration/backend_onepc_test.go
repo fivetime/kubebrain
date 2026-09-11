@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -26,6 +27,13 @@ import (
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
+
+// The client flag is deliberately not synchronized. Enable it once before any
+// client/background worker exists, never between test cases or -count rounds.
+func TestMain(m *testing.M) {
+	clienttikv.EnableFailpoints()
+	os.Exit(m.Run())
+}
 
 type userCommitMarker struct{}
 
@@ -120,7 +128,6 @@ func TestBackendResolvesActualOnePCDefaultRetryBeforeDelivery(t *testing.T) {
 
 func testBackendOnePCOutcome(t *testing.T, beforeDelivery, disableRetry bool) {
 	t.Helper()
-	clienttikv.EnableFailpoints()
 	t.Cleanup(tikvconfig.UpdateGlobal(func(cfg *tikvconfig.Config) {
 		cfg.Enable1PC = true
 		cfg.EnableAsyncCommit = false
