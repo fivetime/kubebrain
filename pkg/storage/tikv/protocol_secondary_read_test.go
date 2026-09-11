@@ -34,6 +34,15 @@ type protocolSecondaryHold struct {
 	once             sync.Once
 	resolveHeld      chan struct{}
 	resolveOnce      sync.Once
+	writeDetails     []protocolWriteResponseDetail
+}
+
+// Record raw response presence, not SDK-converted zero-valued placeholders.
+// All fields are scalar diagnostics: no keys, store addresses or transaction IDs.
+type protocolWriteResponseDetail struct {
+	method                                string
+	present, writePresent, success        bool
+	persist, syncLog, commitLog, applyLog uint64
 }
 
 func (c *protocolSecondaryHold) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
@@ -70,6 +79,26 @@ func (c *protocolSecondaryHold) SendRequest(ctx context.Context, addr string, re
 		}
 	}
 	response, err := c.Client.SendRequest(ctx, addr, req, timeout)
+	if ctx.Value(protocolCommitMarker{}) == true && err == nil && response != nil {
+		var detail *kvrpcpb.ExecDetailsV2
+		var success bool
+		switch r := response.Resp.(type) {
+		case *kvrpcpb.PrewriteResponse:
+			detail = r.ExecDetailsV2
+			success = r.RegionError == nil && len(r.Errors) == 0
+		case *kvrpcpb.CommitResponse:
+			detail = r.ExecDetailsV2
+			success = r.RegionError == nil && r.Error == nil
+		}
+		write := detail.GetWriteDetail()
+		c.mu.Lock()
+		c.writeDetails = append(c.writeDetails, protocolWriteResponseDetail{
+			method: req.Type.String(), present: detail != nil, writePresent: write != nil, success: success,
+			persist: write.GetPersistLogNanos(), syncLog: write.GetRaftDbSyncLogNanos(),
+			commitLog: write.GetCommitLogNanos(), applyLog: write.GetApplyLogNanos(),
+		})
+		c.mu.Unlock()
+	}
 	if ctx.Value(protocolSecondaryReadMarker{}) == true && err == nil && response != nil {
 		c.mu.Lock()
 		if req.Type == tikvrpc.CmdCheckTxnStatus {
@@ -165,6 +194,13 @@ func TestRealTiKVReadBypassesPendingSecondaryCleanup(t *testing.T) {
 	require.NoError(t, txn.Set(data, []byte("committed")))
 	require.NoError(t, txn.Set(witness, []byte("committed")))
 	require.NoError(t, txn.Commit(context.WithValue(ctx, protocolCommitMarker{}, true)))
+	hold.mu.Lock()
+	writeDetails := append([]protocolWriteResponseDetail(nil), hold.writeDetails...)
+	hold.mu.Unlock()
+	for _, d := range writeDetails {
+		t.Logf("WRITE_RESPONSE_DETAIL method=%s success=%t exec_present=%t write_present=%t persist_ns=%d sync_ns=%d commit_log_ns=%d apply_ns=%d scope=diagnostic_only",
+			d.method, d.success, d.present, d.writePresent, d.persist, d.syncLog, d.commitLog, d.applyLog)
+	}
 	select {
 	case <-hold.held:
 	case <-ctx.Done():

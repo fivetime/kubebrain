@@ -5,6 +5,18 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+协议门禁及写入明细验证（2026-09-11）：`30480bf8` 的专用 CI
+`34638996704` 已成功，作业 `103393789160` 普通/race 各十一例明确 PASS，
+清理均成功，两阶段中断均以 143 退出并独立确认资源不存在。日志：
+`/root/.local/state/kubebrain/30480bf8-real-protocol-ci.log`。
+随后本地测试直接检查原始响应：错误 Prewrite 有 ExecDetailsV2、无 WriteDetail；
+两个成功 Prewrite 和主键 Commit 都有 WriteDetail，包含非零日志持久化、日志
+同步、复制确认和应用耗时。已记录成功标志与字段存在性，不能将缺失字段当作
+零耗时。新增诊断后的十一例 race 通过，临时资源独立确认清理；日志
+`/root/.local/state/kubebrain/write-response-details-classified-race.log`。该诊断
+变更不包含在上述旧提交 CI 结果中。单副本临时内存盘数值不代表 Ceph 集群，
+此处只验证可用的响应字段；尚未接入产品指标，未宣称定位生产性能根因。
+
 锁解析归因边界（2026-09-11）：隔离真实 PD/TiKV 的新回归暂停指定两阶段
 事务的次要键 Commit 及后台 ResolveLock，读取仍返回已提交值；实际观察到
 一次主键状态查询、零次前台 ResolveLock 完成。首轮测试错误地要求读取上下文
