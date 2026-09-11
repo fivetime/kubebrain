@@ -25,6 +25,15 @@ public watch=300、direct=300×3、Range=66、Snapshot=1，租约存活，无流
 也不替代原 6000 次滚动升级验收。证据：
 `/root/.local/state/kubebrain/auth-stage-observe.vC1eolYa/`。
 
+同镜像独立前缀复测（2026-09-11 06:44 UTC）：在 `k8s3-compute1` 再运行
+300 次 OBSERVE_ONLY，通过且无重启，仍未复现认证错误。计数循环 77.257 秒，
+含循环后校验的最终进度 92.548 秒；public/direct watch=300/300×3、Range=73、
+Snapshot=1、租约存活且无流式重试。public/direct 最大延迟 604/605 ms。
+清理 keys/users/roles/leases 均为 0；独立核对三个服务实例身份、容器、重启数和
+Ready 不变，StatefulSet UID/spec/generation/revision 不变，测试 Pod 与所有权
+ConfigMap 已删除。两次通过不能关闭间歇性认证故障，也不能替代滚动升级门禁。
+证据：`/root/.local/state/kubebrain/auth-stage-repeat.XivH88cR/`。
+
 恢复认证环境隔离检查（2026-09-11）：将默认 bcrypt 成本、`CN=root` 客户端证书、
 三成员官方 etcd 恢复测试编译后放入独立非 root Pod，在 `k8s3-network2` 连续运行
 5 次均通过，未复现无效 token。测试不连接 TiKV、不使用真实源快照，也没有公共
