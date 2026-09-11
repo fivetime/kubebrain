@@ -25,8 +25,11 @@ type protocolLossStats struct {
 // response before dropping it; no server or network configuration is changed.
 type protocolResponseLoss struct {
 	clienttikv.Client
-	mu    sync.Mutex
-	stats protocolLossStats
+	// Optional cancellation is scoped to the marked caller, after the server
+	// has committed. It prevents retry confirmation without a global failpoint.
+	cancelAfterLoss context.CancelFunc
+	mu              sync.Mutex
+	stats           protocolLossStats
 }
 
 func (c *protocolResponseLoss) snapshot() protocolLossStats {
@@ -62,6 +65,9 @@ func (c *protocolResponseLoss) SendRequest(ctx context.Context, addr string, req
 	c.stats.Changed = c.stats.Changed || c.stats.CommitTS != r.OnePcCommitTs
 	if c.stats.Drops == 0 {
 		c.stats.Drops++
+		if c.cancelAfterLoss != nil {
+			c.cancelAfterLoss()
+		}
 		return nil, errors.New("injected loss of successful real 1PC response")
 	}
 	return response, err
@@ -107,5 +113,31 @@ func TestProtocolResponseLossScope(t *testing.T) {
 }
 
 func TestRealTiKVOnePCResponseLoss(t *testing.T) {
-	testRealTiKVProtocolSmoke(t, true)
+	testRealTiKVProtocolSmoke(t, true, false)
+}
+
+func TestRealTiKVOnePCCancelAfterResponseLoss(t *testing.T) {
+	testRealTiKVProtocolSmoke(t, true, true)
+}
+
+func TestProtocolResponseLossCancellationScope(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), protocolCommitMarker{}, true))
+	defer cancel()
+	stub := &protocolResponseStub{response: &tikvrpc.Response{Resp: &kvrpcpb.PrewriteResponse{}}}
+	calls := 0
+	loss := &protocolResponseLoss{Client: stub, cancelAfterLoss: func() { calls++; cancel() }}
+	req := tikvrpc.NewRequest(tikvrpc.CmdPrewrite, &kvrpcpb.PrewriteRequest{StartVersion: 10, TryOnePc: true})
+	_, err := loss.SendRequest(ctx, "unused", req, time.Second)
+	require.NoError(t, err)
+	require.NoError(t, ctx.Err(), "ordinary prewrite must not cancel the caller")
+	stub.response = &tikvrpc.Response{Resp: &kvrpcpb.PrewriteResponse{OnePcCommitTs: 20}}
+	_, err = loss.SendRequest(context.Background(), "unused", req, time.Second)
+	require.NoError(t, err)
+	require.NoError(t, ctx.Err(), "background requests must not cancel the caller")
+	_, err = loss.SendRequest(ctx, "unused", req, time.Second)
+	require.ErrorContains(t, err, "injected loss")
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	_, err = loss.SendRequest(ctx, "unused", req, time.Second)
+	require.NoError(t, err)
+	require.Equal(t, 1, calls, "cancellation must occur exactly once")
 }

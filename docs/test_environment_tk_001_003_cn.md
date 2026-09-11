@@ -2,7 +2,21 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
-## 最新协议故障验证：成功响应丢失后默认重试通过
+## 最新协议故障验证：成功响应丢失后取消调用者
+
+2026-09-11，独立非特权 Pod `kb-onepc-cancel-5ztqwumt`
+（UID `12b1bd6b-ca86-4c49-81ee-eefb770d0b68`）精确运行
+`TestRealTiKVOnePCCancelAfterResponseLoss`，PASS。二进制上传前后 SHA256 一致：
+`107cfdb5556a50a07d551c5550e16d65a25e848cb37615c499c8447df4973758`。
+实际服务端提交后丢弃响应并取消提交子上下文；适配器返回不确定结果，只有一次尝试。
+独立上下文读取、更新和历史快照检查通过，所有权清理确认前缀为空。
+已用并清理的前缀 `kubebrain/protocol-smoke/d5381498cb716c3a535b8562b96b4aad/` 不复用。
+Pod 已按 UID 前置条件删除并独立核验不存在；本机辅助二进制核验摘要后删除。
+日志、源码摘要及构建信息保留在 `/root/.local/state/kubebrain/real-onepc-cancel.5ZtqwUmT/`。
+未更新 StatefulSet，核验 generation/observed=22/22、Ready=3、revision=`kubebrain-855b5bfb88`。
+生产 1PC 未启用。此项仍不是 KubeBrain 后端持久见证解析验证。
+
+## 前次协议故障验证：成功响应丢失后默认重试通过
 
 2026-09-11，在独立非特权 Pod `kb-onepc-loss-4m8d48mk`
 （UID `d1d568cb-6548-4522-9049-0cdbcc329436`）中运行精确存储测试

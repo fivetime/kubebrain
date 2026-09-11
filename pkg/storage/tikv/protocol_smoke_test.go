@@ -172,10 +172,10 @@ func TestProtocolSmokeScopeValidation(t *testing.T) {
 // counters are process-global. This is not a Raft failure/durability benchmark
 // or proof of KubeBrain's backend uncertain-result resolver.
 func TestRealTiKVProtocolSmoke(t *testing.T) {
-	testRealTiKVProtocolSmoke(t, false)
+	testRealTiKVProtocolSmoke(t, false, false)
 }
 
-func testRealTiKVProtocolSmoke(t *testing.T, dropResponse bool) {
+func testRealTiKVProtocolSmoke(t *testing.T, dropResponse, cancelAfterLoss bool) {
 	t.Helper()
 	pd := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PD")
 	if pd == "" {
@@ -226,6 +226,12 @@ func testRealTiKVProtocolSmoke(t *testing.T, dropResponse bool) {
 	commitCtx := ctx
 	if dropResponse {
 		commitCtx = context.WithValue(ctx, protocolCommitMarker{}, true)
+		if cancelAfterLoss {
+			var cancelCommit context.CancelFunc
+			commitCtx, cancelCommit = context.WithCancel(commitCtx)
+			defer cancelCommit()
+			loss.cancelAfterLoss = cancelCommit
+		}
 	}
 	commitErr := initial.Commit(commitCtx)
 	elapsed := time.Since(started)
@@ -233,6 +239,11 @@ func testRealTiKVProtocolSmoke(t *testing.T, dropResponse bool) {
 	if dropResponse {
 		require.True(t, commitErr == nil || errors.Is(commitErr, storage.ErrUncertainResult), "committed response loss must not become a definite failure: %v", commitErr)
 		stats := loss.snapshot()
+		if cancelAfterLoss {
+			require.ErrorIs(t, commitCtx.Err(), context.Canceled)
+			require.ErrorIs(t, commitErr, storage.ErrUncertainResult, "lost committed response plus caller cancellation must remain uncertain")
+			require.Equal(t, 1, stats.Attempts, "cancelled caller must not retry to confirm the commit")
+		}
 		require.Equal(t, 1, stats.Drops, "must drop an actual successful 1PC response")
 		require.Positive(t, stats.Attempts)
 		require.Greater(t, stats.CommitTS, stats.StartTS)
