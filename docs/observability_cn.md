@@ -6,16 +6,23 @@ KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler
 
 `kubebrain_tikv_write_response_total{method,outcome,details}` 统计实际 Prewrite/Commit
 RPC。`method` 仅为 `prewrite` 或 `commit`；`details` 区分 `absent`、`exec_only`、
-`write`，不把缺失的原始 WriteDetail 当作耗时为零。`outcome` 为 `success`、
+`write`、`invalid_write`，不把缺失的原始 WriteDetail 当作耗时为零。`outcome` 为 `success`、
 `transport_error`、`response_missing`、`unexpected_response`、`region_error` 或 `key_error`。
 不使用键、事务 ID、Region ID、地址或错误文本作为标签。
 
 `kubebrain_tikv_write_stage_seconds{method,stage}` 仅观察成功且原始 WriteDetail
-存在的同一批响应，单位为秒。阶段为 `rpc`、`persist_log`、`raft_sync`、
+存在且所有采样字段均可表示为有符号纳秒时长的同一批响应，单位为秒。阶段为 `rpc`、`persist_log`、`raft_sync`、
 `commit_log`、`apply_log`、`store_wait`、`proposal_wait`、`apply_wait`、`process`、
 `throttle`。明细消息存在但单个标量为零时记录零；protobuf 标量不能区分未填充与
 真实零耗时。各阶段存在嵌套或重叠，**不能相加**，也不能将 RPC 总耗时减去若干
 阶段就直接宣称剩余是网络延迟。
+
+`kubebrain_tikv_write_invalid_duration_total{method,stage}` 逐字段记录超过
+`MaxInt64` 纳秒的异常值。成功响应中的任一采样字段异常时，响应仍计为成功，
+`details` 标记为 `invalid_write`，整条响应从所有阶段直方图（包括 `rpc`）排除，
+不截断为零、不重新解释成负数，也不重置旧样本。此检查只保证时长可表示，
+不证明范围内的数值一定可信。必须同时查看异常比例；排除后的平均值不能代表
+所有请求，也不能把指标均值下降当作性能改善。协议延迟验收门限不受影响。
 
 这些指标包含后台写入、次要键提交和重试，不是逻辑 Put 次数；不能与只统计前台
 Put 的批次指标混算。比较窗口时须核对实例身份、计数增量、响应错误及明细缺失

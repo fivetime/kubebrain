@@ -2,6 +2,7 @@ package tikv
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
@@ -13,6 +14,7 @@ import (
 type writeResponseMetrics struct {
 	responses *prometheus.CounterVec
 	stages    *prometheus.HistogramVec
+	invalid   *prometheus.CounterVec
 }
 
 func newWriteResponseMetrics(reg prometheus.Registerer) *writeResponseMetrics {
@@ -23,11 +25,15 @@ func newWriteResponseMetrics(reg prometheus.Registerer) *writeResponseMetrics {
 		}, []string{"method", "outcome", "details"}),
 		stages: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name:    "kubebrain_tikv_write_stage_seconds",
-			Help:    "Successful TiKV write RPCs with raw WriteDetail only. RPC and server stages overlap; never add them. Zero fields are reported zeros, not missing detail messages.",
+			Help:    "Successful TiKV write RPCs with representable raw WriteDetail only; invalid responses are excluded from every stage. RPC and server stages overlap; never add them. Zero fields are reported zeros, not missing detail messages.",
 			Buckets: prometheus.ExponentialBuckets(0.00001, 4, 12),
 		}, []string{"method", "stage"}),
+		invalid: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "kubebrain_tikv_write_invalid_duration_total",
+			Help: "Successful write responses containing an observed stage above signed nanosecond duration range. Each offending stage is counted; no clamping or reinterpretation is performed.",
+		}, []string{"method", "stage"}),
 	}
-	reg.MustRegister(m.responses, m.stages)
+	reg.MustRegister(m.responses, m.stages, m.invalid)
 	return m
 }
 
@@ -97,14 +103,11 @@ func (m *writeResponseMetrics) observe(method string, response *tikvrpc.Response
 	if write != nil {
 		presence = "write"
 	}
-	m.responses.WithLabelValues(method, outcome, presence).Inc()
 	if outcome != "success" || write == nil {
+		m.responses.WithLabelValues(method, outcome, presence).Inc()
 		return
 	}
-	// Raw uint64 nanoseconds are converted without a signed duration overflow.
-	// Every stage uses exactly the same successful-response population.
-	m.stages.WithLabelValues(method, "rpc").Observe(elapsed.Seconds())
-	for _, stage := range []struct {
+	stages := []struct {
 		name  string
 		nanos uint64
 	}{
@@ -113,7 +116,24 @@ func (m *writeResponseMetrics) observe(method string, response *tikvrpc.Response
 		{"store_wait", write.StoreBatchWaitNanos}, {"proposal_wait", write.ProposeSendWaitNanos},
 		{"apply_wait", write.ApplyBatchWaitNanos}, {"process", write.ProcessNanos},
 		{"throttle", write.ThrottleNanos},
-	} {
+	}
+	// A raw uint64 may encode an underflowed/sentinel duration. Converting it
+	// directly to float64 avoids a Go overflow but still poisons the histogram.
+	// Reject, don't reinterpret: the source of an out-of-range value is unknown.
+	for _, stage := range stages {
+		if stage.nanos > math.MaxInt64 {
+			presence = "invalid_write"
+			m.invalid.WithLabelValues(method, stage.name).Inc()
+		}
+	}
+	m.responses.WithLabelValues(method, outcome, presence).Inc()
+	if presence == "invalid_write" {
+		return
+	}
+	// Reject the entire duration sample, including RPC, to keep populations
+	// matched. The response counter retains all successes, including invalids.
+	m.stages.WithLabelValues(method, "rpc").Observe(elapsed.Seconds())
+	for _, stage := range stages {
 		m.stages.WithLabelValues(method, stage.name).Observe(float64(stage.nanos) / 1e9)
 	}
 }

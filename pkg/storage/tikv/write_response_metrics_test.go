@@ -3,6 +3,7 @@ package tikv
 import (
 	"context"
 	"errors"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,72 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tikv/client-go/v2/tikvrpc"
 )
+
+func TestWriteResponseMetricsRejectUnrepresentableDetail(t *testing.T) {
+	for _, invalid := range []uint64{uint64(math.MaxInt64) + 1, math.MaxUint64} {
+		reg := prometheus.NewRegistry()
+		m := newWriteResponseMetrics(reg)
+		m.observe("commit", &tikvrpc.Response{Resp: &kvrpcpb.CommitResponse{
+			ExecDetailsV2: &kvrpcpb.ExecDetailsV2{WriteDetail: &kvrpcpb.WriteDetail{
+				PersistLogNanos: invalid, RaftDbSyncLogNanos: invalid, ApplyLogNanos: 100,
+			}},
+		}}, nil, time.Millisecond)
+		families, err := reg.Gather()
+		require.NoError(t, err)
+		invalidStages, responses := 0, 0
+		for _, family := range families {
+			require.NotEqual(t, "kubebrain_tikv_write_stage_seconds", family.GetName(),
+				"reject the whole duration sample to preserve matched populations; never clamp to zero")
+			for _, metric := range family.Metric {
+				labels := map[string]string{}
+				for _, label := range metric.Label {
+					labels[label.GetName()] = label.GetValue()
+				}
+				if family.GetName() == "kubebrain_tikv_write_response_total" {
+					responses++
+					require.Equal(t, map[string]string{"method": "commit", "outcome": "success", "details": "invalid_write"}, labels)
+				} else if family.GetName() == "kubebrain_tikv_write_invalid_duration_total" {
+					invalidStages++
+					require.Contains(t, []string{"persist_log", "raft_sync"}, labels["stage"])
+					require.Equal(t, "commit", labels["method"])
+				}
+				require.Equal(t, float64(1), metric.Counter.GetValue())
+			}
+		}
+		require.Equal(t, 1, responses)
+		require.Equal(t, 2, invalidStages)
+	}
+}
+
+func TestWriteResponseMetricsRepresentableBoundary(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := newWriteResponseMetrics(reg)
+	// The guard is a representation check, not a claim that every accepted
+	// duration is physically plausible. Keep the exact signed boundary valid.
+	for _, nanos := range []uint64{math.MaxUint64, math.MaxInt64, 0} {
+		m.observe("prewrite", &tikvrpc.Response{Resp: &kvrpcpb.PrewriteResponse{
+			ExecDetailsV2: &kvrpcpb.ExecDetailsV2{WriteDetail: &kvrpcpb.WriteDetail{PersistLogNanos: nanos}},
+		}}, nil, time.Millisecond)
+	}
+	families, err := reg.Gather()
+	require.NoError(t, err)
+	stages := 0
+	for _, family := range families {
+		if family.GetName() != "kubebrain_tikv_write_stage_seconds" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			stages++
+			require.EqualValues(t, 2, metric.Histogram.GetSampleCount(), "invalid sample must not suppress later valid samples")
+			for _, label := range metric.Label {
+				if label.GetName() == "stage" && label.GetValue() == "persist_log" {
+					require.Equal(t, float64(math.MaxInt64)/1e9, metric.Histogram.GetSampleSum())
+				}
+			}
+		}
+	}
+	require.Equal(t, 10, stages)
+}
 
 func TestWriteResponseMetricsPresenceAndOutcomes(t *testing.T) {
 	withWrite := &kvrpcpb.ExecDetailsV2{WriteDetail: &kvrpcpb.WriteDetail{PersistLogNanos: 2e6}}
