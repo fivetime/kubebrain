@@ -29,6 +29,58 @@ func TestLocalProtocolEntryRejectsMissingConsentAndExternalTargets(t *testing.T)
 	}
 }
 
+func TestLocalProtocolExplicitSubnetReservation(t *testing.T) {
+	source, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
+	require.NoError(t, err)
+	start := strings.Index(string(source), "docker_local network create --internal --label")
+	end := strings.Index(string(source), "\npd_ip=")
+	require.GreaterOrEqual(t, start, 0)
+	require.Greater(t, end, start)
+	for _, scenario := range []string{"owned", "foreign", "busy", "missing-containers", "remove-failed", "recreate-conflict"} {
+		t.Run(scenario, func(t *testing.T) {
+			script := `set -euo pipefail
+evidence="$1"; scenario="$2"; owner=our-owner; label=io.kubebrain.local-protocol-owner; network=our-network
+docker_local() {
+  printf '%s\n' "$*" >> "$evidence/trace"
+  case "$*" in
+    'network create --internal --label '*) echo reservation-id ;;
+    'network inspect our-network')
+      actual_owner=our-owner; containers='{}'
+      if [[ "$scenario" == foreign ]]; then actual_owner=other-owner; fi
+      if [[ "$scenario" == busy ]]; then containers='{"other-container":{}}'; fi
+      if [[ "$scenario" == missing-containers ]]; then containers=null; fi
+      jq -n --arg owner "$actual_owner" --argjson containers "$containers" \
+        '[{Id:"reservation-id",Labels:{"io.kubebrain.local-protocol-owner":$owner},Containers:$containers,IPAM:{Config:[{Subnet:"172.28.0.0/16",Gateway:"172.28.0.1"}]}}]'
+      ;;
+    'network rm reservation-id') [[ "$scenario" != remove-failed ]] ;;
+    'network create --internal --subnet 172.28.0.0/16 --gateway 172.28.0.1 --label io.kubebrain.local-protocol-owner=our-owner our-network')
+      [[ "$scenario" != recreate-conflict ]] || return 1
+      echo explicit-id ;;
+    *) return 99 ;;
+  esac
+}
+` + string(source[start:end])
+			dir := t.TempDir()
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			output, runErr := exec.CommandContext(ctx, "bash", "-c", script, "_", dir, scenario).CombinedOutput()
+			if scenario == "owned" {
+				require.NoError(t, runErr, string(output))
+				id, err := os.ReadFile(filepath.Join(dir, "network-id"))
+				require.NoError(t, err)
+				require.Equal(t, "explicit-id\n", string(id))
+			} else {
+				require.Error(t, runErr, string(output))
+			}
+			trace, err := os.ReadFile(filepath.Join(dir, "trace"))
+			require.NoError(t, err)
+			unsafeReservation := scenario == "foreign" || scenario == "busy" || scenario == "missing-containers"
+			require.Equal(t, !unsafeReservation, strings.Contains(string(trace), "network rm reservation-id\n"))
+			require.Equal(t, !unsafeReservation && scenario != "remove-failed", strings.Contains(string(trace), "network create --internal --subnet"))
+		})
+	}
+}
+
 // Execute the actual cleanup function with a recording Docker substitute. Do
 // not source the entry: that could provision real resources during a unit test.
 func TestLocalProtocolCleanupOwnershipAndFailures(t *testing.T) {

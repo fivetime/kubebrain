@@ -73,8 +73,18 @@ for image in "$pd_image" "$tikv_image"; do
   docker_local image inspect "$image" >/dev/null # never pull a mutable tag
 done
 docker_local network create --internal --label "$label=$owner" "$network" > "$evidence/network-id"
-gateway="$(docker_local network inspect "$network" | jq -er \
-  '.[0].IPAM.Config | select(length == 1) | .[0].Gateway | select(test("^([0-9]{1,3}\\.){3}1$"))')"
+# Let Docker allocate a non-overlapping subnet first, then make that allocation
+# explicit. Older daemons reject static endpoint IPs on an implicit subnet.
+# Release only our verified empty reservation by ID; a concurrent allocation
+# makes the second create fail closed instead of selecting an unrelated network.
+reservation="$(docker_local network inspect "$network")"
+reservation_id="$(jq -er --arg key "$label" --arg owner "$owner" \
+  'select(length == 1) | .[0] | select(.Labels[$key] == $owner and (.Containers | type) == "object" and (.Containers | length) == 0) | .Id' <<<"$reservation")"
+subnet="$(jq -er '.[0].IPAM.Config | select(length == 1) | .[0].Subnet | select(test("^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"))' <<<"$reservation")"
+gateway="$(jq -er '.[0].IPAM.Config | select(length == 1) | .[0].Gateway | select(test("^([0-9]{1,3}\\.){3}1$"))' <<<"$reservation")"
+docker_local network rm "$reservation_id" >/dev/null
+docker_local network create --internal --subnet "$subnet" --gateway "$gateway" \
+  --label "$label=$owner" "$network" > "$evidence/network-id"
 pd_ip="${gateway%.*}.2"
 tikv_ip="${gateway%.*}.3"
 pd_endpoint="$pd_ip:2379"

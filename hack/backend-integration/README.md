@@ -11,6 +11,12 @@ Linux amd64 Runner 上拉取入口使用的固定镜像摘要，运行构建契�
 使用全新的临时集群，不能用同一前缀的 `-count` 重复 Region 分裂测试。
 此门禁不替代仍保留的 mock 门禁；本机通过不等同于 Runner 已验收。
 
+首轮 Runner 验证在创建容器前失败：该 Docker 版本拒绝在自动分配子网的网络
+上指定静态 IP。本机版本未拒绝，因此保留这次 CI 失败记录。入口现先由 Docker
+选择子网，检查本次预留网络的所有权和空容器集合，按确切 ID 移除，再显式
+指定相同子网和网关重建；并发分配冲突会失败退出，不复用或修改外部网络。
+所有权变化、网络被占用、状态缺失、删除失败及重建冲突均有失败关闭契约。
+
 ```sh
 bash hack/backend-integration/run-real-local.sh --allow-local-containers
 bash hack/backend-integration/run-real-local.sh --allow-local-containers --race
