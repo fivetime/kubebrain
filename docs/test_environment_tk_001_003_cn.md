@@ -2,7 +2,29 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
-## 最新分段延迟观测通过（非滚动升级）
+## 最新同窗口指标观测：采样成功、整轮失败
+
+2026-09-11，仍使用服务端 `0ce85e66`、探针 `2ef9d266`，不滚动。
+前缀 `/kubebrain-rollout-availability/kb-e2e-split-td2zupsw/`。
+自动观察 PROBE_STARTED 后采第一组，间隔20秒再采第二组；两组采集退出0，
+各实例采样前后和跨样本的 UID/containerID/imageID/restartCount 一致。
+指标经 UID 校验的 immutable info CA ConfigMap 验证 TLS；公开 CA 通过 stdin
+送入 curl，不依赖非滚动探针中不存在的 info CA 挂载，不关闭证书校验。
+
+整轮退出1：第218次迭代报告 Snapshot 恢复后的 writer 租约续租 invalid auth token。
+最终217/300，不作为通过结果。最终 cleanup keys/users/roles/leases=0；独立核验
+无测试Pod/ownerConfigMap，三个服务实例身份及 StatefulSet spec/UID/gen22/Ready3
+未变。该前缀已用并清理，不复用。
+两组样本分别为 `sample.RcWM0otfdmKG`、`sample.TkGWebltllJQ`，差值 `metric-delta.json`，
+均位于 `/root/.local/state/kubebrain/write-metrics-observe.Td2zUPSw/`。
+窗口中 leader71次Put的 write.latency/apply均值145.57/134.43ms；commit-wait累计
+0ms仅为毫秒取整值，不证明完全没有等待。三实例顺序采集，各自时间和探针进度
+已记录；包含后台/租约/快照请求，不能当作严格隔离的单Put事务开销。
+
+前一轮 `write-path-observe.saWMHJk3/` 的300次观测虽通过，但指标采集因缺少
+info CA挂载失败，没有有效指标差值；该失败记录保留，不与本轮混用。
+
+## 前次分段延迟观测通过（非滚动升级）
 
 2026-09-11，CI `34561935083` 和独立审计通过，探针源码 `2ef9d266`；镜像索引
 `sha256:8a6899e6e3eb3c02011abd8e344f16ac38a246d5084efd7f6e999a7449dbce87`，
