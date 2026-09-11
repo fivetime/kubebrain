@@ -26,10 +26,38 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 )
 
-type restoredAuthDiagnosticKV struct{ clientv3.KV }
+type restoredAuthDiagnosticKV struct {
+	clientv3.KV
+	err error
+}
 
-func (restoredAuthDiagnosticKV) Get(context.Context, string, ...clientv3.OpOption) (*clientv3.GetResponse, error) {
-	return &clientv3.GetResponse{}, nil
+func (kv restoredAuthDiagnosticKV) Get(context.Context, string, ...clientv3.OpOption) (*clientv3.GetResponse, error) {
+	return &clientv3.GetResponse{}, kv.err
+}
+
+func TestRestoredAuthUnexpectedDeniedWatchPreservesOriginalError(t *testing.T) {
+	w := &restoredAuthDiagnosticWatcher{response: clientv3.WatchResponse{
+		Canceled: true, CancelReason: rpctypes.ErrGRPCInvalidAuthToken.Error(),
+	}}
+	client := &clientv3.Client{KV: restoredAuthDiagnosticKV{err: rpctypes.ErrPermissionDenied}, Watcher: w}
+	err := verifyRestoredAuthAccess(t.Context(), client, restoredSnapshotAuthAccessExpectation{
+		username: "fixture-write-only", key: "/fixture/key", read: false,
+	}, 0, nil)
+	require.ErrorContains(t, err, "restored auth Watch returned")
+	require.ErrorIs(t, err, w.response.Err())
+	require.ErrorIs(t, w.ctx.Err(), context.Canceled)
+}
+
+func TestRestoredAuthMissingWatchCreationStillFailsWithoutInventedCause(t *testing.T) {
+	w := &restoredAuthDiagnosticWatcher{response: clientv3.WatchResponse{}}
+	client := &clientv3.Client{KV: restoredAuthDiagnosticKV{}, Watcher: w}
+	err := verifyRestoredAuthAccess(t.Context(), client, restoredSnapshotAuthAccessExpectation{
+		username: "fixture-reader", key: "/fixture/key", read: true,
+	}, 0, nil)
+	require.ErrorContains(t, err, "missing successful creation")
+	require.NotContains(t, err.Error(), "%!w")
+	require.NotContains(t, err.Error(), "invalid auth token")
+	require.ErrorIs(t, w.ctx.Err(), context.Canceled)
 }
 
 type restoredAuthDiagnosticWatcher struct {
@@ -57,6 +85,7 @@ func TestRestoredAuthWatchFailureIncludesEvidenceBeforeOwnCancel(t *testing.T) {
 	}, 0, nil)
 	require.ErrorContains(t, err, "restored auth Watch was denied")
 	require.ErrorContains(t, err, "invalid auth token")
+	require.ErrorIs(t, err, w.response.Err(), "diagnostic wrapping must preserve the original Watch error")
 	require.ErrorContains(t, err, "header_present=true cluster_id=11 member_id=12 revision=13 raft_term=14")
 	require.ErrorContains(t, err, "context_done=false")
 	require.ErrorContains(t, err, `auth_stage="Watch"`)

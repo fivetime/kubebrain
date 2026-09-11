@@ -853,14 +853,21 @@ func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expe
 		watchEvidence := restoredAuthWatchEvidence(response, watchCtx.Err())
 		cancelWatch()
 		if expected.read {
-			if err := response.Err(); err != nil || response.Canceled || !response.Created {
-				return fmt.Errorf("restored auth Watch was denied for user=%q key=%q: %v (%s)", expected.username, expected.key, response.Err(), watchEvidence)
+			if watchErr := response.Err(); watchErr != nil {
+				return fmt.Errorf("restored auth Watch was denied for user=%q key=%q: %w (%s)", expected.username, expected.key, watchErr, watchEvidence)
+			}
+			if response.Canceled || !response.Created {
+				return fmt.Errorf("restored auth Watch was denied for user=%q key=%q: missing successful creation (%s)", expected.username, expected.key, watchEvidence)
 			}
 		} else {
 			watchErr := response.Err()
 			if !errors.Is(watchErr, rpctypes.ErrPermissionDenied) && status.Code(watchErr) != codes.PermissionDenied &&
 				response.CancelReason != rpctypes.ErrGRPCPermissionDenied.Error() &&
 				(watchErr == nil || watchErr.Error() != rpctypes.ErrGRPCPermissionDenied.Error()) {
+				if watchErr != nil {
+					return fmt.Errorf("restored auth Watch returned %w reason=%q for denied user=%q key=%q (%s)",
+						watchErr, response.CancelReason, expected.username, expected.key, watchEvidence)
+				}
 				return fmt.Errorf("restored auth Watch returned %v reason=%q for denied user=%q key=%q (%s)",
 					watchErr, response.CancelReason, expected.username, expected.key, watchEvidence)
 			}
