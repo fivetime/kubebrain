@@ -116,17 +116,33 @@ done
 curl --noproxy '*' --fail --silent --show-error --max-time 5 \
   "http://$pd_endpoint/pd/api/v1/cluster" > "$evidence/cluster.json"
 cluster_id="$(jq -Rser '[match("\"id\"\\s*:\\s*([0-9]+)"; "g").captures[0].string] | select(length == 1) | .[0]' "$evidence/cluster.json")"
+verify_case_result() {
+  local result="$1" name="$2" log="$3"
+  if [[ "$result" != 0 ]]; then
+    printf 'LOCAL_PROTOCOL_CASE_FAILED test=%s exit=%s\n' "$name" "$result" >&2
+    tail -n 100 "$log" >&2
+    return "$result"
+  fi
+  if ! grep -Fq -- "--- PASS: $name (" "$log" || grep -Eq -- '^--- (SKIP|FAIL):' "$log"; then
+    printf 'LOCAL_PROTOCOL_CASE_UNPROVEN test=%s\n' "$name" >&2
+    tail -n 100 "$log" >&2
+    return 1
+  fi
+  printf 'LOCAL_PROTOCOL_CASE_PASSED test=%s\n' "$name"
+}
 for test_name in TestRealTiKVProtocolSmoke TestRealTiKVOnePCResponseLoss \
   TestRealTiKVOnePCCancelAfterResponseLoss TestRealTiKVBackendResolvesCancelledOnePC \
   TestRealTiKVBackendResolvesUndeliveredOnePC TestRealTiKVBackendRetriesCommittedOnePC \
   TestRealTiKVBackendRetriesUndeliveredOnePC TestRealTiKVBackendRegionSplitFallback \
   TestRealTiKVBackendNoRPCRetryCommittedOnePC TestRealTiKVBackendNoRPCRetryUndeliveredOnePC; do
   nonce="$(openssl rand -hex 16)"
+  case_result=0
   KUBEBRAIN_TIKV_PROTOCOL_PD="$pd_endpoint" KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID="$cluster_id" \
     KUBEBRAIN_TIKV_PROTOCOL_ALLOW_REGION_SPLIT=1 \
     KUBEBRAIN_TIKV_PROTOCOL_ENABLE_TEST_FAILPOINTS=1 \
     KUBEBRAIN_TIKV_PROTOCOL_PREFIX="kubebrain/protocol-smoke/$nonce/" KUBEBRAIN_TIKV_PROTOCOL_MODE=1pc \
     timeout --signal=TERM --kill-after=10s 130s "$evidence/protocol.test" \
-    -test.run="^$test_name$" -test.v -test.count=1 -test.timeout=120s > "$evidence/$test_name.log" 2>&1
+    -test.run="^$test_name$" -test.v -test.count=1 -test.timeout=120s > "$evidence/$test_name.log" 2>&1 || case_result=$?
+  verify_case_result "$case_result" "$test_name" "$evidence/$test_name.log"
 done
 echo 'LOCAL_PROTOCOL_TESTS_PASSED acceptance=false'

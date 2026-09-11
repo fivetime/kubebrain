@@ -59,6 +59,7 @@ docker_local() {
     *) return 99 ;;
   esac
 }
+
 ` + string(source[start:end])
 			dir := t.TempDir()
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
@@ -77,6 +78,46 @@ docker_local() {
 			unsafeReservation := scenario == "foreign" || scenario == "busy" || scenario == "missing-containers"
 			require.Equal(t, !unsafeReservation, strings.Contains(string(trace), "network rm reservation-id\n"))
 			require.Equal(t, !unsafeReservation && scenario != "remove-failed", strings.Contains(string(trace), "network create --internal --subnet"))
+		})
+	}
+}
+
+func TestLocalProtocolRequiresActualNamedTestPass(t *testing.T) {
+	source, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
+	require.NoError(t, err)
+	start := strings.Index(string(source), "verify_case_result() {\n")
+	end := strings.Index(string(source), "\nfor test_name in")
+	require.GreaterOrEqual(t, start, 0)
+	require.Greater(t, end, start)
+	for _, tc := range []struct {
+		name, log, result string
+		want              int
+	}{
+		{"pass", "--- PASS: TestTarget (0.01s)\nPASS\n", "0", 0},
+		{"skip", "--- SKIP: TestTarget (0.00s)\nPASS\n", "0", 1},
+		{"no-match", "testing: warning: no tests to run\nPASS\n", "0", 1},
+		{"wrong-name", "--- PASS: TestTargetOther (0.01s)\nPASS\n", "0", 1},
+		{"failed", "--- FAIL: TestTarget (0.01s)\nFAIL\n", "1", 1},
+		{"timeout", "timed out\n", "124", 124},
+		{"late-error", "--- PASS: TestTarget (0.01s)\n", "23", 23},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := filepath.Join(t.TempDir(), "case.log")
+			require.NoError(t, os.WriteFile(log, []byte(tc.log), 0600))
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			script := string(source[start:end]) + "\nverify_case_result \"$1\" TestTarget \"$2\"\n"
+			output, err := exec.CommandContext(ctx, "bash", "-c", script, "_", tc.result, log).CombinedOutput()
+			if tc.want == 0 {
+				require.NoError(t, err, string(output))
+				require.Contains(t, string(output), "LOCAL_PROTOCOL_CASE_PASSED test=TestTarget")
+			} else {
+				var exitErr *exec.ExitError
+				require.ErrorAs(t, err, &exitErr, string(output))
+				require.Equal(t, tc.want, exitErr.ExitCode())
+				require.NotContains(t, string(output), "LOCAL_PROTOCOL_CASE_PASSED")
+				require.Contains(t, string(output), tc.log)
+			}
 		})
 	}
 }
