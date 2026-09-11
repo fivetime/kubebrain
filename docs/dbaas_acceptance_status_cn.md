@@ -5,6 +5,25 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+日志同步诊断补充（2026-09-11）：重用下述 `tikv-window.qaibg8Wqbqaz`
+原始窗口，未重新施加载荷。`raft_engine_sync_log_duration_seconds` 在
+`kb-tikv-0/1/2` 分别增加 954/711/1011 次，均值为
+21.732/21.335/17.955ms，差值另存 `*-deltas-with-sync.log`，原分析保留。
+现场 `tikv_server_info` 标识 v8.5.3、源码 `13b9af5c`；本机 `/root/tikv`
+参考 HEAD 并非此版本，不用其依赖版本解释现场指标。
+[v8.5.3 依赖锁](https://github.com/tikv/tikv/blob/v8.5.3/Cargo.lock)
+固定 Raft Engine `2f9f6888`；对应
+[日志同步实现](https://github.com/tikv/raft-engine/blob/2f9f6888dc2c88d3e2b582187c26e196b88b8ef3/src/file_pipe_log/log_file.rs#L114)
+在文件句柄同步调用外计时。这进一步支持检查存储同步路径，但指标不是纯设备
+耗时，不能分辨节点文件系统、RBD 网络、Ceph 副本或物理设备的责任，也不能
+用不同计数的 sync/write 均值相减估计比例。
+新增 [有界同步诊断工具](../hack/production/cmd/storage-sync-probe/README.md)，
+仅允许显式指定测试目录并确认写入，限制次数、块大小与总字节数；测量独立
+write/fdatasync，取消或失败返回非零，清理不递归删除目录。专项 race 连续
+20 次及 vet 通过，包含本地实际 fdatasync、错误/取消、统计量与原始样本一致性、
+既有文件和意外目录项保留测试。其真实集群独立
+PVC 对照测试尚未执行，不能据本地文件测试宣称底层存储根因已确定。
+
 最新正式复验失败与真实写批次采样（2026-09-11）：`136eb75f` 已通过全部 24 项本地
 发布门禁（含完整 race 和 721 项生产脚本测试）、镜像 CI `34590401325`
 及后端 CI `34590551289`，实际镜像源码、fork 和阶段观察器核验通过。
