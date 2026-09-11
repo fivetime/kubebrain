@@ -5,6 +5,16 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+普通 Put 优化前置回归（2026-09-11）：适配层目前先 Get/解码当前值，再以
+Create/Update 比较循环进入后端 TxnApply；后端还会准备和校验当前对象。
+这是源码中的重复读取候选，不是已测得的延迟归因。新增
+`TestPutValidatesCurrentInlineLifecycleWithoutPrevKV` 锁定：即使不请求 PrevKV，
+截断内联格式、未来创建版本、首版本生命周期不符和不可能的版本计数，也必须
+在写入前拒绝；正常更新保留原 revision 比较条件。该测试与 mutation-key-lock、
+事务前值投影和锁所有权测试一起 `-race -count=20` 通过（2.839 秒）。
+本次只加测试，没有修改产品写入路径；直接删除预读仍需证明旧格式、损坏检测、
+IgnoreValue/IgnoreLease、PrevKV 和并发语义等价，不能据此宣称性能问题已修复。
+
 恢复权限失败诊断补充：`auth_stage` 标识 Range、Watch 或具体租约操作，
 `access_elapsed_ms` 是该用户/键的一整项权限检查耗时，不是单个 RPC 时间。
 `context_done` 和 `deadline_exceeded` 在返回上层、关闭恢复集群之前采集，
