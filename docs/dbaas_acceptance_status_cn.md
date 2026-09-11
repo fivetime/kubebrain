@@ -5,6 +5,18 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+后端资源只读诊断（2026-09-11，非正式负载窗口）：三个 TiKV Pod 均 Ready、
+重启次数为 0，实际容器 CPU 配额为 8 核，自身 cgroup 的 nr_throttled 与
+throttled_usec 均为 0；当前 I/O PSI 有非零等待信号。两次指标抓取之间逐个
+核对 Pod UID、容器 ID、镜像 ID、启动及重启状态一致。Raft Engine 日志同步
+分别增加 381／381／639 次，均值约 18.26／20.42／16.98ms；其中一个副本
+没有前台 storage command 增量，仍有日志同步，不能把前台命令数当作全部
+副本 I/O。该窗口未新增压测负载，既不代表正式验收负载，也未证明 Ceph 根因。
+不同指标总体不能混算或相加；未改变 CPU、同步持久化、租约或存储配置。
+原始窗口与身份核验记录：
+`/root/.local/state/kubebrain/tikv-request-window.RGwLwBRP/`；资源检查见
+`/root/.local/state/kubebrain/tikv-{cpu-quota,pressure}-readonly-check.md`。
+
 认证回归覆盖边界：`TestRestoredAuthTokensAcrossAllMemberPairs` 用原始生成的
 RPC 客户端验证所有成员间 token 复用，刻意不经过官方 clientv3 刷新和重试。
 当前依赖 client/v3 v3.7.1 的 `retry_interceptor.go:streamClientInterceptor`
