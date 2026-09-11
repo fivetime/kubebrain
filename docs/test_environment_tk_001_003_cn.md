@@ -2,7 +2,31 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
-## 最新基线端到端观测（非滚动升级）
+## 最新分段延迟观测失败（非滚动升级）
+
+2026-09-11，CI `34557288219` 成功，源码 `29038dabc382070e367587b160d9f9667c60ab4a`。
+独立校验确认镜像索引、双架构、实际 amd64 版本/客户端依赖及新增探针字段；
+探针镜像为 `ghcr.io/fivetime/kubebrain@sha256:28e7d0dcf3183aa62a33b98190e19b45a4475b8d6cf4d50513d7a32725ae4a2b`。
+临时提取的二进制和审计容器已删除。服务端维持 `0ce85e66`，无滚动或协议切换。
+
+沿用 300 次、100 ms、public/direct 5s/30s、完成窗口 900s。
+探针 `kb-e2e-split-u8lzxe0v`，UID `5b13094f-8afc-43de-a0b0-e86a87a6e552`。
+命令退出 1：第 209 次迭代发现后台 Snapshot integrity probe 失败，官方恢复集群的
+exact-reader 授权 Watch 返回 `Unauthenticated: etcdserver: invalid auth token`。
+最终 `completed=208 total=300 elapsed_ms=61673`，不是通过结果；最后一条进度可能
+包含失败迭代的部分计时，不能当作完整 300 次样本均值。根因尚待定位。
+
+最终 cleanup 报告 keys/users/roles/leases=0；独立检查无探针/清理 Pod 或 owner
+ConfigMap。StatefulSet UID/spec 未变、generation=22、Ready=3、revision
+`kubebrain-855b5bfb88`；三个服务 Pod 的 UID/containerID/imageID/restartCount/Ready
+均与测试前一致。前缀 `/kubebrain-rollout-availability/kb-e2e-split-u8lzxe0v/` 已用并清理，不复用。
+原始日志、镜像校验回执及前后身份：`/root/.local/state/kubebrain/e2e-split-observe.u8lzxE0V/`。
+本机旧 TLS 恢复测试重复 10 次通过（265.139 秒）；新增默认 bcrypt 成本、
+`CN=root` 客户端证书组合也重复 10 次通过（272.038 秒）。两组均未复现，不能
+据此关闭故障；调查证据在
+`/root/.local/state/kubebrain/restored-auth-investigation.8peghe7t/`。
+
+## 前次通过的基线端到端观测（非滚动升级）
 
 2026-09-11，规范 `run-kubebrain-rollout-availability.sh` 以 `OBSERVE_ONLY=true`、
 300 次操作、100 ms 间隔运行，public/direct 门限保持 5s/30s、完成窗口保持 900s。

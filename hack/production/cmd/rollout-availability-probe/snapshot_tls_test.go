@@ -34,6 +34,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // Match the deployed probe identity: a CA-signed root client with clientAuth
@@ -74,6 +75,43 @@ func newClientOnlySnapshotTLSFixture(t *testing.T) restoredSnapshotTLSConfig {
 	require.Empty(t, leaf.DNSNames)
 	require.Empty(t, leaf.IPAddresses)
 	return cfg
+}
+
+// Exercise the deployed certificate identity together with the server's default
+// password cost. The cheaper permission-matrix fixtures do not reproduce this
+// authentication timing. A pass here is not evidence that an intermittent
+// restored Watch authentication failure has been fixed.
+func TestRestoredSnapshotClientOnlyTLSWithDefaultPasswordCost(t *testing.T) {
+	const prefix = "/probe/auth-default-cost/"
+	fixture := newSnapshotAuthFixture(prefix)
+	fixture.expected.revision = 31
+	fixture.expected.enabled = true
+	expected := newStreamProbeExpectations(prefix)
+	state := snapshotAuthTestState(t, expected, &fixture.expected)
+	for index, user := range fixture.expected.users {
+		if user.noPassword {
+			continue
+		}
+		hash, err := bcrypt.GenerateFromPassword([]byte(user.password), bcrypt.DefaultCost)
+		require.NoError(t, err)
+		state.Auth.Users[index].Password = hash
+	}
+	state.Auth.Enabled = true
+	state.Auth.Users = append(state.Auth.Users, &authpb.User{
+		Name: []byte("root"), Roles: []string{"root"}, Options: &authpb.UserAddOptions{NoPassword: true},
+	})
+	state.Auth.Roles = append(state.Auth.Roles, &authpb.Role{Name: []byte("root")})
+	state = attachProductionSnapshotScale(t, prefix, expected, state)
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(t.Context(), restoredSnapshotVerificationTimeout+10*time.Second)
+	defer cancel()
+	partial, err := consumeAndValidateSnapshotWithClusterAuth(ctx, snapshotAuthReceiver(t, state), dir, expected,
+		newClientOnlySnapshotTLSFixture(t), &fixture.expected, 3)
+	require.NoError(t, err)
+	require.True(t, partial)
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Empty(t, entries, "restore data and ephemeral server identity must be removed")
 }
 
 func TestRestoredSnapshotDoesNotUseSourceClientAsServer(t *testing.T) {

@@ -5,6 +5,19 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+分段延迟探针实测失败（2026-09-11）：提交 `29038dabc382` 的镜像 CI
+`34557288219` 及独立镜像身份校验通过；只更新探针，服务仍为 `0ce85e66`。
+300 次非滚动观测在第 209 次迭代报告 Snapshot 恢复验证失败：官方 etcd
+对 exact-reader 的授权 Watch 返回 `Unauthenticated: etcdserver: invalid auth token`。
+此前同一权限检查中的 Range 未报错。最终进度为 208/300，不是一次通过的观测，
+也不能替代原 6000 次升级验收。故障根因尚未确认，不将它归为产品或探针的已知缺陷。
+测试数据及资源已清理，三个服务实例和 StatefulSet 配置/身份未变。
+原有 TLS、三成员、启用认证恢复测试本机重复 10 次通过（265.139 秒），未复现；
+默认 bcrypt 成本与 `CN=root` 客户端证书组合测试也重复 10 次通过（272.038 秒），
+仍未复现实际故障；新增用例不是修复，不能关闭这一验收失败。
+完整失败证据：`/root/.local/state/kubebrain/e2e-split-observe.u8lzxE0V/`；
+本机调查：`/root/.local/state/kubebrain/restored-auth-investigation.8peghe7t/`。
+
 基线端到端短时观测（2026-09-11）：当前运行镜像 `0ce85e66`、三副本、不滚动，
 使用规范 runner 的 `OBSERVE_ONLY=true` 执行 300 次操作。public watch=300，
 direct watch=300×3，lease 存活，Range=70、Snapshot=1，无 stream 重试；所有权清理通过。
