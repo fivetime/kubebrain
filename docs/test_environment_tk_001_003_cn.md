@@ -2,7 +2,24 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
-## 最新协议故障验证：成功响应丢失后取消调用者
+## 最新协议故障验证：真实后端持久见证解析
+
+2026-09-11，非特权 Pod `kb-backend-onepc-52dx4lzj`
+（UID `651f8721-9288-4a05-bb01-f1765ce6e261`）精确运行
+`TestRealTiKVBackendResolvesCancelledOnePC`，PASS。上传前后 SHA256 一致：
+`8805277002a5c8644db7ae557b3d3b016a2ace0730c0b36dbed2dc2edf4e2248`。
+不确定双键事务被真实后端持久见证解析为已提交，双键事件/读取为修订号 101，
+下一次单键写入/事件为 102。未改集群网络、PD/TiKV、StatefulSet 或生产提交协议。
+测试后端不运行选主、全局 GC 或自动压缩；本次不覆盖这些路径或进程重启。
+后端 Close 和独立客户端所有权清理均通过，两个隔离范围确认为空。
+已用并清理的前缀 `kubebrain/protocol-smoke/91d6c43172c62399cc4914b4d3afd624/`
+及 keyspace `protocol-backend-91d6c43172c62399cc4914b4d3afd624` 不复用。
+Pod 已按 UID 前置条件删除并独立确认不存在；本机二进制核验摘要后删除。
+StatefulSet 核验 gen/observed=22/22、Ready=3、revision=`kubebrain-855b5bfb88`。
+日志、构建信息、源码摘要和清理记录：
+`/root/.local/state/kubebrain/real-backend-onepc.52dX4Lzj/`。
+
+## 前次协议故障验证：成功响应丢失后取消调用者
 
 2026-09-11，独立非特权 Pod `kb-onepc-cancel-5ztqwumt`
 （UID `12b1bd6b-ca86-4c49-81ee-eefb770d0b68`）精确运行

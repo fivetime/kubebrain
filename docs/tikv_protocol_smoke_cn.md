@@ -102,3 +102,36 @@ go test ./pkg/storage/tikv -run '^TestRealTiKVOnePCResponseLoss$' -count=1 -time
 起始/提交时间戳分别为 `468999354656751617` / `468999354656751619`；
 快照读取、更新和清理均通过。本证据证明存储适配器对这一取消边界的分类，仍不
 证明 KubeBrain 后端持久见证解析、跨 Region 或 Raft 故障恢复。
+
+## 真实后端持久见证解析
+
+`pkg/storage/tikv/backend_uncertain_test.go` 的
+`TestRealTiKVBackendResolvesCancelledOnePC` 启动进程内的真实 KubeBrain 后端，
+连接真实 TiKV，复用上述响应丢失后取消请求的注入器。使用相同四个专用环境变量，
+显式 `1pc`、全新前缀和独立进程，精确运行：
+
+```sh
+go test ./pkg/storage/tikv -run '^TestRealTiKVBackendResolvesCancelledOnePC$' -count=1 -timeout=120s -v
+```
+
+运行前仍需固定工具链、核对集群 ID，并遵守前面的 TLS、非特权 Pod 和日志保存要求。
+测试从前缀的随机 nonce 派生独立 `protocol-backend-<nonce>` keyspace；写入前同时
+检查原始前缀范围和派生物理对象范围为空，再原子创建随机所有权令牌。不得复用
+其他 smoke 的前缀。后端保留存储适配器能力，但不启动选主、全局 GC 或自动压缩。
+
+用例要求 `TxnApply` 真正返回 `ErrUncertainResult`；一次 prewrite、一次成功响应
+丢失、非零真实提交时间戳；后端 committed 解析指标恰为 1、not_committed 为 0。
+双键 CREATE 和读取必须使用同一修订号 101，后续单键 PUT 必须为 102，并作为有序
+边界检查前面未重放双键事件。调用者取消不能取消后端独立的见证解析工作线程。
+
+清理先调用 `backend.Close` 等待工作线程并释放检查点保护，再用独立存储客户端
+执行所有权 CAS 和删除；不会用已关闭的客户端，也不通过隐藏能力接口跳过真实路径。
+只扫描两个派生的隔离范围，最多允许 128 个键，超量报错不删除。所有权缺失但仍有
+数据、所有权不符或检查后发生变化均拒绝删除；删除后重新检查两个范围为空。
+关闭失败时保留数据及所有权供恢复。清理边界有本地内存存储测试，不等同真实故障测试。
+
+成功要求 PASS、`PROTOCOL_BACKEND_RESOLVED` 和 `PROTOCOL_BACKEND_CLEANUP_OK` 齐全。
+2026-09-11 专用集群实际通过，start/commit TS 为
+`468999580939452418` / `468999580939452420`，revision=101、next=102。
+这补齐了真实 TiKV 已提交分支的后台见证解析证据，不覆盖未提交分支、进程重启、
+领导权切换、真实 Region 分裂、Raft 故障持久性或 900 秒升级验收；生产 1PC 仍关闭。
