@@ -12,6 +12,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	tikvconfig "github.com/tikv/client-go/v2/config"
 	clienttikv "github.com/tikv/client-go/v2/tikv"
@@ -183,6 +184,7 @@ func TestRealTiKVReadBypassesPendingSecondaryCleanup(t *testing.T) {
 	claim.PutIfNotExist([]byte(prefix+"owner"), owner, 0)
 	require.NoError(t, claim.Commit(ctx))
 	client := kv.(*store).getClient()
+	require.IsType(t, &writeResponseClient{}, client.GetTiKVClient(), "production constructor must install write response telemetry")
 	data, witness := []byte(prefix+"data"), []byte(prefix+"witness")
 	_, err = client.SplitRegions(ctx, [][]byte{witness}, false, nil)
 	require.NoError(t, err)
@@ -228,4 +230,29 @@ func TestRealTiKVReadBypassesPendingSecondaryCleanup(t *testing.T) {
 		t.Fatal("transaction-specific background ResolveLock was not observed")
 	}
 	t.Logf("SECONDARY_READ_BYPASS_CONFIRMED checks=%d foreground_resolves=%d secondary_commit_held=true background_resolve_held=true scope=mechanism_only", checks, resolves)
+	// No direct metric Observe calls: these samples must come from real RPCs
+	// through the installed production wrapper and the /metrics registry.
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	exported := map[string]bool{"prewrite": false, "commit": false}
+	for _, family := range families {
+		if family.GetName() != "kubebrain_tikv_write_stage_seconds" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			method, stage := "", ""
+			for _, label := range metric.Label {
+				if label.GetName() == "method" {
+					method = label.GetValue()
+				}
+				if label.GetName() == "stage" {
+					stage = label.GetValue()
+				}
+			}
+			if stage == "persist_log" && metric.Histogram.GetSampleCount() > 0 {
+				exported[method] = true
+			}
+		}
+	}
+	require.True(t, exported["prewrite"] && exported["commit"], "real successful write details must be exported")
 }

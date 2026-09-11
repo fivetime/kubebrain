@@ -2,6 +2,25 @@
 
 KubeBrain 已内置**标准 Prometheus** 指标(真 registry + `promhttp.Handler()`),挂在 **info 端口(`--info-port`,默认 8080)的 `/metrics`**。暴露方式与"进程怎么被调度"无关,所以静态 Pod 部署不影响可观测。
 
+## TiKV 写入响应诊断
+
+`kubebrain_tikv_write_response_total{method,outcome,details}` 统计实际 Prewrite/Commit
+RPC。`method` 仅为 `prewrite` 或 `commit`；`details` 区分 `absent`、`exec_only`、
+`write`，不把缺失的原始 WriteDetail 当作耗时为零。`outcome` 为 `success`、
+`transport_error`、`response_missing`、`unexpected_response`、`region_error` 或 `key_error`。
+不使用键、事务 ID、Region ID、地址或错误文本作为标签。
+
+`kubebrain_tikv_write_stage_seconds{method,stage}` 仅观察成功且原始 WriteDetail
+存在的同一批响应，单位为秒。阶段为 `rpc`、`persist_log`、`raft_sync`、
+`commit_log`、`apply_log`、`store_wait`、`proposal_wait`、`apply_wait`、`process`、
+`throttle`。明细消息存在但单个标量为零时记录零；protobuf 标量不能区分未填充与
+真实零耗时。各阶段存在嵌套或重叠，**不能相加**，也不能将 RPC 总耗时减去若干
+阶段就直接宣称剩余是网络延迟。
+
+这些指标包含后台写入、次要键提交和重试，不是逻辑 Put 次数；不能与只统计前台
+Put 的批次指标混算。比较窗口时须核对实例身份、计数增量、响应错误及明细缺失
+比例。所有客户端实例共享进程默认 registry；采样观察不改变协议、重试或错误。
+
 ## 如何抓取(静态 Pod 数据存储的正确姿势)
 
 生产里 KubeBrain 是 apiserver 的数据存储,通常以**静态 Pod**(kubelet 管,像 etcd)或 systemd/容器运行 —— 不能是被同一个 apiserver 管的 Deployment(先有鸡还是先有蛋)。抓取和 etcd 完全同构,三选一:

@@ -139,6 +139,9 @@ func NewKvStorageWithContext(ctx context.Context, pdAddrs []string, clientNum in
 		cancelStartup()
 		return nil, err
 	}
+	for _, client := range clients {
+		client.SetTiKVClient(&writeResponseClient{Client: client.GetTiKVClient(), metrics: defaultWriteResponseMetrics})
+	}
 	if !stopStartupCancellation() {
 		closeErr := closeClient(clients)
 		cancelStartup()
