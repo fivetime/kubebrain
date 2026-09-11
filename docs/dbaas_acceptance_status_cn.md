@@ -5,6 +5,46 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+最新正式复验失败与真实写批次采样（2026-09-11）：`136eb75f` 已通过全部 24 项本地
+发布门禁（含完整 race 和 721 项生产脚本测试）、镜像 CI `34590401325`
+及后端 CI `34590551289`，实际镜像源码、fork 和阶段观察器核验通过。
+候选索引 `7c763acc`（amd64 `6a9bbc54`）已完成三副本滚动，探针确认覆盖
+升级过程。原 6000 次、100ms 间隔、公共 5s／直连流 30s 和升级后 900s
+完成门限不变。执行器已报告 `availability probe did not complete within 900s`，
+本轮正式执行退出 1，辅助采样退出 0，两者结果独立保留。最后保留的
+4320/6000 进度包含回滚期间继续运行，不是截止时计数，没有完整成功 summary。
+自动回滚后独立核对 StatefulSet UID/spec 与升级前一致，generation 与
+observedGeneration 均为 28，Ready=3，修订恢复 `kubebrain-855b5bfb88`；
+三个实际运行镜像均恢复原 `0ce85e66`，重启数均为 0。
+清理记录确认测试 keys/users/roles/leases 均为 0；另经 API 独立确认探针、
+清理 Pod、所有权 ConfigMap 及三个预拉取 Pod 均不存在，预拉取回执全部
+标记 removed。两个本轮临时恢复工具二进制校验后删除，源码、日志和校验和
+保留，可重新构建。独立恢复证据见同目录 `restored-verification.log` 和
+`restored.j8cLjUrVFGnl/`。完成时限问题及此前间歇性认证失败仍未关闭。
+
+11:29:28—11:30:00 UTC，同实例 `kubebrain-2` 的成功本地 Put 新增 134 次：
+进入后端前平均 17.404ms，后端调用 103.173ms。独立核对的批次样本群也
+新增 134 次，begin/prepare/commit 分别平均 0.904/5.679/78.852ms；
+SDK 写提交明细样本群新增 134 次，prewrite/commit_ts/primary_commit
+分别平均 47.716/1.101/30.000ms。这次计数恰好一致不构成普遍一对一保证，
+SDK 阶段包含在批次 commit 内，不重复相加；两个 follower 未产生本地 Put
+序列，不能用零值替代。两次采样内外的 Pod UID、容器 ID、镜像 ID 和重启数
+保持一致。这支持将后续排查重点放在提交路径，不证明磁盘或网络是根因。
+
+另取 11:39:11—11:39:43 UTC TiKV 服务端窗口，三个 TiKV、PD、KubeBrain 和探针身份及
+就绪状态在窗口前后保持一致。`kb-tikv-0/1/2` 的 Raft Engine write
+独立直方图增量分别为 960/723/1018 次，平均 21.732/21.111/17.950ms；
+Raft 写任务等待分别平均 11.220/7.566/9.326ms。接收事务请求的
+`kb-tikv-0/2` 服务端 prewrite 平均 42.681/35.128ms，commit
+38.543/29.502ms，而 Get 约 0.386/0.414ms。这些是混合服务端样本，
+并非上面的 134 次 Put，也不与其处于同一时间窗口；不能相加或直接相减，
+不能将 Raft Engine write 指标等同于设备 fsync 或据此宣称 Ceph 故障。
+下一步需区分写队列、Raft 持久化和复制等待；未修改 TiKV/PD 或存储配置，
+1PC/async-commit 仍关闭。
+证据：`/root/.local/state/kubebrain/worker-cleanup-release.uXl9OvBK/`，
+`batch-phase-deltas.log`、`sample.2NIFSDMK8yB7`、`sample.0dPZZCMm3xpB`；
+服务端原始指标、身份和差值位于 `tikv-window.qaibg8Wqbqaz/`。
+
 发布回归中的测试生命周期修复（2026-09-11）：`18a4657d` 的完整 race 门禁
 曾在 `TestWatchContextCancellationDoesNotWaitForBlockedRecv` 的原 100ms
 返回检查失败，无数据竞态报告。相同源码单项 race 连续 100 次及另一次完整
@@ -20,7 +60,7 @@ race 连续 100 次通过（7.668 秒），普通全量通过（138.753 秒）�
 证据：`/root/.local/state/kubebrain/test-server-cleanup-*.log`，
 原失败保留在 `batch-observer-release.xcJHEgka/post-backend-race.log`。
 
-写批次阶段观测补充（2026-09-11，尚未部署）：在本地 Put 的后端调用上下文内
+写批次阶段观测补充（2026-09-11，已用于上述当前复验）：在本地 Put 的后端调用上下文内
 增加可选批次观察器，TiKV 适配层记录 begin、prepare 和实际 commit 调用耗时；
 SDK 提供写事务明细时，再记录 prewrite、commit_ts、primary_commit。
 指标前缀为 `write.batch.`，单位秒，标签仅 method=put 和该批次的 success。
@@ -35,7 +75,7 @@ SDK 提供写事务明细时，再记录 prewrite、commit_ts、primary_commit�
 最初测试断言误用指针比较导致失败，修正断言后重新完整运行通过；
 这些测试不证明性能问题已修复，也不替代真实集群采样。
 
-最新正式升级复验失败（2026-09-11 09:42 UTC）：提交 `a264e6ad` 的 Put
+上一轮正式升级复验失败（2026-09-11 09:42 UTC）：提交 `a264e6ad` 的 Put
 阶段指标版本通过全部本地发布回归（含 race、1PC 入口、721 项生产脚本测试）、
 镜像 CI `34580139855` 和后端 CI `34580692142`，实际镜像源码、fork 依赖及
 指标字符串核验通过。候选索引 `af25e8b4`（amd64 `6b402da9`）三副本收敛到
@@ -54,7 +94,7 @@ Prewrite 30.34/38.19 ms、Commit 25.49/30.50 ms（store 2001/2004），
 ResolveLock 在 store 2004 为 27.79 ms；不能直接相加或归属到单次 Put。
 SDK 通用 commit 直方图还统计无写入事务，不能用其 9.89 ms 混合均值替代
 实际写提交成本。下一步可利用单事务提交明细区分准备、提交和时间戳等待，
-但尚未实现或证明根因，不改变 1PC/async-commit 关闭状态。
+当前已补充上述批次观察器，但尚未证明根因，不改变 1PC/async-commit 关闭状态。
 
 最初辅助采集因漏考虑运行环境附加的 `cluster` 标签而退出 1；原始数据和
 失败记录保留，正式验收未被中断。修正只读解析后另取两组样本成功，不重启
