@@ -5,6 +5,24 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+元数据复用候选正式验收（2026-09-11）：将已核验的 `e3184226` 镜像
+`sha256:f0e6a497b32e7d6a010fc482abff417515af4e48ed803f9baae2615d84b55bd1`
+滚动部署至三副本，generation=29、Ready=3。保留 6000 次操作、操作后 100ms
+间隔、公共 5s／直连流 30s、升级完成后 900s 的原门限；仍因未在 900s 内完成
+而失败（执行退出 1）。最终保留的 4380/6000 进度包含回滚期间操作，不是截止
+时计数，也没有完整成功 summary。已回滚原 `0ce85e66` 基线，generation/
+observedGeneration=30、Ready=3。独立比较 StatefulSet spec、三副本实际镜像
+摘要均恢复；本次探针及预拉取 Pod/Job 均不存在，入口清理核验临时键、用户、
+角色、租约均为 0。两个临时编译恢复工具已删除，日志和脚本保留。
+证据：`/root/.local/state/kubebrain/metadata-reuse-release.qepEUPOI/`。
+
+同实例两轮指标增量的 305 次成功 Put：pre-backend 均值 17.346ms、backend
+111.524ms；批次 prepare 5.840ms、commit 83.904ms，其中 SDK prewrite
+51.038ms、primary commit 31.685ms。嵌套阶段不能相加，窗口亦非严格前后
+对照，不能宣称元数据复用已带来性能收益。同窗口 SDK store 2004 的 ResolveLock
+增量为 682 次、均值 36.433ms；该统计包含后台请求，不是 Put 专属，也未证明
+锁解析或 Ceph 是单一根因。未启用 1PC/async commit，未修改 PD/TiKV 或 Ceph。
+
 恢复认证跨成员回归（2026-09-11，仅本地测试）：新增
 `TestRestoredAuthTokensAcrossAllMemberPairs`，将含认证数据的快照恢复为三个
 真实嵌入式 etcd 成员，使用 TLS 和默认 bcrypt 成本。分别向每个成员认证，
@@ -122,7 +140,7 @@ commit，未出现 1PC 提交结果，事务时间戳一致；两键同一 revis
 `backend-module-ci-{contract,entry,vet-test}.log`、`backend-module-vuln-before.log`、
 `backend-module-production-boundary.log`。
 
-TxnApply 元数据校验结果复用（2026-09-11，尚未部署）：兼容模式更新已有
+TxnApply 元数据校验结果复用（2026-09-11，实现阶段记录，当时尚未部署）：兼容模式更新已有
 对象时，复用第一次旧对象校验得到的元数据，不再重复解码内联值或再次
 查询旧格式元数据。保留适配层 Get/条件更新、版本初始化、旧值读取、配额
 校验、CORRUPT 告警和租约迁移；非兼容模式保持原有校验及错误顺序。
@@ -133,7 +151,7 @@ TxnApply 元数据校验结果复用（2026-09-11，尚未部署）：兼容模�
 损坏旧对象和不确定提交测试组合 `-race -count=20` 通过（22.967 秒），
 后端与 etcd 接入层 vet 通过。完整普通回归通过（后端 51.783 秒、etcd
 接入层 135.939 秒）；完整竞态回归也通过（后端 78.260 秒、etcd 接入层
-320.392 秒），尚未部署。
+320.392 秒）。后续部署验收失败并回滚的结果见本页顶部。
 证据：`/root/.local/state/kubebrain/txn-metadata-reuse-{before,focused,errors,vet,full,full-race}.log`。
 此变更没有重新引入下述被否决的普通 Put 快捷路径，不关闭性能验收失败。
 
