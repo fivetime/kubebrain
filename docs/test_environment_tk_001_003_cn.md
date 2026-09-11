@@ -2,6 +2,24 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
+## 最新存储协议 smoke：独立 2PC / 1PC 通过
+
+2026-09-11 使用独立非特权 Pod `kb-protocol-smoke-mccb2vmu`，
+UID `092aa50e-2e87-47fe-a79f-1c34b7672721`，无 API 令牌或宿主机挂载；
+上传的静态测试二进制摘要与本机一致。连接 `kb-pd.kubebrain-dbaas-test.svc:2379`，
+预期及实际 PD 集群 ID 均为 `7683177044639569228`，分别运行精确存储协议 smoke。
+2PC / 1PC 实际成功计数、固定时间戳历史值与当前两键读值均通过，各自清理确认前缀为空。
+已用并清理的前缀（不复用）：
+
+- `kubebrain/protocol-smoke/3cc8888ca014140253924e8ef9244f80/`（2PC）
+- `kubebrain/protocol-smoke/98bccf5e16053290b33a164f2fb64946/`（1PC）
+
+Pod 已按 UID 前置条件删除并独立确认不存在；本机测试二进制在摘要核验后删除，
+源码、摘要、构建信息和日志保留于 `/root/.local/state/kubebrain/real-protocol-smoke.MccB2Vmu/`。
+生产服务未改，仍为下述 generation 22/22、Ready 3 的基线；未重启 PD/TiKV。
+这不是后端见证解析、Raft 故障持久性或性能对比，也不代表严格升级验收通过。
+完整操作约束见 [真实 TiKV 协议 smoke](tikv_protocol_smoke_cn.md)。
+
 ## 最新升级：旧对象读取去重候选超时，基线已恢复
 
 2026-09-11，产品 `ff5dc1a8`、发布 `5fe3d007` 的本地提交前后完整检查、后端 CI

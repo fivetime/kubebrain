@@ -5,6 +5,17 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+真实存储协议 smoke（2026-09-11）：在独立非特权测试 Pod 内，使用本项目 TiKV
+适配器连接已核验的 PD 集群 `7683177044639569228`，2PC 与 1PC 各运行一个独立进程，
+实际成功提交计数分别为 TwoPC=1 和 OnePC=1，AsyncCommit 均为 0；历史快照和当前
+两键读值断言通过。两个全新专用前缀的所有权受保护清理均完成，测试 Pod 按 UID
+删除，本机及 Pod 内辅助二进制已清理；生产服务仍为基线版本、generation 22/22、
+Ready 3，生产 1PC/async commit 未启用。单次首次提交 24.589/140.968 ms 不是受控
+性能对比，不代表 1PC 更快或更慢。此处第二键 `witness` 不是后端持久见证实现。
+运行条件、清理及证据边界见 [真实 TiKV 协议 smoke](tikv_protocol_smoke_cn.md)。
+证据：`/root/.local/state/kubebrain/real-protocol-smoke.MccB2Vmu/`；真实 Raft 故障、
+跨 Region、后端不确定结果解析和 900 秒升级验收仍需独立证明。
+
 协议回退测试补充（2026-09-11）：后端协议集成新增提交途中 mock Region 分裂用例。
 在首次用户 1PC prewrite 已完成分组后分裂 Region，要求真实客户端保留起始时间戳，
 回退到至少两个 Region 的 prewrite 和两阶段 commit，不能出现 1PC 提交时间戳；
