@@ -22,6 +22,7 @@ import (
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
+	"github.com/pingcap/failpoint"
 	"github.com/stretchr/testify/require"
 	tikvconfig "github.com/tikv/client-go/v2/config"
 )
@@ -185,12 +186,22 @@ func TestRealTiKVBackendRetriesUndeliveredOnePC(t *testing.T) {
 	testRealTiKVBackendScenario(t, "retry-undelivered")
 }
 
+func TestRealTiKVBackendNoRPCRetryCommittedOnePC(t *testing.T) {
+	testRealTiKVBackendScenario(t, "no-retry-committed")
+}
+
+func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
+	testRealTiKVBackendScenario(t, "no-retry-undelivered")
+}
+
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
-	require.Contains(t, []string{"committed", "undelivered", "latency", "retry-committed", "retry-undelivered", "split"}, scenario)
+	require.Contains(t, []string{"committed", "undelivered", "latency", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
 	retrying := strings.HasPrefix(scenario, "retry-")
+	noRPCRetry := strings.HasPrefix(scenario, "no-retry-")
 	splitting := scenario == "split"
 	scenario = strings.TrimPrefix(scenario, "retry-")
+	scenario = strings.TrimPrefix(scenario, "no-retry-")
 	beforeDelivery := scenario == "undelivered"
 	pd := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PD")
 	if pd == "" {
@@ -205,6 +216,14 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	mode := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE")
 	if scenario != "latency" {
 		require.Equal(t, "1pc", mode)
+	}
+	if noRPCRetry {
+		require.True(t, protocolFailpointsEnabled, "explicit startup failpoint consent required before creating clients")
+		require.NoError(t, failpoint.Enable("tikvclient/noRetryOnRpcError", "return(true)"))
+		t.Cleanup(func() { require.NoError(t, failpoint.Disable("tikvclient/noRetryOnRpcError")) })
+	} else {
+		_, evalErr := failpoint.Eval("tikvclient/noRetryOnRpcError")
+		require.Error(t, evalErr, "normal cases must not inherit disabled RPC retries")
 	}
 	ks, _, err := protocolBackendScope(prefix)
 	require.NoError(t, err)
@@ -252,8 +271,8 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	defer cancelCommit()
 	client := kv.(*store).getClient()
 	loss := &protocolResponseLoss{Client: client.GetTiKVClient(), cancelAfterLoss: cancelCommit, beforeDelivery: beforeDelivery}
-	if retrying {
-		loss.cancelAfterLoss = nil // exercise the real client's default RPC retry
+	if retrying || noRPCRetry {
+		loss.cancelAfterLoss = nil // keep the caller active across the injected transport error
 	}
 	var latencyClient *protocolLatencyClient
 	var splitClient *protocolRegionSplit
@@ -295,7 +314,11 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	} else {
 		require.ErrorIs(t, err, storage.ErrUncertainResult)
 		require.Nil(t, result)
-		require.ErrorIs(t, commitCtx.Err(), context.Canceled)
+		if noRPCRetry {
+			require.NoError(t, commitCtx.Err(), "plain transport failure must not be replaced by caller cancellation")
+		} else {
+			require.ErrorIs(t, commitCtx.Err(), context.Canceled)
+		}
 	}
 	require.EqualValues(t, 101, revision)
 	stats := loss.snapshot()
@@ -319,6 +342,9 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	}
 	require.NotZero(t, stats.StartTS)
 	require.False(t, stats.Changed)
+	if noRPCRetry {
+		t.Logf("PROTOCOL_BACKEND_NO_RPC_RETRY_CONFIRMED before_delivery=%t context_active=true attempts=%d drops=%d", beforeDelivery, stats.Attempts, stats.Drops)
+	}
 	if beforeDelivery && !retrying {
 		require.Zero(t, stats.CommitTS, "no request was delivered to commit")
 		require.Eventually(t, func() bool { return m.absent.Load() == 1 }, 10*time.Second, 10*time.Millisecond,

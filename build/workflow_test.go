@@ -17,6 +17,7 @@ func TestWorkflowsAreValidYAML(t *testing.T) {
 		"../.github/workflows/image.yml",
 		"../.github/workflows/docker-image.yml",
 		"../.github/workflows/integration.yml",
+		"../.github/workflows/backend-integration.yml",
 	} {
 		t.Run(path, func(t *testing.T) {
 			content, err := os.ReadFile(path)
@@ -36,6 +37,7 @@ func TestWorkflowActionsArePinnedAndCheckoutDropsCredentials(t *testing.T) {
 		"../.github/workflows/image.yml",
 		"../.github/workflows/docker-image.yml",
 		"../.github/workflows/integration.yml",
+		"../.github/workflows/backend-integration.yml",
 	} {
 		t.Run(path, func(t *testing.T) {
 			workflow, err := os.ReadFile(path)
@@ -73,6 +75,52 @@ func TestCIDockerBuildSuppliesRequiredMetadata(t *testing.T) {
 	}
 	require.Equal(t, 2, strings.Count(content, "--build-arg STORAGE="))
 	require.Equal(t, 2, strings.Count(content, "--build-arg KUBEBRAIN_GIT_SHA="))
+}
+
+func TestBackendCIExecutesIsolatedRealProtocolGate(t *testing.T) {
+	data, err := os.ReadFile("../.github/workflows/backend-integration.yml")
+	require.NoError(t, err)
+	var workflow struct {
+		Jobs map[string]struct {
+			If     string `json:"if"`
+			RunsOn string `json:"runs-on"`
+			Steps  []struct {
+				Run             string `json:"run"`
+				ContinueOnError bool   `json:"continue-on-error"`
+			} `json:"steps"`
+		} `json:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &workflow))
+	job, ok := workflow.Jobs["real-protocol"]
+	require.True(t, ok)
+	require.Equal(t, "self-hosted", job.RunsOn)
+	require.Equal(t, "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository", job.If)
+	var commands string
+	for _, step := range job.Steps {
+		require.False(t, step.ContinueOnError)
+		if step.Run != "" {
+			require.True(t, strings.HasPrefix(step.Run, "set -euo pipefail\n"))
+			commands += step.Run
+		}
+	}
+	for _, command := range []string{
+		"go test -race ./build\n",
+		"go vet ./pkg/storage/tikv\n",
+		"bash hack/backend-integration/run-real-local.sh --allow-local-containers\n",
+		"bash hack/backend-integration/run-real-local.sh --allow-local-containers --race\n",
+		"bash hack/backend-integration/run-real-local-interruption-test.sh --allow-local-containers\n",
+	} {
+		require.Contains(t, commands, command)
+	}
+	// Pull exactly the runner's immutable images, through the same local socket.
+	entry, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
+	require.NoError(t, err)
+	images := regexp.MustCompile(`(?m)^(?:pd|tikv)_image=(pingcap/[^\s]+@sha256:[a-f0-9]{64})$`).FindAllStringSubmatch(string(entry), -1)
+	require.Len(t, images, 2)
+	for _, image := range images {
+		require.Contains(t, commands, "docker --host unix:///var/run/docker.sock pull "+image[1]+"\n")
+	}
+	require.NotContains(t, commands, "|| true")
 }
 
 func TestCIScansEveryGoModuleForReachableVulnerabilities(t *testing.T) {

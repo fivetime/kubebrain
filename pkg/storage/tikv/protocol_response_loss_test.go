@@ -55,7 +55,7 @@ func (c *protocolResponseLoss) SendRequest(ctx context.Context, addr string, req
 				c.cancelAfterLoss()
 			}
 			c.mu.Unlock()
-			return nil, errors.New("injected cancellation before 1PC delivery")
+			return nil, errors.New("injected response loss before 1PC delivery")
 		}
 		c.mu.Unlock()
 	}

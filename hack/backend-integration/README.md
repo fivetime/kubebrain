@@ -1,12 +1,19 @@
-# 后端 TiKV 协议集成回归（mock-only）
+# 后端 TiKV 协议集成回归
 
-此独立 Go 模块将真实 KubeBrain TiKV 存储适配器和后端连接到进程内 unistore，
-不接入 Kubernetes、PD 或真实 TiKV，不需要 kubeconfig。
+本目录同时维护根模块的本机真实 PD/TiKV 测试入口，以及尚待替换的独立
+unistore mock Go 模块。两者均不接入 Kubernetes，不需要 kubeconfig。
 
 ## 本机真实协议对照（新增，尚未替代 mock）
 
+`backend-integration.yml` 新增独立 `real-protocol` 门禁：在可信 self-hosted
+Linux amd64 Runner 上拉取入口使用的固定镜像摘要，运行构建契约、vet、
+十例真实协议普通版与 race 版，以及两个启动阶段的中断清理测试。每次入口
+使用全新的临时集群，不能用同一前缀的 `-count` 重复 Region 分裂测试。
+此门禁不替代仍保留的 mock 门禁；本机通过不等同于 Runner 已验收。
+
 ```sh
 bash hack/backend-integration/run-real-local.sh --allow-local-containers
+bash hack/backend-integration/run-real-local.sh --allow-local-containers --race
 ```
 
 此独立入口仅连接本机 `/var/run/docker.sock`，需要 Linux Docker、Go、jq、
@@ -20,7 +27,7 @@ PD/TiKV 容器，不发布宿主端口，以非 root 用户、只读根文件系
 取消，以及后端对已提交/未送达结果的解析与默认重试。每例使用随机前缀和实际集群 ID；
 退出时校验本次资源所有权再清理容器/网络，移除自己的编译二进制，保留
 打印出的 `/tmp/kubebrain-real-protocol.*` 目录中的日志。失败清理会返回失败，
-不能将未知状态视为资源已消失。扩展后的八例全部通过；两个后端默认重试
+不能将未知状态视为资源已消失。扩展后的十例普通运行全部通过；两个后端默认重试
 场景均只重试一次、保持事务时间戳不变、两键只发布一个修订号/Watch 批次，
 下一次写入只递增一个修订号。清理函数的 13 个情形和入口参数拒绝已用
 无 Docker 的替身测试覆盖，`-race -count=10` 通过；包括所有权变化、查询失败、
@@ -42,6 +49,12 @@ bash hack/backend-integration/run-real-local-interruption-test.sh --allow-local-
 验证修复。它不测试 SIGKILL、Docker daemon 崩溃或宿主机失联。
 mock 故障语义的完整替代审核尚未完成，不能据此
 删除 mock 测试或宣称下述测试依赖告警已解决。
+
+新增的禁用重试两例不取消调用上下文，以对照旧 mock 的普通 RPC 错误场景。
+只有显式测试环境变量允许时，测试进程才在 `TestMain` 一次性启用 SDK
+failpoint 支持；每例在创建客户端之前设置 `noRetryOnRpcError`，关闭所有
+客户端后撤销，不在后台工作期间反复写 SDK 的非原子总开关。默认测试不启用
+该开关，普通重试用例检查自己未继承禁用重试状态。此配置不进入产品二进制。
 
 当前安全检查限制：包含测试文件的 `govulncheck -test ./...` 会报告旧 TiDB
 模拟依赖的 [GO-2024-3284](https://pkg.go.dev/vuln/GO-2024-3284)。该问题尚未

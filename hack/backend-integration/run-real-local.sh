@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # A fresh, bounded Linux Docker fixture; accepts no external database endpoints.
 set -euo pipefail
-if [[ $# != 1 || "$1" != --allow-local-containers ]]; then
-  echo 'Usage: bash hack/backend-integration/run-real-local.sh --allow-local-containers' >&2
+if [[ $# -lt 1 || $# -gt 2 || "$1" != --allow-local-containers || ($# == 2 && "$2" != --race) ]]; then
+  echo 'Usage: bash hack/backend-integration/run-real-local.sh --allow-local-containers [--race]' >&2
   exit 2
 fi
+race=()
+if [[ $# == 2 ]]; then race=(-race); fi
 # Preserve the report destination even when a signal trap runs inside a Docker
 # command whose stdout is currently redirected to an ID/evidence file.
 exec {report_fd}>&1
@@ -66,7 +68,7 @@ trap 'exit 143' TERM
 printf 'LOCAL_PROTOCOL_START evidence=%s owner=%s\n' "$evidence" "$owner"
 export GOFLAGS='' GOWORK=off GOTOOLCHAIN=go1.26.8
 cd "$root_dir"
-timeout --signal=TERM --kill-after=10s 300s go test -c -o "$evidence/protocol.test" ./pkg/storage/tikv
+timeout --signal=TERM --kill-after=10s 300s go test "${race[@]}" -c -o "$evidence/protocol.test" ./pkg/storage/tikv
 for image in "$pd_image" "$tikv_image"; do
   docker_local image inspect "$image" >/dev/null # never pull a mutable tag
 done
@@ -107,10 +109,12 @@ cluster_id="$(jq -Rser '[match("\"id\"\\s*:\\s*([0-9]+)"; "g").captures[0].strin
 for test_name in TestRealTiKVProtocolSmoke TestRealTiKVOnePCResponseLoss \
   TestRealTiKVOnePCCancelAfterResponseLoss TestRealTiKVBackendResolvesCancelledOnePC \
   TestRealTiKVBackendResolvesUndeliveredOnePC TestRealTiKVBackendRetriesCommittedOnePC \
-  TestRealTiKVBackendRetriesUndeliveredOnePC TestRealTiKVBackendRegionSplitFallback; do
+  TestRealTiKVBackendRetriesUndeliveredOnePC TestRealTiKVBackendRegionSplitFallback \
+  TestRealTiKVBackendNoRPCRetryCommittedOnePC TestRealTiKVBackendNoRPCRetryUndeliveredOnePC; do
   nonce="$(openssl rand -hex 16)"
   KUBEBRAIN_TIKV_PROTOCOL_PD="$pd_endpoint" KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID="$cluster_id" \
     KUBEBRAIN_TIKV_PROTOCOL_ALLOW_REGION_SPLIT=1 \
+    KUBEBRAIN_TIKV_PROTOCOL_ENABLE_TEST_FAILPOINTS=1 \
     KUBEBRAIN_TIKV_PROTOCOL_PREFIX="kubebrain/protocol-smoke/$nonce/" KUBEBRAIN_TIKV_PROTOCOL_MODE=1pc \
     timeout --signal=TERM --kill-after=10s 130s "$evidence/protocol.test" \
     -test.run="^$test_name$" -test.v -test.count=1 -test.timeout=120s > "$evidence/$test_name.log" 2>&1

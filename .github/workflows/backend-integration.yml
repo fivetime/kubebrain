@@ -23,6 +23,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  real-protocol:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.8'
+          cache-dependency-path: go.sum
+      - name: Validate isolated fixture contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n hack/backend-integration/run-real-local.sh
+          bash -n hack/backend-integration/run-real-local-interruption-test.sh
+          go test -race ./build
+          go vet ./pkg/storage/tikv
+      - name: Fetch pinned local-only server images
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          test -S /var/run/docker.sock
+          timeout --signal=TERM --kill-after=10s 300s docker --host unix:///var/run/docker.sock pull pingcap/pd@sha256:b32c69d8b9cc08cead83649d54c58942c441492b459c4cf190cd8c4747bf85f3
+          timeout --signal=TERM --kill-after=10s 300s docker --host unix:///var/run/docker.sock pull pingcap/tikv@sha256:b88a0400113812aca789f31bfb793b7ce748710372f49ad13e68a59df19bc35e
+      - name: Real protocol outcomes and race checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hack/backend-integration/run-real-local.sh --allow-local-containers
+          bash hack/backend-integration/run-real-local.sh --allow-local-containers --race
+      - name: Verify cleanup after interrupted startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hack/backend-integration/run-real-local-interruption-test.sh --allow-local-containers
+          git diff --exit-code
   onepc:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: self-hosted
