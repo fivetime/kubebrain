@@ -22,17 +22,33 @@ go build -o /absolute/private/tool-directory/storage-sync-probe ./hack/productio
 Run **inside the prepared test-volume environment**, using its mount path:
 
 ```sh
-storage-sync-probe --directory=/test-volume --allow-test-writes --count=256 --block-size=4096 --duration=30s
+storage-sync-probe --directory=/test-volume --allow-test-writes --mode=append --count=256 --block-size=4096 --duration=30s
 ```
 
 Both the explicit directory and write acknowledgement are mandatory. Defaults
-append 1 MiB total; hard limits are 4096 pairs, 64 KiB per block, 64 MiB total,
+append 1 MiB total; hard limits are 4096 pairs, 64 KiB per block, 64 MiB total (including preparation),
 and a soft deadline of at most one minute. Each block contains fresh random data
 to avoid zero-fill compression. Random generation is outside write/sync timers.
-Buffered write and Linux `fdatasync` are measured separately. There is no warm-up
-or preallocation; initial allocation and filesystem metadata work can therefore
-influence observations. JSON contains every successful pair and the nearest-rank
+Buffered write and Linux `fdatasync` are measured separately. Default `append`
+has no warm-up or preallocation; initial allocation and filesystem metadata work
+can therefore influence observations. JSON contains every successful pair and the nearest-rank
 p99 of sync samples. This is **not** a Prometheus interpolated histogram p99.
+
+For a controlled no-file-growth comparison, select `--mode=overwrite` with the
+same count and block size on the same isolated volume. This first writes fresh
+random data over the full file, performs one preparation `fdatasync`, seeks to
+offset zero, then measures fresh writes over those initialized blocks. Default
+overwrite mode writes 1 MiB during preparation and 1 MiB during measurement.
+Preparation bytes/time are reported separately and never included in per-pair
+samples or the sync mean/p99. Preparation consumes the same overall soft deadline
+and 64 MiB write budget; a failed or cancelled preparation produces no measured
+samples. Each invocation still creates its own exclusive private file.
+
+This removes file growth from the measured overwrite operations, not all metadata
+work, caching effects or shared storage contention. It is not TiKV's precise log
+allocation algorithm. For actual comparisons record ordering and repeat both
+modes with a balanced order if permitted; do not attribute an unpaired change
+entirely to allocation or compare different nodes as an allocation experiment.
 
 The deadline and cancellation are checked between operations and after the final
 sync. They cannot interrupt a blocked kernel I/O call: use an externally bounded

@@ -25,6 +25,7 @@ type options struct {
 	count     int
 	blockSize int
 	duration  time.Duration
+	mode      string
 }
 
 type sample struct {
@@ -33,18 +34,24 @@ type sample struct {
 }
 
 type result struct {
-	Scope          string   `json:"scope"`
-	Completed      int      `json:"completed"`
-	Requested      int      `json:"requested"`
-	BlockSize      int      `json:"block_size"`
-	Bytes          int64    `json:"bytes"`
-	SyncMeanMS     float64  `json:"fdatasync_mean_ms"`
-	SyncP99MS      float64  `json:"fdatasync_p99_nearest_rank_ms"`
-	Samples        []sample `json:"samples"`
-	CleanupSuccess bool     `json:"cleanup_success"`
+	Scope            string   `json:"scope"`
+	Mode             string   `json:"mode"`
+	PreparationBytes int64    `json:"preparation_bytes"`
+	PreparationNS    int64    `json:"preparation_ns"`
+	Completed        int      `json:"completed"`
+	Requested        int      `json:"requested"`
+	BlockSize        int      `json:"block_size"`
+	Bytes            int64    `json:"bytes"`
+	SyncMeanMS       float64  `json:"fdatasync_mean_ms"`
+	SyncP99MS        float64  `json:"fdatasync_p99_nearest_rank_ms"`
+	Samples          []sample `json:"samples"`
+	CleanupSuccess   bool     `json:"cleanup_success"`
 }
 
 func (o options) validate() error {
+	if o.mode != "append" && o.mode != "overwrite" {
+		return errors.New("mode must be append or overwrite")
+	}
 	if !o.allow || !filepath.IsAbs(o.directory) || filepath.Clean(o.directory) == "/" {
 		return errors.New("require --allow-test-writes and an absolute dedicated test-volume directory (not /)")
 	}
@@ -54,11 +61,15 @@ func (o options) validate() error {
 	if o.duration <= 0 || o.duration > time.Minute {
 		return errors.New("duration must be positive and at most 1m")
 	}
+	if o.mode == "overwrite" && int64(o.count)*int64(o.blockSize)*2 > 64<<20 {
+		return errors.New("overwrite preparation plus measurement must total <=64MiB")
+	}
 	return nil
 }
 
 func run(ctx context.Context, o options, syncFile func(*os.File) error) (r result, err error) {
 	r.Scope, r.Requested, r.BlockSize = "diagnostic_only_not_durability_or_acceptance", o.count, o.blockSize
+	r.Mode = o.mode
 	if err = o.validate(); err != nil {
 		return r, err
 	}
@@ -94,6 +105,17 @@ func run(ctx context.Context, o options, syncFile func(*os.File) error) (r resul
 	ctx, cancel := context.WithTimeout(ctx, o.duration)
 	defer cancel()
 	buffer := make([]byte, o.blockSize)
+	if o.mode == "overwrite" {
+		// Initialize and synchronize a full, non-sparse file before seeking back
+		// to offset zero. Preparation belongs to the same deadline/write budget,
+		// but never to the measured per-operation histogram population.
+		start := time.Now()
+		r.PreparationBytes, err = prepareOverwrite(ctx, f, buffer, o.count, syncFile)
+		r.PreparationNS = time.Since(start).Nanoseconds()
+		if err != nil {
+			return r, err
+		}
+	}
 	for range o.count {
 		if err = ctx.Err(); err != nil {
 			break
@@ -140,12 +162,43 @@ func run(ctx context.Context, o options, syncFile func(*os.File) error) (r resul
 	return r, err
 }
 
+func prepareOverwrite(ctx context.Context, f *os.File, buffer []byte, count int, syncFile func(*os.File) error) (written int64, err error) {
+	for range count {
+		if err = ctx.Err(); err != nil {
+			return written, err
+		}
+		if _, err = rand.Read(buffer); err != nil {
+			return written, err
+		}
+		n, writeErr := f.Write(buffer)
+		written += int64(n)
+		if writeErr != nil {
+			return written, writeErr
+		}
+		if n != len(buffer) {
+			return written, io.ErrShortWrite
+		}
+	}
+	if err = ctx.Err(); err != nil {
+		return written, err
+	}
+	if err = syncFile(f); err != nil {
+		return written, err
+	}
+	if err = ctx.Err(); err != nil {
+		return written, err
+	}
+	_, err = f.Seek(0, io.SeekStart)
+	return written, err
+}
+
 func main() {
 	var o options
 	flag.StringVar(&o.directory, "directory", "", "dedicated test-volume directory; never a database data directory")
 	flag.BoolVar(&o.allow, "allow-test-writes", false, "explicitly allow bounded writes to this test volume")
+	flag.StringVar(&o.mode, "mode", "append", "append to a new file, or overwrite a fully initialized and synced file")
 	flag.IntVar(&o.count, "count", 256, "number of write+fdatasync pairs")
-	flag.IntVar(&o.blockSize, "block-size", 4096, "bytes appended per pair")
+	flag.IntVar(&o.blockSize, "block-size", 4096, "bytes written per measured pair")
 	flag.DurationVar(&o.duration, "duration", 30*time.Second, "soft deadline; cannot interrupt a kernel I/O call")
 	flag.Parse()
 	if flag.NArg() != 0 {
