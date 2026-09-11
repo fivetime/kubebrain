@@ -5,7 +5,7 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-事务内 revision 预取合并（待发布）：把持久化 revision 分配器的读取与已知
+事务内 revision 预取合并（已发布，未部署）：把持久化 revision 分配器的读取与已知
 提交检查键放到同一事务快照预取，后续 Get、revision 边界检查、CAS 及冲突
 保护写入仍执行；不支持预取的存储保留原路径。预取失败不分配 revision，
 新增测试覆盖缺失、已有、损坏、耗尽及失败边界。真实单 Region、2PC、带配额
@@ -17,6 +17,16 @@ Commit=20 不变；修正的是一次读取 RPC，不是减少两阶段提交或
 `/root/.local/state/kubebrain/allocator-prefetch-`。尚未部署，不宣称正式性能收益。
 其前置计数基线 `631fecff` 的协议 CI `34653805839` 已核验普通/race 各十二例
 通过、清理成功、两阶段中断退出 143 且资源不存在；该 CI 不包含本次优化。
+
+优化提交 `2352b9bf` 的协议 CI `34654692308` 随后通过，普通／race 各十二例、
+清理和两阶段中断检查通过；镜像 CI `34654692368` 也已成功。独立核验发布
+索引与平台摘要、dbaas 标签指向、实际 amd64 二进制提交号与 Go 版本、非 root
+配置、固定 fork 依赖及写入／认证诊断字段。发布索引为
+`sha256:8e0ef7ea9d8b7710e7d8dc9750be985febdfc74a89f5f4ea46c8ac93de2d6710`。
+核验进程退出 0，临时容器和提取的两个二进制均已删除并独立确认不存在；
+证据在 `/root/.local/state/kubebrain/allocator-prefetch-release.ufJgJZZz/`。
+同期只读确认集群仍为原 `0ce85e66` 基线，generation／observedGeneration=32、
+Ready=3。新镜像尚未部署，原 6000 次／900 秒升级验收与认证根因问题仍未关闭。
 
 后端资源只读诊断（2026-09-11，非正式负载窗口）：三个 TiKV Pod 均 Ready、
 重启次数为 0，实际容器 CPU 配额为 8 核，自身 cgroup 的 nr_throttled 与
