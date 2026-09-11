@@ -5,6 +5,34 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+真实协议本机对照（2026-09-11，入口尚在完善）：固定摘要的 PD/TiKV 8.5.3
+在独立 Docker 内部网络、单副本及临时内存盘中运行，无宿主端口、无 Kubernetes/
+Ceph 接入。根模块的七个真实适配器/后端测试全部执行通过：包含 1PC 提交、
+丢成功响应后的默认重试和取消、后端对已提交/未送达结果的解析，以及新增
+的后端默认重试两场景。两场景均恰好 2 次请求、1 次丢失，事务起始和提交
+时间戳不变；返回 revision=101，两键同一 Watch 批次，下一次写入 revision=102，
+未进入不确定结果解析。它验证的是调用方默认重试，不是生产环境启用 1PC。
+每例前缀已清理，独立核对本次容器/网络不存在，测试二进制移除，日志保留于
+`/tmp/kubebrain-real-protocol.SXH6pPIM3n`；编排记录为
+`/root/.local/state/kubebrain/real-local-backend-retry-run.log`。
+清理异常与参数拒绝契约新增 13 个清理情形及 4 个拒绝场景，重复竞态检查
+10 次通过（4.139 秒）；旧实现的日志失败路径会遗漏空网络，修复后仍保持
+失败退出、同时清理安全可删资源。七个真实测试再次通过，独立检查资源及
+编译二进制均已移除，证据目录 `/tmp/kubebrain-real-protocol.gVVIff00d7`。
+随后第八项真实 Region 分裂用例通过（0.08 秒）：首次 1PC prewrite 前实际
+分裂，收到 1 次 epoch 错误，在 2 个 Region 成功 prewrite，观察到两阶段
+commit，未出现 1PC 提交结果，事务时间戳一致；两键同一 revision=101/Watch
+批次，下一次写入 102。记录于 `/tmp/kubebrain-real-protocol.9bcJbbSISw`，
+该次八例全通过，独立核对容器/网络及二进制均已清理。分裂只在本机一次性
+集群进行，没有修改 Kubernetes 测试集群 Region。
+启动中断补验：PD 创建后、TiKV 创建后分别发送 SIGTERM，均返回 143 且独立
+检查资源/二进制已移除。首次失败定位到清理标记被当时的命令重定向写入 ID
+文件（资源实际已清理），修复为独立输出描述符后，两阶段实测与重定向回归
+通过。证据：`/root/.local/state/kubebrain/real-local-interruption-{run,after}.log`、
+`/tmp/kubebrain-protocol-interruption.obDLC6dvTn`。这不覆盖 SIGKILL 或宿主故障。
+旧 mock 故障语义的完整替代审核仍待补齐；旧 SQL 模拟依赖未移除，
+漏洞告警未关闭。单副本/内存盘结果不替代真实集群持久性、延迟或升级验收。
+
 发布与全量回归补查（2026-09-11）：提交 `cc88957a` 的镜像 CI
 `34604917676`、协议集成 CI `34604917691` 均成功；镜像索引为
 `sha256:d0d8cd6f2cc6ea2a01496257c56d18bda72ddbf37796a49a65fe51866e5b17f4`，

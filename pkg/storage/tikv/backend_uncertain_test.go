@@ -177,13 +177,27 @@ func TestRealTiKVBackendResolvesUndeliveredOnePC(t *testing.T) {
 	testRealTiKVBackendScenario(t, "undelivered")
 }
 
+func TestRealTiKVBackendRetriesCommittedOnePC(t *testing.T) {
+	testRealTiKVBackendScenario(t, "retry-committed")
+}
+
+func TestRealTiKVBackendRetriesUndeliveredOnePC(t *testing.T) {
+	testRealTiKVBackendScenario(t, "retry-undelivered")
+}
+
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
-	require.Contains(t, []string{"committed", "undelivered", "latency"}, scenario)
+	require.Contains(t, []string{"committed", "undelivered", "latency", "retry-committed", "retry-undelivered", "split"}, scenario)
+	retrying := strings.HasPrefix(scenario, "retry-")
+	splitting := scenario == "split"
+	scenario = strings.TrimPrefix(scenario, "retry-")
 	beforeDelivery := scenario == "undelivered"
 	pd := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PD")
 	if pd == "" {
 		t.Skip("explicit protocol PD endpoint required")
+	}
+	if splitting {
+		require.Equal(t, "1", os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_ALLOW_REGION_SPLIT"), "Region split requires explicit disposable-cluster consent")
 	}
 	prefix := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PREFIX")
 	expected, err := validateProtocolSmokeScope(os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID"), prefix, os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE"))
@@ -238,12 +252,22 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	defer cancelCommit()
 	client := kv.(*store).getClient()
 	loss := &protocolResponseLoss{Client: client.GetTiKVClient(), cancelAfterLoss: cancelCommit, beforeDelivery: beforeDelivery}
+	if retrying {
+		loss.cancelAfterLoss = nil // exercise the real client's default RPC retry
+	}
 	var latencyClient *protocolLatencyClient
+	var splitClient *protocolRegionSplit
 	var quota int64
 	if scenario == "latency" {
 		latencyClient = &protocolLatencyClient{Client: client.GetTiKVClient()}
 		client.SetTiKVClient(latencyClient)
 		quota = 2 << 30
+	} else if splitting {
+		splitClient = &protocolRegionSplit{Client: client.GetTiKVClient()}
+		splitClient.split = func(splitCtx context.Context, key []byte) ([]uint64, error) {
+			return client.SplitRegions(splitCtx, [][]byte{key}, false, nil)
+		}
+		client.SetTiKVClient(splitClient)
 	} else {
 		client.SetTiKVClient(loss)
 	}
@@ -264,16 +288,38 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	result, revision, err := b.TxnApply(commitCtx, []backend.TxnWriteOp{
 		{Key: left, Value: []byte("left-value")}, {Key: right, Value: []byte("right-value")},
 	}, nil)
-	require.ErrorIs(t, err, storage.ErrUncertainResult)
-	require.Nil(t, result)
+	if retrying || splitting {
+		require.NoError(t, err, "real server must confirm the retried single transaction")
+		require.Len(t, result, 2)
+		require.NoError(t, commitCtx.Err())
+	} else {
+		require.ErrorIs(t, err, storage.ErrUncertainResult)
+		require.Nil(t, result)
+		require.ErrorIs(t, commitCtx.Err(), context.Canceled)
+	}
 	require.EqualValues(t, 101, revision)
-	require.ErrorIs(t, commitCtx.Err(), context.Canceled)
 	stats := loss.snapshot()
-	require.Equal(t, 1, stats.Drops)
-	require.Equal(t, 1, stats.Attempts)
+	if splitting {
+		splitStats := splitClient.snapshot()
+		require.Equal(t, 1, splitStats.Splits)
+		require.Positive(t, splitStats.EpochErrors, "must exercise a real stale-epoch response")
+		require.GreaterOrEqual(t, splitStats.Regions, 2, "must prewrite successfully in multiple Regions")
+		require.Positive(t, splitStats.Commits, "must execute two-phase commit")
+		require.False(t, splitStats.OnePCCommitted)
+		require.False(t, splitStats.Changed)
+		stats = protocolLossStats{Attempts: splitStats.Attempts, StartTS: splitStats.StartTS, CommitTS: splitStats.CommitTS}
+		t.Logf("PROTOCOL_REAL_SPLIT_CONFIRMED splits=%d epoch_errors=%d regions=%d commits=%d", splitStats.Splits, splitStats.EpochErrors, splitStats.Regions, splitStats.Commits)
+	} else {
+		require.Equal(t, 1, stats.Drops)
+		if retrying {
+			require.Equal(t, 2, stats.Attempts, "one injected loss must cause exactly one RPC retry")
+		} else {
+			require.Equal(t, 1, stats.Attempts)
+		}
+	}
 	require.NotZero(t, stats.StartTS)
 	require.False(t, stats.Changed)
-	if beforeDelivery {
+	if beforeDelivery && !retrying {
 		require.Zero(t, stats.CommitTS, "no request was delivered to commit")
 		require.Eventually(t, func() bool { return m.absent.Load() == 1 }, 10*time.Second, 10*time.Millisecond,
 			"real backend must establish that the candidate did not commit")
@@ -300,9 +346,13 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		return
 	}
 	require.Greater(t, stats.CommitTS, stats.StartTS)
+	var resolvedCommitted int32 = 1
+	if retrying || splitting {
+		resolvedCommitted = 0 // acknowledged RPC retry must not enter uncertain resolution
+	}
 	require.Eventually(t, func() bool {
-		return m.committed.Load() == 1 && b.GetCurrentRevision() == revision
-	}, 10*time.Second, 10*time.Millisecond, "real durable witness resolution must publish revision")
+		return m.committed.Load() == resolvedCommitted && b.GetCurrentRevision() == revision
+	}, 10*time.Second, 10*time.Millisecond, "committed transaction must publish its revision")
 	require.Zero(t, m.absent.Load())
 	events := protocolNextMutation(t, ctx, watch)
 	require.Len(t, events, 2)
@@ -330,9 +380,15 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	require.Equal(t, nextRevision, next[0].Revision)
 	require.Equal(t, left, next[0].Kv.Key)
 	require.Equal(t, []byte("next"), backend.StripInlineValue(next[0].Kv.Value))
-	require.EqualValues(t, 1, m.committed.Load())
+	require.Equal(t, resolvedCommitted, m.committed.Load())
 	require.Zero(t, m.absent.Load())
-	t.Logf("PROTOCOL_BACKEND_RESOLVED committed=1 absent=0 revision=%d next=%d attempts=%d drops=%d start_ts=%d commit_ts=%d", revision, nextRevision, stats.Attempts, stats.Drops, stats.StartTS, stats.CommitTS)
+	if splitting {
+		t.Logf("PROTOCOL_BACKEND_SPLIT_ATOMICITY_CONFIRMED revision=%d next=%d attempts=%d start_ts=%d commit_ts=%d", revision, nextRevision, stats.Attempts, stats.StartTS, stats.CommitTS)
+	} else if retrying {
+		t.Logf("PROTOCOL_BACKEND_RETRY_CONFIRMED before_delivery=%t resolver_committed=0 resolver_absent=0 revision=%d next=%d attempts=%d drops=%d start_ts=%d commit_ts=%d", beforeDelivery, revision, nextRevision, stats.Attempts, stats.Drops, stats.StartTS, stats.CommitTS)
+	} else {
+		t.Logf("PROTOCOL_BACKEND_RESOLVED committed=1 absent=0 revision=%d next=%d attempts=%d drops=%d start_ts=%d commit_ts=%d", revision, nextRevision, stats.Attempts, stats.Drops, stats.StartTS, stats.CommitTS)
+	}
 }
 
 func TestProtocolBackendCleanupOwnership(t *testing.T) {

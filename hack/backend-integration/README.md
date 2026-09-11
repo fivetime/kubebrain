@@ -3,6 +3,46 @@
 此独立 Go 模块将真实 KubeBrain TiKV 存储适配器和后端连接到进程内 unistore，
 不接入 Kubernetes、PD 或真实 TiKV，不需要 kubeconfig。
 
+## 本机真实协议对照（新增，尚未替代 mock）
+
+```sh
+bash hack/backend-integration/run-real-local.sh --allow-local-containers
+```
+
+此独立入口仅连接本机 `/var/run/docker.sock`，需要 Linux Docker、Go、jq、
+curl、openssl 和 timeout。预先准备脚本中固定摘要的 PD/TiKV 8.5.3 amd64
+镜像；入口不自动拉取、不接受外部 PD 地址。它创建一个内部网络及各一个
+PD/TiKV 容器，不发布宿主端口，以非 root 用户、只读根文件系统、受限 CPU/
+内存和临时内存盘运行；`local-*.toml` 只用于此单副本临时环境，不能部署到
+共享集群。单副本、内存盘测试不证明 Raft 多副本持久性或磁盘性能。
+
+入口编译根模块的真实存储测试，分别运行 1PC、丢响应后默认重试、丢响应后
+取消，以及后端对已提交/未送达结果的解析与默认重试。每例使用随机前缀和实际集群 ID；
+退出时校验本次资源所有权再清理容器/网络，移除自己的编译二进制，保留
+打印出的 `/tmp/kubebrain-real-protocol.*` 目录中的日志。失败清理会返回失败，
+不能将未知状态视为资源已消失。扩展后的八例全部通过；两个后端默认重试
+场景均只重试一次、保持事务时间戳不变、两键只发布一个修订号/Watch 批次，
+下一次写入只递增一个修订号。清理函数的 13 个情形和入口参数拒绝已用
+无 Docker 的替身测试覆盖，`-race -count=10` 通过；包括所有权变化、查询失败、
+资源仍存在、删除失败、日志导出失败、缺失网络状态及符号链接保护。日志失败
+仍导致失败退出，但不妨碍删除独立确认归本次所有且为空的网络。
+真实 Region 分裂用例在已分组的首次 1PC prewrite 发送前调用 SplitRegions，
+要求实际 epoch 错误、多 Region prewrite、两阶段 commit 及相同事务/Watch
+语义；额外的 `KUBEBRAIN_TIKV_PROTOCOL_ALLOW_REGION_SPLIT=1` 仅由隔离入口设置。
+不要对共享集群运行此用例，删除测试键不会恢复 Region 边界。
+启动中断可单独验证（同样需要预先准备固定镜像）：
+
+```sh
+bash hack/backend-integration/run-real-local-interruption-test.sh --allow-local-containers
+```
+
+该测试在本次 PD/TiKV 创建后分别向自己的入口进程发送 SIGTERM，检查退出码
+143、资源实际不存在及编译二进制移除。两阶段实测通过。曾发现信号处理期间
+清理标记被重定向进资源 ID 文件，现保留独立输出描述符，并用替身和真实中断
+验证修复。它不测试 SIGKILL、Docker daemon 崩溃或宿主机失联。
+mock 故障语义的完整替代审核尚未完成，不能据此
+删除 mock 测试或宣称下述测试依赖告警已解决。
+
 当前安全检查限制：包含测试文件的 `govulncheck -test ./...` 会报告旧 TiDB
 模拟依赖的 [GO-2024-3284](https://pkg.go.dev/vuln/GO-2024-3284)。该问题尚未
 完成处理，不因它是测试模块就忽略，也不能省略 `-test` 得到空扫描结果。

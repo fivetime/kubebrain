@@ -1,0 +1,3 @@
+# Isolated local protocol fixture only; never use on a shared cluster.
+[replication]
+max-replicas = 1

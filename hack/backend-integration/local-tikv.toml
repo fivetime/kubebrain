@@ -1,0 +1,9 @@
+# Isolated local protocol fixture only. Data lives on container tmpfs.
+[storage]
+reserve-space = "0MB"
+[storage.block-cache]
+capacity = "128MB"
+[rocksdb]
+max-background-jobs = 2
+[raftdb]
+max-background-jobs = 2
