@@ -764,6 +764,7 @@ func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.C
 	}
 
 	clients := make(map[string]*clientv3.Client, len(expected.users))
+	traces := make(map[string]*restoredAuthRPCTrace, len(expected.users))
 	defer func() {
 		for name, authenticated := range clients {
 			if closeErr := authenticated.Close(); closeErr != nil {
@@ -785,11 +786,13 @@ func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.C
 		cfg.Username = user.name
 		cfg.Password = user.password
 		cfg.Logger = zap.NewNop()
-		authenticated, clientErr := clientv3.New(cfg)
+		trace := &restoredAuthRPCTrace{}
+		authenticated, clientErr := clientv3.New(trace.config(cfg))
 		if clientErr != nil {
 			return fmt.Errorf("authenticate restored user %q: %w", user.name, clientErr)
 		}
 		clients[user.name] = authenticated
+		traces[user.name] = trace
 	}
 	barrier := func(barrierCtx context.Context, key, value string, leaseID clientv3.LeaseID, revision int64) error {
 		return waitForRestoredAuthLeaseReplication(barrierCtx, adminConfig, key, value, leaseID, revision)
@@ -800,7 +803,7 @@ func verifyRestoredSnapshotAuthWithAdmin(ctx context.Context, client *clientv3.C
 			return fmt.Errorf("invalid restored auth access expectation at %d", index)
 		}
 		if err := verifyRestoredAuthAccess(ctx, authenticated, access, index, barrier); err != nil {
-			return err
+			return fmt.Errorf("%w (auth_rpc_trace=%s)", err, traces[access.username].summary())
 		}
 	}
 	if verifyAdmin != nil {
