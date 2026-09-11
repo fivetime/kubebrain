@@ -1622,7 +1622,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 
 		directRemaining := time.Until(started.Add(cfg.maxDirectLatency))
-		progress.public += watchReceived.Sub(started)
+		progress.recordPublic(putLatency, watchResumeLatency)
 		directWaitStarted := time.Now()
 		if directRemaining <= 0 {
 			return fmt.Errorf("iteration=%d direct watch recovery exceeded %s", i, cfg.maxDirectLatency)

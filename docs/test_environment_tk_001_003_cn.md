@@ -2,6 +2,39 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
+## 最新基线端到端观测（非滚动升级）
+
+2026-09-11，规范 `run-kubebrain-rollout-availability.sh` 以 `OBSERVE_ONLY=true`、
+300 次操作、100 ms 间隔运行，public/direct 门限保持 5s/30s、完成窗口保持 900s。
+未设置 TARGET_IMAGE，不滚动、不切换协议。探针与服务均为现有不可变镜像 `0ce85e66`。
+Pod `kb-e2e-observe-9rw2jxvi`，UID `7d60ad37-7f0f-4971-8cff-4557c73e1b3a`。
+命令退出 0；公共 watch=300、三个直连 watch 各 300，lease 存活（公共 48、直连 132
+次响应，无重启），Range=70、Snapshot=1，无 stream 重试。
+
+最后一条计数循环内进度（`final=false completed=300`）如下：
+
+| 阶段 | 累计耗时 | 每次平均 |
+| --- | --- | --- |
+| PD/TiKV 健康检查等前置工作 | 1.829 s | 6.10 ms |
+| 公共写入开始至公共 watch 接收 | 51.783 s | 172.61 ms |
+| 公共 watch 之后额外等待直连结果 | 0.621 s | 2.07 ms |
+| 固定间隔（含调度偏差） | 30.164 s | 100.55 ms |
+
+循环总计 84.405 s；上述阶段之外约 8 ms 为其他工作和取整差异。随后 `final=true`
+记录为 86.042 s，包含循环后的检查，不应把多出的 1.637 s 归入单次写入延迟。
+public 最大延迟 962 ms、Put 确认最大 941 ms、Put 后 watch 最大等待 257 ms；
+这些最大值不能替代各阶段均值。主要非固定等待在公共路径，但当前镜像未细分其均值。
+下一版已加入 `put_resolve_ms`、`watch_after_put_ms`，本次实际结果不能回填新字段。
+
+canonical cleanup 确认 keys/users/roles/leases=0。独立检查确认探针、清理 Pod 和 owner
+ConfigMap 均不存在；StatefulSet UID、spec、generation=22、revision=`kubebrain-855b5bfb88`、
+Ready=3 前后完全一致，三个服务 Pod 的 UID/containerID/imageID/restartCount/Ready 也一致。
+已用前缀 `/kubebrain-rollout-availability/kb-e2e-observe-9rw2jxvi/` 不复用。
+完整日志、前后身份、私有环境包装脚本及摘要：
+`/root/.local/state/kubebrain/e2e-observe.9rW2jxvi/`。没有额外保留编译二进制。
+这是当前基线短时诊断，不代表原 6000 次升级通过；不能直接与 `cab503a8` 后端内部
+固定 256 字节工作负载做减法来推断认证/代理开销。
+
 ## 最新受控后端延迟测量
 
 2026-09-11，非特权 Pod `kb-latency-dnifb5m6`，UID

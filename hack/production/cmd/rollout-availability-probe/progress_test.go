@@ -29,12 +29,14 @@ func TestProbeProgressBoundedAndDiagnosticOnly(t *testing.T) {
 	}
 	start := time.Unix(0, 0).UTC()
 	p := newProbeProgress(start, 6000)
-	p.completed, p.backend, p.public, p.direct, p.pacing = 17, 10*time.Millisecond, 20*time.Millisecond, 30*time.Millisecond, 40*time.Millisecond
+	p.completed, p.backend, p.direct, p.pacing = 17, 10*time.Millisecond, 30*time.Millisecond, 40*time.Millisecond
+	p.recordPublic(3*time.Millisecond, 7*time.Millisecond)
+	p.recordPublic(4*time.Millisecond, 6*time.Millisecond)
 	var output bytes.Buffer
 	if err := p.write(&output, start.Add(time.Second), true); err != nil {
 		t.Fatal(err)
 	}
-	want := "PROBE_PROGRESS at=1970-01-01T00:00:01Z completed=17 total=6000 elapsed_ms=1000 backend_ms=10 public_ms=20 direct_wait_ms=30 pacing_ms=40 final=true scope=diagnostic_only\n"
+	want := "PROBE_PROGRESS at=1970-01-01T00:00:01Z completed=17 total=6000 elapsed_ms=1000 backend_ms=10 public_ms=20 put_resolve_ms=7 watch_after_put_ms=13 direct_wait_ms=30 pacing_ms=40 final=true scope=diagnostic_only\n"
 	if output.String() != want {
 		t.Fatalf("unexpected partial-run diagnostics: %q", output.String())
 	}
