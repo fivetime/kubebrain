@@ -85,8 +85,11 @@ func TestCIScansEveryGoModuleForReachableVulnerabilities(t *testing.T) {
 	for _, moduleDir := range moduleDirs {
 		require.Contains(t, content, "cd "+moduleDir+" &&", moduleDir)
 	}
+	// This module contains only tests; a source-only scan would skip its mock
+	// server and dependencies while still appearing to cover the module.
+	require.Contains(t, content, "(cd hack/backend-integration && \\\n            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -test ./...)")
 	require.Equal(t, len(moduleDirs)+1, strings.Count(content,
-		"go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./..."))
+		"go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 "))
 }
 
 func TestCICompilesAndTestsEveryNestedGoModule(t *testing.T) {
@@ -96,6 +99,17 @@ func TestCICompilesAndTestsEveryNestedGoModule(t *testing.T) {
 	moduleDirs := nestedGoModuleDirs(t)
 
 	for _, moduleDir := range moduleDirs {
+		if moduleDir == "hack/backend-integration" {
+			// The checked entry compiles and runs the actual test binary with a
+			// private compatibility patch, never editing the shared module cache.
+			require.Contains(t, content, "bash hack/backend-integration/run-onepc.sh --count 10")
+			require.Contains(t, content, "bash hack/backend-integration/run-onepc.sh --race --count 3")
+			entry, err := os.ReadFile("../hack/backend-integration/run-onepc.sh")
+			require.NoError(t, err)
+			require.Contains(t, string(entry), `go vet -mod=readonly -modfile="$scratch/go.mod" ./...`)
+			require.Contains(t, string(entry), `go test -mod=readonly -modfile="$scratch/go.mod"`)
+			continue
+		}
 		if moduleDir == "hack/etcd-client-compat" {
 			require.Contains(t, content, "working-directory: hack/etcd-client-compat")
 			continue

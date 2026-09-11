@@ -81,6 +81,11 @@ jobs:
               go vet ./... && go test ./...)
           done
 
+      - name: Validate isolated backend protocol tests
+        run: |
+          bash hack/backend-integration/run-onepc.sh --count 10
+          bash hack/backend-integration/run-onepc.sh --race --count 3
+
       - name: Scan reachable Go vulnerabilities
         run: |
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
@@ -94,6 +99,8 @@ jobs:
             go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
           (cd hack/scale-lab/loadgen && \
             go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
+          (cd hack/backend-integration && \
+            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -test ./...)
 
       - name: Run static analysis
         run: |

@@ -3,12 +3,19 @@
 此独立 Go 模块将真实 KubeBrain TiKV 存储适配器和后端连接到进程内 unistore，
 不接入 Kubernetes、PD 或真实 TiKV，不需要 kubeconfig。
 
+当前安全检查限制：包含测试文件的 `govulncheck -test ./...` 会报告旧 TiDB
+模拟依赖的 [GO-2024-3284](https://pkg.go.dev/vuln/GO-2024-3284)。该问题尚未
+完成处理，不因它是测试模块就忽略，也不能省略 `-test` 得到空扫描结果。
+数据面构建不包含此 TiDB 依赖；详见仓库的
+[验收记录](../../docs/dbaas_acceptance_status_cn.md)。
+
 ```sh
 bash hack/backend-integration/run-onepc.sh --count 10
 bash hack/backend-integration/run-onepc.sh --race --count 3
 ```
 
-入口固定 Go 1.26.8、只读模块解析、测试范围和 180 秒测试超时，只接受上面的选项
+入口固定 Go 1.26.8、只读模块解析、测试范围和 180 秒测试超时；先用同一临时
+modfile 执行完整 vet，再编译并运行测试。只接受上面的选项
 及 `--help`，次数范围为 1–100。环境需要 Bash、Go、jq、patch 和 GNU coreutils/find。
 不传递任意测试参数，不读取真实集群端点。测试中的 1PC 开关仅作用于测试进程，
 清理时恢复；产品配置没有改变。每种故障都分别测试禁用 RPC 重试和默认重试，

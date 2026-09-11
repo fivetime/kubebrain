@@ -28,6 +28,11 @@ func TestDataplaneProductionBuildsExcludeForeignStorageAndRaftImplementations(t 
 			out, err := exec.Command("go", "list", "-tags", buildTag, "-deps", ".").CombinedOutput()
 			require.NoError(t, err, string(out))
 			dependencies := strings.Split(string(out), "\n")
+			for _, dependency := range dependencies {
+				require.False(t, dependency == "github.com/pingcap/tidb" ||
+					strings.HasPrefix(dependency, "github.com/pingcap/tidb/"),
+					"TiDB's test-only mock/SQL implementation must not enter the dataplane: %s", dependency)
+			}
 			for dependency, reason := range map[string]string{
 				"go.etcd.io/etcd/server/v3/storage/backend":         "upstream bbolt registers colliding process-global etcd metrics",
 				"go.etcd.io/etcd/server/v3/etcdserver/api/rafthttp": "KubeBrain uses TiKV/PD and must not expose an upstream Raft transport",

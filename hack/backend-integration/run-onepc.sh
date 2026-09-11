@@ -82,5 +82,6 @@ cp "$module_dir/go.sum" "$scratch/go.sum"
 go mod edit -modfile="$scratch/go.mod" \
   -replace="github.com/kubewharf/kubebrain=$root_dir" \
   -replace="github.com/pingcap/tidb=$scratch/tidb"
+go vet -mod=readonly -modfile="$scratch/go.mod" ./...
 go test -mod=readonly -modfile="$scratch/go.mod" "${race[@]}" . \
   -run '^TestBackendResolvesActualOnePC' "-count=$count" -timeout=180s
