@@ -5,6 +5,16 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+真实后端未提交分支（2026-09-11）：仅测试客户端在标记的 1PC prewrite 送达前中断
+并取消调用者，实际适配器返回不确定结果、候选修订号 101。真实后端解析为
+not_committed=1、committed=0；可见修订号保持 100、双键不存在。下一次成功 CREATE
+复用 101 且为第一个 watch 变更，未出现被中断事务的事件或修订号空洞。
+实际 attempts=1、drops=1、start TS=`468999762448220169`、commit TS=0。
+同一构建另用新前缀复验已提交分支通过：committed=1、next=102；两组清理均通过。
+这补齐受控调用者取消下的真实后端两种解析结果，不是网络分区、进程重启、跨 Region
+或 Raft 故障证明；生产 1PC 仍关闭，900 秒升级失败仍待解决。
+证据：`/root/.local/state/kubebrain/real-backend-absent.Ejf6ofNf/`。
+
 真实后端持久见证解析（2026-09-11）：进程内 KubeBrain 后端连接真实 TiKV，
 用户双键事务收到成功提交响应后丢弃并取消调用者，实际返回 `ErrUncertainResult`。
 后台见证解析 committed=1、not_committed=0；双键 CREATE/读取均为修订号 101，

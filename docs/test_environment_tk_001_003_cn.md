@@ -2,7 +2,28 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
-## 最新协议故障验证：真实后端持久见证解析
+## 最新协议故障验证：真实后端未提交解析及已提交复验
+
+2026-09-11，非特权 Pod `kb-backend-absent-ejf6ofnf`
+（UID `62b09d96-8e3d-4f37-909d-6d9232f7987d`）分别用独立进程精确运行
+`TestRealTiKVBackendResolvesUndeliveredOnePC` 和
+`TestRealTiKVBackendResolvesCancelledOnePC`，两次 PASS。
+上传前后二进制 SHA256 一致：
+`91b1568679ca3540708ac6d9bb49d8db5777ee79a1e8e46eefd90d02eb589df2`。
+未送达分支解析 absent=1、committed=0，候选 101 不推进可见修订号，下一次 CREATE
+复用 101；已提交复验解析 committed=1、absent=0，双键 101、下一次 PUT 为 102。
+两次均通过后端 Close 及所有权 CAS 清理，两个派生范围分别确认为空。
+以下前缀及同 nonce 的 `protocol-backend-<nonce>` keyspace 已用并清理，不复用：
+
+- 未送达：`kubebrain/protocol-smoke/e2a575cb685594c94f3c1ef46318bda3/`
+- 已提交：`kubebrain/protocol-smoke/3507a804144a487df11736ca946a2a66/`
+
+Pod 已按 UID 前置条件删除并独立确认不存在，本机二进制核验摘要后删除。
+未更改网络、PD/TiKV、StatefulSet 或生产提交协议；核验 gen/observed=22/22、Ready=3、
+revision=`kubebrain-855b5bfb88`。日志、构建和清理证据保留于
+`/root/.local/state/kubebrain/real-backend-absent.Ejf6ofNf/`。
+
+## 前次协议故障验证：真实后端持久见证解析
 
 2026-09-11，非特权 Pod `kb-backend-onepc-52dx4lzj`
 （UID `651f8721-9288-4a05-bb01-f1765ce6e261`）精确运行

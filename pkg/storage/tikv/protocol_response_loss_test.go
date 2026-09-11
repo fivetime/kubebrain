@@ -21,12 +21,14 @@ type protocolLossStats struct {
 	Changed           bool
 }
 
-// Wraps only this test process's client. It receives a real successful 1PC
-// response before dropping it; no server or network configuration is changed.
+// Wraps only this test process's client. By default it drops a real successful
+// 1PC response; beforeDelivery instead interrupts one marked 1PC before sending.
+// No server or network configuration is changed.
 type protocolResponseLoss struct {
 	clienttikv.Client
-	// Optional cancellation is scoped to the marked caller, after the server
-	// has committed. It prevents retry confirmation without a global failpoint.
+	beforeDelivery bool
+	// Optional cancellation is scoped to the marked caller at the selected
+	// fault point. It prevents retry confirmation without a global failpoint.
 	cancelAfterLoss context.CancelFunc
 	mu              sync.Mutex
 	stats           protocolLossStats
@@ -47,6 +49,14 @@ func (c *protocolResponseLoss) SendRequest(ctx context.Context, addr string, req
 			c.stats.StartTS = req.Prewrite().StartVersion
 		}
 		c.stats.Changed = c.stats.Changed || c.stats.StartTS != req.Prewrite().StartVersion
+		if c.beforeDelivery && req.Prewrite().TryOnePc && c.stats.Drops == 0 {
+			c.stats.Drops++
+			if c.cancelAfterLoss != nil {
+				c.cancelAfterLoss()
+			}
+			c.mu.Unlock()
+			return nil, errors.New("injected cancellation before 1PC delivery")
+		}
 		c.mu.Unlock()
 	}
 	response, err := c.Client.SendRequest(ctx, addr, req, timeout)
@@ -77,10 +87,35 @@ type protocolResponseStub struct {
 	clienttikv.Client
 	response *tikvrpc.Response
 	err      error
+	calls    int
 }
 
 func (s *protocolResponseStub) SendRequest(context.Context, string, *tikvrpc.Request, time.Duration) (*tikvrpc.Response, error) {
+	s.calls++
 	return s.response, s.err
+}
+
+func TestProtocolBeforeDeliveryCancellationScope(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), protocolCommitMarker{}, true))
+	defer cancel()
+	stub := &protocolResponseStub{response: &tikvrpc.Response{Resp: &kvrpcpb.PrewriteResponse{}}}
+	loss := &protocolResponseLoss{Client: stub, beforeDelivery: true, cancelAfterLoss: cancel}
+	req := tikvrpc.NewRequest(tikvrpc.CmdPrewrite, &kvrpcpb.PrewriteRequest{StartVersion: 10, TryOnePc: true})
+	_, err := loss.SendRequest(context.Background(), "unused", req, time.Second)
+	require.NoError(t, err)
+	require.NoError(t, ctx.Err())
+	require.Equal(t, 1, stub.calls)
+	req.Prewrite().TryOnePc = false
+	_, err = loss.SendRequest(ctx, "unused", req, time.Second)
+	require.NoError(t, err)
+	require.NoError(t, ctx.Err(), "ordinary 2PC must not consume the fault")
+	require.Equal(t, 2, stub.calls)
+	req.Prewrite().TryOnePc = true
+	_, err = loss.SendRequest(ctx, "unused", req, time.Second)
+	require.ErrorContains(t, err, "before 1PC delivery")
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.Equal(t, 2, stub.calls, "faulted prewrite must never reach the transport")
+	require.Equal(t, protocolLossStats{Attempts: 2, Drops: 1, StartTS: 10}, loss.snapshot())
 }
 
 func TestProtocolResponseLossScope(t *testing.T) {

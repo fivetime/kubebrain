@@ -135,3 +135,24 @@ go test ./pkg/storage/tikv -run '^TestRealTiKVBackendResolvesCancelledOnePC$' -c
 `468999580939452418` / `468999580939452420`，revision=101、next=102。
 这补齐了真实 TiKV 已提交分支的后台见证解析证据，不覆盖未提交分支、进程重启、
 领导权切换、真实 Region 分裂、Raft 故障持久性或 900 秒升级验收；生产 1PC 仍关闭。
+
+### 未送达分支
+
+`TestRealTiKVBackendResolvesUndeliveredOnePC` 使用相同运行条件和清理路径，但在带标记
+且 `TryOnePc=true` 的 prewrite 调用底层传输之前，返回注入错误并取消调用者。
+普通 2PC、后台请求不消耗故障；本地测试核对底层调用数，确保目标请求确实没有送出。
+这是本测试客户端的受控中断，不是实际集群网络分区，也不是服务端提交后回滚。
+
+精确运行 `-run '^TestRealTiKVBackendResolvesUndeliveredOnePC$' -count=1 -timeout=120s`，
+仍要求四个专用环境变量、独立进程和全新前缀。真实适配器必须返回
+`ErrUncertainResult`，候选修订号 101、尝试数 1、拦截数 1、提交时间戳 0。
+后台解析必须为 not_committed=1、committed=0；可见修订号保持 100、双键不存在。
+下一次单键写入必须复用 101，且第一个 watch 变更只能是这次 CREATE，不能先收到
+被中断双键事务的事件。成功仍需 PASS、RESOLVED 和 CLEANUP_OK 三项齐全。
+
+2026-09-11 实测通过：start TS=`468999762448220169`，commit TS=0，next=101。
+同一构建在另一新前缀复验已提交分支也通过：start/commit TS 为
+`468999782213615623` / `468999782213615625`，next=102。两次均完成所有权清理。
+证据目录 `/root/.local/state/kubebrain/real-backend-absent.Ejf6ofNf/`。
+这补齐上述受控取消方式下的两种解析结果，不改变进程崩溃、跨 Region、Raft 故障、
+性能或升级验收仍需独立证明的要求。

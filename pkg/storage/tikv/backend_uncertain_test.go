@@ -170,6 +170,15 @@ func protocolNextMutation(t *testing.T, ctx context.Context, watch <-chan []*pro
 // Opt-in real adapter AND backend, with no network/server/global-failpoint
 // modification. This does not cover process restart, Region split or Raft loss.
 func TestRealTiKVBackendResolvesCancelledOnePC(t *testing.T) {
+	testRealTiKVBackendCancelledOnePC(t, false)
+}
+
+func TestRealTiKVBackendResolvesUndeliveredOnePC(t *testing.T) {
+	testRealTiKVBackendCancelledOnePC(t, true)
+}
+
+func testRealTiKVBackendCancelledOnePC(t *testing.T, beforeDelivery bool) {
+	t.Helper()
 	pd := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PD")
 	if pd == "" {
 		t.Skip("explicit protocol PD endpoint required")
@@ -223,7 +232,7 @@ func TestRealTiKVBackendResolvesCancelledOnePC(t *testing.T) {
 	commitCtx, cancelCommit := context.WithCancel(context.WithValue(ctx, protocolCommitMarker{}, true))
 	defer cancelCommit()
 	client := kv.(*store).getClient()
-	loss := &protocolResponseLoss{Client: client.GetTiKVClient(), cancelAfterLoss: cancelCommit}
+	loss := &protocolResponseLoss{Client: client.GetTiKVClient(), cancelAfterLoss: cancelCommit, beforeDelivery: beforeDelivery}
 	client.SetTiKVClient(loss)
 	m := &protocolResolutionMetrics{Metrics: metricmock.NewMinimalMetrics(ctrl)}
 	b := backend.NewBackend(kv, backend.Config{
@@ -245,8 +254,35 @@ func TestRealTiKVBackendResolvesCancelledOnePC(t *testing.T) {
 	stats := loss.snapshot()
 	require.Equal(t, 1, stats.Drops)
 	require.Equal(t, 1, stats.Attempts)
-	require.Greater(t, stats.CommitTS, stats.StartTS)
+	require.NotZero(t, stats.StartTS)
 	require.False(t, stats.Changed)
+	if beforeDelivery {
+		require.Zero(t, stats.CommitTS, "no request was delivered to commit")
+		require.Eventually(t, func() bool { return m.absent.Load() == 1 }, 10*time.Second, 10*time.Millisecond,
+			"real backend must establish that the candidate did not commit")
+		require.Zero(t, m.committed.Load())
+		require.EqualValues(t, 100, b.GetCurrentRevision(), "absent candidate must not advance visible revision")
+		for _, key := range [][]byte{left, right} {
+			got, err := b.Get(ctx, &proto.GetRequest{Key: key})
+			require.NoError(t, err)
+			require.Nil(t, got.Kv, "undelivered transaction must leave both keys absent")
+		}
+		_, nextRevision, err := b.TxnApply(ctx, []backend.TxnWriteOp{{Key: left, Value: []byte("next")}}, nil)
+		require.NoError(t, err)
+		require.Equal(t, revision, nextRevision, "absent candidate must be reused without a revision hole")
+		next := protocolNextMutation(t, ctx, watch)
+		require.Len(t, next, 1, "undelivered transaction must not publish events before next acknowledged write")
+		require.Equal(t, proto.Event_CREATE, next[0].Type)
+		require.Equal(t, nextRevision, next[0].Revision)
+		require.Equal(t, nextRevision, next[0].Kv.Revision)
+		require.Equal(t, left, next[0].Kv.Key)
+		require.Equal(t, []byte("next"), backend.StripInlineValue(next[0].Kv.Value))
+		require.EqualValues(t, 1, m.absent.Load())
+		require.Zero(t, m.committed.Load())
+		t.Logf("PROTOCOL_BACKEND_RESOLVED committed=0 absent=1 revision=%d next=%d attempts=%d drops=%d start_ts=%d commit_ts=%d", revision, nextRevision, stats.Attempts, stats.Drops, stats.StartTS, stats.CommitTS)
+		return
+	}
+	require.Greater(t, stats.CommitTS, stats.StartTS)
 	require.Eventually(t, func() bool {
 		return m.committed.Load() == 1 && b.GetCurrentRevision() == revision
 	}, 10*time.Second, 10*time.Millisecond, "real durable witness resolution must publish revision")
