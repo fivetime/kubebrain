@@ -19,10 +19,12 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pkg/errors"
 	tikverr "github.com/tikv/client-go/v2/error"
 	"github.com/tikv/client-go/v2/txnkv"
+	"github.com/tikv/client-go/v2/util"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
@@ -182,6 +184,23 @@ func (b *batch) Atomic(fn func(context.Context, storage.AtomicBatch) error) {
 }
 
 func (b *batch) Commit(ctx context.Context) (err error) {
+	observer := storage.BatchCommitObserverFromContext(ctx)
+	var observation storage.BatchCommitObservation
+	var detail *util.CommitDetails
+	if observer != nil {
+		defer func() {
+			observation.Err = err
+			// These scalar durations are finalized by the synchronous Commit
+			// path. Do not read background-updated request/backoff details.
+			if detail != nil {
+				observation.HasWriteDetails = true
+				observation.Prewrite = detail.PrewriteTime
+				observation.CommitTS = detail.GetCommitTsTime
+				observation.PrimaryCommit = detail.CommitTime
+			}
+			observer(observation)
+		}()
+	}
 	defer func() {
 		// A context-bound Begin can fail before publishing a transaction. Guard the
 		// rollback so the PD/TSO error is returned instead of dereferencing nil.
@@ -190,19 +209,39 @@ func (b *batch) Commit(ctx context.Context) (err error) {
 		}
 	}()
 	if b.txn == nil && b.begin != nil {
+		start := time.Now()
 		b.txn, err = b.begin(ctx)
+		if observer != nil {
+			observation.Begin = time.Since(start)
+		}
 		if err != nil {
 			return err
 		}
 	}
+	prepareStart := time.Now()
 	for _, f := range b.list {
 		err = f(ctx)
 		if err != nil {
+			if observer != nil {
+				observation.Prepare = time.Since(prepareStart)
+			}
 			return err
 		}
 	}
-
+	if observer != nil {
+		observation.Prepare = time.Since(prepareStart)
+		observation.CommitAttempted = true
+		// Preserve any caller-owned SDK diagnostic sink. Each observed batch
+		// otherwise gets its own sink, never a pointer shared across retries.
+		if ctx.Value(util.CommitDetailCtxKey) == nil {
+			ctx = context.WithValue(ctx, util.CommitDetailCtxKey, &detail)
+		}
+	}
+	commitStart := time.Now()
 	err = b.txn.Commit(ctx)
+	if observer != nil {
+		observation.Commit = time.Since(commitStart)
+	}
 
 	if err != nil {
 		if tikverr.IsErrWriteConflict(err) {

@@ -1,10 +1,36 @@
 package etcd
 
 import (
+	"context"
 	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 )
+
+// Child batch attempts may outnumber public Put calls (CAS/uncertain retries).
+// Keep their population and outcomes distinct from the parent Put histograms.
+func observePutBatchCommits(ctx context.Context, metricCli metrics.Metrics) context.Context {
+	if metricCli == nil {
+		return ctx
+	}
+	return storage.WithBatchCommitObserver(ctx, func(o storage.BatchCommitObservation) {
+		tags := []metrics.T{metrics.Tag("method", "put"), getSuccessMetricTagByErr(o.Err)}
+		emit := func(phase string, elapsed time.Duration) {
+			_ = metricCli.EmitHistogram("write.batch."+phase+".latency", elapsed.Seconds(), tags...)
+		}
+		emit("begin", o.Begin)
+		emit("prepare", o.Prepare)
+		if o.CommitAttempted {
+			emit("commit", o.Commit)
+		}
+		if o.HasWriteDetails {
+			emit("prewrite", o.Prewrite)
+			emit("commit_ts", o.CommitTS)
+			emit("primary_commit", o.PrimaryCommit)
+		}
+	})
+}
 
 // These paired observations cover only local Put requests that reach the
 // backend call. Pre-backend includes admission, leadership, auth, quota and
