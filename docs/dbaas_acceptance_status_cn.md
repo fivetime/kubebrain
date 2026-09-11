@@ -5,6 +5,21 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+发布回归中的测试生命周期修复（2026-09-11）：`18a4657d` 的完整 race 门禁
+曾在 `TestWatchContextCancellationDoesNotWaitForBlockedRecv` 的原 100ms
+返回检查失败，无数据竞态报告。相同源码单项 race 连续 100 次及另一次完整
+race 重测通过，不能抹去原失败或据此宣称根因已确定；原发布门禁仍未通过。
+进一步检查确认公共测试辅助函数只调用 `stopLeases` 和空实现的
+`memkv.Close`，没有按所有权关闭服务器与后端后台任务。新增确定性回归
+在旧实现上失败：清理函数返回时，受该服务器管理的任务仍未退出。
+修复改为关闭 RPCServer、保留的原始适配层及原始后端，再结束指标 mock；
+后台任务须取消并退出后才能返回。新清理回归与原 Watch 取消测试一起
+race 连续 100 次通过（7.668 秒），普通全量通过（138.753 秒），vet 通过；
+修复后的完整 race 通过（334.967 秒）。本次仅修改测试代码，未放宽 100ms 或真实集群
+5s/30s/900s 门限，不能认定已修复生产 Watch 或 Put 性能问题。
+证据：`/root/.local/state/kubebrain/test-server-cleanup-*.log`，
+原失败保留在 `batch-observer-release.xcJHEgka/post-backend-race.log`。
+
 写批次阶段观测补充（2026-09-11，尚未部署）：在本地 Put 的后端调用上下文内
 增加可选批次观察器，TiKV 适配层记录 begin、prepare 和实际 commit 调用耗时；
 SDK 提供写事务明细时，再记录 prewrite、commit_ts、primary_commit。

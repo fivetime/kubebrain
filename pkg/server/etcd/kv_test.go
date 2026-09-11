@@ -1681,10 +1681,17 @@ func newTestRPCServerWithCompatibility(t *testing.T, enableEtcdCompatibility boo
 	// so their short RPC contexts measure protocol behavior rather than queueing
 	// behind minutes of intentionally expensive password hashing.
 	server.auth.bcryptCost = bcrypt.MinCost
+	ownedShim := server.backend.(*backendShim)
 	return server, func() {
-		server.stopLeases()
-		require.NoError(t, kv.Close())
+		// Match Endpoint ownership order. memkv.Close is a no-op and cannot
+		// cancel backend workers; stopLeases alone does not join lease tasks.
+		closeErr := server.Close()
+		// Protocol tests may replace server.backend with a lightweight fake.
+		// The original shim is still ours, even when the fake hides Close.
+		ownedShim.Close()
+		closeErr = errors.Join(closeErr, b.(interface{ Close() error }).Close())
 		ctrl.Finish()
+		require.NoError(t, closeErr)
 	}
 }
 
