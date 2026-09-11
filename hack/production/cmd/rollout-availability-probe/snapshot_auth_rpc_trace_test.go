@@ -5,12 +5,15 @@ import (
 	"encoding/json"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -29,6 +32,83 @@ func (authTraceAuthServer) Authenticate(context.Context, *etcdserverpb.Authentic
 
 type authTraceWatchServer struct {
 	etcdserverpb.UnimplementedWatchServer
+}
+
+type authTraceRejectedLeaseServer struct {
+	etcdserverpb.UnimplementedLeaseServer
+}
+
+func (authTraceRejectedLeaseServer) LeaseKeepAlive(stream etcdserverpb.Lease_LeaseKeepAliveServer) error {
+	if _, err := stream.Recv(); err != nil {
+		return err
+	}
+	return rpctypes.ErrGRPCInvalidAuthToken
+}
+
+// A deterministic transport harness, not a reproduction of the restored-cluster
+// failure: verify that diagnostics observe clientv3's actual refresh path and
+// preserve a server rejection after a successful Authenticate.
+func TestRestoredAuthRPCTraceOfficialKeepAliveRefresh(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	var authentications atomic.Int32
+	streamAuthCount := make(chan int32, 4)
+	server := grpc.NewServer(
+		grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+			if info.FullMethod == "/etcdserverpb.Auth/Authenticate" {
+				authentications.Add(1)
+			}
+			return handler(ctx, req)
+		}),
+		grpc.StreamInterceptor(func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+			if info.FullMethod == "/etcdserverpb.Lease/LeaseKeepAlive" {
+				select {
+				case streamAuthCount <- authentications.Load():
+				case <-stream.Context().Done():
+					return stream.Context().Err()
+				}
+			}
+			return handler(srv, stream)
+		}))
+	etcdserverpb.RegisterAuthServer(server, authTraceAuthServer{})
+	etcdserverpb.RegisterLeaseServer(server, authTraceRejectedLeaseServer{})
+	done := make(chan struct{})
+	go func() { defer close(done); _ = server.Serve(listener) }()
+	t.Cleanup(func() { server.Stop(); <-done })
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	trace := &restoredAuthRPCTrace{}
+	client, err := clientv3.New(trace.config(clientv3.Config{
+		Context: ctx, Endpoints: []string{listener.Addr().String()}, DialTimeout: time.Second,
+		Username: "secret-user", Password: "secret-password", Logger: zap.NewNop(),
+	}))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	initial := authentications.Load()
+	require.Positive(t, initial)
+	_, err = client.KeepAliveOnce(ctx, 42)
+	require.ErrorIs(t, err, rpctypes.ErrInvalidAuthToken)
+	require.NoError(t, ctx.Err(), "rejection must not be a harness deadline")
+	select {
+	case count := <-streamAuthCount:
+		require.Greater(t, count, initial, "official client must refresh before opening the stream")
+	default:
+		t.Fatal("lease stream was not observed")
+	}
+	var result struct {
+		Auth   *restoredAuthRPCEvent  `json:"last_auth"`
+		Recent []restoredAuthRPCEvent `json:"recent"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(trace.summary()), &result))
+	require.NotNil(t, result.Auth)
+	require.Equal(t, "OK", result.Auth.Code)
+	require.Equal(t, listener.Addr().String(), result.Auth.Peer)
+	require.NotEmpty(t, result.Recent)
+	last := result.Recent[len(result.Recent)-1]
+	require.Equal(t, "/etcdserverpb.Lease/LeaseKeepAlive", last.Method)
+	require.Equal(t, "Unauthenticated", last.Code)
+	require.Equal(t, listener.Addr().String(), last.Peer)
+	require.NotContains(t, trace.summary(), "secret-")
 }
 
 func (authTraceWatchServer) Watch(stream etcdserverpb.Watch_WatchServer) error {

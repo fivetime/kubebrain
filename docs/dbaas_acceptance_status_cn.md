@@ -13,6 +13,16 @@ Authenticate 并更新共享凭据。因此上述回归通过，不能排除真�
 KeepAliveOnce 的流创建、token 刷新或请求时序相关问题。已有官方客户端权限
 矩阵回归也不是原偶发错误的稳定复现；尚无证据足以指定根因或修改重试策略。
 
+官方客户端诊断回归：`TestRestoredAuthRPCTraceOfficialKeepAliveRefresh` 使用
+真实 loopback gRPC 和 clientv3，服务端记录建流前的 Authenticate 次数，
+确认 KeepAliveOnce 比客户端初始化多一次认证。受控服务随后返回
+invalid auth token，测试确认原错误返回且未耗尽上下文，诊断保留成功认证
+及被拒绝 Lease 流的真实 peer/status，不泄露密码或令牌。相关诊断测试
+十轮 race 通过（1.440 秒），日志为
+`/root/.local/state/kubebrain/auth-official-refresh-trace-race.log`。
+这是显式注入拒绝的传输测试，不是恢复集群故障复现，不验证 token 在 etcd
+成员间的真实有效性，也不改变产品认证或重试逻辑。
+
 写入响应诊断候选正式验收（2026-09-11）：`11da1003` 镜像构建
 `34640955142` 和协议 CI `34640955159` 成功，后者普通/race 各十一例
 通过，两阶段中断清理通过。核验镜像来源、平台摘要和实际二进制后，部署
