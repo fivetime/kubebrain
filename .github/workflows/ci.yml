@@ -19,6 +19,8 @@ env:
   ETCD_COMPAT_GO_VERSION: "1.26.x"
 
 jobs:
+  backend-protocol:
+    uses: ./.github/workflows/backend-integration.yml
   go-test:
     name: Go tests
     runs-on: ubuntu-24.04
@@ -81,14 +83,9 @@ jobs:
               go vet ./... && go test ./...)
           done
 
-      - name: Validate isolated backend protocol tests
-        run: |
-          bash hack/backend-integration/run-onepc.sh --count 10
-          bash hack/backend-integration/run-onepc.sh --race --count 3
-
       - name: Scan reachable Go vulnerabilities
         run: |
-          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -test ./...
           (cd hack/backup/objectstore && \
             go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
           (cd hack/kubectl && \
@@ -99,8 +96,6 @@ jobs:
             go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
           (cd hack/scale-lab/loadgen && \
             go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...)
-          (cd hack/backend-integration && \
-            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -test ./...)
 
       - name: Run static analysis
         run: |

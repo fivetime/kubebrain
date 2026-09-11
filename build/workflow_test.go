@@ -46,6 +46,11 @@ func TestWorkflowActionsArePinnedAndCheckoutDropsCredentials(t *testing.T) {
 			actions := actionPattern.FindAllStringSubmatch(content, -1)
 			require.NotEmpty(t, actions)
 			for _, action := range actions {
+				if action[1] == "./.github/workflows/backend-integration.yml" {
+					_, err := os.Stat("../.github/workflows/backend-integration.yml")
+					require.NoError(t, err)
+					continue // Repository-local reusable workflow uses the same commit.
+				}
 				require.Regexp(t, pinnedActionPattern, action[1])
 			}
 			require.Equal(t,
@@ -123,19 +128,43 @@ func TestBackendCIExecutesIsolatedRealProtocolGate(t *testing.T) {
 	require.NotContains(t, commands, "|| true")
 }
 
+func TestMainCIReusesRealProtocolGateAfterMockRetirement(t *testing.T) {
+	mainCI, err := os.ReadFile("../.github/workflows/ci.yml")
+	require.NoError(t, err)
+	var main struct {
+		Jobs map[string]struct {
+			Uses string `json:"uses"`
+		} `json:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(mainCI, &main))
+	require.Equal(t, "./.github/workflows/backend-integration.yml", main.Jobs["backend-protocol"].Uses)
+	backendCI, err := os.ReadFile("../.github/workflows/backend-integration.yml")
+	require.NoError(t, err)
+	var backend struct {
+		On map[string]any `json:"on"`
+	}
+	require.NoError(t, yaml.Unmarshal(backendCI, &backend))
+	require.Contains(t, backend.On, "workflow_call")
+	// The direct workflow and its caller must not cancel each other's jobs.
+	require.Contains(t, string(backendCI), "group: backend-protocol-${{ github.workflow }}-${{ github.ref }}")
+	for _, content := range []string{string(mainCI), string(backendCI)} {
+		require.NotContains(t, content, "run-onepc.sh")
+		require.NotContains(t, content, "hack/backend-integration/go.sum")
+	}
+	_, err = os.Stat("../hack/backend-integration/go.mod")
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
 func TestCIScansEveryGoModuleForReachableVulnerabilities(t *testing.T) {
 	workflow, err := os.ReadFile("../.github/workflows/ci.yml")
 	require.NoError(t, err)
 	content := string(workflow)
 
-	require.Contains(t, content, "go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...")
+	require.Contains(t, content, "go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -test ./...")
 	moduleDirs := nestedGoModuleDirs(t)
 	for _, moduleDir := range moduleDirs {
 		require.Contains(t, content, "cd "+moduleDir+" &&", moduleDir)
 	}
-	// This module contains only tests; a source-only scan would skip its mock
-	// server and dependencies while still appearing to cover the module.
-	require.Contains(t, content, "(cd hack/backend-integration && \\\n            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -test ./...)")
 	require.Equal(t, len(moduleDirs)+1, strings.Count(content,
 		"go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 "))
 }
@@ -147,17 +176,6 @@ func TestCICompilesAndTestsEveryNestedGoModule(t *testing.T) {
 	moduleDirs := nestedGoModuleDirs(t)
 
 	for _, moduleDir := range moduleDirs {
-		if moduleDir == "hack/backend-integration" {
-			// The checked entry compiles and runs the actual test binary with a
-			// private compatibility patch, never editing the shared module cache.
-			require.Contains(t, content, "bash hack/backend-integration/run-onepc.sh --count 10")
-			require.Contains(t, content, "bash hack/backend-integration/run-onepc.sh --race --count 3")
-			entry, err := os.ReadFile("../hack/backend-integration/run-onepc.sh")
-			require.NoError(t, err)
-			require.Contains(t, string(entry), `go vet -mod=readonly -modfile="$scratch/go.mod" ./...`)
-			require.Contains(t, string(entry), `go test -mod=readonly -modfile="$scratch/go.mod"`)
-			continue
-		}
 		if moduleDir == "hack/etcd-client-compat" {
 			require.Contains(t, content, "working-directory: hack/etcd-client-compat")
 			continue
