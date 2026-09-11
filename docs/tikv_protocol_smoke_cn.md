@@ -63,3 +63,25 @@ done
 一次 smoke 不证明真实 Region 分裂回退、响应丢失处理、Raft 故障持久性、
 KubeBrain 修订/watch/不确定结果解析或滚动升级可用性。首次事务耗时包含冷启动等
 因素，单次不同模式的数值不是受控性能对比。不能以此启用生产 1PC/async commit。
+
+## 真实 1PC 成功响应丢失
+
+`TestRealTiKVOnePCResponseLoss` 复用上述集群 ID、独占前缀、所有权与清理约束，
+要求 `KUBEBRAIN_TIKV_PROTOCOL_MODE=1pc`。使用全新前缀，单独进程精确运行：
+
+```sh
+go test ./pkg/storage/tikv -run '^TestRealTiKVOnePCResponseLoss$' -count=1 -timeout=120s -v
+```
+
+运行前仍须设置上述四个专用环境变量及固定 Go 工具链。未提供 PD 时跳过，不算通过。
+注入器仅包装本测试的 TiKV 客户端，不改集群网络或其他客户端。它先收到带非零
+`OnePcCommitTs` 的成功 prewrite 响应，再对带上下文标记的首次用户提交返回普通
+传输错误；后台请求、不成功的响应及普通两阶段 prewrite 不消耗故障。
+故障只触发一次，保留默认 RPC 重试，检查重试的起始及提交时间戳不发生变化。
+
+客户端可以重试后确认成功，也可以返回 `ErrUncertainResult`，但不能将已证实提交
+误报为确定失败；随后必须从新的固定快照读到两键，再检查更新和历史值。
+除 smoke/cleanup/PASS 外，还必须存在 `PROTOCOL_RESPONSE_LOSS_CONFIRMED`，记录实际
+丢失次数和返回分支。成功重试的结果不代表测试执行过不确定结果解析分支。
+此测试仍只覆盖存储适配器，第二键不是 KubeBrain 后端的持久见证；真实后端见证
+解析、发送前故障、跨 Region 和 Raft 故障持久性需要其他测试。

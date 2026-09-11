@@ -172,6 +172,11 @@ func TestProtocolSmokeScopeValidation(t *testing.T) {
 // counters are process-global. This is not a Raft failure/durability benchmark
 // or proof of KubeBrain's backend uncertain-result resolver.
 func TestRealTiKVProtocolSmoke(t *testing.T) {
+	testRealTiKVProtocolSmoke(t, false)
+}
+
+func testRealTiKVProtocolSmoke(t *testing.T, dropResponse bool) {
+	t.Helper()
 	pd := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PD")
 	if pd == "" {
 		t.Skip("explicit protocol PD endpoint required")
@@ -179,6 +184,9 @@ func TestRealTiKVProtocolSmoke(t *testing.T) {
 	prefix, mode := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PREFIX"), os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE")
 	expected, err := validateProtocolSmokeScope(os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID"), prefix, mode)
 	require.NoError(t, err) // Validate mutation scope before opening a client.
+	if dropResponse {
+		require.Equal(t, "1pc", mode, "response loss requires explicit 1pc mode")
+	}
 	t.Cleanup(tikvconfig.UpdateGlobal(func(cfg *tikvconfig.Config) {
 		cfg.Enable1PC = mode == "1pc"
 		cfg.EnableAsyncCommit = false
@@ -189,6 +197,12 @@ func TestRealTiKVProtocolSmoke(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, kv.Close()) })
 	require.Equal(t, expected, kv.(storage.ClusterIdentifier).ClusterID(), "wrong cluster: no writes allowed")
+	var loss *protocolResponseLoss
+	if dropResponse {
+		client := kv.(*store).getClient()
+		loss = &protocolResponseLoss{Client: client.GetTiKVClient()}
+		client.SetTiKVClient(loss)
+	}
 	require.NoError(t, protocolSmokePrefixEmpty(ctx, kv, prefix))
 	claim, data, witness := []byte(prefix+"owner"), []byte(prefix+"data"), []byte(prefix+"witness")
 	// A fresh owner token also fences accidentally concurrent invocations using
@@ -209,16 +223,35 @@ func TestRealTiKVProtocolSmoke(t *testing.T) {
 	initial.Put(witness, []byte("before"), 0)
 	before := tikvmetrics.GetTxnCommitCounter()
 	started := time.Now()
-	require.NoError(t, initial.Commit(ctx))
+	commitCtx := ctx
+	if dropResponse {
+		commitCtx = context.WithValue(ctx, protocolCommitMarker{}, true)
+	}
+	commitErr := initial.Commit(commitCtx)
 	elapsed := time.Since(started)
 	delta := tikvmetrics.GetTxnCommitCounter().Sub(before)
-	if mode == "1pc" {
+	if dropResponse {
+		require.True(t, commitErr == nil || errors.Is(commitErr, storage.ErrUncertainResult), "committed response loss must not become a definite failure: %v", commitErr)
+		stats := loss.snapshot()
+		require.Equal(t, 1, stats.Drops, "must drop an actual successful 1PC response")
+		require.Positive(t, stats.Attempts)
+		require.Greater(t, stats.CommitTS, stats.StartTS)
+		require.False(t, stats.Changed, "retry must preserve transaction identity and commit timestamp")
+		t.Logf("PROTOCOL_RESPONSE_LOSS_CONFIRMED uncertain=%t attempts=%d drops=%d start_ts=%d commit_ts=%d", errors.Is(commitErr, storage.ErrUncertainResult), stats.Attempts, stats.Drops, stats.StartTS, stats.CommitTS)
+	} else if mode == "1pc" {
+		require.NoError(t, commitErr)
 		require.Equal(t, tikvmetrics.TxnCommitCounter{OnePC: 1}, delta, "must actually commit with 1PC")
 	} else {
+		require.NoError(t, commitErr)
 		require.Equal(t, tikvmetrics.TxnCommitCounter{TwoPC: 1}, delta)
 	}
 	ts, err := kv.GetTimestampOracle(ctx)
 	require.NoError(t, err)
+	for _, key := range [][]byte{data, witness} {
+		value, err := kv.(storage.SnapshotGetter).GetAt(ctx, key, ts)
+		require.NoError(t, err)
+		require.Equal(t, []byte("before"), value, "both keys must be visible after the committed response loss")
+	}
 	update := kv.BeginBatchWrite()
 	update.CAS(claim, owner, owner, 0)
 	update.Put(data, []byte("after"), 0)

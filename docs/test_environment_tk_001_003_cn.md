@@ -2,6 +2,20 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
+## 最新协议故障验证：成功响应丢失后默认重试通过
+
+2026-09-11，在独立非特权 Pod `kb-onepc-loss-4m8d48mk`
+（UID `d1d568cb-6548-4522-9049-0cdbcc329436`）中运行精确存储测试
+`TestRealTiKVOnePCResponseLoss`。上传二进制摘要与本机一致；只包装此测试客户端，
+收到真实 1PC 成功响应后丢弃一次，不改集群网络、PD/TiKV 或现有服务。
+默认重试实际发送两次并返回成功，两键可见性及历史快照检查通过，清理确认前缀为空。
+已用并清理的前缀为 `kubebrain/protocol-smoke/ff65b9ff7f86dc4dcfb3d5c68e16184e/`，不复用。
+Pod 已按 UID 前置条件删除并独立确认不存在，本机辅助二进制经摘要核验后删除。
+源码、构建信息、清理及实际分支记录位于
+`/root/.local/state/kubebrain/real-onepc-response-loss.4M8d48MK/`。
+本次不是不确定结果返回分支，不代表 KubeBrain 后端见证解析或 Raft 故障持久性通过；
+生产 1PC 未启用，严格滚动升级仍未通过。
+
 ## 最新存储协议 smoke：独立 2PC / 1PC 通过
 
 2026-09-11 使用独立非特权 Pod `kb-protocol-smoke-mccb2vmu`，
