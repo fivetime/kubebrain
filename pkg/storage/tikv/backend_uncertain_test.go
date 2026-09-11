@@ -23,8 +23,10 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 	"github.com/pingcap/failpoint"
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/require"
 	tikvconfig "github.com/tikv/client-go/v2/config"
+	tikvmetrics "github.com/tikv/client-go/v2/metrics"
 )
 
 // Derive BOTH physical ranges from the validated dedicated nonce. Backend
@@ -304,6 +306,15 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	watch, err := b.Watch(ctx, "/integration/onepc/", 101)
 	require.NoError(t, err)
 	left, right := []byte("/integration/onepc/left"), []byte("/integration/onepc/right")
+	// Each real fixture case runs in its own process. Read the SDK counter,
+	// rather than substituting a fake health endpoint for the actual TiKV server.
+	// The SDK increments this only when its gRPC Check reports SERVING.
+	healthOK := func() float64 {
+		var metric dto.Metric
+		require.NoError(t, tikvmetrics.StatusCountWithOK.Write(&metric))
+		return metric.GetCounter().GetValue()
+	}
+	healthBefore := healthOK()
 	result, revision, err := b.TxnApply(commitCtx, []backend.TxnWriteOp{
 		{Key: left, Value: []byte("left-value")}, {Key: right, Value: []byte("right-value")},
 	}, nil)
@@ -336,6 +347,9 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		require.Equal(t, 1, stats.Drops)
 		if retrying {
 			require.Equal(t, 2, stats.Attempts, "one injected loss must cause exactly one RPC retry")
+			healthDelta := healthOK() - healthBefore
+			require.Positive(t, healthDelta, "default retry must complete a real TiKV gRPC health check")
+			t.Logf("PROTOCOL_REAL_HEALTH_CONFIRMED successful_checks=%g", healthDelta)
 		} else {
 			require.Equal(t, 1, stats.Attempts)
 		}

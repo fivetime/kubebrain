@@ -50,6 +50,30 @@ bash hack/backend-integration/run-real-local-interruption-test.sh --allow-local-
 mock 故障语义的完整替代审核尚未完成，不能据此
 删除 mock 测试或宣称下述测试依赖告警已解决。
 
+### 旧 mock 与真实测试的覆盖对照
+
+以下名称均为根模块 `TestRealTiKVBackend` 后缀；不是仅检查进程退出码。
+
+| 旧 mock 场景 | 真实用例后缀 | 必须保持的结果 |
+| --- | --- | --- |
+| 未送达、禁用 RPC 重试 | `NoRPCRetryUndeliveredOnePC` | 上下文仍有效，仅一次发送，不确定结果解析为未提交，候选修订号可复用 |
+| 已提交、禁用 RPC 重试 | `NoRPCRetryCommittedOnePC` | 上下文仍有效，仅一次发送，不确定结果解析为已提交，两键同修订号和 Watch 批次 |
+| 未送达、默认重试 | `RetriesUndeliveredOnePC` | 两次发送、相同事务时间戳、成功健康检查、只提交一次 |
+| 已提交、默认重试 | `RetriesCommittedOnePC` | 两次发送、相同事务时间戳、成功健康检查、无重复提交或 Watch 批次 |
+| 首次 prewrite 前分裂 | `RegionSplitFallback` | 真实 epoch 错误、至少两个 Region 成功 prewrite、两阶段 commit、原子修订号 |
+
+默认重试两例在 TxnApply 前后读取 SDK 的 `StatusCountWithOK` 增量。当前固定
+客户端版本仅在真实 gRPC Health/Check 返回 SERVING 后递增该计数；隔离入口
+每例独立进程，不以伪造健康服务或成功的数据 RPC 数替代健康检查。补充断言后
+十例真实 race 运行通过，两种默认重试均观测到一次成功健康检查。
+
+有意保留的服务端差异：旧 unistore 在提交后丢响应并重试时仍返回不确定结果，
+真实 TiKV 8.5.3 则确认成功。因此不能硬编码旧 mock 的返回错误作为真实服务端
+规范；两者必须共同满足同一事务、单次持久提交和单次事件发布。真实“已提交但
+调用返回不确定”的见证解析由禁用 RPC 重试且上下文仍有效的用例单独锁定。
+取消上下文两例、协议 smoke 和原始丢响应测试是额外覆盖。CI 尚需验证，旧模块
+及其漏洞告警仍保留；此对照不证明多副本故障恢复或生产性能达标。
+
 新增的禁用重试两例不取消调用上下文，以对照旧 mock 的普通 RPC 错误场景。
 只有显式测试环境变量允许时，测试进程才在 `TestMain` 一次性启用 SDK
 failpoint 支持；每例在创建客户端之前设置 `noRetryOnRpcError`，关闭所有
