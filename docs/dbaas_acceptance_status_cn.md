@@ -11,9 +11,13 @@
 把所得令牌直接用于每个目标成员的 Watch、LeaseKeepAlive，逐轮各覆盖 9 条
 有向组合；校验 Authenticate 和 Watch 响应的成员 ID，避免只验证单一落点。
 使用原始生成的 gRPC 客户端，不经过 etcd 客户端令牌刷新封装；租约场景在
-目标成员 Grant/Put 后 KeepAlive/Revoke，不等同于原探针的完整租约复制屏障。
-三轮 race 均通过（39.623 秒），`go vet` 通过。证据：
-`/root/.local/state/kubebrain/restored-auth-cross-member-pairs-race.log`。
+目标成员 Grant/Put 后调用原探针的全成员复制屏障，确认只写用户读取租约键
+被拒绝，再用同一令牌 KeepAlive/Revoke。管理员屏障使用独立上下文，不能
+继承只写用户的出站令牌。初版三轮 race 通过（39.623 秒）；补齐复制屏障和
+拒绝检查后三轮 race 通过（44.536 秒），`go vet` 通过。最新证据：
+`/root/.local/state/kubebrain/restored-auth-cross-member-barrier-after-race.log`。
+官方客户端在建立流前还会重新 Authenticate，此原始客户端测试不覆盖该刷新
+与流创建之间的并发行为，也不据此排除原探针的完整调用顺序问题。
 这补齐固定成员组合的回归覆盖，没有复现原偶发错误，也不是运行时修复；
 未修改或部署产品代码，未改变 Kubernetes、PD/TiKV 或 Ceph。
 

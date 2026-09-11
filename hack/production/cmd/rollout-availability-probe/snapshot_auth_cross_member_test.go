@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
@@ -70,6 +72,15 @@ func TestRestoredAuthTokensAcrossAllMemberPairs(t *testing.T) {
 		}
 		tlsConfig, err := cfg.localTLS.passwordClient.ClientConfig()
 		require.NoError(t, err)
+		adminTLS, err := cfg.clientTLSConfig()
+		require.NoError(t, err)
+		adminConfig := clientv3.Config{
+			Context: ctx, TLS: adminTLS, DialTimeout: 3 * time.Second, Logger: zap.NewNop(),
+			DialOptions: []grpc.DialOption{grpc.WithAuthority(cfg.localTLS.server.ServerName)},
+		}
+		for _, member := range cfg.members {
+			adminConfig.Endpoints = append(adminConfig.Endpoints, member.clientURL.String())
+		}
 		connections := make([]*grpc.ClientConn, len(cfg.members))
 		defer func() {
 			for _, conn := range connections {
@@ -116,10 +127,24 @@ func TestRestoredAuthTokensAcrossAllMemberPairs(t *testing.T) {
 						leases := etcdserverpb.NewLeaseClient(conn)
 						lease, err := leases.LeaseGrant(opCtx, &etcdserverpb.LeaseGrantRequest{TTL: 30})
 						require.NoError(t, err)
-						_, err = etcdserverpb.NewKVClient(conn).Put(opCtx, &etcdserverpb.PutRequest{
+						put, err := etcdserverpb.NewKVClient(conn).Put(opCtx, &etcdserverpb.PutRequest{
 							Key: []byte(fixture.expected.access[2].key), Value: []byte("leased"), Lease: lease.ID,
 						})
 						require.NoError(t, err)
+						require.NotNil(t, put.Header)
+						// Match the deployed probe's all-member attachment barrier and
+						// denied TTL-with-keys request before testing the same token on
+						// KeepAlive. The raw client still deliberately does not refresh it.
+						// Do not forward the writer's outgoing token to the root
+						// replication client: it takes precedence over certificate CN.
+						barrierCtx, stopBarrier := context.WithTimeout(ctx, 5*time.Second)
+						barrierErr := waitForRestoredAuthLeaseReplication(barrierCtx, adminConfig,
+							fixture.expected.access[2].key, "leased", clientv3.LeaseID(lease.ID), put.Header.Revision)
+						stopBarrier()
+						require.NoError(t, barrierErr)
+						_, err = leases.LeaseTimeToLive(opCtx, &etcdserverpb.LeaseTimeToLiveRequest{ID: lease.ID, Keys: true})
+						require.ErrorIs(t, rpctypes.Error(err), rpctypes.ErrPermissionDenied,
+							"write-only lease keys source=%d target=%d", source, target)
 						stream, err := leases.LeaseKeepAlive(opCtx)
 						require.NoError(t, err)
 						require.NoError(t, stream.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: lease.ID}))
