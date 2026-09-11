@@ -2,7 +2,32 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
-## 最新分段延迟观测失败（非滚动升级）
+## 最新分段延迟观测通过（非滚动升级）
+
+2026-09-11，CI `34561935083` 和独立审计通过，探针源码 `2ef9d266`；镜像索引
+`sha256:8a6899e6e3eb3c02011abd8e344f16ac38a246d5084efd7f6e999a7449dbce87`，
+实际 Pod amd64 镜像摘要 `sha256:7f985abb925922d15d63efff4fe54b0bdddb044bdb51ee93d1fc507261a91ccb`。
+探针 `kb-e2e-split-cprg7d8r`，UID `c93a444a-b12c-440c-8c71-6b7ebab98300`。
+仍为 OBSERVE_ONLY、300 次、100 ms、public/direct 5s/30s、完成窗口 900s；
+服务端保持 `0ce85e66`，无滚动或协议切换，命令退出 0。
+
+循环最后一条 `completed=300 final=false`：elapsed=89955 ms，backend=2068 ms，
+public=54455 ms，其中 put_resolve=46776 ms、watch_after_put=7678 ms，
+direct_wait=3259 ms、pacing=30162 ms。阶段毫秒取整存在差异；final=true 的
+91643 ms 另含循环后检查，不能计入单次请求耗时。平均写入确认155.92 ms、
+随后公共 Watch 等待25.59 ms，不等同纯服务端耗时。
+public watch=300、direct=300×3，Range=70、Snapshot=1，无 stream 重试；
+lease 公共51/直连141次响应，无重启。最大 public1491/put1457/watch_after150/
+direct2289/TSO3/Region415 ms。前次偶发认证错误未复现，但仍未解决。
+
+清理报告 keys/users/roles/leases=0；独立确认测试 Pod、清理 Pod 和 owner ConfigMap
+均不存在。StatefulSet UID/spec/generation22/Ready3/revision855b5bfb88 未变；
+三个服务 Pod 的 UID/containerID/imageID/restartCount/Ready 均未变。
+前缀 `/kubebrain-rollout-availability/kb-e2e-split-cprg7d8r/` 已用并清理，不复用。
+证据：`/root/.local/state/kubebrain/auth-diagnostic-observe.cPrG7d8R/`。
+这不是原 6000 次滚动升级验收；不能与其他负载的 TiKV 测量直接相减推导开销。
+
+## 前次分段延迟观测失败（非滚动升级）
 
 2026-09-11，CI `34557288219` 成功，源码 `29038dabc382070e367587b160d9f9667c60ab4a`。
 独立校验确认镜像索引、双架构、实际 amd64 版本/客户端依赖及新增探针字段；
