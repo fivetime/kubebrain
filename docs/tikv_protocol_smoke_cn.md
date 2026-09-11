@@ -156,3 +156,37 @@ go test ./pkg/storage/tikv -run '^TestRealTiKVBackendResolvesCancelledOnePC$' -c
 证据目录 `/root/.local/state/kubebrain/real-backend-absent.Ejf6ofNf/`。
 这补齐上述受控取消方式下的两种解析结果，不改变进程崩溃、跨 Region、Raft 故障、
 性能或升级验收仍需独立证明的要求。
+
+## 固定后端更新的协议延迟测量
+
+`TestRealTiKVBackendProtocolLatency` 复用相同显式 PD/集群 ID/全新前缀/模式要求及
+两范围所有权清理。精确选择用例，`-count=1 -timeout=120s`，每组独立进程运行。
+固定条件为 2 GiB 配额、单键 256 字节值、一次创建、10 次预热、20 次测量更新；
+只计时 `backend.TxnApply`，逐次 watch 核验、最终读取和配额核验在计时段之外。
+不注入故障、不启用后台全局 GC/自动压缩，也不启动公共 gRPC 或选主。
+
+同一二进制、同一 Pod 内按 2PC → 1PC → 1PC → 2PC 顺序运行，每组另用新前缀。
+测量请求携带独立上下文标记：预热、后台检查点和清理不计入 RPC 计数；每组必须
+恰有 20 次成功 prewrite，1PC 有 20 个成功提交时间戳且无 commit RPC，2PC 有
+20 个 commit 成功响应且无 1PC 时间戳。故障、重试或协议回退不满足该受控样本条件。
+后台工作仍可能争用资源；标记只隔离计数，不隔离负载。输出原始 `durations_ns`。
+
+该固定规模的物理键数量有本地上界回归检查，并保留真实检查点/所有权元数据余量；
+仍沿用 128 键清理硬上限。不要直接增加样本数而不重新验证清理容量和时间预算。
+成功需要每组 PASS、`PROTOCOL_BACKEND_LATENCY` 和 `PROTOCOL_BACKEND_CLEANUP_OK`。
+
+2026-09-11 同一 `k8s3-compute1` Pod 的四组实测通过：
+
+| 顺序 | 模式 | 样本数 | 平均耗时（ms） |
+| --- | --- | --- | --- |
+| 1 | 2PC | 20 | 46.85 |
+| 2 | 1PC | 20 | 28.31 |
+| 3 | 1PC | 20 | 30.50 |
+| 4 | 2PC | 20 | 45.00 |
+
+合并后各 40 个样本，平均值为 45.92 / 29.41 ms，差约 16.52 ms。原始值、协议计数、
+构建信息和清理证据见 `/root/.local/state/kubebrain/backend-latency.dNiFb5M6/`。
+这是小样本、单 Region、后端内部更新的探索性比较，不是 p99/SLO，也不覆盖认证、
+公共 RPC、代理或副本 watch。不可直接与旧混合流量的 Put 均值相减，推断 RPC 开销。
+不能据此启用生产 1PC 或认定 900 秒升级门禁会通过；下一步需相同工作负载下的
+端到端测量及真实跨 Region/故障验证。

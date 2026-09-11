@@ -170,15 +170,17 @@ func protocolNextMutation(t *testing.T, ctx context.Context, watch <-chan []*pro
 // Opt-in real adapter AND backend, with no network/server/global-failpoint
 // modification. This does not cover process restart, Region split or Raft loss.
 func TestRealTiKVBackendResolvesCancelledOnePC(t *testing.T) {
-	testRealTiKVBackendCancelledOnePC(t, false)
+	testRealTiKVBackendScenario(t, "committed")
 }
 
 func TestRealTiKVBackendResolvesUndeliveredOnePC(t *testing.T) {
-	testRealTiKVBackendCancelledOnePC(t, true)
+	testRealTiKVBackendScenario(t, "undelivered")
 }
 
-func testRealTiKVBackendCancelledOnePC(t *testing.T, beforeDelivery bool) {
+func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
+	require.Contains(t, []string{"committed", "undelivered", "latency"}, scenario)
+	beforeDelivery := scenario == "undelivered"
 	pd := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PD")
 	if pd == "" {
 		t.Skip("explicit protocol PD endpoint required")
@@ -186,12 +188,15 @@ func testRealTiKVBackendCancelledOnePC(t *testing.T, beforeDelivery bool) {
 	prefix := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PREFIX")
 	expected, err := validateProtocolSmokeScope(os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID"), prefix, os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE"))
 	require.NoError(t, err)
-	require.Equal(t, "1pc", os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE"))
+	mode := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE")
+	if scenario != "latency" {
+		require.Equal(t, "1pc", mode)
+	}
 	ks, _, err := protocolBackendScope(prefix)
 	require.NoError(t, err)
 	ctrl := gomock.NewController(t) // Finish only after backend workers stop.
 	t.Cleanup(tikvconfig.UpdateGlobal(func(cfg *tikvconfig.Config) {
-		cfg.Enable1PC = true
+		cfg.Enable1PC = mode == "1pc"
 		cfg.EnableAsyncCommit = false
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -233,14 +238,26 @@ func testRealTiKVBackendCancelledOnePC(t *testing.T, beforeDelivery bool) {
 	defer cancelCommit()
 	client := kv.(*store).getClient()
 	loss := &protocolResponseLoss{Client: client.GetTiKVClient(), cancelAfterLoss: cancelCommit, beforeDelivery: beforeDelivery}
-	client.SetTiKVClient(loss)
+	var latencyClient *protocolLatencyClient
+	var quota int64
+	if scenario == "latency" {
+		latencyClient = &protocolLatencyClient{Client: client.GetTiKVClient()}
+		client.SetTiKVClient(latencyClient)
+		quota = 2 << 30
+	} else {
+		client.SetTiKVClient(loss)
+	}
 	m := &protocolResolutionMetrics{Metrics: metricmock.NewMinimalMetrics(ctrl)}
 	b := backend.NewBackend(kv, backend.Config{
 		Prefix: prefix + "backend", Keyspace: ks.Name(), Identity: ks.Name(),
-		EnableEtcdCompatibility: true, StorageGCLifetime: 0,
+		EnableEtcdCompatibility: true, StorageGCLifetime: 0, QuotaBackendBytes: quota,
 	}, m)
 	closer = b.(interface{ Close() error })
 	b.SetCurrentRevision(100)
+	if scenario == "latency" {
+		measureProtocolBackendLatency(t, ctx, b, latencyClient, mode)
+		return
+	}
 	watch, err := b.Watch(ctx, "/integration/onepc/", 101)
 	require.NoError(t, err)
 	left, right := []byte("/integration/onepc/left"), []byte("/integration/onepc/right")

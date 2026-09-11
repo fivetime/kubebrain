@@ -2,6 +2,29 @@
 
 最后核验：2026-09-11。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
+## 最新受控后端延迟测量
+
+2026-09-11，非特权 Pod `kb-latency-dnifb5m6`，UID
+`6bd55648-6f37-4a31-8356-d2f6c4ae3a3c`，节点 `k8s3-compute1`，restart=0。
+上传前后二进制 SHA256 一致：
+`ef9dbf49bf2c27f217e6d063466f917c881e159aa785a1ecc4aa64df5a6267d8`。
+同一构建分四个独立进程执行固定后端更新测量（2PC/1PC/1PC/2PC），均 PASS；
+平均耗时分别 46.85/28.31/30.50/45.00 ms。请求协议计数、配额、watch 和清理检查通过。
+同构建另外复验不确定结果已提交/未提交分支，两次 PASS。均非公共 RPC 或升级验收。
+以下 nonce 对应的 `kubebrain/protocol-smoke/<nonce>/` 前缀及
+`protocol-backend-<nonce>` keyspace 已用并清理，禁止复用：
+
+- 四组测量：`07c04e2cfd443c648c395dbf2f69ecb2`、`c9c223569b232934bd8caa633b5aec5e`、
+  `5bbcac3f13a60f0c4021124d7fed167a`、`aa4125ca3360569f6e81c0604e94de42`。
+- 两分支复验：`47b24de7f0240eecdf42131f64b47f3e`、`8ac99d83d4081001c21d3ee5346ddb09`。
+
+每次均由后端 Close 后的独立客户端完成所有权 CAS 清理并检查双范围为空。
+Pod 已按 UID 前置条件删除并独立确认不存在，本机辅助二进制经摘要核验后删除。
+未更新现有服务或生产协议；核验 StatefulSet gen/observed=22/22、Ready=3、
+revision=`kubebrain-855b5bfb88`。原始样本与结果见
+`/root/.local/state/kubebrain/backend-latency.dNiFb5M6/results.json`，同目录保留日志、
+构建和清理证据。小样本后端均值不能替代 900 秒升级门禁。
+
 ## 本机升级探针取证修复（尚未重新执行真实升级）
 
 2026-09-11，检查最近失败升级的执行日志与脚本，发现完成窗口超时未触发回滚后
