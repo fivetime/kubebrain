@@ -94,6 +94,7 @@ tikv_ip="${gateway%.*}.3"
 pd_endpoint="$pd_ip:2379"
 common=(--network "$network" --label "$label=$owner" --read-only --user 65532:65532
   --cap-drop ALL --security-opt no-new-privileges --pids-limit 256 --cpus 2
+  --ulimit nofile=262144:262144
   --tmpfs /tmp:rw,nosuid,nodev,size=64m,uid=65532,gid=65532
   --tmpfs /data:rw,nosuid,nodev,size=2g,uid=65532,gid=65532)
 docker_local create "${common[@]}" --ip "$pd_ip" --memory 1g --name "$pd_name" \

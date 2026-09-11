@@ -23,6 +23,11 @@ Linux amd64 Runner 上拉取入口使用的固定镜像摘要，运行构建契�
 有限状态字段；失败退出清理时还输出各容器最后 100 行启动日志。没有放宽
 就绪期限，不打印完整容器环境或宿主配置。
 
+诊断版 Runner 随后确认根因：PD 可访问且仍在运行，TiKV 因容器文件描述符
+上限 65,536 低于其启动要求 123,880 而以退出码 1 退出（非 OOM）。入口现给
+本次临时容器显式设置 `--ulimit nofile=262144:262144`，不修改宿主 sysctl、
+不启用 privileged，也不改变真实 Kubernetes 部署。该修复仍需 Runner 验证。
+
 ```sh
 bash hack/backend-integration/run-real-local.sh --allow-local-containers
 bash hack/backend-integration/run-real-local.sh --allow-local-containers --race

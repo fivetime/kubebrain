@@ -29,6 +29,19 @@ func TestLocalProtocolEntryRejectsMissingConsentAndExternalTargets(t *testing.T)
 	}
 }
 
+func TestLocalProtocolSetsContainerFileDescriptorLimit(t *testing.T) {
+	source, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
+	require.NoError(t, err)
+	start := strings.Index(string(source), "common=(")
+	end := strings.Index(string(source), "\ndocker_local create \"${common[@]}\"")
+	require.GreaterOrEqual(t, start, 0)
+	require.Greater(t, end, start)
+	// The pinned TiKV binary requires >=123880; Runner defaults may be65536.
+	// Set container limits explicitly, not a host sysctl or privileged flag.
+	require.Contains(t, string(source[start:end]), "--ulimit nofile=262144:262144")
+	require.NotContains(t, string(source[start:end]), "--privileged")
+}
+
 func TestLocalProtocolExplicitSubnetReservation(t *testing.T) {
 	source, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
 	require.NoError(t, err)
