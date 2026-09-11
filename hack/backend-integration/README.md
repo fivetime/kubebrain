@@ -7,12 +7,20 @@
 
 `backend-integration.yml` 新增独立 `real-protocol` 门禁：在可信 self-hosted
 Linux amd64 Runner 上拉取入口使用的固定镜像摘要，运行构建契约、vet、
-十例真实协议普通版与 race 版，以及两个启动阶段的中断清理测试。每次入口
+十一例真实协议普通版与 race 版，以及两个启动阶段的中断清理测试。每次入口
 使用全新的临时集群，不能用同一前缀的 `-count` 重复 Region 分裂测试。
 主 CI 通过仓库内可复用工作流调用同一门禁，旧 mock 门禁已移除。
 Runner 在 `a5f8e0bd` 的作业 `103343113136` 已完成：普通/race 各十项
 明确 PASS，两阶段启动中断清理通过；完整日志已留存，不将单副本临时测试
 描述为生产性能或多副本持久性验收。
+
+新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
+在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键
+Commit 和后台 ResolveLock。读取仍返回已提交值，且观察到主键状态查询。
+这验证后台锁清理无需阻塞该读取，不是证明锁清理没有负载成本；不能将 SDK
+ResolveLock 总耗时直接归入前台 Put/Range 延迟，也不能据此启用生产 1PC。
+2026-09-11 本地普通/race 各十一例通过，独立检查临时容器、网络、编译测试
+文件均已清理；新增用例的远端 CI 结果需另行核验，不沿用上面的十例历史结果。
 
 首轮 Runner 验证在创建容器前失败：该 Docker 版本拒绝在自动分配子网的网络
 上指定静态 IP。本机版本未拒绝，因此保留这次 CI 失败记录。入口现先由 Docker

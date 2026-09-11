@@ -149,13 +149,16 @@ for test_name in TestRealTiKVProtocolSmoke TestRealTiKVOnePCResponseLoss \
   TestRealTiKVOnePCCancelAfterResponseLoss TestRealTiKVBackendResolvesCancelledOnePC \
   TestRealTiKVBackendResolvesUndeliveredOnePC TestRealTiKVBackendRetriesCommittedOnePC \
   TestRealTiKVBackendRetriesUndeliveredOnePC TestRealTiKVBackendRegionSplitFallback \
-  TestRealTiKVBackendNoRPCRetryCommittedOnePC TestRealTiKVBackendNoRPCRetryUndeliveredOnePC; do
+  TestRealTiKVBackendNoRPCRetryCommittedOnePC TestRealTiKVBackendNoRPCRetryUndeliveredOnePC \
+  TestRealTiKVReadBypassesPendingSecondaryCleanup; do
   nonce="$(openssl rand -hex 16)"
+  protocol_mode=1pc
+  if [[ "$test_name" == TestRealTiKVReadBypassesPendingSecondaryCleanup ]]; then protocol_mode=2pc; fi
   case_result=0
   KUBEBRAIN_TIKV_PROTOCOL_PD="$pd_endpoint" KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID="$cluster_id" \
     KUBEBRAIN_TIKV_PROTOCOL_ALLOW_REGION_SPLIT=1 \
     KUBEBRAIN_TIKV_PROTOCOL_ENABLE_TEST_FAILPOINTS=1 \
-    KUBEBRAIN_TIKV_PROTOCOL_PREFIX="kubebrain/protocol-smoke/$nonce/" KUBEBRAIN_TIKV_PROTOCOL_MODE=1pc \
+    KUBEBRAIN_TIKV_PROTOCOL_PREFIX="kubebrain/protocol-smoke/$nonce/" KUBEBRAIN_TIKV_PROTOCOL_MODE="$protocol_mode" \
     timeout --signal=TERM --kill-after=10s 130s "$evidence/protocol.test" \
     -test.run="^$test_name$" -test.v -test.count=1 -test.timeout=120s > "$evidence/$test_name.log" 2>&1 || case_result=$?
   verify_case_result "$case_result" "$test_name" "$evidence/$test_name.log"
