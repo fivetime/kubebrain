@@ -206,6 +206,8 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	attempts := client.requestSnapshot()
 	require.Equal(t, samples, attempts["prewrite"], "include unsuccessful RPC attempts, not only successful responses")
 	require.Equal(t, want.Commit, attempts["commit"])
+	require.Equal(t, 2*samples, attempts["get"], "allocator read must share the transactional guard prefetch")
+	require.Equal(t, 3*samples, attempts["batch_get"], "prefetch must not add an extra wire request")
 	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, warmup, samples, len(value), quota, durations, stats)
 	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_foreground_only excludes=background_and_unmarked_work", attempts)
 }

@@ -206,10 +206,23 @@ func (b *backend) stageNextDurableRevision(batch storage.BatchWrite, stage func(
 // stageNextDurableRevisionAfter atomically folds an observed committed floor
 // into the durable counter before allocating. The floor protects recovery and
 // compatibility states that may be newer than a stale durable counter.
-func (b *backend) stageNextDurableRevisionAfter(batch storage.BatchWrite, floor uint64, stage func(context.Context, storage.AtomicBatch, uint64) error) *uint64 {
+func (b *backend) stageNextDurableRevisionAfter(batch storage.BatchWrite, floor uint64, stage func(context.Context, storage.AtomicBatch, uint64) error, readKeys ...[]byte) *uint64 {
 	var allocated uint64
 	key := b.ks.EncodeInternalKey(durableRevisionKey)
 	batch.Atomic(func(ctx context.Context, txn storage.AtomicBatch) error {
+		// Fetch the allocator and known guard reads at this transaction's own
+		// snapshot. Get and all later comparisons still execute; this must not
+		// turn a pre-read outside the transaction into a trusted allocator value.
+		if len(readKeys) != 0 {
+			if prefetcher, ok := txn.(storage.AtomicBatchPrefetcher); ok {
+				keys := make([][]byte, 1, 1+len(readKeys))
+				keys[0] = key
+				keys = append(keys, readKeys...)
+				if err := prefetcher.Prefetch(ctx, keys); err != nil {
+					return err
+				}
+			}
+		}
 		current, err := txn.Get(ctx, key)
 		var revision uint64
 		switch {

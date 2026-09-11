@@ -3,6 +3,7 @@ package backend
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
@@ -13,6 +14,83 @@ type atomicPrefetchRecorder struct {
 	values map[string][]byte
 	reads  [][]byte
 	writes []string
+}
+
+type allocatorPrefetchBatch struct {
+	storage.BatchWrite
+	fn func(context.Context, storage.AtomicBatch) error
+}
+
+func (b *allocatorPrefetchBatch) Atomic(fn func(context.Context, storage.AtomicBatch) error) {
+	b.fn = fn
+}
+
+func TestAllocatorPrefetchPreservesRevisionValidation(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := b.ks.EncodeInternalKey(durableRevisionKey)
+	guard := []byte("guard")
+	for _, tc := range []struct {
+		name    string
+		value   []byte
+		want    uint64
+		wantErr error
+	}{
+		{"absent", nil, 11, nil},
+		{"present", encodeQuotaUsage(20), 21, nil},
+		{"corrupt", []byte("invalid"), 0, ErrInvalidMVCCMetadata},
+		{"exhausted", encodeQuotaUsage(math.MaxInt64 - 1), 0, ErrRevisionExhausted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, prefetch := range []bool{false, true} {
+				recorder := &atomicPrefetchRecorder{values: map[string][]byte{}}
+				if tc.value != nil {
+					recorder.values[string(key)] = tc.value
+				}
+				var txn storage.AtomicBatch = recorder
+				batched := &prefetchingAtomicRecorder{atomicPrefetchRecorder: recorder}
+				if prefetch {
+					txn = batched
+				}
+				batch := &allocatorPrefetchBatch{}
+				called := false
+				allocated := b.stageNextDurableRevisionAfter(batch, 10, func(_ context.Context, _ storage.AtomicBatch, revision uint64) error {
+					called = true
+					require.Equal(t, tc.want, revision)
+					return nil
+				}, guard)
+				err := batch.fn(ctx, txn)
+				if tc.wantErr != nil {
+					require.ErrorIs(t, err, tc.wantErr)
+				} else {
+					require.NoError(t, err)
+				}
+				require.Equal(t, tc.want, *allocated)
+				require.Equal(t, tc.wantErr == nil, called)
+				require.Equal(t, [][]byte{key}, recorder.reads, "prefetch cannot replace allocator validation")
+				if prefetch {
+					require.Equal(t, [][]byte{key, guard}, batched.keys)
+				}
+				if tc.wantErr != nil {
+					require.Empty(t, recorder.writes)
+				}
+			}
+		})
+	}
+}
+
+func TestAllocatorPrefetchFailureDoesNotAllocate(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	want := errors.New("prefetch unavailable")
+	txn := &prefetchingAtomicRecorder{atomicPrefetchRecorder: &atomicPrefetchRecorder{}, err: want}
+	batch := &allocatorPrefetchBatch{}
+	allocated := b.stageNextDurableRevisionAfter(batch, 10, func(context.Context, storage.AtomicBatch, uint64) error {
+		t.Fatal("must not stage on prefetch failure")
+		return nil
+	}, []byte("guard"))
+	require.ErrorIs(t, batch.fn(ctx, txn), want)
+	require.Zero(t, *allocated)
+	require.Empty(t, txn.reads)
+	require.Empty(t, txn.writes)
 }
 
 func (r *atomicPrefetchRecorder) Get(_ context.Context, key []byte) ([]byte, error) {

@@ -806,7 +806,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	batch := b.kv.BeginBatchWrite()
 	allocated := b.stageNextDurableRevisionAfter(batch, baseRevision, func(callbackCtx context.Context, txn storage.AtomicBatch, revision uint64) error {
 		return b.stageTxnAtomic(callbackCtx, txn, preps, guardPreps, revision, quotaUsageRaw, nextQuotaUsage, corruptGuard)
-	})
+	}, b.txnAtomicReadKeys(preps, guardPreps, corruptGuard)...)
 	cerr := b.commitUserBatch(ctx, batch)
 	newRevision = *allocated
 	discardTxnPutPreviousValues(preps)
