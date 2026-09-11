@@ -18,6 +18,12 @@
 完整失败证据：`/root/.local/state/kubebrain/e2e-split-observe.u8lzxE0V/`；
 本机调查：`/root/.local/state/kubebrain/restored-auth-investigation.8peghe7t/`。
 
+针对该失败，探针新增固定格式的 Watch 响应诊断：响应头是否存在、集群/成员 ID、
+修订号、Raft term、创建/取消状态、事件数量及上下文是否结束。上下文状态在主动
+取消 Watch 之前采集；无响应头时明确标记未知，不推断服务成员。新增字段不包含
+token、密码或事件正文，不新增 RPC/重试，不改变允许/拒绝权限判断。此诊断尚未
+用于新的集群观测，不代表认证错误已修复。
+
 基线端到端短时观测（2026-09-11）：当前运行镜像 `0ce85e66`、三副本、不滚动，
 使用规范 runner 的 `OBSERVE_ONLY=true` 执行 300 次操作。public watch=300，
 direct watch=300×3，lease 存活，Range=70、Snapshot=1，无 stream 重试；所有权清理通过。

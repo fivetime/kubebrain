@@ -839,18 +839,21 @@ func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expe
 			cancelWatch()
 			return closeErr
 		}
+		// Capture before our own cancellation; otherwise every response would
+		// misleadingly appear to have arrived on a canceled context.
+		watchEvidence := restoredAuthWatchEvidence(response, watchCtx.Err())
 		cancelWatch()
 		if expected.read {
 			if err := response.Err(); err != nil || response.Canceled || !response.Created {
-				return fmt.Errorf("restored auth Watch was denied for user=%q key=%q: %v", expected.username, expected.key, response.Err())
+				return fmt.Errorf("restored auth Watch was denied for user=%q key=%q: %v (%s)", expected.username, expected.key, response.Err(), watchEvidence)
 			}
 		} else {
 			watchErr := response.Err()
 			if !errors.Is(watchErr, rpctypes.ErrPermissionDenied) && status.Code(watchErr) != codes.PermissionDenied &&
 				response.CancelReason != rpctypes.ErrGRPCPermissionDenied.Error() &&
 				(watchErr == nil || watchErr.Error() != rpctypes.ErrGRPCPermissionDenied.Error()) {
-				return fmt.Errorf("restored auth Watch returned %v reason=%q for denied user=%q key=%q",
-					watchErr, response.CancelReason, expected.username, expected.key)
+				return fmt.Errorf("restored auth Watch returned %v reason=%q for denied user=%q key=%q (%s)",
+					watchErr, response.CancelReason, expected.username, expected.key, watchEvidence)
 			}
 		}
 	case <-ctx.Done():
@@ -916,6 +919,16 @@ func verifyRestoredAuthAccess(ctx context.Context, client *clientv3.Client, expe
 		}
 	}
 	return nil
+}
+
+// Only fixed-format envelope metadata is added here: no token, credentials,
+// event payload, or unrestricted server error text. Missing headers explicitly
+// remain unknown; a transport-level error need not identify its serving member.
+func restoredAuthWatchEvidence(response clientv3.WatchResponse, contextErr error) string {
+	return fmt.Sprintf("header_present=%t cluster_id=%d member_id=%d revision=%d raft_term=%d created=%t canceled=%t compact_revision=%d events=%d context_done=%t",
+		response.Header != nil, response.Header.GetClusterId(), response.Header.GetMemberId(),
+		response.Header.GetRevision(), response.Header.GetRaftTerm(), response.Created, response.Canceled,
+		response.CompactRevision, len(response.Events), contextErr != nil)
 }
 
 func restoredAuthWatchCloseError(ctx context.Context, username, key string) error {

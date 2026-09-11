@@ -38,6 +38,21 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 )
 
+func TestRestoredAuthWatchEvidence(t *testing.T) {
+	response := clientv3.WatchResponse{
+		Header:   &etcdserverpb.ResponseHeader{ClusterId: 11, MemberId: 12, Revision: 13, RaftTerm: 14},
+		Canceled: true, CancelReason: "secret-token-must-not-be-added",
+		Events: []*clientv3.Event{{Kv: &mvccpb.KeyValue{Value: []byte("private-value")}}},
+	}
+	require.Equal(t, "header_present=true cluster_id=11 member_id=12 revision=13 raft_term=14 created=false canceled=true compact_revision=0 events=1 context_done=false",
+		restoredAuthWatchEvidence(response, nil))
+	require.Equal(t, "header_present=false cluster_id=0 member_id=0 revision=0 raft_term=0 created=false canceled=false compact_revision=0 events=0 context_done=true",
+		restoredAuthWatchEvidence(clientv3.WatchResponse{}, context.Canceled))
+	response.Created, response.Canceled, response.CompactRevision = true, false, 9
+	require.Contains(t, restoredAuthWatchEvidence(response, context.DeadlineExceeded),
+		"created=true canceled=false compact_revision=9 events=1 context_done=true")
+}
+
 func TestSnapshotAuthFixtureInstallCleanupAndCollisionOwnership(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
