@@ -170,6 +170,14 @@ func TestLocalProtocolCleanupOwnershipAndFailures(t *testing.T) {
 			command.Env = append(os.Environ(), "EVIDENCE="+dir, "CASE="+tc.name, "INITIAL="+tc.initial)
 			output, runErr := command.CombinedOutput()
 			require.Contains(t, string(output), "LOCAL_PROTOCOL_END", "report must escape interrupted command redirection")
+			if tc.name == "owned" {
+				if tc.initial == "0" {
+					require.NotContains(t, string(output), "LOCAL_PROTOCOL_CONTAINER_LOG")
+				} else {
+					require.Contains(t, string(output), "LOCAL_PROTOCOL_CONTAINER_LOG name=fixture-tikv")
+					require.Contains(t, string(output), "fixture server diagnostic")
+				}
+			}
 			idOutput, readErr := os.ReadFile(filepath.Join(dir, "id-output"))
 			require.NoError(t, readErr)
 			require.Empty(t, idOutput, "cleanup must not corrupt the resource ID file")
@@ -245,7 +253,9 @@ docker_local() {
       ;;
     'network rm') [[ "$CASE" != network-remove-failed ]] || return 1 ;;
     'rm -f') [[ "$CASE" != remove-failed ]] || return 1 ;;
-    logs*) [[ "$CASE" != logs-failed ]] || return 1 ;;
+    logs*)
+      [[ "$CASE" != logs-failed ]] || return 1
+      echo 'fixture server diagnostic' ;;
     *) echo "unexpected Docker operation: $*" >&2; return 1 ;;
   esac
 }

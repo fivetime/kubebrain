@@ -17,6 +17,12 @@ Linux amd64 Runner 上拉取入口使用的固定镜像摘要，运行构建契�
 指定相同子网和网关重建；并发分配冲突会失败退出，不复用或修改外部网络。
 所有权变化、网络被占用、状态缺失、删除失败及重建冲突均有失败关闭契约。
 
+第二轮 Runner 已越过静态 IP 创建错误，但在 90 秒就绪检查处超时，协议测试
+尚未开始；该次日志报告清理成功。超时根因尚未确定，不能将其算作修复通过。
+入口在就绪失败时输出最后一次 HTTP 错误、PD stores 响应和本次两个容器的
+有限状态字段；失败退出清理时还输出各容器最后 100 行启动日志。没有放宽
+就绪期限，不打印完整容器环境或宿主配置。
+
 ```sh
 bash hack/backend-integration/run-real-local.sh --allow-local-containers
 bash hack/backend-integration/run-real-local.sh --allow-local-containers --race

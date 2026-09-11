@@ -34,6 +34,10 @@ cleanup() {
       id="$(jq -er --arg key "$label" --arg owner "$owner" \
         'select(length == 1) | .[0] | select(.Config.Labels[$key] == $owner) | .Id' <<<"$inspect")" || { failed=1; continue; }
       docker_local logs "$id" > "$evidence/$name.log" 2>&1 || failed=1
+      if [[ "$result" != 0 ]]; then
+        printf 'LOCAL_PROTOCOL_CONTAINER_LOG name=%s\n' "$name" >&"$report_fd"
+        tail -n 100 "$evidence/$name.log" >&"$report_fd" || failed=1
+      fi
       docker_local rm -f "$id" >/dev/null || failed=1
     else
       # A failed inspect is not proof of absence if the daemon is unavailable.
@@ -108,9 +112,19 @@ docker_local create "${common[@]}" --ip "$tikv_ip" --memory 2g --name "$tikv_nam
 tikv_id="$(<"$evidence/tikv-id")"
 docker_local start "$tikv_id" >/dev/null
 deadline=$((SECONDS + 90))
-until curl --noproxy '*' --fail --silent --max-time 3 "http://$pd_endpoint/pd/api/v1/stores" > "$evidence/stores.json" &&
+until curl --noproxy '*' --fail --silent --show-error --max-time 3 "http://$pd_endpoint/pd/api/v1/stores" > "$evidence/stores.json" 2> "$evidence/readiness-error.log" &&
   jq -e '.count == 1 and .stores[0].store.state_name == "Up"' "$evidence/stores.json" >/dev/null; do
-  (( SECONDS < deadline )) || { echo 'isolated TiKV readiness timeout' >&2; exit 1; }
+  if (( SECONDS >= deadline )); then
+    echo 'isolated TiKV readiness timeout' >&2
+    printf 'LOCAL_PROTOCOL_READINESS_FAILED pd_endpoint=%s\n' "$pd_endpoint" >&2
+    tail -n 20 "$evidence/readiness-error.log" "$evidence/stores.json" >&2
+    # Only fixture container state, not arbitrary inspect output or host config.
+    for name in "$pd_name" "$tikv_name"; do
+      docker_local container inspect "$name" | jq -c \
+        '.[0] | {name: .Name, state: {status: .State.Status, exit_code: .State.ExitCode, oom_killed: .State.OOMKilled, error: .State.Error}}' >&2 || true
+    done
+    exit 1
+  fi
   sleep 1
 done
 curl --noproxy '*' --fail --silent --show-error --max-time 5 \
