@@ -5,6 +5,16 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+预取冲突回归补充：`TestAtomicPrefetchConflictRequiresFreshTransaction` 使用
+客户端 SDK 与模拟 TiKV，分别覆盖预取时键已存在／不存在。竞争事务先提交后，
+旧事务仍读到旧快照，但实际 Commit 必须报 WriteConflict，且不能发布伴随
+payload；重建事务必须读到竞争者的新值，随后提交的键与 payload 均可读。
+与原快照／读己之写用例一起运行十轮 race 通过（1.338 秒）。这是确定性
+客户端事务语义测试，不是真实 PD/TiKV 并发或故障测试，不关闭以下性能门限。
+日志：`/root/.local/state/kubebrain/atomic-prefetch-conflict-race.log`。
+随后存储适配器包 race 通过（1.883 秒，未启用外部真实协议用例），vet 通过；
+完整包日志为同目录 `atomic-prefetch-conflict-full-race.log`。
+
 最新正式复验（2026-09-11，`2352b9bf`）：事务内 revision 预取优化已部署，
 三副本完成滚动更新，探针覆盖滚动过程。保持 6000 次、操作后 100ms、公共
 5s／直连流 30s、滚动完成后 900s 原门限，仍因未在完成窗口内结束而失败，

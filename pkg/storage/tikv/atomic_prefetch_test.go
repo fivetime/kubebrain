@@ -8,10 +8,79 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/stretchr/testify/require"
+	tikverr "github.com/tikv/client-go/v2/error"
 	"github.com/tikv/client-go/v2/testutils"
 	clienttikv "github.com/tikv/client-go/v2/tikv"
 	"github.com/tikv/client-go/v2/tikvrpc"
 )
+
+func TestAtomicPrefetchConflictRequiresFreshTransaction(t *testing.T) {
+	for _, present := range []bool{false, true} {
+		name := "absent"
+		if present {
+			name = "present"
+		}
+		t.Run(name, func(t *testing.T) {
+			client, cluster, pd, err := testutils.NewMockTiKV("", nil)
+			require.NoError(t, err)
+			testutils.BootstrapWithSingleStore(cluster)
+			store, err := clienttikv.NewKVStore("prefetch-conflict-"+name, clienttikv.NewCodecPDClient(clienttikv.ModeTxn, pd), clienttikv.NewMockSafePointKV(), client)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, store.Close()) })
+			ctx := t.Context()
+			key, payload := []byte("allocator"), []byte("payload")
+			if present {
+				seed, err := store.Begin()
+				require.NoError(t, err)
+				require.NoError(t, seed.Set(key, []byte("old")))
+				require.NoError(t, seed.Commit(ctx))
+			}
+			stale, err := store.Begin()
+			require.NoError(t, err)
+			a := atomicBatch{txn: stale}
+			require.NoError(t, a.Prefetch(ctx, [][]byte{key, payload}))
+			winner, err := store.Begin()
+			require.NoError(t, err)
+			require.NoError(t, winner.Set(key, []byte("winner")))
+			require.NoError(t, winner.Commit(ctx))
+			value, err := a.Get(ctx, key)
+			if present {
+				require.NoError(t, err)
+				require.Equal(t, []byte("old"), value)
+			} else {
+				require.ErrorIs(t, err, storage.ErrKeyNotFound)
+			}
+			require.NoError(t, a.Put(key, []byte("loser"), 0))
+			require.NoError(t, a.Put(payload, []byte("must-not-commit"), 0))
+			err = stale.Commit(ctx)
+			require.Error(t, err)
+			require.True(t, tikverr.IsErrWriteConflict(err), "unexpected commit error: %v", err)
+
+			fresh, err := store.Begin()
+			require.NoError(t, err)
+			require.Greater(t, fresh.StartTS(), stale.StartTS())
+			retry := atomicBatch{txn: fresh}
+			require.NoError(t, retry.Prefetch(ctx, [][]byte{key, payload}))
+			value, err = retry.Get(ctx, key)
+			require.NoError(t, err)
+			require.Equal(t, []byte("winner"), value, "new attempt must not reuse the old prefetch cache")
+			_, err = retry.Get(ctx, payload)
+			require.ErrorIs(t, err, storage.ErrKeyNotFound, "failed attempt must not publish its payload")
+			require.NoError(t, retry.Put(key, []byte("retry"), 0))
+			require.NoError(t, retry.Put(payload, []byte("committed"), 0))
+			require.NoError(t, fresh.Commit(ctx))
+			reader, err := store.Begin()
+			require.NoError(t, err)
+			defer func() { require.NoError(t, reader.Rollback()) }()
+			value, err = reader.Get(ctx, key)
+			require.NoError(t, err)
+			require.Equal(t, []byte("retry"), value)
+			value, err = reader.Get(ctx, payload)
+			require.NoError(t, err)
+			require.Equal(t, []byte("committed"), value)
+		})
+	}
+}
 
 type prefetchRPCRecorder struct {
 	clienttikv.Client
