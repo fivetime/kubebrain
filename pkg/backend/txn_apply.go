@@ -570,8 +570,10 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 				if verr != nil {
 					return nil, 0, false, verr
 				}
+				var meta EtcdMetadata
 				if b.config.EnableEtcdCompatibility {
-					validationErr := b.validateEventObjectValue(ctx, op.Key, p.curRev, val)
+					var validationErr error
+					meta, validationErr = b.validatedEventObjectMetadata(ctx, op.Key, p.curRev, val)
 					if errors.Is(validationErr, ErrInvalidMVCCMetadata) {
 						validationErr = b.persistWitnessedObjectCorruption(
 							ctx, op.Key, p.curRev, b.coder.EncodeObjectKey(op.Key, p.curRev), val, validationErr,
@@ -588,17 +590,22 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 						return nil, 0, false, verr
 					}
 				}
-				meta, _, ok, decodeErr := DecodeInlineValueChecked(val)
-				if decodeErr != nil {
-					return nil, 0, false, decodeErr
-				}
-				if !ok {
-					meta, verr = b.GetEtcdMetadata(ctx, op.Key, p.curRev)
-					if verr != nil {
-						return nil, 0, false, verr
+				if !b.config.EnableEtcdCompatibility {
+					// Retain the non-etcd path's original validation/error order.
+					var ok bool
+					var decodeErr error
+					meta, _, ok, decodeErr = DecodeInlineValueChecked(val)
+					if decodeErr != nil {
+						return nil, 0, false, decodeErr
 					}
-				} else if validationErr := ValidateEtcdMetadataAtRevision(meta, p.curRev, "previous inline value metadata"); validationErr != nil {
-					return nil, 0, false, validationErr
+					if !ok {
+						meta, verr = b.GetEtcdMetadata(ctx, op.Key, p.curRev)
+						if verr != nil {
+							return nil, 0, false, verr
+						}
+					} else if validationErr := ValidateEtcdMetadataAtRevision(meta, p.curRev, "previous inline value metadata"); validationErr != nil {
+						return nil, 0, false, validationErr
+					}
 				}
 				if b.config.EnableEtcdCompatibility && op.PrevLeaseKnown && !InlineValueLeaseKnown(val) {
 					meta.Lease = op.PrevLease

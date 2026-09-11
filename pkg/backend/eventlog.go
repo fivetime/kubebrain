@@ -419,15 +419,24 @@ func (b *backend) eventLogWatchEvents(ctx context.Context, prefix string, fromRe
 // envelopes validate without another storage read; legacy raw values retain
 // their exact-revision etcdmeta/recovery compatibility path.
 func (b *backend) validateEventObjectValue(ctx context.Context, userKey []byte, revision uint64, stored []byte) error {
+	_, err := b.validatedEventObjectMetadata(ctx, userKey, revision, stored)
+	return err
+}
+
+// Return the metadata from the same validation so mutation preparation need
+// not decode the inline envelope or resolve legacy metadata a second time.
+func (b *backend) validatedEventObjectMetadata(ctx context.Context, userKey []byte, revision uint64, stored []byte) (EtcdMetadata, error) {
 	meta, _, inlined, err := DecodeInlineValueChecked(stored)
 	if err != nil {
-		return err
+		return EtcdMetadata{}, err
 	}
 	if inlined {
-		return ValidateEtcdMetadataAtRevision(meta, revision, "event object inline value metadata")
+		if err := ValidateEtcdMetadataAtRevision(meta, revision, "event object inline value metadata"); err != nil {
+			return EtcdMetadata{}, err
+		}
+		return meta, nil
 	}
-	_, err = b.GetEtcdMetadata(ctx, userKey, revision)
-	return err
+	return b.GetEtcdMetadata(ctx, userKey, revision)
 }
 
 func validateEventLogEntries(entries []eventLogPending) error {
