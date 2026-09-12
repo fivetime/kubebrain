@@ -5,6 +5,17 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+持续写入路径调查（2026-09-12，测试变更，未改运行代码）：新增
+`TestPlainPutTransactionPathDifferential`，使用两套独立真实 backend + memkv，
+比较已有 `backendShim.Put` 与单操作 `TxnApply` 两个入口。在无租约、明确
+旧租约为 0、PrevKv=true 的场景下，创建／更新／空值更新／删除后重建的
+Put 响应、PrevKv 和各历史 revision 的 Range 结果一致。四次 Put 的适配层
+Backend.Get 次数均为普通入口 1、事务入口 0；不是 TiKV RPC 计数，也不是
+延迟收益证明。目标 race 回归通过（1.242s）。这提示可研究取消适配层的
+Get→Create/Update 循环，但当前公共 Put 路径保持不变。正式替换前仍需覆盖
+IgnoreValue/IgnoreLease、PrevKv=false、旧 raw/v1 租约来源和孤立索引修复、
+权限配置变更、配额／CORRUPT 门禁、竞争和不确定提交；不能绕过这些职责。
+
 扫描页优化真实验收终态（2026-09-12）：运行源码 `4374cfa6`、已审计镜像
 `sha256:77b462ea2f5b6b9bf714ed3bc53245c6c96c4388ba151c943c31877204fb6fa4`
 完成 3 副本滚动升级，实际 amd64 摘要与审计一致，探针覆盖升级过程；但随后
