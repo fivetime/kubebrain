@@ -5,6 +5,17 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+Put 提交保护窗口回归（2026-09-12，仅测试）：新增
+`TestPutPathsRejectGuardChangedAtCommit`，普通 Put／单操作 TxnApply × 新建／
+更新四组，在请求和后端准备完成、底层批次提交前切换内部权限保护值。
+两条入口均返回 `ErrInternalWriteGuardConflict`，读取结果及可见 revision 不变，
+新保护值未被覆盖；随后使用新值提交只推进一个 revision。目标 race 回归
+通过（1.287s）。这验证保护值传递，不等于真实 TiKV 冲突、token 认证或 RBAC
+策略验收。初版测试夹具因 memkv 从 BeginBatchWrite 起持锁而发生重入死锁，
+在原 2 分钟时限超时；修正版先记录批次操作，再切换保护值并交给底层执行，
+同一时限及断言通过。与生命周期差分、孤立索引恢复、Put Ignore 回归合并
+race 连续三轮通过（2.412s），vet 通过。产品代码和集群未改动。
+
 Put 路径兼容性覆盖扩展（2026-09-12，仅测试）：差分回归现覆盖 PrevKv
 true/false × 无租约/内联租约 ID 变化四组，增加当前值、Lease、Version 与
 CreateRevision 的独立期望断言；每组四次写入仍为适配层 Get 1 对 0。
