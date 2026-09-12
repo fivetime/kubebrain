@@ -8,6 +8,7 @@ import (
 	"github.com/golang/mock/gomock"
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 	"github.com/stretchr/testify/require"
@@ -17,6 +18,38 @@ import (
 type putPathReadCounter struct {
 	backend.Backend
 	gets atomic.Int64
+}
+
+// A plain Put must not turn a read-visible legacy orphan into a new lifecycle.
+// This pins a responsibility of the pre-read/Create/Update path before it can
+// be replaced by an unconditional transaction. Count-index corruption policy
+// is separate; this fixture deliberately exercises the legacy recovery mode.
+func TestPlainPutPreservesOrphanLifecycle(t *testing.T) {
+	m := mock.NewMinimalMetrics(gomock.NewController(t))
+	kv := memkv.NewKvStorage()
+	raw := backend.NewBackend(kv, backend.Config{Identity: "put-orphan", EnableEtcdCompatibility: true}, m)
+	t.Cleanup(func() { require.NoError(t, raw.(interface{ Close() error }).Close()) })
+	raw.SetCurrentRevision(100)
+	shim := NewBackendShim(raw, m).(*backendShim)
+	ctx := backend.WithPreviousLease(context.Background(), 0)
+	key := []byte("/put-path/orphan")
+	created, err := shim.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("old")})
+	require.NoError(t, err)
+	ks, err := coder.NewKeyspace("")
+	require.NoError(t, err)
+	require.NoError(t, kv.Del(ctx, ks.NewCoder().EncodeRevisionKey(key)))
+	updated, err := shim.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("new"), PrevKv: true})
+	require.NoError(t, err)
+	require.NotNil(t, updated.PrevKv)
+	require.Equal(t, []byte("old"), updated.PrevKv.Value)
+	require.Equal(t, created.Header.Revision, updated.PrevKv.CreateRevision)
+	require.Equal(t, created.Header.Revision+1, updated.Header.Revision)
+	current, err := shim.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Len(t, current.Kvs, 1)
+	require.Equal(t, []byte("new"), current.Kvs[0].Value)
+	require.EqualValues(t, 2, current.Kvs[0].Version)
+	require.Equal(t, created.Header.Revision, current.Kvs[0].CreateRevision)
 }
 
 func (b *putPathReadCounter) Get(ctx context.Context, r *proto.GetRequest) (*proto.GetResponse, error) {
@@ -29,6 +62,23 @@ func (b *putPathReadCounter) Get(ctx context.Context, r *proto.GetRequest) (*pro
 // Ignore options, legacy repair, auth changes and contention need separate
 // coverage before replacing the public path with an unconditional transaction.
 func TestPlainPutTransactionPathDifferential(t *testing.T) {
+	for _, projection := range []struct {
+		name string
+		prev bool
+	}{{"return_previous", true}, {"discard_previous", false}} {
+		for _, lease := range []struct {
+			name string
+			ids  []int64
+		}{{"unleased", []int64{0, 0, 0, 0}}, {"lease_changes", []int64{11, 22, 0, 33}}} {
+			t.Run(projection.name+"/"+lease.name, func(t *testing.T) {
+				comparePlainPutTransactionPath(t, projection.prev, lease.ids)
+			})
+		}
+	}
+}
+
+func comparePlainPutTransactionPath(t *testing.T, prev bool, leases []int64) {
+	t.Helper()
 	newShim := func() (*backendShim, *putPathReadCounter) {
 		m := mock.NewMinimalMetrics(gomock.NewController(t))
 		raw := backend.NewBackend(memkv.NewKvStorage(), backend.Config{
@@ -43,6 +93,7 @@ func TestPlainPutTransactionPathDifferential(t *testing.T) {
 	transaction, transactionReads := newShim()
 	ctx := context.Background()
 	key := []byte("/put-path/key")
+	var previousLease int64
 	for i, value := range []string{"created", "updated", "", "recreated"} {
 		if i == 3 {
 			left, err := plain.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key, PrevKv: true})
@@ -50,21 +101,28 @@ func TestPlainPutTransactionPathDifferential(t *testing.T) {
 			right, err := transaction.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key, PrevKv: true})
 			require.NoError(t, err)
 			require.Equal(t, left, right)
+			previousLease = 0
 		}
 		plainReads.gets.Store(0)
 		transactionReads.gets.Store(0)
-		left, err := plain.Put(backend.WithPreviousLease(ctx, 0), &etcdserverpb.PutRequest{
-			Key: key, Value: []byte(value), PrevKv: true,
+		left, err := plain.Put(backend.WithPreviousLease(ctx, previousLease), &etcdserverpb.PutRequest{
+			Key: key, Value: []byte(value), PrevKv: prev, Lease: leases[i],
 		})
 		require.NoError(t, err)
 		right, rev, results, err := transaction.TxnApply(ctx, []backend.TxnWriteOp{{
-			Key: key, Value: []byte(value), PrevLeaseKnown: true, PrevLease: 0,
-		}}, nil, []bool{true})
+			Key: key, Value: []byte(value), Lease: leases[i], PrevLeaseKnown: true, PrevLease: previousLease,
+		}}, nil, []bool{prev})
 		require.NoError(t, err)
 		require.Len(t, right, 1)
 		require.Len(t, results, 1)
 		require.Equal(t, left, right[0].GetResponsePut())
 		require.Equal(t, left.Header.Revision, int64(rev))
+		if !prev || i == 0 || i == 3 {
+			require.Nil(t, left.PrevKv)
+		} else {
+			require.NotNil(t, left.PrevKv)
+			require.Equal(t, previousLease, left.PrevKv.Lease)
+		}
 		require.Zero(t, transactionReads.gets.Load(), "transaction entrypoint needs no shim pre-read")
 		t.Logf("operation=%d plain_adapter_gets=%d transaction_adapter_gets=%d", i,
 			plainReads.gets.Load(), transactionReads.gets.Load())
@@ -77,6 +135,18 @@ func TestPlainPutTransactionPathDifferential(t *testing.T) {
 			rightRange, err := transaction.Get(ctx, request)
 			require.NoError(t, err)
 			require.Equal(t, leftRange, rightRange)
+			if revision == int64(rev) {
+				require.Len(t, leftRange.Kvs, 1)
+				require.Equal(t, []byte(value), leftRange.Kvs[0].Value)
+				require.Equal(t, leases[i], leftRange.Kvs[0].Lease)
+				version, created := int64(i+1), int64(101)
+				if i == 3 {
+					version, created = 1, int64(rev)
+				}
+				require.Equal(t, version, leftRange.Kvs[0].Version)
+				require.Equal(t, created, leftRange.Kvs[0].CreateRevision)
+			}
 		}
+		previousLease = leases[i]
 	}
 }

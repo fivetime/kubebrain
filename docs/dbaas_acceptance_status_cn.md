@@ -5,6 +5,18 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+Put 路径兼容性覆盖扩展（2026-09-12，仅测试）：差分回归现覆盖 PrevKv
+true/false × 无租约/内联租约 ID 变化四组，增加当前值、Lease、Version 与
+CreateRevision 的独立期望断言；每组四次写入仍为适配层 Get 1 对 0。
+内联租约元数据验证不等于 Grant/Revoke/附件恢复流程验收。另新增
+`TestPlainPutPreservesOrphanLifecycle`：删除旧对象的 revision 索引后，
+普通 Put 必须修复索引，返回真实旧值、保留创建 revision、将 version 推进到
+2，且只消耗一次用户 revision。该用例使用未开启 count index 的旧数据恢复
+模式，不替代启用 count index 时的 CORRUPT 拒绝策略。两项最终 race 回归
+通过（1.431s）；此前四组差分与两个 Ignore 回归连续三轮通过（2.117s）。
+公共 Put 的预读还承担旧数据恢复职责，不能仅凭正常数据差分通过便直接删除。
+运行实现和测试集群均未变更；权限变更、冲突和不确定提交仍需覆盖。
+
 持续写入路径调查（2026-09-12，测试变更，未改运行代码）：新增
 `TestPlainPutTransactionPathDifferential`，使用两套独立真实 backend + memkv，
 比较已有 `backendShim.Put` 与单操作 `TxnApply` 两个入口。在无租约、明确
