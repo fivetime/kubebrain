@@ -12,7 +12,10 @@
 临时容器／网络／编译测试文件独立核验不存在；完整日志为
 `/root/.local/state/kubebrain/protocol-concurrent-final-real-race.log`，实际用例
 证据在 `/tmp/kubebrain-real-protocol.EEaa94xK7J/`。存储／构建契约包 race
-通过（2.006／2.501 秒），存储 vet 通过；尚无新增用例的远端 CI 结果。
+通过（2.006／2.501 秒），存储 vet 通过。随后提交 `0272fabf` 的远端 CI
+`34660932207` 成功；作业 `103463101007` 实际日志确认普通／race 各十三例
+通过，两轮 cleanup_failed=0，PD／TiKV 启动中断均退出 143 且资源不存在。
+下载日志：`/root/.local/state/kubebrain/0272fabf-real-protocol-ci.log`。
 本地余量断言十轮通过（1.876 秒）。开发时首次 CREATE 类型断言、合并前缀
 的清理余量断言和新增场景白名单遗漏均先失败，修正后完整重跑通过；未放宽
 100 键余量断言或 128 键总清理上限。该用例不保证每次都发生冲突，不替代
