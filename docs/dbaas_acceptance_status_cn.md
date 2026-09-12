@@ -26,6 +26,12 @@ backend 防护初始化与 TiKV 适配器，在三个 Region 的模拟 TiKV 上�
 `/root/.local/state/kubebrain/fence-prefetch-token-change-`。
 此项底层仍为模拟 TiKV，不是实际 Raft 故障证明；仅追加测试，不重启正在
 验证运行源码 `b1ff4d5a` 的 CI，不声称该旧 SHA 的 CI 包含本次追加用例。
+后续完整后端包 `go test -race ./pkg/backend -count=1 -timeout=10m` 通过
+（78.507s），终态日志 `fence-prefetch-full-backend-race.log` 保存在同私有目录。
+运行源码 `b1ff4d5a` 的协议 CI `34682794500`／作业 `103524409911`
+通过，实际日志 `b1ff4d5a-real-protocol-ci.log` 确认普通／race 各十三例、
+两轮 `cleanup_failed=0` 和两个中断清理通过。真实协议用例没有初始化完整
+生产防护，不能以这些通过结果声称成对防护预取已经在真实 TiKV 上被覆盖。
 
 生产防护写入形态回归（2026-09-12）：新增
 `TestProtocolProductionFencedShape`，在本地模拟 TiKV 的固定三个 Region 中，

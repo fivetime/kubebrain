@@ -33,6 +33,14 @@ BatchGet、Prewrite、Commit 等计数，不记录键或请求内容。单 Regio
 后台上下文，不是总请求数；本机单副本临时存储的耗时不设置生产性能通过线。
 上文十一例历史记录不代表新增第十二例已在远端验证。
 
+覆盖边界：该顺序延迟夹具没有创建生产资源锁及完整领导权／恢复防护，
+因此其单 Region 计数不代表生产提交形态，也不能验证只在两个防护均启用
+时执行的成对预取路径。`TestProtocolProductionFencedShape` 和
+`TestPrefetchedProductionFenceRejectsChangedToken` 补充了三 Region 模拟 TiKV
+上的形态与预取后 token 冲突验证，但不是本入口的真实 Raft 用例。完整防护
+初始化涉及 512 个分片键，后续真实覆盖需要独立设计所有权、键数量上限和
+失败清理；不要直接提高已有 128-key 上限或把模拟结果算作真实集成结果。
+
 第十三例 `TestRealTiKVBackendConcurrentWrites` 显式使用 2PC，在独立前缀中
 同步放行四个竞争事务，每个事务写入相同的两个键。校验四个唯一且连续的
 revision、每个 revision 的双键 Watch 批次、最终两键版本和值一致，以及配额
