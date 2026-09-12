@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -256,19 +257,22 @@ func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend
 	results := make(chan result, workers)
 	start := make(chan struct{})
 	type readResult struct {
-		response *proto.RangeResponse
-		err      error
+		response        *proto.RangeResponse
+		err             error
+		completedBefore uint64
 	}
+	var acknowledged atomic.Uint64
 	const readSamples = 16
 	reads := make(chan []readResult, 1)
 	go func() {
 		<-start
 		observed := make([]readResult, 0, readSamples)
 		for i := 0; i < readSamples; i++ {
+			floor := acknowledged.Load()
 			response, err := b.List(ctx, &proto.RangeRequest{
 				Key: []byte("/integration/contention/"), End: []byte("/integration/contention0"),
 			})
-			observed = append(observed, readResult{response: response, err: err})
+			observed = append(observed, readResult{response: response, err: err, completedBefore: floor})
 			if err != nil {
 				break
 			}
@@ -282,6 +286,13 @@ func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend
 			_, revision, err := b.TxnApply(ctx, []backend.TxnWriteOp{
 				{Key: left, Value: value}, {Key: right, Value: value},
 			}, nil)
+			if err == nil {
+				for old := acknowledged.Load(); revision > old; old = acknowledged.Load() {
+					if acknowledged.CompareAndSwap(old, revision) {
+						break
+					}
+				}
+			}
 			results <- result{revision: revision, value: value, err: err}
 		}(i)
 	}
@@ -292,6 +303,12 @@ func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend
 		outcomes[i] = <-results
 	}
 	observations := <-reads
+	// This sample cannot race an unfinished writer, and must exercise the
+	// acknowledgement floor even if all concurrent reads ran before any commit.
+	finalRange, finalErr := b.List(ctx, &proto.RangeRequest{
+		Key: []byte("/integration/contention/"), End: []byte("/integration/contention0"),
+	})
+	observations = append(observations, readResult{response: finalRange, err: finalErr, completedBefore: acknowledged.Load()})
 	values := make(map[uint64][]byte, workers)
 	for _, outcome := range outcomes {
 		require.NoError(t, outcome.err)
@@ -300,13 +317,17 @@ func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend
 		require.NotContains(t, values, outcome.revision, "concurrent transactions must not reuse a revision")
 		values[outcome.revision] = outcome.value
 	}
-	require.Len(t, observations, readSamples)
+	require.Equal(t, base+workers, acknowledged.Load())
+	require.Len(t, observations, readSamples+1)
+	var lastObserved uint64
 	for _, observation := range observations {
 		require.NoError(t, observation.err)
 		require.NotNil(t, observation.response)
 		require.False(t, observation.response.More)
 		kvs := observation.response.Kvs
 		if len(kvs) == 0 {
+			require.Zero(t, observation.completedBefore, "Range after acknowledged write must not be empty")
+			require.Zero(t, lastObserved, "sequential Range snapshots must not regress to empty")
 			continue // Valid if this snapshot predates all four commits.
 		}
 		require.Len(t, kvs, 2, "concurrent Range must not observe half a transaction")
@@ -314,6 +335,9 @@ func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend
 		require.NotNil(t, kvs[1])
 		require.ElementsMatch(t, [][]byte{left, right}, [][]byte{kvs[0].Key, kvs[1].Key})
 		require.Equal(t, kvs[0].Revision, kvs[1].Revision)
+		require.GreaterOrEqual(t, kvs[0].Revision, observation.completedBefore, "Range must include writes acknowledged before its invocation")
+		require.GreaterOrEqual(t, kvs[0].Revision, lastObserved, "sequential Range revisions must not regress")
+		lastObserved = kvs[0].Revision
 		require.Contains(t, values, kvs[0].Revision)
 		for _, kv := range kvs {
 			require.Equal(t, values[kv.Revision], backend.StripInlineValue(kv.Value))
@@ -346,5 +370,5 @@ func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend
 	require.NoError(t, err)
 	require.False(t, alarm)
 	require.EqualValues(t, usageBefore+int64(len(left)+len(right)+2), usage)
-	t.Logf("PROTOCOL_CONCURRENT_WRITES_PASSED workers=%d writes_per_txn=2 range_samples=%d revisions=%d..%d scope=bounded_contention_not_fault_or_soak", workers, readSamples, base+1, base+workers)
+	t.Logf("PROTOCOL_CONCURRENT_WRITES_PASSED workers=%d writes_per_txn=2 range_samples=%d post_ack_samples=1 revisions=%d..%d scope=bounded_contention_not_fault_or_soak", workers, readSamples, base+1, base+workers)
 }
