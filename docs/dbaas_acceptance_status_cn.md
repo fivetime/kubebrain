@@ -5,6 +5,20 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+认证调度条件复验（2026-09-12）：以 `GOMAXPROCS=2` 运行
+`TestRestoredSnapshotClientOnlyTLSWithDefaultPasswordCost` 三轮 race，通过
+（126.949 秒），未复现 invalid auth token。覆盖三个真实嵌入式 etcd 成员、
+默认 bcrypt 成本、client-only TLS、恢复数据规模及权限矩阵；测试断言恢复目录
+和临时身份清理为空。Go 调度并行度不等于容器 CPU 限额，此结果不排除容器
+限流或其他时序条件，不是部署验收。未修改产品代码、重试或集群资源配置。
+日志：`/root/.local/state/kubebrain/auth-restore-gomaxprocs2-race.log`。
+
+对应本地依赖源码核对：恢复配置沿用 embed 默认 simple token／300 秒 TTL，
+恢复验证上下文为 100 秒；`auth/simple_token.go` 等待 token 内索引的 applyWait，
+`etcdserver/server.go:applyAll` 在 applyEntries 后触发等待者。正常应用路径
+未显示“尚未应用认证条目就唤醒索引等待者”的顺序；这只是源码路径核对，
+不是原故障现场证据，也不能据此排除其他 token 失效或上下文取消原因。
+
 预取冲突回归补充：`TestAtomicPrefetchConflictRequiresFreshTransaction` 使用
 客户端 SDK 与模拟 TiKV，分别覆盖预取时键已存在／不存在。竞争事务先提交后，
 旧事务仍读到旧快照，但实际 Commit 必须报 WriteConflict，且不能发布伴随
