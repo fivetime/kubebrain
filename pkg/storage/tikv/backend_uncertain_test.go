@@ -222,8 +222,8 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
-	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "fenced", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
-	fenced := scenario == "fenced"
+	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
+	fenced := scenario == "fenced" || strings.HasPrefix(scenario, "fenced-")
 	retrying := strings.HasPrefix(scenario, "retry-")
 	noRPCRetry := strings.HasPrefix(scenario, "no-retry-")
 	splitting := scenario == "split"
@@ -320,12 +320,22 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		client.SetTiKVClient(loss)
 	}
 	m := &protocolResolutionMetrics{Metrics: metricmock.NewMinimalMetrics(ctrl)}
-	b := backend.NewBackend(kv, backend.Config{
+	backendKV := kv
+	var conflict *fenceChangeAfterPrefetch
+	if strings.HasPrefix(scenario, "fenced-") {
+		conflict = &fenceChangeAfterPrefetch{KvStorage: kv, target: prefix + "backend/" + strings.TrimPrefix(scenario, "fenced-") + "/"}
+		backendKV = conflict
+	}
+	b := backend.NewBackend(backendKV, backend.Config{
 		Prefix: prefix + "backend", Keyspace: ks.Name(), Identity: ks.Name(),
 		EnableEtcdCompatibility: true, StorageGCLifetime: 0, QuotaBackendBytes: quota,
 	}, m)
 	closer = b.(interface{ Close() error })
 	b.SetCurrentRevision(100)
+	if conflict != nil {
+		verifyRealProtocolFenceConflict(t, ctx, b, conflict, ks, strings.TrimPrefix(scenario, "fenced-"))
+		return
+	}
 	if fenced {
 		rpc := &fencedShapeClient{protocolLatencyClient: latencyClient, coordinationPrefix: prefix + "backend"}
 		client.SetTiKVClient(rpc)

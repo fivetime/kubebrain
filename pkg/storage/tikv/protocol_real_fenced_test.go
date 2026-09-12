@@ -3,11 +3,14 @@ package tikv
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend"
+	"github.com/kubewharf/kubebrain/pkg/backend/coder"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -20,6 +23,70 @@ import (
 // failures or production throughput.
 func TestRealTiKVBackendProductionFences(t *testing.T) {
 	testRealTiKVBackendScenario(t, "fenced")
+}
+
+func TestRealTiKVPrefetchedLeadershipConflict(t *testing.T) {
+	testRealTiKVBackendScenario(t, "fenced-election-fence")
+}
+
+func TestRealTiKVPrefetchedRestorationConflict(t *testing.T) {
+	testRealTiKVBackendScenario(t, "fenced-restoration-fence-shard")
+}
+
+func verifyRealProtocolFenceConflict(t *testing.T, ctx context.Context, b backend.Backend, wrapped *fenceChangeAfterPrefetch, ks *coder.Keyspace, target string) {
+	t.Helper()
+	// Registered after the scenario cleanup: restore our exact modification
+	// before backend.Close and the owned fixture's bounded deletion run.
+	t.Cleanup(func() {
+		if wrapped.changedKey == nil {
+			return
+		}
+		cleanupCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		batch := wrapped.KvStorage.BeginBatchWrite()
+		batch.CAS(wrapped.changedKey, wrapped.oldValue, []byte("changed-by-test"), 0)
+		require.NoError(t, batch.Commit(cleanupCtx))
+	})
+	require.NoError(t, b.EnsureQuotaInitialized(ctx))
+	require.NoError(t, b.GetResourceLock().Create(ctx, resourcelock.LeaderElectionRecord{HolderIdentity: b.GetResourceLock().Identity(), LeaseDurationSeconds: 30}))
+	_, _, ok := b.GetResourceLock().(election.StorageFenceTokenProvider).StorageFenceToken(0)
+	require.True(t, ok)
+	_, _, ok = b.GetResourceLock().(election.RestorationFenceTokenProvider).RestorationFenceToken(0)
+	require.True(t, ok)
+	b.SetLeadershipFence(func() (uint64, bool) { return 1, true })
+	ctx = backend.WithLeadershipEpoch(ctx, 1)
+	metadataBefore := make(map[string][]byte)
+	metadataAbsent := make(map[string]bool)
+	for _, name := range []string{"revision/committed", "quota/usage"} {
+		value, err := wrapped.KvStorage.Get(ctx, ks.EncodeInternalKey([]byte(name)))
+		require.True(t, err == nil || errors.Is(err, storage.ErrKeyNotFound))
+		metadataBefore[name] = bytes.Clone(value)
+		metadataAbsent[name] = errors.Is(err, storage.ErrKeyNotFound)
+	}
+	key := []byte("/integration/fenced/conflict")
+	wrapped.armed.Store(true)
+	_, _, err := b.TxnApply(context.WithValue(ctx, protocolLatencyMarker{}, true), []backend.TxnWriteOp{{Key: key, Value: []byte("must-not-publish")}}, nil)
+	want := backend.ErrLeadershipFenced
+	if target == "restoration-fence-shard" {
+		want = backend.ErrRestorationFenced
+	}
+	require.ErrorIs(t, err, want)
+	require.NotEmpty(t, wrapped.changedKey, "competitor must commit after real snapshot prefetch")
+	for _, physical := range [][]byte{ks.NewCoder().EncodeRevisionKey(key), ks.NewCoder().EncodeObjectKey(key, 101), ks.EncodeEventLogKey(101, key)} {
+		_, err := wrapped.KvStorage.Get(ctx, physical)
+		require.ErrorIs(t, err, storage.ErrKeyNotFound)
+	}
+	require.EqualValues(t, 100, b.GetCurrentRevision())
+	for name, before := range metadataBefore {
+		value, err := wrapped.KvStorage.Get(ctx, ks.EncodeInternalKey([]byte(name)))
+		if metadataAbsent[name] {
+			require.ErrorIs(t, err, storage.ErrKeyNotFound)
+		} else {
+			require.NoError(t, err)
+			require.Equal(t, before, value, "failed guard must not publish %s", name)
+		}
+	}
+	t.Logf("PROTOCOL_PREFETCH_CONFLICT_OK target=%s user_and_metadata_unpublished=true", target)
 }
 
 func verifyRealProtocolProductionFences(t *testing.T, ctx context.Context, b backend.Backend, rpc *fencedShapeClient) {

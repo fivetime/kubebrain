@@ -46,11 +46,22 @@ BatchGet、Prewrite、Commit 等计数，不记录键或请求内容。单 Regio
 标记上下文的实际 RPC 必须包含至少三次成对防护 BatchGet、零次防护单键 Get，
 两个防护族分别至少三次预写 mutation；重试可能增加次数，不把次数当作事务数。
 此例不强制 Region 布局，不证明多副本故障、真实 token 冲突或生产性能通过。
-只有此例采用独立清理预算：精确白名单为本次随机前缀下两族各 256 个小写
+此例及下面两项完整防护冲突用例采用独立清理预算：精确白名单为本次随机前缀下两族各 256 个小写
 两位十六进制分片键，另保留 128 个普通键预算（含 owner），总上限 640。
 近似分片名不获豁免；旧例仍只有 128 键。所有权检查、同事务 owner CAS 与
 删除、后台退出后清理、删除后缺席确认保持不变。清理单测覆盖上限边界、
 超限、近似名、owner 缺失／变化／竞争及无关键保留。
+
+第十五／十六例 `TestRealTiKVPrefetchedLeadershipConflict`／
+`TestRealTiKVPrefetchedRestorationConflict` 使用同一安全夹具，各自独立进程
+和随机前缀，显式 2PC／async commit 关闭。真实快照 Prefetch 完成后，另一
+真实事务 CAS 修改被预取的指定防护 token；原快照仍读取旧 token，原写入
+必须因提交冲突返回对应 LeadershipFenced／RestorationFenced。检查用户
+索引、对象、事件不存在，revision 可见性不前进，修订号分配器和配额不变。
+清理先以精确 CAS 恢复测试改写，再关闭后台与有界删除本次所有权范围。
+这是有意安排的真实事务竞争，不是进程崩溃、网络故障或多副本 Raft 验收。
+本地十六例 race 已通过，终态 result=0、cleanup_failed=0；证据目录
+`/tmp/kubebrain-real-protocol.0qhMwcpnxl/`。旧远端十三例结果不包含新增三例。
 
 第十三例 `TestRealTiKVBackendConcurrentWrites` 显式使用 2PC，在独立前缀中
 同步放行四个竞争事务，每个事务写入相同的两个键。校验四个唯一且连续的

@@ -5,6 +5,19 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+真实预取后 token 冲突补充（2026-09-12，本地验证，未部署）：新增独立
+领导权／恢复防护竞争用例。真实快照成对预取后，另一真实事务 CAS 修改
+选中的 token，确认原快照保留旧值；原写入分别返回对应防护错误。检查用户
+索引、对象、事件均未发布，修订号分配器、配额和可见 revision 不变。
+默认 2PC、async commit 关闭；沿用精确分片白名单预算与所有权清理，
+先 CAS 恢复本次改写，后退出后台并删除本次夹具。十六例 race 全通过，
+`result=0 cleanup_failed=0`，独立确认本次容器／网络／测试二进制均不存在。
+证据 `/tmp/kubebrain-real-protocol.0qhMwcpnxl/`，私有汇总日志
+`/root/.local/state/kubebrain/real-prefetch-conflict-local-race.log`。
+完整 TiKV/build 包 race 通过（2.834/2.527s），TiKV vet 通过。
+这补上了下文先前缺失的真实 token 冲突覆盖，不证明进程／网络／多副本
+Raft 故障或生产性能门禁通过；没有改运行代码和测试集群配置。
+
 真实完整防护补充（2026-09-12，本地验证，未部署）：新增
 `TestRealTiKVBackendProductionFences`，一次性真实 PD/TiKV 8.5.3 中使用
 真实资源锁初始化，关闭 1PC／async commit。三次写后读保持 revision 连续，
