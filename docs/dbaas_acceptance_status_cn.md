@@ -13,7 +13,10 @@
 十三例 race 全部通过，临时资源独立核验清理。证据：
 `/root/.local/state/kubebrain/protocol-concurrent-reads-real-race.log` 及
 `/tmp/kubebrain-real-protocol.IbbHKVumq5/`。这些有界采样不保证覆盖每个提交
-交错窗口，不是完整线性一致性证明；前一提交的 CI 不包含本次断言。
+交错窗口，不是完整线性一致性证明。提交 `7001fad0` 的 CI `34661956517`
+随后通过：作业 `103466115675` 日志确认普通／race 各十三例、两轮清理及
+PD／TiKV 两阶段中断清理通过。日志保留为
+`/root/.local/state/kubebrain/7001fad0-real-protocol-ci.log`；不替代生产验收。
 
 真实后端并发回归（2026-09-12）：隔离本机 PD/TiKV 8.5.3 的协议入口增加
 第十三例 `TestRealTiKVBackendConcurrentWrites`，显式 2PC，四个同步放行
