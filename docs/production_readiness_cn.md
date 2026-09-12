@@ -1254,6 +1254,14 @@ TLS 独立，因此明文 client + HTTPS info 也必须用 HTTPS readiness/preSt
 fixture 写入之前。cleanup 与 leader 发现不挂载 info CA。此新参数要求使用包含本次
 改动的探针镜像；旧镜像不支持，不能仅凭宿主机脚本更新认定升级门禁已可运行。
 
+滚动诊断可显式设置 `KEEP_RUNTIME_EVIDENCE=true`：runner 会打印
+`RUNTIME_EVIDENCE_DIRECTORY`，退出时保留本次 `mktemp` 创建的 0700 私有目录，
+并打印 `RUNTIME_EVIDENCE_RETAINED`。默认 false 仍删除该临时目录；非法布尔值
+在集群访问前拒绝。不接受外部目录作为覆盖／删除目标。此开关不保留集群
+Pod/Job，不跳过失败回滚或夹具清理，也不改变验收门限。保留内容仅包括
+runner 原本采集的有界证据，不自动添加所有副本日志；可能含诊断敏感信息，
+应按本地测试资料保管，不提交到仓库，分析结束后按精确目录清理。
+
 受控滚动期间的 `run-kubebrain-rollout-availability.sh` 还会运行 native availability probe。probe 不把
 clientv3 的 `err=nil` 单独视为成功：首次 prefix cleanup 固定非零 cluster ID，后续 Delete/Grant/Put、
 Put 不确定结果的 linearizable Get、Watch created/event、KeepAlive、TimeToLive、Revoke 与最终 cleanup Get

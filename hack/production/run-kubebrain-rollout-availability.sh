@@ -55,6 +55,7 @@ KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT="${KUBECTL_PHASE_WAIT_COMMAND_TIMEOUT:-5s}"
 UID_DELETE_COMMAND_TIMEOUT="${UID_DELETE_COMMAND_TIMEOUT:-60s}"
 ALLOW_MUTATING_KUBEBRAIN_ROLLOUT="${ALLOW_MUTATING_KUBEBRAIN_ROLLOUT:-false}"
 PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"
+KEEP_RUNTIME_EVIDENCE="${KEEP_RUNTIME_EVIDENCE:-false}"
 OBSERVE_ONLY="${OBSERVE_ONLY:-false}"
 HARD_FAILOVER="${HARD_FAILOVER:-false}"
 CONFIRM_KUBEBRAIN_HARD_FAILOVER="${CONFIRM_KUBEBRAIN_HARD_FAILOVER:-}"
@@ -76,6 +77,10 @@ SOURCE_SNAPSHOT_DRAIN_CAPABILITY=snapshot-history-pin-before-write-barrier-relea
 MAX_RUNTIME_EVIDENCE_BYTES=1048576
 MAX_PROBE_PHASE_RESPONSE_BYTES=4096
 
+if [[ "$KEEP_RUNTIME_EVIDENCE" != true && "$KEEP_RUNTIME_EVIDENCE" != false ]]; then
+  echo "KEEP_RUNTIME_EVIDENCE must be true or false" >&2
+  exit 2
+fi
 if [[ "$PREFLIGHT_ONLY" != true && "$PREFLIGHT_ONLY" != false ]]; then
   echo "PREFLIGHT_ONLY must be true or false" >&2
   exit 2
@@ -406,7 +411,20 @@ patch_kubebrain_spec() {
 }
 
 runtime_evidence_dir="$(mktemp -d)"
-trap 'rm -rf -- "$runtime_evidence_dir"' EXIT
+finish_runtime_evidence() {
+  if [[ "$KEEP_RUNTIME_EVIDENCE" == true ]]; then
+    # Only retain this invocation's mktemp-owned private directory. Never
+    # accept a caller-supplied deletion/overwrite target. Cluster compensation
+    # is independent and still runs before this function on the rollout path.
+    printf 'RUNTIME_EVIDENCE_RETAINED directory=%s\n' "$runtime_evidence_dir"
+  else
+    rm -rf -- "$runtime_evidence_dir"
+  fi
+}
+trap finish_runtime_evidence EXIT
+if [[ "$KEEP_RUNTIME_EVIDENCE" == true ]]; then
+  printf 'RUNTIME_EVIDENCE_DIRECTORY=%s\n' "$runtime_evidence_dir"
+fi
 capture_bounded_evidence() {
   local destination="$1" limit="$2" overflow_message="$3" size
   local -a pipeline_status=()
@@ -1161,7 +1179,7 @@ cleanup() {
       echo "CRITICAL: failed to compensate rollout fixture ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
     fi
   fi
-  rm -rf -- "$runtime_evidence_dir"
+  finish_runtime_evidence
   [[ "$rollback_failed" != true ]]
 }
 rollout_exit() {
