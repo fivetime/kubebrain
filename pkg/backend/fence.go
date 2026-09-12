@@ -69,15 +69,26 @@ func (b *leadershipFencedBatch) Commit(ctx context.Context) error {
 	} else {
 		restorationGuarded = false
 	}
-	if restorationGuarded {
-		b.BatchWrite.CAS(restorationKey, restorationToken, restorationToken, 0)
-	}
 	_, admitted := leadershipEpochFromContext(ctx)
 	provider, providerOK := b.storage.backend.election.GetResourceLock().(election.StorageFenceTokenProvider)
 	var key, token []byte
 	leadershipGuarded := false
 	if h.fn != nil && admitted && providerOK {
 		key, token, leadershipGuarded = provider.StorageFenceToken(b.shard)
+	}
+	if restorationGuarded && leadershipGuarded {
+		b.BatchWrite.Atomic(func(ctx context.Context, txn storage.AtomicBatch) error {
+			if prefetcher, ok := txn.(storage.AtomicBatchPrefetcher); ok {
+				// Read both guards at this transaction's own snapshot. The CAS
+				// operations below still compare and stage both mutations, so a
+				// concurrent token change remains a prewrite conflict.
+				return prefetcher.Prefetch(ctx, [][]byte{restorationKey, key})
+			}
+			return nil
+		})
+	}
+	if restorationGuarded {
+		b.BatchWrite.CAS(restorationKey, restorationToken, restorationToken, 0)
 	}
 	if leadershipGuarded {
 		// Writing the same token makes this shard part of the transaction's

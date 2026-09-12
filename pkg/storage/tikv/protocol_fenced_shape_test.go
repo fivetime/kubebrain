@@ -25,10 +25,25 @@ import (
 
 type fencedShapeClient struct {
 	*protocolLatencyClient
-	leadership, restoration atomic.Int32
+	leadership, restoration        atomic.Int32
+	fenceBatchGets, fencePointGets atomic.Int32
 }
 
 func (c *fencedShapeClient) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
+	isFence := func(key []byte) bool {
+		return strings.HasPrefix(string(key), "/kubebrain-internal/ks-fenced-shape/election-fence/") || strings.HasPrefix(string(key), "/kubebrain-internal/ks-fenced-shape/restoration-fence-shard/")
+	}
+	if ctx.Value(protocolLatencyMarker{}) == true {
+		if req.Type == tikvrpc.CmdGet && isFence(req.Get().Key) {
+			c.fencePointGets.Add(1)
+		}
+		if req.Type == tikvrpc.CmdBatchGet {
+			keys := req.BatchGet().Keys
+			if len(keys) == 2 && isFence(keys[0]) && isFence(keys[1]) {
+				c.fenceBatchGets.Add(1)
+			}
+		}
+	}
 	if ctx.Value(protocolLatencyMarker{}) == true && req.Type == tikvrpc.CmdPrewrite {
 		for _, mutation := range req.Prewrite().Mutations {
 			if strings.HasPrefix(string(mutation.Key), "/kubebrain-internal/ks-fenced-shape/election-fence/") {
@@ -120,6 +135,9 @@ func TestProtocolProductionFencedShape(t *testing.T) {
 					}
 					require.Equal(t, fenceMutations, rpc.leadership.Load(), "every measured batch must carry its leadership CAS mutation")
 					require.Equal(t, fenceMutations, rpc.restoration.Load(), "every measured batch must carry its restoration CAS mutation")
+					require.Equal(t, fenceMutations, rpc.fenceBatchGets.Load(), "guard pair shares one snapshot BatchGet per attempt")
+					require.Zero(t, rpc.fencePointGets.Load(), "CAS still executes but reads the prefetched snapshot")
+					t.Logf("FENCED_SHAPE_RPC_ATTEMPTS onepc_enabled=%t fenced=%t counts=%v", onePC, fenced, rpc.requestSnapshot())
 				})
 			}
 		})
