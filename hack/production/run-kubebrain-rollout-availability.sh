@@ -64,6 +64,7 @@ TARGET_IMAGE="${TARGET_IMAGE:-}"
 TARGET_RUNTIME_DIGESTS="${TARGET_RUNTIME_DIGESTS:-}"
 ENABLE_GRPC_CONNECTION_AGING_MIGRATION="${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}"
 ENABLE_HTTP_READINESS_MIGRATION="${ENABLE_HTTP_READINESS_MIGRATION:-false}"
+ENABLE_TEMPORARY_1PC_EXPERIMENT="${ENABLE_TEMPORARY_1PC_EXPERIMENT:-false}"
 PROBE_IMAGE="${PROBE_IMAGE:-}"
 PROBE_CLIENT_TLS_SECRET="${PROBE_CLIENT_TLS_SECRET:-}"
 PROBE_INFO_CA_CONFIGMAP="${PROBE_INFO_CA_CONFIGMAP:-}"
@@ -93,6 +94,14 @@ if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" != true && "$ENABLE_GRPC_CONNECT
 fi
 if [[ "$ENABLE_HTTP_READINESS_MIGRATION" != true && "$ENABLE_HTTP_READINESS_MIGRATION" != false ]]; then
   echo "ENABLE_HTTP_READINESS_MIGRATION must be true or false" >&2
+  exit 2
+fi
+if [[ "$ENABLE_TEMPORARY_1PC_EXPERIMENT" != true && "$ENABLE_TEMPORARY_1PC_EXPERIMENT" != false ]]; then
+  echo "ENABLE_TEMPORARY_1PC_EXPERIMENT must be true or false" >&2
+  exit 2
+fi
+if [[ "$ENABLE_TEMPORARY_1PC_EXPERIMENT" == true && ( -z "$TARGET_IMAGE" || "$OBSERVE_ONLY" == true || "$HARD_FAILOVER" == true || "$ENABLE_HTTP_READINESS_MIGRATION" == true || "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ) ]]; then
+  echo "temporary 1PC experiment requires TARGET_IMAGE and excludes other experiment/migration modes" >&2
   exit 2
 fi
 if [[ "$ALLOW_MUTATING_KUBEBRAIN_ROLLOUT" != true ]]; then
@@ -454,6 +463,12 @@ initial_spec="$(jq -cS '.spec' "$statefulset_json")" || exit 1
 candidate_spec="$initial_spec"
 restart_patch=""
 full_spec_migration=false
+if [[ "$ENABLE_TEMPORARY_1PC_EXPERIMENT" == true ]]; then
+  jq -e --argjson index "$kubebrain_container_index" '
+    all(.spec.template.spec.containers[$index].args[]?; startswith("--experimental-tikv-enable-1pc")|not)
+  ' "$statefulset_json" >/dev/null || { echo 'temporary 1PC experiment requires a source without the experimental flag' >&2; exit 1; }
+  full_spec_migration=true
+fi
 if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true || "$ENABLE_HTTP_READINESS_MIGRATION" == true ]]; then
   full_spec_migration=true
 fi
@@ -461,9 +476,13 @@ if [[ -n "$TARGET_IMAGE" ]]; then
   candidate_spec="$(jq -cS --arg image "$TARGET_IMAGE" --argjson index "$kubebrain_container_index" \
     --argjson migrate_aging "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" \
     --argjson migrate_readiness "$ENABLE_HTTP_READINESS_MIGRATION" \
+    --argjson temporary_onepc "$ENABLE_TEMPORARY_1PC_EXPERIMENT" \
     --arg max_age "$grpc_max_connection_age_arg" --arg max_age_grace "$grpc_max_connection_age_grace_arg" '
     .spec |
     .template.spec.containers[$index].image = $image |
+    if $temporary_onepc then
+      .template.spec.containers[$index].args += ["--experimental-tikv-enable-1pc=true"]
+    else . end |
     if $migrate_aging then
       .template.spec.containers[$index].args = ([.template.spec.containers[$index].args[] |
         select((startswith("--grpc-max-connection-age=") or startswith("--grpc-max-connection-age-grace=")) | not)] +
@@ -1020,11 +1039,17 @@ delete_probe_pod() {
   return 1
 }
 cleanup() {
+  local rollback_failed=false
   stop_rollout_observer
-  if [[ "$candidate_rollout_started" == true && "$candidate_rollout_succeeded" != true ]]; then
-    echo "candidate rollout failed; restoring original image ${image}" >&2
+  if [[ "$candidate_rollout_started" == true && ( "$candidate_rollout_succeeded" != true || "$ENABLE_TEMPORARY_1PC_EXPERIMENT" == true ) ]]; then
+    if [[ "$candidate_rollout_succeeded" == true ]]; then
+      echo "temporary experiment completed; restoring original image ${image}" >&2
+    else
+      echo "candidate rollout failed; restoring original image ${image}" >&2
+    fi
     rollback_current_json="$runtime_evidence_dir/statefulset-rollback-current.json"
     if ! capture_runtime_evidence "$rollback_current_json" kctl_evidence get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
+      rollback_failed=true
       echo "CRITICAL: failed to read candidate state before rollback" >&2
     else
       rollback_current_uid="$(jq -r '.metadata.uid // ""' "$rollback_current_json" 2>/dev/null || true)"
@@ -1033,22 +1058,28 @@ cleanup() {
     fi
     if [[ "${rollback_current_uid:-}" != "$statefulset_uid" || -z "${rollback_current_resource_version:-}" ||
       -z "${rollback_current_spec:-}" ]]; then
+      rollback_failed=true
       echo "CRITICAL: candidate state identity is unreadable before rollback; refusing to overwrite" >&2
     elif [[ "$rollback_current_spec" == "$initial_spec" ]]; then
       echo "candidate image mutation was not observed; original StatefulSet spec remains" >&2
     elif [[ "$rollback_current_spec" != "$candidate_spec" ]]; then
+      rollback_failed=true
       echo "CRITICAL: candidate state drifted before rollback; refusing to overwrite concurrent StatefulSet changes" >&2
     elif [[ "$full_spec_migration" == true ]] &&
       ! patch_kubebrain_spec "$candidate_spec" "$initial_spec" "$rollback_current_resource_version" >/dev/null; then
+      rollback_failed=true
       echo "CRITICAL: failed to request candidate spec rollback to image ${image}" >&2
     elif [[ "$full_spec_migration" != true ]] &&
       ! patch_kubebrain_image "$TARGET_IMAGE" "$image" "$rollback_current_resource_version" >/dev/null; then
+      rollback_failed=true
       echo "CRITICAL: failed to request candidate image rollback to ${image}" >&2
     elif ! kctl_watch "$KUBECTL_ROLLOUT_STATUS_COMMAND_TIMEOUT" \
       rollout status "statefulset/$KUBEBRAIN_STATEFULSET" --timeout="$ROLLOUT_TIMEOUT" >/dev/null; then
+      rollback_failed=true
       echo "CRITICAL: candidate image rollback did not converge within ${ROLLOUT_TIMEOUT}" >&2
     elif ! capture_runtime_evidence "$runtime_evidence_dir/statefulset-rollback.json" \
       kctl_evidence get statefulset "$KUBEBRAIN_STATEFULSET" -o json; then
+      rollback_failed=true
       echo "CRITICAL: failed to read candidate rollback StatefulSet identity" >&2
     elif [[ "$(jq -cS '.spec' "$runtime_evidence_dir/statefulset-rollback.json")" != "$initial_spec" ]] ||
       ! jq -e --arg uid "$statefulset_uid" --arg image "$image" --arg revision "$current_revision" --argjson replicas "$EXPECTED_REPLICAS" '
@@ -1056,12 +1087,14 @@ cleanup() {
       .status.currentRevision == $revision and .status.updateRevision == $revision and
       ([.spec.template.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1
     ' "$runtime_evidence_dir/statefulset-rollback.json" >/dev/null; then
+      rollback_failed=true
       echo "CRITICAL: candidate image rollback identity mismatch: expected image=${image} revision=${current_revision} replicas=${EXPECTED_REPLICAS}" >&2
     else
       for ((ordinal = 0; ordinal < EXPECTED_REPLICAS; ordinal++)); do
         pod_name="${KUBEBRAIN_STATEFULSET}-${ordinal}"
         pod_json="$runtime_evidence_dir/pod-rollback-${ordinal}.json"
         if ! capture_runtime_evidence "$pod_json" kctl_evidence get pod "$pod_name" -o json; then
+          rollback_failed=true
           echo "CRITICAL: failed to read candidate rollback Pod ${pod_name}" >&2
           continue
         fi
@@ -1073,6 +1106,7 @@ cleanup() {
           ([.spec.containers[]? | select(.name == "kubebrain" and .image == $image)] | length) == 1 and
           ([.status.containerStatuses[]? | select(.name == "kubebrain" and .ready == true and .imageID == $image_id)] | length) == 1
         ' "$pod_json" >/dev/null; then
+          rollback_failed=true
           echo "CRITICAL: candidate rollback Pod runtime identity mismatch: ${pod_name} image=${image} imageID=${original_runtime_image_ids[$ordinal]} revision=${current_revision}" >&2
         fi
       done
@@ -1128,6 +1162,7 @@ cleanup() {
     fi
   fi
   rm -rf -- "$runtime_evidence_dir"
+  [[ "$rollback_failed" != true ]]
 }
 rollout_exit() {
   local status=$? cleanup_status

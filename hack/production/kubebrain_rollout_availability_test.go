@@ -2,6 +2,7 @@ package production_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1872,6 +1873,64 @@ func TestRolloutAvailabilityRunnerRejectsHTTPReadinessMigrationWhenAlreadyConfig
 	require.NotContains(t, log, " patch ")
 }
 
+func TestRolloutAvailabilityRunnerTemporaryOnePCRestoresSpec(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		fail, drift bool
+	}{
+		{name: "success"}, {name: "rollout-failure", fail: true}, {name: "restore-runtime-drift", drift: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+			target := "registry.example/kubebrain@sha256:" + strings.Repeat("e", 64)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(),
+				"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+				"FAKE_TLS_STATE=true", fmt.Sprintf("FAKE_ROLLOUT_FAIL=%t", tc.fail),
+				fmt.Sprintf("FAKE_ROLLBACK_RUNTIME_DRIFT=%t", tc.drift), "FAKE_ROLLBACK_MARKER="+statePath+"-rollback",
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
+				"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64),
+				"ENABLE_TEMPORARY_1PC_EXPERIMENT=true",
+			)
+			output, err := command.CombinedOutput()
+			if tc.fail || tc.drift {
+				require.Error(t, err, string(output))
+			} else {
+				require.NoError(t, err, string(output))
+				require.Contains(t, string(output), "temporary experiment completed; restoring original image")
+			}
+			if tc.drift {
+				require.Contains(t, string(output), "temporary experiment completed; restoring original image")
+				require.Contains(t, string(output), "CRITICAL: candidate rollback Pod runtime identity mismatch")
+			}
+			require.NoFileExists(t, statePath, "temporary experiment must restore even after success")
+			log := readOptionalFile(t, logPath)
+			require.Equal(t, 2, strings.Count(log, " patch statefulset/kubebrain --type=json -p "))
+			require.Equal(t, 4, strings.Count(log, `"path":"/spec"`))
+			require.Contains(t, log, `"--experimental-tikv-enable-1pc=true"`)
+		})
+	}
+}
+
+func TestRolloutAvailabilityRunnerTemporaryOnePCRejectsUnsafeModes(t *testing.T) {
+	for _, extra := range []string{
+		"ENABLE_TEMPORARY_1PC_EXPERIMENT=invalid", "TARGET_IMAGE=",
+		"OBSERVE_ONLY=true", "HARD_FAILOVER=true", "ENABLE_HTTP_READINESS_MIGRATION=true",
+		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
+	} {
+		t.Run(extra, func(t *testing.T) {
+			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
+			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "ENABLE_TEMPORARY_1PC_EXPERIMENT=true",
+				"TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("e", 64), extra)
+			output, err := command.CombinedOutput()
+			require.EqualError(t, err, "exit status 2", string(output))
+			require.NoFileExists(t, logPath, "invalid experiment must not reach Kubernetes")
+		})
+	}
+}
+
 func TestRolloutAvailabilityRunnerRollsBackSemanticReadinessMigrationSpec(t *testing.T) {
 	fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
 	target := "registry.example/kubebrain@sha256:" + strings.Repeat("e", 64)
@@ -2623,6 +2682,9 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
     args="$(jq -c --arg age "--grpc-max-connection-age=${max_age}" --arg grace "--grpc-max-connection-age-grace=${max_age_grace}" '
       [ .[] | select((startswith("--grpc-max-connection-age=") or startswith("--grpc-max-connection-age-grace=")) | not) ] + [$age,$grace]
     ' <<<"$args")"
+  fi
+  if [[ "${ENABLE_TEMPORARY_1PC_EXPERIMENT:-false}" == true && -e "$FAKE_KUBECTL_STATE" ]]; then
+    args="$(jq -c '. + ["--experimental-tikv-enable-1pc=true"]' <<<"$args")"
   fi
   [[ "${FAKE_ROOT_POD_CONTEXT:-false}" != true ]] || pod_security_context='{"runAsNonRoot":false,"runAsUser":0,"runAsGroup":0,"fsGroup":0}'
   runtime_image=kubebrain:test
