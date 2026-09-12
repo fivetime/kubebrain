@@ -5,6 +5,19 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+扫描页 SDK 请求实证（2026-09-12）：完整 backend race 已终态通过
+（78.150s，`witness-scan-page-full-backend-race.log`）。新增适配器测试通过
+实际固定 SDK 的 Scanner，在单 Region 模拟 TiKV 中写入 4097 条固定大小
+记录，再逐行检查键和值以及 EOF。默认页 17 次 Scan，2048 行页 3 次，
+显式 128 行页 33 次；逐个请求的 Limit 也与预期一致。race 通过（2.058s），
+日志 `/root/.local/state/kubebrain/witness-scan-page-sdk-rpc-race.log`。
+这不是 setter 假对象断言，但底层仍是模拟服务，不代表真实 Raft 或完整
+领导权初始化耗时；也不证明只扩大见证族的页面足以跨过原 5 秒门禁。
+随后完整 TiKV 适配包 race 通过（3.613s），vet 通过；日志前缀
+`witness-scan-page-sdk-package-race.log`／`witness-scan-page-sdk-vet.log`。
+此次仅追加测试，不取消运行源码 `4374cfa6` 的镜像／协议 CI；这些旧 SHA
+的 CI 不包含新增的 SDK 请求测试。
+
 完整见证扫描页优化（2026-09-12，未部署）：完整校验已经顺序合并见证和
 事件迭代器，并按 512 项分批校验当前索引／对象；不是逐事务无界 N+1 读取。
 本次仅为见证族迭代器增加 2048 行扫描提示，调用方显式提示优先；事件、对象
