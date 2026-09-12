@@ -255,6 +255,26 @@ func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend
 	}
 	results := make(chan result, workers)
 	start := make(chan struct{})
+	type readResult struct {
+		response *proto.RangeResponse
+		err      error
+	}
+	const readSamples = 16
+	reads := make(chan []readResult, 1)
+	go func() {
+		<-start
+		observed := make([]readResult, 0, readSamples)
+		for i := 0; i < readSamples; i++ {
+			response, err := b.List(ctx, &proto.RangeRequest{
+				Key: []byte("/integration/contention/"), End: []byte("/integration/contention0"),
+			})
+			observed = append(observed, readResult{response: response, err: err})
+			if err != nil {
+				break
+			}
+		}
+		reads <- observed
+	}()
 	for i := 0; i < workers; i++ {
 		go func(i int) {
 			<-start
@@ -271,6 +291,7 @@ func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend
 	for i := range outcomes {
 		outcomes[i] = <-results
 	}
+	observations := <-reads
 	values := make(map[uint64][]byte, workers)
 	for _, outcome := range outcomes {
 		require.NoError(t, outcome.err)
@@ -278,6 +299,25 @@ func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend
 		require.LessOrEqual(t, outcome.revision, base+workers)
 		require.NotContains(t, values, outcome.revision, "concurrent transactions must not reuse a revision")
 		values[outcome.revision] = outcome.value
+	}
+	require.Len(t, observations, readSamples)
+	for _, observation := range observations {
+		require.NoError(t, observation.err)
+		require.NotNil(t, observation.response)
+		require.False(t, observation.response.More)
+		kvs := observation.response.Kvs
+		if len(kvs) == 0 {
+			continue // Valid if this snapshot predates all four commits.
+		}
+		require.Len(t, kvs, 2, "concurrent Range must not observe half a transaction")
+		require.NotNil(t, kvs[0])
+		require.NotNil(t, kvs[1])
+		require.ElementsMatch(t, [][]byte{left, right}, [][]byte{kvs[0].Key, kvs[1].Key})
+		require.Equal(t, kvs[0].Revision, kvs[1].Revision)
+		require.Contains(t, values, kvs[0].Revision)
+		for _, kv := range kvs {
+			require.Equal(t, values[kv.Revision], backend.StripInlineValue(kv.Value))
+		}
 	}
 	for revision := base + 1; revision <= base+workers; revision++ {
 		events := protocolNextMutation(t, ctx, watch)
@@ -306,5 +346,5 @@ func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend
 	require.NoError(t, err)
 	require.False(t, alarm)
 	require.EqualValues(t, usageBefore+int64(len(left)+len(right)+2), usage)
-	t.Logf("PROTOCOL_CONCURRENT_WRITES_PASSED workers=%d writes_per_txn=2 revisions=%d..%d scope=bounded_contention_not_fault_or_soak", workers, base+1, base+workers)
+	t.Logf("PROTOCOL_CONCURRENT_WRITES_PASSED workers=%d writes_per_txn=2 range_samples=%d revisions=%d..%d scope=bounded_contention_not_fault_or_soak", workers, readSamples, base+1, base+workers)
 }

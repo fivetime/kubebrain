@@ -5,6 +5,16 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+并发 Range 可见性补充（2026-09-12）：在上述独立双键事务用例中增加同时
+放行的十六次 Range。每次结果必须为空或完整的同 revision 双键，值对应
+某个成功事务，不能只出现一键或混合不同提交。所有写入与读取 goroutine
+结束后才断言，避免测试失败时后台访问已关闭后端。内存夹具十轮 race
+通过（1.510 秒），存储包 race／vet 通过（1.857 秒）；本机真实 PD/TiKV
+十三例 race 全部通过，临时资源独立核验清理。证据：
+`/root/.local/state/kubebrain/protocol-concurrent-reads-real-race.log` 及
+`/tmp/kubebrain-real-protocol.IbbHKVumq5/`。这些有界采样不保证覆盖每个提交
+交错窗口，不是完整线性一致性证明；前一提交的 CI 不包含本次断言。
+
 真实后端并发回归（2026-09-12）：隔离本机 PD/TiKV 8.5.3 的协议入口增加
 第十三例 `TestRealTiKVBackendConcurrentWrites`，显式 2PC，四个同步放行
 的双键写入分别提交 revision 101..104。验证 revision 唯一连续、双键事件
