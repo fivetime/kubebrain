@@ -16,6 +16,16 @@ token，不删除防护，不改变提交协议或冲突分类。生产形态模
 包 race 通过（2.435/2.502s），相关 vet 通过。日志前缀：
 `/root/.local/state/kubebrain/fence-prefetch-`。仍需后续真实生产形态验证；
 原正式性能门禁仍失败，不因该局部优化修改验收标准。
+安全回归补充：`TestPrefetchedProductionFenceRejectsChangedToken` 使用真实
+backend 防护初始化与 TiKV 适配器，在三个 Region 的模拟 TiKV 上完成防护
+快照预取后，用另一事务修改选中的领导权／恢复分片 token，再让原 CAS
+读取旧快照并提交。两种情况分别返回对应防护错误，用户索引、对象和事件
+日志均未发布，修订号分配器、配额及可见 revision 保持原值；清理先以 CAS
+恢复精确的测试修改。增强十轮 race 通过（3.760s），完整适配包 race 通过
+（2.591s），vet 通过，日志前缀
+`/root/.local/state/kubebrain/fence-prefetch-token-change-`。
+此项底层仍为模拟 TiKV，不是实际 Raft 故障证明；仅追加测试，不重启正在
+验证运行源码 `b1ff4d5a` 的 CI，不声称该旧 SHA 的 CI 包含本次追加用例。
 
 生产防护写入形态回归（2026-09-12）：新增
 `TestProtocolProductionFencedShape`，在本地模拟 TiKV 的固定三个 Region 中，
