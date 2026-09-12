@@ -172,6 +172,11 @@ type txnRevisionIndexCorruption struct {
 
 const txnRevisionIndexValidationBatch = 512
 
+// Normal seals have fixed-size values (version, count, digest). Increase only
+// their scan page, not the variable-size event/object families. This remains a
+// streaming full integrity scan, with no cached validation across elections.
+const txnWitnessScanBatchSize = 2048
+
 type witnessHashWriter interface {
 	Write([]byte) (int, error)
 }
@@ -314,7 +319,11 @@ func (b *backend) validatePersistedTxnWitnessesAfter(
 		// one value earlier, so afterRevision+1 cannot wrap here.
 		start = b.ks.EncodeInternalKey(txnWitnessLogicalKey(afterRevision + 1))
 	}
-	witnesses, err := b.kv.Iter(ctx, start, rawPrefixEnd(base), 0, 0)
+	witnessCtx := ctx
+	if _, configured := storage.ScanBatchSizeFromContext(ctx); !configured {
+		witnessCtx = storage.WithScanBatchSize(ctx, txnWitnessScanBatchSize)
+	}
+	witnesses, err := b.kv.Iter(witnessCtx, start, rawPrefixEnd(base), 0, 0)
 	if err != nil {
 		return err
 	}

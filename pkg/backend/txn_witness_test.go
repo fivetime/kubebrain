@@ -78,6 +78,59 @@ type witnessIterTraceStorage struct {
 	starts [][]byte
 }
 
+type witnessScanPageStorage struct {
+	storage.KvStorage
+	mu    sync.Mutex
+	pages map[string]int
+}
+
+func (s *witnessScanPageStorage) Iter(ctx context.Context, start, end []byte, timestamp, limit uint64) (storage.Iter, error) {
+	size, _ := storage.ScanBatchSizeFromContext(ctx)
+	s.mu.Lock()
+	s.pages[string(start)] = size
+	s.mu.Unlock()
+	return s.KvStorage.Iter(ctx, start, end, timestamp, limit)
+}
+
+func TestLeadershipWitnessScanPageScope(t *testing.T) {
+	for _, explicit := range []int{0, 128} {
+		t.Run(fmt.Sprint(explicit), func(t *testing.T) {
+			ctx := context.Background()
+			trace := &witnessScanPageStorage{KvStorage: imemkv.NewKvStorage(), pages: make(map[string]int)}
+			b := NewBackend(trace, Config{Prefix: prefix + "/witness-pages", Identity: getStorageIdentity(), EnableEtcdCompatibility: true}, mock.NewMinimalMetrics(gomock.NewController(t))).(*backend)
+			t.Cleanup(func() { require.NoError(t, b.Close()) })
+			b.SetCurrentRevision(100)
+			key := []byte(prefix + "/witness-page-scope")
+			_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+			require.NoError(t, err)
+			if explicit != 0 {
+				ctx = storage.WithScanBatchSize(ctx, explicit)
+			}
+			require.NoError(t, b.validatePersistedTxnWitnessesAfter(ctx, false, false, 0))
+			trace.mu.Lock()
+			pages := make(map[string]int, len(trace.pages))
+			for k, v := range trace.pages {
+				pages[k] = v
+			}
+			trace.mu.Unlock()
+			want := txnWitnessScanBatchSize
+			if explicit != 0 {
+				want = explicit
+			}
+			require.Equal(t, want, pages[string(b.ks.EncodeInternalKey(txnWitnessPrefix))])
+			eventPage, found := pages[string(b.ks.EventLogRangeStart(revision))]
+			require.True(t, found)
+			require.Equal(t, explicit, eventPage, "fixed-size seal hint must not enlarge event pages")
+			// A subsequent full validation must still discover newly removed
+			// events: no historical success is cached by the page optimization.
+			batch := b.kv.BeginBatchWrite()
+			batch.Del(b.ks.EncodeEventLogKey(revision, key))
+			require.NoError(t, batch.Commit(ctx))
+			require.ErrorIs(t, b.validatePersistedTxnWitnessesAfter(ctx, false, false, 0), ErrTxnWitnessCorrupt)
+		})
+	}
+}
+
 func (s *witnessIterTraceStorage) Iter(
 	ctx context.Context, start, end []byte, timestamp, limit uint64,
 ) (storage.Iter, error) {
