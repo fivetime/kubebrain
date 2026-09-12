@@ -17,6 +17,16 @@ Region ID、地址或事务 ID 标签。它包含重试，既不是唯一 Region
 统一为 float64 再重跑，失败与最终日志均保留在
 `/root/.local/state/kubebrain/prewrite-region-observer-` 前缀下。
 不改变提交策略、重试、锁或确认条件，真实部署效果待验证。
+后续测试补充：Prometheus 实际 Gather 验证名称、固定标签、成功／失败分开，
+注册不增加样本、零值计入次数、分组总和不转换为秒；指标包十轮 race 通过
+（1.267s）。现有真实 TiKV 延迟用例增加同步批次观测断言，本机十三例 race
+全部通过，20 次测量写入各观测一次且 Region groups=1，原有 RPC 次数仍为
+Get=40、BatchGet=60、Prewrite=20、Commit=20。证据：
+`/root/.local/state/kubebrain/prewrite-region-observer-real-race.log` 与
+`/tmp/kubebrain-real-protocol.OYztNLIDFU/`。清理 exit 0 后，独立按 owner
+`2d422091f396fcbb1e370b51852cd06a` 检查容器／网络及测试二进制均缺席。
+本次仅加强测试，不替代专用集群的多 Region 写入测量；测试追加提交不重启
+正在验证运行代码 `3cb04918` 的 CI，该 CI 不作为追加测试已在 Runner 执行的证明。
 
 此前 1PC 同身份采样内，`write_commit_wait` 增量为 623 次、累计 15ms，
 两个失败计数均为零。该指标仅记录进入等待路径的成功样本且逐次毫秒取整，

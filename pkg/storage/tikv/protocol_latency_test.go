@@ -12,6 +12,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/stretchr/testify/require"
@@ -196,6 +197,13 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	watch, err := b.Watch(ctx, string(key), last+1)
 	require.NoError(t, err)
 	measured := context.WithValue(ctx, protocolLatencyMarker{}, true)
+	var observationMu sync.Mutex
+	var observations []storage.BatchCommitObservation
+	measured = storage.WithBatchCommitObserver(measured, func(o storage.BatchCommitObservation) {
+		observationMu.Lock()
+		observations = append(observations, o)
+		observationMu.Unlock()
+	})
 	durations := make([]int64, 0, samples)
 	for i := 0; i < samples; i++ {
 		started := time.Now()
@@ -232,6 +240,17 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	require.Equal(t, want.Commit, attempts["commit"])
 	require.Equal(t, 2*samples, attempts["get"], "allocator read must share the transactional guard prefetch")
 	require.Equal(t, 3*samples, attempts["batch_get"], "prefetch must not add an extra wire request")
+	observationMu.Lock()
+	observed := append([]storage.BatchCommitObservation(nil), observations...)
+	observationMu.Unlock()
+	require.Len(t, observed, samples, "one synchronous observation per measured user storage batch")
+	for _, o := range observed {
+		require.NoError(t, o.Err)
+		require.True(t, o.CommitAttempted)
+		require.True(t, o.HasWriteDetails)
+		require.EqualValues(t, 1, o.PrewriteRegionGroups, "single-Region fixture without retries")
+	}
+	t.Logf("PROTOCOL_BATCH_REGION_GROUPS samples=%d each=1 scope=marked_foreground_only", len(observed))
 	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, warmup, samples, len(value), quota, durations, stats)
 	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_foreground_only excludes=background_and_unmarked_work", attempts)
 }
