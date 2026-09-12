@@ -105,7 +105,7 @@ func TestPutPathsRejectGuardChangedAtCommit(t *testing.T) {
 				}
 				write := func(ctx context.Context) (uint64, error) {
 					if path == "plain" {
-						r, err := shim.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("replacement"), PrevKv: true})
+						r, err := shim.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("replacement")})
 						if err != nil {
 							return 0, err
 						}

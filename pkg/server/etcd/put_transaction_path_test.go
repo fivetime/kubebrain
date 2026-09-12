@@ -2,6 +2,7 @@ package etcd
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -17,7 +18,9 @@ import (
 
 type putPathReadCounter struct {
 	backend.Backend
-	gets atomic.Int64
+	gets         atomic.Int64
+	metadataGets atomic.Int64
+	metadataErr  error
 }
 
 // A plain Put must not turn a read-visible legacy orphan into a new lifecycle.
@@ -25,6 +28,12 @@ type putPathReadCounter struct {
 // be replaced by an unconditional transaction. Count-index corruption policy
 // is separate; this fixture deliberately exercises the legacy recovery mode.
 func TestPlainPutPreservesOrphanLifecycle(t *testing.T) {
+	t.Run("return_previous", func(t *testing.T) { checkPlainPutOrphanLifecycle(t, true) })
+	t.Run("metadata_only", func(t *testing.T) { checkPlainPutOrphanLifecycle(t, false) })
+}
+
+func checkPlainPutOrphanLifecycle(t *testing.T, previous bool) {
+	t.Helper()
 	m := mock.NewMinimalMetrics(gomock.NewController(t))
 	kv := memkv.NewKvStorage()
 	raw := backend.NewBackend(kv, backend.Config{Identity: "put-orphan", EnableEtcdCompatibility: true}, m)
@@ -38,11 +47,15 @@ func TestPlainPutPreservesOrphanLifecycle(t *testing.T) {
 	ks, err := coder.NewKeyspace("")
 	require.NoError(t, err)
 	require.NoError(t, kv.Del(ctx, ks.NewCoder().EncodeRevisionKey(key)))
-	updated, err := shim.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("new"), PrevKv: true})
+	updated, err := shim.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("new"), PrevKv: previous})
 	require.NoError(t, err)
-	require.NotNil(t, updated.PrevKv)
-	require.Equal(t, []byte("old"), updated.PrevKv.Value)
-	require.Equal(t, created.Header.Revision, updated.PrevKv.CreateRevision)
+	if previous {
+		require.NotNil(t, updated.PrevKv)
+		require.Equal(t, []byte("old"), updated.PrevKv.Value)
+		require.Equal(t, created.Header.Revision, updated.PrevKv.CreateRevision)
+	} else {
+		require.Nil(t, updated.PrevKv)
+	}
 	require.Equal(t, created.Header.Revision+1, updated.Header.Revision)
 	current, err := shim.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
@@ -55,6 +68,29 @@ func TestPlainPutPreservesOrphanLifecycle(t *testing.T) {
 func (b *putPathReadCounter) Get(ctx context.Context, r *proto.GetRequest) (*proto.GetResponse, error) {
 	b.gets.Add(1)
 	return b.Backend.Get(ctx, r)
+}
+
+func (b *putPathReadCounter) GetKeysOnly(ctx context.Context, r *proto.GetRequest) (*proto.GetResponse, error) {
+	b.metadataGets.Add(1)
+	if b.metadataErr != nil {
+		return nil, b.metadataErr
+	}
+	return b.Backend.(interface {
+		GetKeysOnly(context.Context, *proto.GetRequest) (*proto.GetResponse, error)
+	}).GetKeysOnly(ctx, r)
+}
+
+func TestPlainPutMetadataReadFailureDoesNotFallback(t *testing.T) {
+	shim := newBackendShimIgnoreTest(t)
+	want := errors.New("metadata snapshot unavailable")
+	reads := &putPathReadCounter{Backend: shim.backend, metadataErr: want}
+	shim.backend = reads
+	revision := reads.GetCurrentRevision()
+	_, err := shim.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("/put-path/failed"), Value: []byte("no")})
+	require.ErrorIs(t, err, want)
+	require.EqualValues(t, 1, reads.metadataGets.Load())
+	require.Zero(t, reads.gets.Load(), "a failed metadata snapshot must not silently switch reads")
+	require.Equal(t, revision, reads.GetCurrentRevision())
 }
 
 // This compares two existing entrypoints, not a new public Put implementation.
@@ -104,6 +140,7 @@ func comparePlainPutTransactionPath(t *testing.T, prev bool, leases []int64) {
 			previousLease = 0
 		}
 		plainReads.gets.Store(0)
+		plainReads.metadataGets.Store(0)
 		transactionReads.gets.Store(0)
 		left, err := plain.Put(backend.WithPreviousLease(ctx, previousLease), &etcdserverpb.PutRequest{
 			Key: key, Value: []byte(value), PrevKv: prev, Lease: leases[i],
@@ -124,6 +161,13 @@ func comparePlainPutTransactionPath(t *testing.T, prev bool, leases []int64) {
 			require.Equal(t, previousLease, left.PrevKv.Lease)
 		}
 		require.Zero(t, transactionReads.gets.Load(), "transaction entrypoint needs no shim pre-read")
+		if prev {
+			require.EqualValues(t, 1, plainReads.gets.Load())
+			require.Zero(t, plainReads.metadataGets.Load())
+		} else {
+			require.Zero(t, plainReads.gets.Load())
+			require.EqualValues(t, 1, plainReads.metadataGets.Load())
+		}
 		t.Logf("operation=%d plain_adapter_gets=%d transaction_adapter_gets=%d", i,
 			plainReads.gets.Load(), transactionReads.gets.Load())
 		// Compare both latest state and every retained historical version,

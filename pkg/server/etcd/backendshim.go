@@ -695,7 +695,19 @@ func (b *backendShim) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etc
 		if time.Now().After(deadline) {
 			return nil, status.Errorf(codes.Unavailable, "put %s: still contended after %s", r.Key, unaryRpcTimeout)
 		}
-		getResp, err := b.backend.Get(ctx, &proto.GetRequest{Key: r.Key})
+		// Plain overwrites need the existing revision/lifecycle, not the old
+		// payload. Keep the read (including orphan recovery) and CAS loop, but
+		// use the optional metadata path when no request option consumes old
+		// state. The backend transaction still validates the previous object.
+		get := b.backend.Get
+		if !r.PrevKv && !r.IgnoreValue && !r.IgnoreLease {
+			if getter, ok := b.backend.(interface {
+				GetKeysOnly(context.Context, *proto.GetRequest) (*proto.GetResponse, error)
+			}); ok {
+				get = getter.GetKeysOnly
+			}
+		}
+		getResp, err := get(ctx, &proto.GetRequest{Key: r.Key})
 		if err != nil {
 			return nil, err
 		}

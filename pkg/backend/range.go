@@ -127,12 +127,13 @@ func (b *backend) getResponse(ctx context.Context, r *proto.GetRequest, metadata
 	resp = &proto.GetResponse{
 		Header: responseHeader(curRev),
 	}
-	if val != nil {
-		resp.Kv = &proto.KeyValue{
-			Key:      r.Key,
-			Value:    val,
-			Revision: modRev,
-		}
+	// Absence was handled through ErrKeyNotFound above. A metadata projection
+	// can deliberately discard a legacy raw payload to nil; that must not turn
+	// the successfully read key into an absent key (including before a Put).
+	resp.Kv = &proto.KeyValue{
+		Key:      r.Key,
+		Value:    val,
+		Revision: modRev,
 	}
 
 	return resp, nil

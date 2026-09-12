@@ -5,6 +5,35 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+元数据预读候选本地完整验证完成（2026-09-12）：包含旧格式存在性修复及
+不存在 key 断言的最终代码，完整 backend race 74.050s、完整 etcd 服务包
+race 325.351s，均退出 0；backend＋etcd vet 通过，diff check 通过。
+两段完整回归期间未改运行或测试源码。准备推送触发镜像及真实协议 CI，
+尚未有该候选的镜像审计或集群验收结果。下面“完整回归正在运行”为历史状态。
+
+旧格式元数据投影遗漏及修复（2026-09-12，本地候选）：前述 Put 优化的
+完整 etcd 服务包 race 回归通过（325.110s），但额外复查发现既有
+`GetKeysOnly` 把未封装旧值投影成 nil 后，`getResponse` 以 `val != nil`
+判断是否返回 Kv，导致实际存在的旧 key 被投影成不存在。新增用例对非空／
+空旧值均复现失败（`put-metadata-legacy-before.log`），不能凭原全包通过放行。
+现改为仅依赖前面的 `ErrKeyNotFound` 分支判断不存在；成功读取即保留 key
+和 revision，允许投影值为 nil。修复后目标 race 连续三轮通过（1.342s），
+另补真实不存在 key 仍返回 nil Kv 的断言。完整 backend 与 etcd 包 race
+正在重跑最终组合，尚未有终态。未提交部署或修改集群。
+
+普通 Put 元数据预读优化（2026-09-12，本地候选，未部署）：在不请求 PrevKv、
+IgnoreValue、IgnoreLease 时，`backendShim.Put` 使用已有可选 `GetKeysOnly`
+读取当前 revision／生命周期，避免适配层获取完整旧值；不具备该接口的后端
+保持普通 Get。仍保留预读、Create/Update CAS 循环，事务仍验证完整旧对象，
+不改事务协议或租约附件写入。元数据读取失败直接返回，不换快照重试；旧目录
+缺失／漂移及孤立索引仍由现有读取和修复路径处理。探针主循环反复更新同一
+watchKey 且不请求 PrevKv，因此该优化覆盖实际负载，而非只优化无关请求。
+新增断言验证 PrevKv=false 的元数据接口选择、失败不回退，以及优化路径的
+孤立索引生命周期；提交保护用例也改为覆盖不返回旧值的公共 Put。
+BackendShim／PrevKv／相关新用例 race 回归通过（2.478s），vet 通过。
+完整 `pkg/server/etcd` race 回归已启动，尚未有终态；不能以选定测试替代全包
+结果，更不能声称已测得真实 TiKV RPC 减少量或集群延迟改善。
+
 Put 提交保护窗口回归（2026-09-12，仅测试）：新增
 `TestPutPathsRejectGuardChangedAtCommit`，普通 Put／单操作 TxnApply × 新建／
 更新四组，在请求和后端准备完成、底层批次提交前切换内部权限保护值。
