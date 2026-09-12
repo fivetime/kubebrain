@@ -15,6 +15,10 @@
 协议 CI 的夹具检查阶段增加整个 TiKV 适配包 race，避免只有显式真实用例
 被执行而遗漏此类模拟回归。本项不修改产品或集群配置，不证明真实 Raft
 故障原子性，也不解释上一轮每一笔 2PC 的具体来源。
+提交 `f137a15b` 的协议 CI `34677579797` 随后成功；作业 `103510092123`
+实际日志确认适配包 race 通过（4.043s）、普通／race 各十三个真实用例通过，
+两轮 `cleanup_failed=0`，PD／TiKV 中断均 exit 143 且资源缺席确认。
+日志保存为 `/root/.local/state/kubebrain/f137a15b-real-protocol-ci.log`。
 
 临时 1PC 正式实验结果（2026-09-12）：**未通过，已完整恢复**。
 运行源码 `343ffe6a`，镜像 CI `34674079262` 和协议 CI `34674107689`
@@ -36,6 +40,11 @@ generation/observed=36，原 revision `kubebrain-855b5bfb88`、Ready=3，
 缺席检查通过。证据目录 `/root/.local/state/kubebrain/onepc-experiment-release.LtR8AHe1/`：
 `execute.log`、`write-window-analysis.md`、`restored.UmKA17IG/`。
 不保留启用状态，不扩展故障授权；性能与偶发认证根因仍待解决。
+补充回滚前诊断区间：600→3600 次操作，共 3000 次／715003ms，平均
+238.334ms/次，其中公共路径 130.918ms（Put/结果解析 120.254ms、随后
+Watch 10.664ms）、固定 pacing 100.604ms、后端健康检查 5.478ms、直连等待
+1.325ms。不是精确门禁窗口，也不是服务端并发吞吐；不得与不同窗口的
+623 次 Put 指标直接相减。计算依据保存为同目录 `steady-progress-analysis.md`。
 
 临时 1PC 对照实验准备（历史记录，已由上述结果更新）：用户已明确授权仅在专用测试集群
 临时启用、实验后恢复。新增启动参数 `--experimental-tikv-enable-1pc`，默认
