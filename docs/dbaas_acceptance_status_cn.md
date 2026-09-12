@@ -5,7 +5,33 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-公共 Put 子批次 Region 观测补充（2026-09-12，尚未部署）：增加
+Region 观测版正式复验（2026-09-12）：**未通过，已独立确认恢复**。
+运行源码 `3cb04918`，镜像 CI `34678429276` 与协议 CI `34678429271`
+成功。协议作业 `103512371528` 日志确认普通／race 各十三例、两轮清理及
+两个启动中断清理通过；独立镜像审计核验版本、fork 依赖、新指标、平台摘要
+及标签更新，固定索引为
+`sha256:6ddfb262f25a81d182c1d98ac68e5d4b09f1f1a085c1bbeac9f5b678b487ae7b`。
+
+本次保持 1PC／async commit 关闭，原 6000 次、操作后 100ms、公共 5s／
+直连流 30s、滚动后 900s 不变。执行会话 `4482` 因 900s 内未完成而 exit 1；
+最后保留进度 3900/6000 包含回滚期间操作，不是门禁截止时完成数。
+两轮同身份采样的 583 个成功 Put 子批次：预写 Region 分组 sum=1749、
+count=583，平均 3；后端平均 112.170ms、批次提交 89.009ms、其中预写
+54.793ms、主键提交 33.144ms。嵌套阶段不能相加，分组次数含重试，不能
+等同唯一 Region 数。采样未出现 Prewrite 非成功响应系列，但 SDK 内部
+生成的 Region 错误可能不经过该观测层，初始跨 Region 分组仍是待验证解释。
+SDK 2PC 成功增量 952，1PC／async 成功为零；全局计数含后台事务。
+
+独立检查确认原完整 spec 和原实际 imageID 恢复，generation/observed=38、
+Ready=3、revision=`kubebrain-855b5bfb88`、镜像 `0ce85e66`；测试数据清理
+keys/users/roles/leases 全零，本次探针及预拉取 Pod/Job 均缺席。两个专用
+工具二进制在校验 SHA 后删除，可从源码重建；日志和脚本保留。
+私有证据目录 `/root/.local/state/kubebrain/region-group-release.x0WmgJBn/`：
+`image-audit.vLDhRDBCbJ88/`、`execute.eSWlW2PRdKmV/`、`write-window-analysis.md`、
+`restored.akyekUpB/`。没有活动复验，不复用已消耗前缀。后续需要验证事务
+初始分组／物理键布局，不能靠相同镜像重复部署或放宽门限宣布解决。
+
+公共 Put 子批次 Region 观测补充（历史准备，部署结果见上）：增加
 `write_batch_prewrite_region_groups`，从每个被观测存储批次的 SDK 提交详情
 原子读取预写 Region 分组累计次数，沿用 method/success 标签，不增加键、
 Region ID、地址或事务 ID 标签。它包含重试，既不是唯一 Region 数，也不能
