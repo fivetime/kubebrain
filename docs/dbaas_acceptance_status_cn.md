@@ -5,6 +5,21 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+跨扫描页完整性补充（2026-09-12）：新增完整 backend→SDK 验证。真实
+backend 在内存存储生成 2050 个事务及其物理见证／事件，再按 256 行分批
+复制至模拟 TiKV，校验使用实际 TiKV 适配器和 SDK。健康完整校验实际经过
+两页 2048 行见证扫描；随后删除第一页之外 revision=2051 的事件，下一次
+完整校验必须触发 CORRUPT。race 通过（4.820s），日志
+`/root/.local/state/kubebrain/witness-scan-page-cross-page-batched-race.log`。
+前两轮在 SDK 上逐事务构造同键／不同键数据，均在原两分钟准备时限失败，
+未算作校验通过；最终保持同样时限和数据规模，仅改用分批复制生成的数据。
+该测试不是实际 PD/TiKV 或 Raft 故障证明。运行源码 `4374cfa6` 的协议 CI
+`34685563901`／作业 `103531845207` 已核验普通／race 各 16 项、两轮
+cleanup_failed=0、PD/TiKV 中断退出 143 且资源缺席；日志
+`4374cfa6-real-protocol-ci.log`。旧 SHA 的 CI 不包含本次追加测试。
+随后完整 TiKV 包 race 通过（7.230s），vet 通过，日志前缀
+`witness-scan-page-cross-page-package-race.log`／`witness-scan-page-cross-page-final-vet.log`。
+
 扫描页 SDK 请求实证（2026-09-12）：完整 backend race 已终态通过
 （78.150s，`witness-scan-page-full-backend-race.log`）。新增适配器测试通过
 实际固定 SDK 的 Scanner，在单 Region 模拟 TiKV 中写入 4097 条固定大小
