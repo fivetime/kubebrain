@@ -28,6 +28,9 @@ func observePutBatchCommits(ctx context.Context, metricCli metrics.Metrics) cont
 			emit("prewrite", o.Prewrite)
 			emit("commit_ts", o.CommitTS)
 			emit("primary_commit", o.PrimaryCommit)
+			// A batch-scoped numeric observation, not a Region-ID label. SDK
+			// retries can count the same Region more than once.
+			_ = metricCli.EmitHistogram("write.batch.prewrite_region_groups", float64(o.PrewriteRegionGroups), tags...)
 		}
 	})
 }

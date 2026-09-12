@@ -321,6 +321,8 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 
 func metricHelp(name string) string {
 	switch formatName(name) {
+	case "write_batch_prewrite_region_groups":
+		return "SDK prewrite Region groups per observed storage batch, including retries; not distinct Regions, RPC counts, or a commit protocol verdict."
 	case "etcd_cluster_version":
 		return "Which version is running. 1 for 'cluster_version' label with current cluster version"
 	case "etcd_debugging_auth_revision":

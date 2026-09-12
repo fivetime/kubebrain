@@ -95,6 +95,7 @@ func TestBatchObserverRealClientWriteEmptyAndCallerSink(t *testing.T) {
 				require.Equal(t, mode == "write", o.HasWriteDetails)
 			}
 			if mode == "write" {
+				require.EqualValues(t, 1, o.PrewriteRegionGroups)
 				require.Positive(t, o.Prewrite)
 				require.Positive(t, o.PrimaryCommit)
 				require.GreaterOrEqual(t, o.Commit, o.Prewrite)
@@ -116,4 +117,32 @@ func TestBatchObserverRealClientWriteEmptyAndCallerSink(t *testing.T) {
 			require.NoError(t, read.Rollback())
 		})
 	}
+}
+
+func TestBatchObserverPrewriteRegionGroups(t *testing.T) {
+	client, cluster, pd, err := testutils.NewMockTiKV("", nil)
+	require.NoError(t, err)
+	_, _, region := testutils.BootstrapWithSingleStore(cluster)
+	newRegion, peer := cluster.AllocID(), cluster.AllocID()
+	cluster.Split(region, newRegion, []byte("m"), []uint64{peer}, peer)
+	store, err := clienttikv.NewKVStore("batch-region-observer", clienttikv.NewCodecPDClient(clienttikv.ModeTxn, pd), clienttikv.NewMockSafePointKV(), client)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, store.Close()) })
+	var observations []storage.BatchCommitObservation
+	ctx := storage.WithBatchCommitObserver(t.Context(), func(o storage.BatchCommitObservation) {
+		observations = append(observations, o)
+	})
+	b := &batch{begin: func(context.Context) (*txnkv.KVTxn, error) { return store.Begin() }}
+	b.Put([]byte("a"), []byte("left"), 0)
+	b.Put([]byte("z"), []byte("right"), 0)
+	require.NoError(t, b.Commit(ctx))
+	require.Len(t, observations, 1)
+	require.True(t, observations[0].HasWriteDetails)
+	require.EqualValues(t, 2, observations[0].PrewriteRegionGroups)
+	reader, err := store.Begin()
+	require.NoError(t, err)
+	defer func() { require.NoError(t, reader.Rollback()) }()
+	values, err := reader.BatchGet(ctx, [][]byte{[]byte("a"), []byte("z")})
+	require.NoError(t, err)
+	require.Equal(t, map[string][]byte{"a": []byte("left"), "z": []byte("right")}, values)
 }

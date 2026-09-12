@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/pkg/errors"
@@ -197,6 +198,7 @@ func (b *batch) Commit(ctx context.Context) (err error) {
 				observation.Prewrite = detail.PrewriteTime
 				observation.CommitTS = detail.GetCommitTsTime
 				observation.PrimaryCommit = detail.CommitTime
+				observation.PrewriteRegionGroups = atomic.LoadInt32(&detail.PrewriteRegionNum)
 			}
 			observer(observation)
 		}()

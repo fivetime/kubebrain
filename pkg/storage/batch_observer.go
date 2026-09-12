@@ -15,7 +15,10 @@ type BatchCommitObservation struct {
 	CommitAttempted                   bool
 	HasWriteDetails                   bool
 	Prewrite, CommitTS, PrimaryCommit time.Duration
-	Err                               error
+	// PrewriteRegionGroups sums SDK prewrite Region groups across attempts,
+	// including retries. It is not a distinct-Region count or a protocol verdict.
+	PrewriteRegionGroups int32
+	Err                  error
 }
 
 type batchCommitObserverKey struct{}

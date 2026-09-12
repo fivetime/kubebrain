@@ -37,6 +37,7 @@ func TestPutBatchMetricsUnitsPopulationAndOutcome(t *testing.T) {
 			Commit: 9 * time.Millisecond, CommitAttempted: true,
 			HasWriteDetails: true, Prewrite: 3 * time.Millisecond,
 			CommitTS: time.Millisecond, PrimaryCommit: 4 * time.Millisecond, Err: result,
+			PrewriteRegionGroups: 2,
 		})
 		tags := []metrics.T{metrics.Tag("method", "put"), getSuccessMetricTagByErr(result)}
 		require.Equal(t, []recordedHistogram{
@@ -46,6 +47,7 @@ func TestPutBatchMetricsUnitsPopulationAndOutcome(t *testing.T) {
 			{name: "write.batch.prewrite.latency", value: .003, tags: tags},
 			{name: "write.batch.commit_ts.latency", value: .001, tags: tags},
 			{name: "write.batch.primary_commit.latency", value: .004, tags: tags},
+			{name: "write.batch.prewrite_region_groups", value: float64(2), tags: tags},
 		}, rec.histograms)
 		rec.histograms = nil
 		callback(storage.BatchCommitObservation{Err: result})
