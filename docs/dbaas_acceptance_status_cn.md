@@ -5,6 +5,17 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+完整工具包覆盖核对更新（2026-09-12）：第二次整包执行也在 30 分钟总预算
+终止（1800.018s），仍不是整包通过；JSON 没有具体测试失败事件或跳过。
+完整清单含 724 个顶层测试，已有 699 个顶层 pass，剩余 25 个没有完成的
+通过结果（含被打断的 `TestValidateInstanceReady`）。已按这 25 个精确名称
+补跑全部子用例，不复用被打断顶层测试的部分子用例作为完整证明。
+新日志 `rollout-evidence-retention-remaining-production-json.log`，清单差集
+`production-remaining-tests.json`，均在 `/root/.local/state/kubebrain/`。
+待补跑终态后核对两段 pass 集合与完整清单一致，再报告“分段完整覆盖”，
+不能改写为单次整包成功。两段被测代码相同，仅验收状态文档更新；未更改
+单用例时限或集群门限，未部署。此前“30m 运行中”为历史状态。
+
 完整 production 工具包回归状态（2026-09-12）：首次完整执行在整包 15 分钟
 总时限处终止（900.016s），**未通过／未完成**，没有此前断言失败。
 当时 `TestRolloutAvailabilityRunnerKeepsProbeActiveThroughRollout` 运行 45s，
