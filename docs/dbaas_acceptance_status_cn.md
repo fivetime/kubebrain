@@ -5,6 +5,25 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+成对防护预取正式验收结果（2026-09-12）：**失败，已完整恢复**。
+审计后的 `b1ff4d5a` 镜像在滚动更新阶段，第 103 次 Put-to-Watch
+耗时 9.399251296s，超过原 5s 门限；其中 Put=9.378588009s，Put 返回后
+Watch=20.663287ms。实际调用轨迹 40 次尝试，39 次 Unavailable 后一次 OK，
+没有截断或覆盖记录。不能据此证明预取优化造成中断，也不能声称吞吐改善；
+这次没有进入滚动完成后的 900s 门禁，没有取得稳定候选镜像指标窗口。
+自动恢复原镜像，generation 38→39→40；独立核验原完整 spec、实际运行
+镜像 ID、三副本就绪和原 revision `kubebrain-855b5bfb88`，本次探针／预拉取
+Pod、Job 缺席。夹具键、用户、角色、租约缺席，预拉取清理确认，无 CRITICAL。
+正式执行退出 1，独立恢复检查退出 0。证据目录
+`/root/.local/state/kubebrain/fence-prefetch-release.pNpuFyCl/`：`execute.log`、
+`execute.66pqeML4OIrf/`、`restored.xRMS3kaP/`、`restored-verification.log`。
+两项构建助手经原 SHA 核对后删除；不复用已消耗前缀，不修改门限或开启 1PC。
+下一步沿失败轨迹诊断滚动更新的代理／领导权交接可用性，避免无新假设重跑。
+新增协议 CI `34684228000`／作业 `103528262514` 已终态成功：实际普通／race
+各 16 项，两个 cleanup_failed=0，PD/TiKV 中断各退出 143 且资源缺席。
+日志 `/root/.local/state/kubebrain/5df693c4-real-protocol-ci.log`；这些协议通过
+不抵消上述正式验收失败。以下“尚未部署／CI 运行中”段落为先前阶段记录。
+
 成对防护预取镜像审计（2026-09-12，尚未部署）：运行源码 `b1ff4d5a` 的
 镜像 CI `34682794586`／作业 `103524410016` 已成功。独立读取发布清单、
 验证双架构摘要和 dbaas promotion，并运行 amd64 实际二进制 version，
