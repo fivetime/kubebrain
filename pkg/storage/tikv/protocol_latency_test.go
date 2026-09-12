@@ -134,6 +134,29 @@ func TestRealTiKVBackendProtocolLatency(t *testing.T) {
 	testRealTiKVBackendScenario(t, "latency")
 }
 
+func TestRealTiKVBackendConcurrentWrites(t *testing.T) {
+	testRealTiKVBackendScenario(t, "concurrent")
+}
+
+func TestProtocolConcurrentFixtureBound(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	prefix := "kubebrain/protocol-smoke/0123456789abcdef0123456789abcdef/"
+	ks, _, err := protocolBackendScope(prefix)
+	require.NoError(t, err)
+	kv := memkv.NewKvStorage()
+	b := backend.NewBackend(kv, backend.Config{Prefix: prefix + "backend", Keyspace: ks.Name(),
+		Identity: ks.Name(), EnableEtcdCompatibility: true, QuotaBackendBytes: 2 << 30},
+		metricmock.NewMinimalMetrics(gomock.NewController(t)))
+	t.Cleanup(func() { require.NoError(t, b.(interface{ Close() error }).Close()) })
+	b.SetCurrentRevision(100)
+	require.NoError(t, b.EnsureQuotaInitialized(ctx))
+	verifyProtocolConcurrentWrites(t, ctx, b)
+	keys, err := protocolBackendKeys(ctx, kv, prefix)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(keys), 100)
+}
+
 func TestProtocolLatencyFixtureBound(t *testing.T) {
 	ctx := context.Background()
 	prefix := "kubebrain/protocol-smoke/0123456789abcdef0123456789abcdef/"
@@ -210,4 +233,78 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	require.Equal(t, 3*samples, attempts["batch_get"], "prefetch must not add an extra wire request")
 	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, warmup, samples, len(value), quota, durations, stats)
 	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_foreground_only excludes=background_and_unmarked_work", attempts)
+}
+
+// Contend on both user rows and the allocator in an independently owned fixture.
+// This is separate from the sequential RPC-count measurement and cleanup budget.
+func verifyProtocolConcurrentWrites(t *testing.T, ctx context.Context, b backend.Backend) {
+	t.Helper()
+	const workers = 4
+	left, right := []byte("/integration/contention/left"), []byte("/integration/contention/right")
+	base := b.GetCurrentRevision()
+	usageBefore, _, _, err := b.QuotaStatus(ctx)
+	require.NoError(t, err)
+	watchCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	watch, err := b.Watch(watchCtx, "/integration/contention/", base+1)
+	require.NoError(t, err)
+	type result struct {
+		revision uint64
+		value    []byte
+		err      error
+	}
+	results := make(chan result, workers)
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		go func(i int) {
+			<-start
+			value := []byte{byte('a' + i)}
+			_, revision, err := b.TxnApply(ctx, []backend.TxnWriteOp{
+				{Key: left, Value: value}, {Key: right, Value: value},
+			}, nil)
+			results <- result{revision: revision, value: value, err: err}
+		}(i)
+	}
+	close(start)
+	// Drain all workers before assertions so failure cannot race backend cleanup.
+	outcomes := make([]result, workers)
+	for i := range outcomes {
+		outcomes[i] = <-results
+	}
+	values := make(map[uint64][]byte, workers)
+	for _, outcome := range outcomes {
+		require.NoError(t, outcome.err)
+		require.Greater(t, outcome.revision, base)
+		require.LessOrEqual(t, outcome.revision, base+workers)
+		require.NotContains(t, values, outcome.revision, "concurrent transactions must not reuse a revision")
+		values[outcome.revision] = outcome.value
+	}
+	for revision := base + 1; revision <= base+workers; revision++ {
+		events := protocolNextMutation(t, ctx, watch)
+		require.Len(t, events, 2, "both keys must be published in one revision batch")
+		wantType := proto.Event_PUT
+		if revision == base+1 {
+			wantType = proto.Event_CREATE
+		}
+		keys := make([][]byte, 0, 2)
+		for _, event := range events {
+			require.Equal(t, wantType, event.Type)
+			require.Equal(t, revision, event.Revision)
+			require.Equal(t, values[revision], backend.StripInlineValue(event.Kv.Value))
+			keys = append(keys, event.Kv.Key)
+		}
+		require.ElementsMatch(t, [][]byte{left, right}, keys)
+	}
+	for _, key := range [][]byte{left, right} {
+		got, err := b.Get(ctx, &proto.GetRequest{Key: key})
+		require.NoError(t, err)
+		require.NotNil(t, got.Kv)
+		require.Equal(t, base+workers, got.Kv.Revision)
+		require.Equal(t, values[base+workers], backend.StripInlineValue(got.Kv.Value))
+	}
+	usage, _, alarm, err := b.QuotaStatus(ctx)
+	require.NoError(t, err)
+	require.False(t, alarm)
+	require.EqualValues(t, usageBefore+int64(len(left)+len(right)+2), usage)
+	t.Logf("PROTOCOL_CONCURRENT_WRITES_PASSED workers=%d writes_per_txn=2 revisions=%d..%d scope=bounded_contention_not_fault_or_soak", workers, base+1, base+workers)
 }

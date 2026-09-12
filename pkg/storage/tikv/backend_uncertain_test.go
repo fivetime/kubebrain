@@ -198,7 +198,7 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
-	require.Contains(t, []string{"committed", "undelivered", "latency", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
+	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
 	retrying := strings.HasPrefix(scenario, "retry-")
 	noRPCRetry := strings.HasPrefix(scenario, "no-retry-")
 	splitting := scenario == "split"
@@ -216,7 +216,9 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	expected, err := validateProtocolSmokeScope(os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID"), prefix, os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE"))
 	require.NoError(t, err)
 	mode := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE")
-	if scenario != "latency" {
+	if scenario == "concurrent" {
+		require.Equal(t, "2pc", mode)
+	} else if scenario != "latency" {
 		require.Equal(t, "1pc", mode)
 	}
 	if noRPCRetry {
@@ -279,7 +281,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	var latencyClient *protocolLatencyClient
 	var splitClient *protocolRegionSplit
 	var quota int64
-	if scenario == "latency" {
+	if scenario == "latency" || scenario == "concurrent" {
 		latencyClient = &protocolLatencyClient{Client: client.GetTiKVClient()}
 		client.SetTiKVClient(latencyClient)
 		quota = 2 << 30
@@ -299,6 +301,11 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	}, m)
 	closer = b.(interface{ Close() error })
 	b.SetCurrentRevision(100)
+	if scenario == "concurrent" {
+		require.NoError(t, b.EnsureQuotaInitialized(ctx))
+		verifyProtocolConcurrentWrites(t, ctx, b)
+		return
+	}
 	if scenario == "latency" {
 		measureProtocolBackendLatency(t, ctx, b, latencyClient, mode)
 		return

@@ -5,6 +5,19 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+真实后端并发回归（2026-09-12）：隔离本机 PD/TiKV 8.5.3 的协议入口增加
+第十三例 `TestRealTiKVBackendConcurrentWrites`，显式 2PC，四个同步放行
+的双键写入分别提交 revision 101..104。验证 revision 唯一连续、双键事件
+同批发布、最终版本和值一致及配额只计最终内容。十三例 race 全部通过，
+临时容器／网络／编译测试文件独立核验不存在；完整日志为
+`/root/.local/state/kubebrain/protocol-concurrent-final-real-race.log`，实际用例
+证据在 `/tmp/kubebrain-real-protocol.EEaa94xK7J/`。存储／构建契约包 race
+通过（2.006／2.501 秒），存储 vet 通过；尚无新增用例的远端 CI 结果。
+本地余量断言十轮通过（1.876 秒）。开发时首次 CREATE 类型断言、合并前缀
+的清理余量断言和新增场景白名单遗漏均先失败，修正后完整重跑通过；未放宽
+100 键余量断言或 128 键总清理上限。该用例不保证每次都发生冲突，不替代
+三副本故障、完整线性一致性检查、规模 soak 或正式升级验收。
+
 认证调度条件复验（2026-09-12）：以 `GOMAXPROCS=2` 运行
 `TestRestoredSnapshotClientOnlyTLSWithDefaultPasswordCost` 三轮 race，通过
 （126.949 秒），未复现 invalid auth token。覆盖三个真实嵌入式 etcd 成员、
