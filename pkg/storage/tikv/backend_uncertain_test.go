@@ -50,13 +50,30 @@ func protocolBackendScope(prefix string) (*coder.Keyspace, []coder.KeyRange, err
 // than deleting an unbounded namespace. Called only before writers start or
 // after backend.Close has joined every worker.
 func protocolBackendKeys(ctx context.Context, kv storage.KvStorage, prefix string) ([][]byte, error) {
+	return protocolBackendKeysWithFences(ctx, kv, prefix, false)
+}
+
+// The larger fixture permits only the exact 512 production coordination shards
+// in addition to the unchanged 128-key ordinary budget. Near-matching names
+// consume the ordinary budget; they never gain an unbounded exemption.
+func protocolBackendKeysWithFences(ctx context.Context, kv storage.KvStorage, prefix string, fenced bool) ([][]byte, error) {
 	_, ranges, err := protocolBackendScope(prefix)
 	if err != nil {
 		return nil, err
 	}
+	allowed := make(map[string]bool)
+	if fenced {
+		for i := 0; i < 256; i++ {
+			for _, family := range []string{"election-fence", "restoration-fence-shard"} {
+				allowed[fmt.Sprintf("%sbackend/%s/%02x", prefix, family, i)] = true
+			}
+		}
+	}
+	limit := 128 + len(allowed)
+	ordinary := 0
 	var keys [][]byte
 	for _, r := range ranges {
-		iter, err := kv.Iter(ctx, r.Start, r.End, 0, 129)
+		iter, err := kv.Iter(ctx, r.Start, r.End, 0, uint64(limit+1))
 		if err != nil {
 			return nil, err
 		}
@@ -71,8 +88,11 @@ func protocolBackendKeys(ctx context.Context, kv storage.KvStorage, prefix strin
 				break
 			}
 			keys = append(keys, bytes.Clone(key))
-			if len(keys) > 128 {
-				err = fmt.Errorf("fixture exceeds 128-key cleanup bound")
+			if !allowed[string(key)] {
+				ordinary++
+			}
+			if ordinary > 128 || len(keys) > limit {
+				err = fmt.Errorf("fixture exceeds 128 ordinary-key cleanup bound (total bound %d)", limit)
 				break
 			}
 		}
@@ -88,6 +108,10 @@ func protocolBackendKeys(ctx context.Context, kv storage.KvStorage, prefix strin
 }
 
 func cleanupProtocolBackend(ctx context.Context, kv storage.KvStorage, prefix string, owner []byte) error {
+	return cleanupProtocolBackendWithFences(ctx, kv, prefix, owner, false)
+}
+
+func cleanupProtocolBackendWithFences(ctx context.Context, kv storage.KvStorage, prefix string, owner []byte, fenced bool) error {
 	if _, _, err := protocolBackendScope(prefix); err != nil {
 		return err
 	}
@@ -102,7 +126,7 @@ func cleanupProtocolBackend(ctx context.Context, kv storage.KvStorage, prefix st
 	if claimErr == nil && !bytes.Equal(got, owner) {
 		return fmt.Errorf("ownership changed: refuse backend cleanup")
 	}
-	keys, err := protocolBackendKeys(ctx, kv, prefix)
+	keys, err := protocolBackendKeysWithFences(ctx, kv, prefix, fenced)
 	if err != nil {
 		return err
 	}
@@ -120,7 +144,7 @@ func cleanupProtocolBackend(ctx context.Context, kv storage.KvStorage, prefix st
 	if err := batch.Commit(ctx); err != nil {
 		return err
 	}
-	keys, err = protocolBackendKeys(ctx, kv, prefix)
+	keys, err = protocolBackendKeysWithFences(ctx, kv, prefix, fenced)
 	if err == nil && len(keys) != 0 {
 		err = fmt.Errorf("backend cleanup left keys behind")
 	}
@@ -198,7 +222,8 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
-	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
+	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "fenced", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
+	fenced := scenario == "fenced"
 	retrying := strings.HasPrefix(scenario, "retry-")
 	noRPCRetry := strings.HasPrefix(scenario, "no-retry-")
 	splitting := scenario == "split"
@@ -216,7 +241,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	expected, err := validateProtocolSmokeScope(os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID"), prefix, os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE"))
 	require.NoError(t, err)
 	mode := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE")
-	if scenario == "concurrent" {
+	if scenario == "concurrent" || fenced {
 		require.Equal(t, "2pc", mode)
 	} else if scenario != "latency" {
 		require.Equal(t, "1pc", mode)
@@ -248,7 +273,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cleanupKV.Close()) })
 	require.Equal(t, expected, cleanupKV.(storage.ClusterIdentifier).ClusterID())
-	keys, err := protocolBackendKeys(ctx, cleanupKV, prefix)
+	keys, err := protocolBackendKeysWithFences(ctx, cleanupKV, prefix, fenced)
 	require.NoError(t, err)
 	require.Empty(t, keys, "both fixture ranges must be empty before claiming")
 	owner := make([]byte, 32)
@@ -264,7 +289,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		}
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stop()
-		require.NoError(t, cleanupProtocolBackend(cleanupCtx, cleanupKV, prefix, owner))
+		require.NoError(t, cleanupProtocolBackendWithFences(cleanupCtx, cleanupKV, prefix, owner, fenced))
 		t.Logf("PROTOCOL_BACKEND_CLEANUP_OK prefix=%s keyspace=%s", prefix, ks.Name())
 	})
 	t.Logf("PROTOCOL_BACKEND_STARTED cluster=%d prefix=%s keyspace=%s owner_sha256=%x", expected, prefix, ks.Name(), sha256.Sum256(owner))
@@ -281,7 +306,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	var latencyClient *protocolLatencyClient
 	var splitClient *protocolRegionSplit
 	var quota int64
-	if scenario == "latency" || scenario == "concurrent" {
+	if scenario == "latency" || scenario == "concurrent" || fenced {
 		latencyClient = &protocolLatencyClient{Client: client.GetTiKVClient()}
 		client.SetTiKVClient(latencyClient)
 		quota = 2 << 30
@@ -301,6 +326,12 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	}, m)
 	closer = b.(interface{ Close() error })
 	b.SetCurrentRevision(100)
+	if fenced {
+		rpc := &fencedShapeClient{protocolLatencyClient: latencyClient, coordinationPrefix: prefix + "backend"}
+		client.SetTiKVClient(rpc)
+		verifyRealProtocolProductionFences(t, ctx, b, rpc)
+		return
+	}
 	if scenario == "concurrent" {
 		require.NoError(t, b.EnsureQuotaInitialized(ctx))
 		verifyProtocolConcurrentWrites(t, ctx, b)

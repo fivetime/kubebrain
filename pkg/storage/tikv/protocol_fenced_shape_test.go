@@ -25,13 +25,18 @@ import (
 
 type fencedShapeClient struct {
 	*protocolLatencyClient
+	coordinationPrefix             string
 	leadership, restoration        atomic.Int32
 	fenceBatchGets, fencePointGets atomic.Int32
 }
 
 func (c *fencedShapeClient) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
+	prefix := c.coordinationPrefix
+	if prefix == "" {
+		prefix = "/kubebrain-internal/ks-fenced-shape"
+	}
 	isFence := func(key []byte) bool {
-		return strings.HasPrefix(string(key), "/kubebrain-internal/ks-fenced-shape/election-fence/") || strings.HasPrefix(string(key), "/kubebrain-internal/ks-fenced-shape/restoration-fence-shard/")
+		return strings.HasPrefix(string(key), prefix+"/election-fence/") || strings.HasPrefix(string(key), prefix+"/restoration-fence-shard/")
 	}
 	if ctx.Value(protocolLatencyMarker{}) == true {
 		if req.Type == tikvrpc.CmdGet && isFence(req.Get().Key) {
@@ -46,10 +51,10 @@ func (c *fencedShapeClient) SendRequest(ctx context.Context, addr string, req *t
 	}
 	if ctx.Value(protocolLatencyMarker{}) == true && req.Type == tikvrpc.CmdPrewrite {
 		for _, mutation := range req.Prewrite().Mutations {
-			if strings.HasPrefix(string(mutation.Key), "/kubebrain-internal/ks-fenced-shape/election-fence/") {
+			if strings.HasPrefix(string(mutation.Key), prefix+"/election-fence/") {
 				c.leadership.Add(1)
 			}
-			if strings.HasPrefix(string(mutation.Key), "/kubebrain-internal/ks-fenced-shape/restoration-fence-shard/") {
+			if strings.HasPrefix(string(mutation.Key), prefix+"/restoration-fence-shard/") {
 				c.restoration.Add(1)
 			}
 		}

@@ -38,8 +38,19 @@ BatchGet、Prewrite、Commit 等计数，不记录键或请求内容。单 Regio
 时执行的成对预取路径。`TestProtocolProductionFencedShape` 和
 `TestPrefetchedProductionFenceRejectsChangedToken` 补充了三 Region 模拟 TiKV
 上的形态与预取后 token 冲突验证，但不是本入口的真实 Raft 用例。完整防护
-初始化涉及 512 个分片键，后续真实覆盖需要独立设计所有权、键数量上限和
-失败清理；不要直接提高已有 128-key 上限或把模拟结果算作真实集成结果。
+初始化涉及 512 个分片键；第十四例按下述独立预算覆盖真实防护写入，
+不提高旧例的 128-key 上限，也不把模拟结果算作真实集成结果。
+
+第十四例 `TestRealTiKVBackendProductionFences` 显式使用 2PC，关闭 async commit，
+通过真实资源锁 Create 安装领导权／恢复防护，完成三次连续修订号的写后读。
+标记上下文的实际 RPC 必须包含至少三次成对防护 BatchGet、零次防护单键 Get，
+两个防护族分别至少三次预写 mutation；重试可能增加次数，不把次数当作事务数。
+此例不强制 Region 布局，不证明多副本故障、真实 token 冲突或生产性能通过。
+只有此例采用独立清理预算：精确白名单为本次随机前缀下两族各 256 个小写
+两位十六进制分片键，另保留 128 个普通键预算（含 owner），总上限 640。
+近似分片名不获豁免；旧例仍只有 128 键。所有权检查、同事务 owner CAS 与
+删除、后台退出后清理、删除后缺席确认保持不变。清理单测覆盖上限边界、
+超限、近似名、owner 缺失／变化／竞争及无关键保留。
 
 第十三例 `TestRealTiKVBackendConcurrentWrites` 显式使用 2PC，在独立前缀中
 同步放行四个竞争事务，每个事务写入相同的两个键。校验四个唯一且连续的

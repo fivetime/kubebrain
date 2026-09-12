@@ -5,6 +5,23 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+真实完整防护补充（2026-09-12，本地验证，未部署）：新增
+`TestRealTiKVBackendProductionFences`，一次性真实 PD/TiKV 8.5.3 中使用
+真实资源锁初始化，关闭 1PC／async commit。三次写后读保持 revision 连续，
+实际标记 RPC 确认防护成对 BatchGet=3、单键 Get=0、领导权／恢复 mutation
+各 3。新夹具仅为本次前缀的精确 512 个分片键增加白名单预算，普通键仍限
+128，旧用例仍总限 128；所有权 CAS 删除和清理后缺席检查保留。
+首次真实执行因测试选举身份与夹具身份不一致而被 token 断言拒绝，清理成功；
+修正为资源锁实际 Identity 后，十四例 race 全通过，终态退出 0、
+`cleanup_failed=0`，独立确认本次容器／网络及编译的 protocol.test 均不存在。
+失败／成功日志分别为私有目录 `/root/.local/state/kubebrain/` 下
+`real-fenced-fixture-local-race.log`／`real-fenced-fixture-local-race-fixed.log`；
+成功逐例证据 `/tmp/kubebrain-real-protocol.SlSzMlbj2E/`。
+修正后完整 TiKV/build 包 race 通过（2.892/2.550s），TiKV vet 通过。
+本次无运行代码或集群配置变化，不重复构建镜像；旧源码 `b1ff4d5a` 的
+远端协议 CI 不包含此新增用例。此例不强制 Region 布局，尚不覆盖真实
+token 冲突、多副本故障或正式性能门禁，不替代这些未完成验收。
+
 防护 CAS 成对预取（2026-09-12，尚未部署）：在领导权和恢复防护均启用时，
 在同一存储事务内对两个防护键执行可选 Prefetch，随后仍按原顺序执行两个
 CAS 比较及 mutation；不支持预取的存储继续走原 CAS 读取。不缓存跨事务
