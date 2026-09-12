@@ -5,6 +5,18 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+完整 production 工具包回归状态（2026-09-12）：首次完整执行在整包 15 分钟
+总时限处终止（900.016s），**未通过／未完成**，没有此前断言失败。
+当时 `TestRolloutAvailabilityRunnerKeepsProbeActiveThroughRollout` 运行 45s，
+其中 `hung_evidence_during_rollout` 子用例运行 6s，尚未达到其自身 10s
+命令时限；该子用例随后单独执行通过（8.339s）。保留原失败日志
+`rollout-evidence-retention-full-production.log` 及独立验证日志
+`rollout-evidence-retention-interrupted-case.log`（均在私有状态目录）。
+整包现以 `-json -count=1 -timeout=30m` 重新运行，尚未有终态；仅增加本地
+整包总运行预算，没有修改代码、单用例 deadline 或集群 5s／30s／900s 门限。
+新日志 `rollout-evidence-retention-full-production-json.log`，不得以选定回归
+或被中断前未报错替代完整通过证据。镜像独立审计已完成，但仍未重新部署。
+
 见证扫描页镜像审计（2026-09-12，未部署）：运行源码 `4374cfa6` 的镜像
 CI `34685563892`／作业 `103531844913` 成功，独立审计退出 0。
 核对精确源码 SHA、发布与 promotion 清单、双架构摘要、实际 amd64 version、
