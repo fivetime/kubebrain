@@ -45,6 +45,7 @@ jobs:
           bash -n hack/backend-integration/run-real-local.sh
           bash -n hack/backend-integration/run-real-local-interruption-test.sh
           go test -race ./build
+          go test -race ./pkg/storage/tikv
           go vet ./pkg/storage/tikv
       - name: Fetch pinned local-only server images
         shell: bash
