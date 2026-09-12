@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
+	tikvcfg "github.com/tikv/client-go/v2/config"
 	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/admissionfence"
@@ -35,8 +36,9 @@ import (
 const defaultTiKVClientNum = 16
 
 type storageConfig struct {
-	pdAddrs   []string
-	clientNum int
+	pdAddrs         []string
+	clientNum       int
+	experimental1PC bool
 
 	// mTLS for the KubeBrain->TiKV/PD data plane (#33). Empty = plaintext.
 	caFile   string
@@ -85,6 +87,7 @@ func newStorageConfig() *storageConfig {
 }
 
 func (s *storageConfig) addFlag(fs *pflag.FlagSet) {
+	fs.BoolVar(&s.experimental1PC, "experimental-tikv-enable-1pc", false, "Try TiKV 1PC with SDK 2PC fallback; dedicated test clusters only, disabled by default. Async commit remains disabled.")
 	fs.StringSliceVar(&s.pdAddrs, "pd-addrs", s.pdAddrs, "addresses of TiKV PD servers")
 	fs.IntVar(&s.clientNum, "tikv-client-num", s.clientNum, "number of round-robined TiKV txn clients; each has its own PD connections, region cache and TSO stream, so keep it modest")
 	fs.StringVar(&s.caFile, "tikv-ca-file", s.caFile, "Path to the CA cert for TLS to TiKV/PD (empty = plaintext data plane).")
@@ -121,10 +124,24 @@ func (s *storageConfig) validate() error {
 }
 
 func (s *storageConfig) buildStorage(ctx context.Context) (storage.KvStorage, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.configureCommitProtocol()
 	return storagetikv.NewKvStorageWithContext(ctx, s.pdAddrs, s.clientNum, storagetikv.Security{
 		CAPath:   s.caFile,
 		CertPath: s.certFile,
 		KeyPath:  s.keyFile,
 		VerifyCN: s.verifyCN,
+	})
+}
+
+// The SDK snapshots these process-wide settings when it creates a transaction.
+// Apply once at process startup, before constructing any storage clients. This
+// is not a runtime toggle; restoring the default requires restarting the process.
+func (s *storageConfig) configureCommitProtocol() {
+	tikvcfg.UpdateGlobal(func(c *tikvcfg.Config) {
+		c.Enable1PC = s.experimental1PC
+		c.EnableAsyncCommit = false
 	})
 }

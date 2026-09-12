@@ -22,7 +22,32 @@ import (
 
 	"github.com/spf13/pflag"
 	"github.com/stretchr/testify/require"
+	tikvcfg "github.com/tikv/client-go/v2/config"
 )
+
+func TestTiKVExperimentalOnePCStartupPolicy(t *testing.T) {
+	// Keep global SDK state local to this non-parallel test.
+	t.Cleanup(tikvcfg.UpdateGlobal(func(c *tikvcfg.Config) {
+		c.Enable1PC = true
+		c.EnableAsyncCommit = true
+	}))
+	s := newStorageConfig()
+	fs := pflag.NewFlagSet("protocol", pflag.ContinueOnError)
+	s.addFlag(fs)
+	require.False(t, s.experimental1PC)
+	require.Equal(t, "false", fs.Lookup("experimental-tikv-enable-1pc").DefValue)
+	s.configureCommitProtocol()
+	require.False(t, tikvcfg.GetGlobalConfig().Enable1PC)
+	require.False(t, tikvcfg.GetGlobalConfig().EnableAsyncCommit)
+	require.NoError(t, fs.Parse([]string{"--experimental-tikv-enable-1pc=true"}))
+	s.configureCommitProtocol()
+	require.True(t, tikvcfg.GetGlobalConfig().Enable1PC)
+	require.False(t, tikvcfg.GetGlobalConfig().EnableAsyncCommit)
+	require.NoError(t, fs.Set("experimental-tikv-enable-1pc", "false"))
+	s.configureCommitProtocol()
+	require.False(t, tikvcfg.GetGlobalConfig().Enable1PC)
+	require.False(t, tikvcfg.GetGlobalConfig().EnableAsyncCommit)
+}
 
 // TiKV/PD cluster TLS is mutual, so a partial cert set must be rejected up front
 // rather than silently falling back to plaintext or failing deep inside the
