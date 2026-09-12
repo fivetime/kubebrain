@@ -5,6 +5,19 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+见证扫描页镜像审计（2026-09-12，未部署）：运行源码 `4374cfa6` 的镜像
+CI `34685563892`／作业 `103531844913` 成功，独立审计退出 0。
+核对精确源码 SHA、发布与 promotion 清单、双架构摘要、实际 amd64 version、
+Go 1.26.8、TiKV 与 fork 模块版本、标签及非 root 用户。索引为
+`sha256:77b462ea2f5b6b9bf714ed3bc53245c6c96c4388ba151c943c31877204fb6fa4`，
+amd64 为 `sha256:0a835b9de9591c8fd129976be7dfc5b7fdcd7fdfe37e45819d9de6b11aa89cf6`，
+arm64 为 `sha256:4ebac3941a4265ca2f6747bd4a03c8c04f28886da41911749bc79f50691dd4af`。
+证据 `/root/.local/state/kubebrain/witness-scan-release.mEjNyI4Y/`；
+cleanup_failed=0，另核验审计容器和提取的二进制不存在。完整 production
+工具包回归尚在运行，此处不提前声明通过；日志
+`/root/.local/state/kubebrain/rollout-evidence-retention-full-production.log`。
+没有部署，没有实际初始化耗时改善的结论。
+
 验收证据保留（2026-09-12）：rollout runner 新增默认关闭的
 `KEEP_RUNTIME_EVIDENCE`。显式 true 只保留本次 mktemp 私有目录并输出路径，
 不改变集群补偿、回滚和门限；默认删除行为保留，非法值在集群访问前拒绝。
