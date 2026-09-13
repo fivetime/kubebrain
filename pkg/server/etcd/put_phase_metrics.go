@@ -23,6 +23,7 @@ func observePutBatchCommits(ctx context.Context, metricCli metrics.Metrics) cont
 		emit("prepare", o.Prepare)
 		if o.CommitAttempted {
 			emit("commit", o.Commit)
+			emitPrimaryWriteSample(metricCli, o.PrimaryWrite, tags)
 		}
 		if o.HasWriteDetails {
 			emit("prewrite", o.Prewrite)
@@ -33,6 +34,35 @@ func observePutBatchCommits(ctx context.Context, metricCli metrics.Metrics) cont
 			_ = metricCli.EmitHistogram("write.batch.prewrite_region_groups", float64(o.PrewriteRegionGroups), tags...)
 		}
 	})
+}
+
+func emitPrimaryWriteSample(metricCli metrics.Metrics, sample storage.PrimaryWriteObservation, tags []metrics.T) {
+	if sample.SuccessfulRPCs == 0 {
+		return
+	}
+	details := sample.Details
+	switch details {
+	case "absent", "exec_only", "write", "invalid_write":
+	default:
+		details = "invalid_write" // never export arbitrary provider text as a label
+	}
+	if sample.RPC < 0 || sample.PersistLog < 0 || sample.RaftSync < 0 || sample.CommitLog < 0 {
+		details = "invalid_write"
+	}
+	sampleTags := append(append([]metrics.T(nil), tags...), metrics.Tag("details", details))
+	_ = metricCli.EmitCounter("write.batch.primary_rpc.samples", 1, sampleTags...)
+	_ = metricCli.EmitHistogram("write.batch.primary_rpc.successful_requests", float64(sample.SuccessfulRPCs), tags...)
+	if details != "write" {
+		return
+	}
+	// All four histograms share the same selected, representable raw-detail
+	// population. The batch outcome tag is NOT a claim of exactly-once RPCs.
+	for _, phase := range []struct {
+		name  string
+		value time.Duration
+	}{{"rpc", sample.RPC}, {"persist_log", sample.PersistLog}, {"raft_sync", sample.RaftSync}, {"commit_log", sample.CommitLog}} {
+		_ = metricCli.EmitHistogram("write.batch.primary_rpc."+phase.name+".latency", phase.value.Seconds(), tags...)
+	}
 }
 
 // These paired observations cover only local Put requests that reach the

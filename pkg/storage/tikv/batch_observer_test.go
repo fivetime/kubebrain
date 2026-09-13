@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"github.com/tikv/client-go/v2/testutils"
 	clienttikv "github.com/tikv/client-go/v2/tikv"
@@ -44,7 +45,8 @@ func TestBatchObserverRealClientWriteEmptyAndCallerSink(t *testing.T) {
 	client, cluster, pd, err := testutils.NewMockTiKV("", nil)
 	require.NoError(t, err)
 	testutils.BootstrapWithSingleStore(cluster)
-	store, err := clienttikv.NewKVStore("batch-observer-test", clienttikv.NewCodecPDClient(clienttikv.ModeTxn, pd), clienttikv.NewMockSafePointKV(), client)
+	wrapped := &writeResponseClient{Client: client, metrics: newWriteResponseMetrics(prometheus.NewRegistry())}
+	store, err := clienttikv.NewKVStore("batch-observer-test", clienttikv.NewCodecPDClient(clienttikv.ModeTxn, pd), clienttikv.NewMockSafePointKV(), wrapped)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 	for _, mode := range []string{"write", "empty", "caller_sink", "prepare_failure", "commit_canceled"} {
@@ -93,6 +95,12 @@ func TestBatchObserverRealClientWriteEmptyAndCallerSink(t *testing.T) {
 			}
 			if mode != "commit_canceled" {
 				require.Equal(t, mode == "write", o.HasWriteDetails)
+			}
+			if mode == "write" || mode == "caller_sink" {
+				require.EqualValues(t, 1, o.PrimaryWrite.SuccessfulRPCs)
+				require.Positive(t, o.PrimaryWrite.RPC)
+			} else {
+				require.Zero(t, o.PrimaryWrite.SuccessfulRPCs)
 			}
 			if mode == "write" {
 				require.EqualValues(t, 1, o.PrewriteRegionGroups)

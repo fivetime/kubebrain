@@ -187,6 +187,7 @@ func (b *batch) Atomic(fn func(context.Context, storage.AtomicBatch) error) {
 func (b *batch) Commit(ctx context.Context) (err error) {
 	observer := storage.BatchCommitObserverFromContext(ctx)
 	var observation storage.BatchCommitObservation
+	var primaryTracker *primaryWriteTracker
 	var detail *util.CommitDetails
 	if observer != nil {
 		defer func() {
@@ -233,6 +234,8 @@ func (b *batch) Commit(ctx context.Context) (err error) {
 	if observer != nil {
 		observation.Prepare = time.Since(prepareStart)
 		observation.CommitAttempted = true
+		primaryTracker = &primaryWriteTracker{}
+		ctx = context.WithValue(ctx, primaryWriteTrackerKey{}, primaryTracker)
 		// Preserve any caller-owned SDK diagnostic sink. Each observed batch
 		// otherwise gets its own sink, never a pointer shared across retries.
 		if ctx.Value(util.CommitDetailCtxKey) == nil {
@@ -243,6 +246,7 @@ func (b *batch) Commit(ctx context.Context) (err error) {
 	err = b.txn.Commit(ctx)
 	if observer != nil {
 		observation.Commit = time.Since(commitStart)
+		observation.PrimaryWrite = primaryTracker.finish()
 	}
 
 	if err != nil {

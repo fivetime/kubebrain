@@ -57,3 +57,59 @@ func TestPutBatchMetricsUnitsPopulationAndOutcome(t *testing.T) {
 		require.Len(t, rec.histograms, 3, "no-write transaction has no SDK write details")
 	}
 }
+
+func TestPrimaryWriteMetricsPresenceUnitsAndBatchOutcome(t *testing.T) {
+	for _, outcome := range []error{nil, errors.New("not exported")} {
+		for _, details := range []string{"absent", "exec_only", "write", "invalid_write", "private provider text"} {
+			rec := &recordingMetrics{}
+			tags := []metrics.T{metrics.Tag("method", "put"), getSuccessMetricTagByErr(outcome)}
+			sample := storage.PrimaryWriteObservation{SuccessfulRPCs: 2, Details: details,
+				RPC: 10 * time.Millisecond, PersistLog: 3 * time.Millisecond, RaftSync: time.Millisecond, CommitLog: 5 * time.Millisecond}
+			emitPrimaryWriteSample(rec, sample, tags)
+			label := details
+			if details == "private provider text" {
+				label = "invalid_write"
+			}
+			require.Equal(t, []recordedCounter{{name: "write.batch.primary_rpc.samples", value: 1,
+				tags: append(append([]metrics.T(nil), tags...), metrics.Tag("details", label))}}, rec.counters)
+			want := []recordedHistogram{{name: "write.batch.primary_rpc.successful_requests", value: float64(2), tags: tags}}
+			if details == "write" {
+				want = append(want,
+					recordedHistogram{name: "write.batch.primary_rpc.rpc.latency", value: .010, tags: tags},
+					recordedHistogram{name: "write.batch.primary_rpc.persist_log.latency", value: .003, tags: tags},
+					recordedHistogram{name: "write.batch.primary_rpc.raft_sync.latency", value: .001, tags: tags},
+					recordedHistogram{name: "write.batch.primary_rpc.commit_log.latency", value: .005, tags: tags})
+			}
+			require.Equal(t, want, rec.histograms)
+			require.Len(t, tags, 2, "detail tags must not mutate the caller tag slice")
+		}
+	}
+}
+
+func TestPrimaryWriteMetricsNoSampleAndNegativeDurations(t *testing.T) {
+	rec := &recordingMetrics{}
+	emitPrimaryWriteSample(rec, storage.PrimaryWriteObservation{}, nil)
+	require.Empty(t, rec.counters)
+	require.Empty(t, rec.histograms)
+	for _, field := range []string{"rpc", "persist", "raft", "commit"} {
+		rec := &recordingMetrics{}
+		sample := storage.PrimaryWriteObservation{SuccessfulRPCs: 1, Details: "write"}
+		switch field {
+		case "rpc":
+			sample.RPC = -1
+		case "persist":
+			sample.PersistLog = -1
+		case "raft":
+			sample.RaftSync = -1
+		case "commit":
+			sample.CommitLog = -1
+		}
+		emitPrimaryWriteSample(rec, sample, nil)
+		require.Len(t, rec.histograms, 1, "only request count, no invalid duration samples")
+		require.Equal(t, []metrics.T{metrics.Tag("details", "invalid_write")}, rec.counters[0].tags)
+	}
+	rec = &recordingMetrics{}
+	callback := storage.BatchCommitObserverFromContext(observePutBatchCommits(context.Background(), rec))
+	callback(storage.BatchCommitObservation{PrimaryWrite: storage.PrimaryWriteObservation{SuccessfulRPCs: 1, Details: "write"}})
+	require.Empty(t, rec.counters, "no commit attempt means no primary sample")
+}

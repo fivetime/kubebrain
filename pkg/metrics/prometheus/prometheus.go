@@ -323,6 +323,12 @@ func metricHelp(name string) string {
 	switch formatName(name) {
 	case "write_batch_prewrite_region_groups":
 		return "SDK prewrite Region groups per observed storage batch, including retries; not distinct Regions, RPC counts, or a commit protocol verdict."
+	case "write_batch_primary_rpc_samples":
+		return "Batches with a selected slowest successful synchronous primary Commit RPC, by raw detail presence; success labels the batch outcome. Async-enabled attempts and late/background observations are excluded."
+	case "write_batch_primary_rpc_successful_requests":
+		return "Successful matching primary Commit RPCs per observed synchronous batch before Commit returns, including retries; not logical Put counts."
+	case "write_batch_primary_rpc_rpc_latency", "write_batch_primary_rpc_persist_log_latency", "write_batch_primary_rpc_raft_sync_latency", "write_batch_primary_rpc_commit_log_latency":
+		return "Seconds for the slowest successful primary Commit RPC selected per synchronous batch, with valid raw WriteDetail only; success labels the batch outcome. RPC and server stages overlap; never add them. Not all RPCs or tail latency of the full operation."
 	case "etcd_cluster_version":
 		return "Which version is running. 1 for 'cluster_version' label with current cluster version"
 	case "etcd_debugging_auth_revision":

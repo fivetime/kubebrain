@@ -18,7 +18,23 @@ type BatchCommitObservation struct {
 	// PrewriteRegionGroups sums SDK prewrite Region groups across attempts,
 	// including retries. It is not a distinct-Region count or a protocol verdict.
 	PrewriteRegionGroups int32
+	PrimaryWrite         PrimaryWriteObservation
 	Err                  error
+}
+
+// PrimaryWriteObservation selects the slowest successful primary Commit RPC
+// observed before a synchronous batch Commit returns. Retries may produce more
+// than one successful RPC. Async-enabled attempts are excluded, even on fallback.
+// Details is absent, exec_only, write, or invalid_write; only write permits
+// duration histograms. RPC and server stages overlap and must never be added.
+// SuccessfulRPCs==0 means no selected sample, not a zero-duration operation.
+type PrimaryWriteObservation struct {
+	SuccessfulRPCs uint64
+	Details        string
+	RPC            time.Duration
+	PersistLog     time.Duration
+	RaftSync       time.Duration
+	CommitLog      time.Duration
 }
 
 type batchCommitObserverKey struct{}

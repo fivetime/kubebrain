@@ -54,9 +54,23 @@ func (c *writeResponseClient) SendRequest(ctx context.Context, addr string, req 
 	default:
 		return c.Client.SendRequest(ctx, addr, req, timeout)
 	}
+	tracker, _ := ctx.Value(primaryWriteTrackerKey{}).(*primaryWriteTracker)
+	if tracker != nil && method == "prewrite" {
+		prewrite, _ := req.Req.(*kvrpcpb.PrewriteRequest)
+		tracker.register(prewrite)
+	}
 	start := time.Now()
 	response, err := c.Client.SendRequest(ctx, addr, req, timeout)
-	c.metrics.observe(method, response, err, time.Since(start))
+	elapsed := time.Since(start)
+	c.metrics.observe(method, response, err, elapsed)
+	if tracker != nil && method == "commit" {
+		commit, _ := req.Req.(*kvrpcpb.CommitRequest)
+		var result *kvrpcpb.CommitResponse
+		if response != nil {
+			result, _ = response.Resp.(*kvrpcpb.CommitResponse)
+		}
+		tracker.observe(commit, result, err, elapsed)
+	}
 	return response, err // preserve response/error identity and perform no retry
 }
 

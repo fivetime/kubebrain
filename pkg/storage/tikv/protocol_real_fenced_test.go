@@ -120,7 +120,14 @@ func verifyRealProtocolProductionFences(t *testing.T, ctx context.Context, b bac
 		require.NoError(t, o.Err)
 		require.True(t, o.HasWriteDetails)
 		require.Positive(t, o.PrewriteRegionGroups)
+		require.Positive(t, o.PrimaryWrite.SuccessfulRPCs)
+		require.Equal(t, "write", o.PrimaryWrite.Details)
+		require.Positive(t, o.PrimaryWrite.RPC)
+		require.GreaterOrEqual(t, o.PrimaryWrite.PersistLog, time.Duration(0))
+		require.GreaterOrEqual(t, o.PrimaryWrite.RaftSync, time.Duration(0))
+		require.GreaterOrEqual(t, o.PrimaryWrite.CommitLog, time.Duration(0))
 	}
+	t.Log("PROTOCOL_PRIMARY_WRITE_SAMPLE_OK batches=3 raw_detail=write async_commit=false")
 	// Retries can add attempts; do not equate RPC count with transaction count.
 	require.GreaterOrEqual(t, rpc.fenceBatchGets.Load(), int32(3))
 	require.Zero(t, rpc.fencePointGets.Load())
