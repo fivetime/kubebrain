@@ -127,6 +127,20 @@ func verifyRealProtocolProductionFences(t *testing.T, ctx context.Context, b bac
 	require.GreaterOrEqual(t, rpc.leadership.Load(), int32(3))
 	require.GreaterOrEqual(t, rpc.restoration.Load(), int32(3))
 	t.Logf("PROTOCOL_PRODUCTION_FENCES_OK writes=3 pair_batch_gets=%d fence_point_gets=%d leadership_mutations=%d restoration_mutations=%d", rpc.fenceBatchGets.Load(), rpc.fencePointGets.Load(), rpc.leadership.Load(), rpc.restoration.Load())
+	// Exercise the persisted witness/index/object validation against actual
+	// TiKV after repeated writes of one key, not only the committing RPC path.
+	// No startup prevalidation was supplied, so promotion must scan all seals.
+	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
+	require.EqualValues(t, 103, b.GetCurrentRevision())
+	got, err := b.Get(ctx, &proto.GetRequest{Key: key})
+	require.NoError(t, err)
+	require.NotNil(t, got.Kv)
+	require.EqualValues(t, 103, got.Kv.Revision)
+	require.Equal(t, []byte("value-2"), backend.StripInlineValue(got.Kv.Value))
+	alarms, err := b.CorruptAlarms(ctx)
+	require.NoError(t, err)
+	require.Empty(t, alarms)
+	t.Log("PROTOCOL_PRODUCTION_WITNESS_VALIDATION_OK repeated_key_writes=3 current_revision=103 corrupt_alarms=0")
 }
 
 func TestProtocolFencedCleanupBudget(t *testing.T) {
