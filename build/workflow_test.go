@@ -18,6 +18,7 @@ func TestWorkflowsAreValidYAML(t *testing.T) {
 		"../.github/workflows/docker-image.yml",
 		"../.github/workflows/integration.yml",
 		"../.github/workflows/backend-integration.yml",
+		"../.github/workflows/probe-regression.yml",
 	} {
 		t.Run(path, func(t *testing.T) {
 			content, err := os.ReadFile(path)
@@ -38,6 +39,7 @@ func TestWorkflowActionsArePinnedAndCheckoutDropsCredentials(t *testing.T) {
 		"../.github/workflows/docker-image.yml",
 		"../.github/workflows/integration.yml",
 		"../.github/workflows/backend-integration.yml",
+		"../.github/workflows/probe-regression.yml",
 	} {
 		t.Run(path, func(t *testing.T) {
 			workflow, err := os.ReadFile(path)
@@ -58,6 +60,54 @@ func TestWorkflowActionsArePinnedAndCheckoutDropsCredentials(t *testing.T) {
 				strings.Count(content, "persist-credentials: false"))
 		})
 	}
+}
+
+func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
+	data, err := os.ReadFile("../.github/workflows/probe-regression.yml")
+	require.NoError(t, err)
+	var workflow struct {
+		On map[string]struct {
+			Branches []string `json:"branches"`
+			Paths    []string `json:"paths"`
+		} `json:"on"`
+		Permissions map[string]string `json:"permissions"`
+		Jobs        map[string]struct {
+			If      string `json:"if"`
+			RunsOn  string `json:"runs-on"`
+			Timeout int    `json:"timeout-minutes"`
+			Steps   []struct {
+				Run             string `json:"run"`
+				ContinueOnError bool   `json:"continue-on-error"`
+			} `json:"steps"`
+		} `json:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &workflow))
+	require.Len(t, workflow.On, 2)
+	require.Contains(t, workflow.On, "push")
+	require.Contains(t, workflow.On, "workflow_dispatch")
+	require.Equal(t, []string{"dbaas"}, workflow.On["push"].Branches)
+	for _, path := range []string{"hack/production/cmd/rollout-availability-probe/**", "hack/production/internal/**", "pkg/**", "go.mod", "go.sum", "build/workflow_test.go", ".github/workflows/probe-regression.yml"} {
+		require.Contains(t, workflow.On["push"].Paths, path)
+	}
+	require.Equal(t, map[string]string{"contents": "read"}, workflow.Permissions)
+	require.Len(t, workflow.Jobs, 1)
+	job := workflow.Jobs["probe-tests"]
+	require.Equal(t, "github.ref == 'refs/heads/dbaas'", job.If)
+	require.Equal(t, "self-hosted", job.RunsOn)
+	require.Equal(t, 30, job.Timeout)
+	var commands string
+	for _, step := range job.Steps {
+		require.False(t, step.ContinueOnError)
+		if step.Run != "" {
+			require.True(t, strings.HasPrefix(step.Run, "set -euo pipefail\n"))
+			commands += step.Run
+		}
+	}
+	require.Contains(t, commands, "go test -race -count=1 ./build\n")
+	require.Contains(t, commands, "go vet ./hack/production/cmd/rollout-availability-probe\n")
+	require.Contains(t, commands, "go test -race -count=1 -timeout=20m -v ./hack/production/cmd/rollout-availability-probe\n")
+	require.NotContains(t, commands, "|| true")
+	require.NotContains(t, commands, "kubectl")
 }
 
 func TestCIDockerBuildSuppliesRequiredMetadata(t *testing.T) {

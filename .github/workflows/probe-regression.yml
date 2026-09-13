@@ -1,0 +1,52 @@
+name: Rollout probe regression
+
+"on":
+  push:
+    branches: [dbaas]
+    paths:
+      - 'hack/production/cmd/rollout-availability-probe/**'
+      - 'hack/production/internal/**'
+      - 'pkg/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'build/workflow_test.go'
+      - '.github/workflows/probe-regression.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: probe-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  probe-tests:
+    if: github.ref == 'refs/heads/dbaas'
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.8'
+          cache-dependency-path: go.sum
+      - name: Verify workflow contracts and probe code
+        run: |
+          set -euo pipefail
+          go mod download
+          go mod verify
+          go test -race -count=1 ./build
+          go vet ./hack/production/cmd/rollout-availability-probe
+      - name: Race test all probe regressions
+        run: |
+          set -euo pipefail
+          go test -race -count=1 -timeout=20m -v ./hack/production/cmd/rollout-availability-probe
