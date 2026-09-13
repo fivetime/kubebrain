@@ -502,7 +502,9 @@ func TestLeadershipRevisionIndexRepairBeforeAlarmDoesNotArmCorrupt(t *testing.T)
 	raw := imemkv.NewKvStorage()
 	t.Cleanup(func() { require.NoError(t, raw.Close()) })
 	store := &blockingRevisionIndexRecheckStorage{
-		KvStorage: raw, blockAt: 3, blocked: make(chan struct{}), release: make(chan struct{}),
+		// The two historical expectations share one deduplicated index read.
+		// The second read is the final evidence recheck before arming CORRUPT.
+		KvStorage: raw, blockAt: 2, blocked: make(chan struct{}), release: make(chan struct{}),
 	}
 	b := NewBackend(store, Config{
 		Prefix:   prefix + "/restart-witness/index-repair-race",
@@ -527,6 +529,7 @@ func TestLeadershipRevisionIndexRepairBeforeAlarmDoesNotArmCorrupt(t *testing.T)
 	go func() { done <- b.InitializeLeadershipRevision(ctx, 0) }()
 	select {
 	case <-store.blocked:
+		require.Equal(t, int32(2), store.reads.Load())
 	case <-time.After(time.Second):
 		t.Fatal("leadership validation did not reach the final revision-index evidence check")
 	}
@@ -615,6 +618,36 @@ func TestLeadershipRevisionIndexValidationUsesBoundedBatchGets(t *testing.T) {
 	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
 	require.Equal(t, int32(4), store.calls.Load(),
 		"leadership index/object validation must use two bounded phases, not issue N+1 reads per witness")
+}
+
+func TestLeadershipRevisionIndexValidationDeduplicatesReadsNotExpectations(t *testing.T) {
+	store := &countingWitnessIndexBatchStorage{KvStorage: imemkv.NewKvStorage()}
+	b := NewBackend(store, Config{
+		Prefix: prefix + "/witness-repeated-index", Identity: getStorageIdentity(), EnableEtcdCompatibility: true,
+	}, mock.NewMinimalMetrics(gomock.NewController(t))).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	b.SetCurrentRevision(100)
+	ctx := context.Background()
+	key := []byte(prefix + "/repeated-index")
+	var first uint64
+	for i := 0; i < txnRevisionIndexValidationBatch+88; i++ {
+		_, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("value")}}, nil)
+		require.NoError(t, err)
+		if i == 0 {
+			first = revision
+		}
+	}
+	store.calls.Store(0)
+	store.maxKeys.Store(0)
+	require.NoError(t, b.validatePersistedTxnWitnessesAfter(ctx, false, false, 0))
+	require.Equal(t, int32(4), store.calls.Load(), "each bounded window must freshly read index and object")
+	require.Equal(t, int32(1), store.maxKeys.Load(), "repeated history must not repeat physical read keys")
+	// The first expectation alone is satisfied by this rollback. All later
+	// expectations must still be checked despite sharing its physical index.
+	batch := store.BeginBatchWrite()
+	batch.Put(b.coder.EncodeRevisionKey(key), uint64ToBytes(first), 0)
+	require.NoError(t, batch.Commit(ctx))
+	require.ErrorIs(t, b.validatePersistedTxnWitnessesAfter(ctx, false, false, 0), ErrTxnWitnessCorrupt)
 }
 
 func TestLeadershipRevisionIndexValidationBoundsSingleLargeTransactionBatch(t *testing.T) {

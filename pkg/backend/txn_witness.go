@@ -635,10 +635,18 @@ func (b *backend) validateTxnRevisionIndexes(
 		return nil, nil
 	}
 	indexKeys := make([][]byte, len(expectations))
+	uniqueIndexKeys := make([][]byte, 0, len(expectations))
+	seenIndexes := make(map[string]struct{}, len(expectations))
 	for i := range expectations {
 		indexKeys[i] = b.coder.EncodeRevisionKey(expectations[i].userKey)
+		if _, seen := seenIndexes[string(indexKeys[i])]; !seen {
+			seenIndexes[string(indexKeys[i])] = struct{}{}
+			uniqueIndexKeys = append(uniqueIndexKeys, indexKeys[i])
+		}
 	}
-	values, incomplete, err := b.loadEventValues(ctx, indexKeys)
+	// Deduplicate only this read window, not the historical expectations below.
+	// Every window/retry still reads fresh state; no integrity result is cached.
+	values, incomplete, err := b.loadEventValues(ctx, uniqueIndexKeys)
 	if err != nil {
 		return nil, err
 	}
