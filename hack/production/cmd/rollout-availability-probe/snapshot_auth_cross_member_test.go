@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"os"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -75,8 +77,14 @@ func testRestoredAuthMemberClients(t *testing.T, officialRefresh bool) {
 				}
 			}
 		}()
+		indexes := make([]*restoredAuthRaftIndexCore, len(cfg.members))
 		for index, member := range cfg.members {
-			servers[index], err = embed.StartEtcd(newRestoredSnapshotEmbedConfig(cfg, member, cfg.initialCluster))
+			embedConfig := newRestoredSnapshotEmbedConfig(cfg, member, cfg.initialCluster)
+			if !officialRefresh {
+				indexes[index] = &restoredAuthRaftIndexCore{}
+				embedConfig.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.New(indexes[index]))
+			}
+			servers[index], err = embed.StartEtcd(embedConfig)
 			require.NoError(t, err)
 		}
 		for index, server := range servers {
@@ -125,6 +133,16 @@ func testRestoredAuthMemberClients(t *testing.T, officialRefresh bool) {
 				require.Equal(t, uint64(servers[source].Server.MemberID()), response.Header.MemberId,
 					"authentication must reach the selected source member")
 				require.NotEmpty(t, response.Token)
+				// Correlate the sequential raw Authenticate with its actual Raft
+				// application. Parse only the numeric suffix, never log the token.
+				separator := strings.LastIndexByte(response.Token, '.')
+				require.Greater(t, separator, 0, "expected official simple token format")
+				tokenIndex, parseErr := strconv.ParseUint(response.Token[separator+1:], 10, 64)
+				require.True(t, parseErr == nil, "invalid numeric token index")
+				entryIndex := indexes[source].authIndex()
+				require.Positive(t, entryIndex, "Authenticate Raft application must be observed")
+				require.Less(t, tokenIndex, entryIndex, "pinned upstream assigns the earlier consistent index")
+				t.Logf("official Authenticate source=%d token_index=%d actual_entry_index=%d", source, tokenIndex, entryIndex)
 				tokenCtx := metadata.AppendToOutgoingContext(ctx, "token", response.Token)
 				for target, conn := range connections {
 					opCtx, stop := context.WithTimeout(tokenCtx, 5*time.Second)
