@@ -5,6 +5,19 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+探针 CI 首轮失败与认证复现（2026-09-13）：提交 `6447d2f1` 的任务
+`34742434075` 已结束为 failure；配置契约与 vet 成功，探针全包 race
+失败（344.294s）。TLS 恢复权限矩阵在预期拒绝的 exact-reader Watch 上
+返回 invalid auth token，而非 PermissionDenied；client-only TLS 恢复的
+writer KeepAliveOnce 同样返回 invalid auth token。两处最近 Authenticate
+均成功，认证与失败请求落在不同成员，且上下文未结束、未超时；这些是
+传输诊断事实，不足以证明具体 token 身份或复制时序根因。另一个 fixture
+用例因源 etcd 20 秒内未就绪失败，暂不与认证错误归为同一原因。
+原始 token 全成员交叉用例（14.29s）和新并发刷新用例（44.17s）均通过，
+因此它们不能替代实际失败场景。该轮在 Runner 的本地嵌入式官方 etcd 上
+复现，无专用集群连接或部署；进一步缩小了复现所需环境，但尚未定位或修复。
+完整失败步骤日志：`/root/.local/state/kubebrain/probe-ci-34742434075-failed.log`。
+
 探针 CI 覆盖补齐（2026-09-13）：原通用 CI 仅在 main push／PR 时自动运行，
 dbaas 镜像构建不执行探针测试，后端协议任务的路径过滤也不覆盖探针变更。
 新增独立 `probe-regression.yml`，在 dbaas 探针、内部依赖、pkg、模块依赖及
