@@ -505,6 +505,22 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		absent, tombstone := false, false
 		switch {
 		case errors.Is(gerr, storage.ErrKeyNotFound):
+			if b.config.EnableEtcdCompatibility {
+				// A missing auxiliary index is not proof that a legacy object
+				// never existed. Use the same authoritative fallback and guarded,
+				// revision-neutral repair as ordinary writes, then restart all
+				// transaction preparation so guards observe the repaired state.
+				_, _, orphanErr := b.get(ctx, op.Key, 0)
+				if orphanErr == nil {
+					if _, healErr := b.healOrphanIndex(ctx, op.Key); healErr != nil {
+						return nil, 0, false, healErr
+					}
+					return nil, 0, true, nil
+				}
+				if !errors.Is(orphanErr, storage.ErrKeyNotFound) {
+					return nil, 0, false, orphanErr
+				}
+			}
 			absent = true
 		case gerr != nil:
 			return nil, 0, false, gerr

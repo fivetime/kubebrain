@@ -778,6 +778,15 @@ func TestTxnApplyBeforeConcurrentCrossReplicaCorruptActivationRemainsCommitted(t
 }
 
 func TestOrphanIndexHealIsFencedByConcurrentCrossReplicaCorruptActivation(t *testing.T) {
+	checkOrphanIndexHealConcurrentCorrupt(t, false)
+}
+
+func TestTxnOrphanRecoveryIsFencedByConcurrentCrossReplicaCorruptActivation(t *testing.T) {
+	checkOrphanIndexHealConcurrentCorrupt(t, true)
+}
+
+func checkOrphanIndexHealConcurrentCorrupt(t *testing.T, transaction bool) {
+	t.Helper()
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 	store, err := ibadger.NewKvStorage(ibadger.Config{Dir: t.TempDir()})
@@ -796,6 +805,7 @@ func TestOrphanIndexHealIsFencedByConcurrentCrossReplicaCorruptActivation(t *tes
 	require.NoError(t, err)
 	revisionKey := writer.coder.EncodeRevisionKey(key)
 	require.NoError(t, store.Del(context.Background(), revisionKey))
+	beforeRevision := writer.GetCurrentRevision()
 
 	blocking.trigger.Store(true)
 	type healResult struct {
@@ -804,6 +814,11 @@ func TestOrphanIndexHealIsFencedByConcurrentCrossReplicaCorruptActivation(t *tes
 	}
 	result := make(chan healResult, 1)
 	go func() {
+		if transaction {
+			_, _, txnErr := writer.TxnApply(context.Background(), []TxnWriteOp{{Key: key, Value: []byte("new")}}, nil)
+			result <- healResult{err: txnErr}
+			return
+		}
 		healed, healErr := writer.healOrphanIndex(context.Background(), key)
 		result <- healResult{healed: healed, err: healErr}
 	}()
@@ -813,6 +828,7 @@ func TestOrphanIndexHealIsFencedByConcurrentCrossReplicaCorruptActivation(t *tes
 	got := <-result
 	require.False(t, got.healed)
 	require.ErrorIs(t, got.err, ErrCorruptAlarmActive)
+	require.Equal(t, beforeRevision, writer.GetCurrentRevision())
 	_, err = store.Get(context.Background(), revisionKey)
 	require.ErrorIs(t, err, storage.ErrKeyNotFound,
 		"an orphan repair ordered after CORRUPT activation must not commit")

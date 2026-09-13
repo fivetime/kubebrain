@@ -28,11 +28,16 @@ type putPathReadCounter struct {
 // be replaced by an unconditional transaction. Count-index corruption policy
 // is separate; this fixture deliberately exercises the legacy recovery mode.
 func TestPlainPutPreservesOrphanLifecycle(t *testing.T) {
-	t.Run("return_previous", func(t *testing.T) { checkPlainPutOrphanLifecycle(t, true) })
-	t.Run("metadata_only", func(t *testing.T) { checkPlainPutOrphanLifecycle(t, false) })
+	t.Run("return_previous", func(t *testing.T) { checkPlainPutOrphanLifecycle(t, true, false) })
+	t.Run("metadata_only", func(t *testing.T) { checkPlainPutOrphanLifecycle(t, false, false) })
 }
 
-func checkPlainPutOrphanLifecycle(t *testing.T, previous bool) {
+func TestTransactionPutPreservesOrphanLifecycle(t *testing.T) {
+	t.Run("return_previous", func(t *testing.T) { checkPlainPutOrphanLifecycle(t, true, true) })
+	t.Run("without_previous", func(t *testing.T) { checkPlainPutOrphanLifecycle(t, false, true) })
+}
+
+func checkPlainPutOrphanLifecycle(t *testing.T, previous, transaction bool) {
 	t.Helper()
 	m := mock.NewMinimalMetrics(gomock.NewController(t))
 	kv := memkv.NewKvStorage()
@@ -47,7 +52,18 @@ func checkPlainPutOrphanLifecycle(t *testing.T, previous bool) {
 	ks, err := coder.NewKeyspace("")
 	require.NoError(t, err)
 	require.NoError(t, kv.Del(ctx, ks.NewCoder().EncodeRevisionKey(key)))
-	updated, err := shim.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("new"), PrevKv: previous})
+	var updated *etcdserverpb.PutResponse
+	if transaction {
+		responses, _, _, txnErr := shim.TxnApply(ctx, []backend.TxnWriteOp{{
+			Key: key, Value: []byte("new"), PrevLeaseKnown: true,
+		}}, nil, []bool{previous})
+		require.NoError(t, txnErr)
+		require.Len(t, responses, 1)
+		updated = responses[0].GetResponsePut()
+		require.NotNil(t, updated)
+	} else {
+		updated, err = shim.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("new"), PrevKv: previous})
+	}
 	require.NoError(t, err)
 	if previous {
 		require.NotNil(t, updated.PrevKv)
