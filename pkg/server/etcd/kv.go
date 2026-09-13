@@ -1994,6 +1994,22 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	backendStart := time.Now()
 	if prevLease := s.leaseIDForKey(string(put.Key)); put.Lease != 0 || prevLease != 0 {
 		response, err = s.putLeasedAtomic(ctx, put, prevLease)
+	} else if !r.PrevKv && !r.IgnoreValue && !r.IgnoreLease {
+		// All admission checks above and the lease attachment barrier remain
+		// in force. An unconditional, unleased Put needs no adapter pre-read:
+		// TxnApply validates prior state and retries its storage-atomic write.
+		// Preserve authoritative zero-lease provenance for legacy envelopes.
+		var responses []*etcdserverpb.ResponseOp
+		responses, _, _, err = s.backend.TxnApply(ctx, []backend.TxnWriteOp{{
+			Key: put.Key, Value: put.Value, PrevLeaseKnown: true, PrevLease: 0,
+		}}, nil, []bool{false})
+		if err == nil {
+			if len(responses) != 1 || responses[0].GetResponsePut() == nil {
+				err = status.Error(codes.Internal, "invalid unconditional Put transaction response")
+			} else {
+				response = responses[0].GetResponsePut()
+			}
+		}
 	} else {
 		response, err = s.backend.Put(backend.WithPreviousLease(ctx, 0), put)
 	}

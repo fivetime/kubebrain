@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/authpb"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -66,6 +67,11 @@ func (s *authMutationRangeStreamServer) Send(response *etcdserverpb.RangeStreamR
 func (b *authMutationWriteShim) Put(ctx context.Context, request *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 	b.once.Do(b.hook)
 	return b.BackendShim.Put(ctx, request)
+}
+
+func (b *authMutationWriteShim) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prev []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
+	b.once.Do(b.hook)
+	return b.BackendShim.TxnApply(ctx, ops, guards, prev)
 }
 
 func (b *authMutationReadShim) Get(ctx context.Context, request *etcdserverpb.RangeRequest) (*etcdserverpb.RangeResponse, error) {
@@ -699,17 +705,26 @@ func TestAuthorizedReadonlyTxnPreservesCanceledContextWithoutAuthMutation(t *tes
 }
 
 func TestAuthorizedPutAtomicallyRejectsAuthMutationBeforeCommit(t *testing.T) {
+	t.Run("native", func(t *testing.T) { checkAuthorizedPutMutationBeforeCommit(t, false) })
+	t.Run("previous_value", func(t *testing.T) { checkAuthorizedPutMutationBeforeCommit(t, true) })
+}
+
+func checkAuthorizedPutMutationBeforeCommit(t *testing.T, previous bool) {
+	t.Helper()
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	aliceCtx := setupAuthKVUser(t, server)
 
 	shim := &authMutationWriteShim{BackendShim: server.backend}
 	var mutationErr error
+	mutated := false
 	shim.hook = func() {
+		mutated = true
 		mutationErr = server.auth.roleRevokePermission(context.Background(), "allowed", []byte("/allowed/"), []byte("/allowed0"))
 	}
 	server.backend = shim
-	_, err := server.Put(aliceCtx, &etcdserverpb.PutRequest{Key: []byte("/allowed/raced"), Value: []byte("must-not-commit")})
+	_, err := server.Put(aliceCtx, &etcdserverpb.PutRequest{Key: []byte("/allowed/raced"), Value: []byte("must-not-commit"), PrevKv: previous})
+	require.True(t, mutated, "permission revocation must run at the selected write entrypoint")
 	requireAuthAuthorizerError(t, err, rpctypes.ErrAuthOldRevision, codes.Unknown, "etcdserver: revision of auth store is old")
 	require.NoError(t, mutationErr)
 
