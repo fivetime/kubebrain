@@ -62,6 +62,8 @@ func TestRPCAttemptDiagnosticsCaptureRemoteAndPhases(t *testing.T) {
 	recorder.HandleRPC(ctx, &stats.End{Client: true, BeginTime: base.Add(time.Millisecond), EndTime: base.Add(13 * time.Millisecond)})
 
 	require.JSONEq(t, `{
+		"window_start_utc":"2023-11-14T22:13:20Z",
+		"window_end_utc":"2023-11-14T22:13:20.02Z",
 		"attempts":[{
 			"method":"put",
 			"remote":"10.244.0.12:3379",
@@ -110,6 +112,8 @@ func TestRPCAttemptDiagnosticsKeepRetryAttemptsAndBoundOutput(t *testing.T) {
 	recorder.HandleRPC(unrelated, &stats.End{Client: true, BeginTime: base.Add(8 * time.Millisecond), EndTime: base.Add(9 * time.Millisecond)})
 
 	require.JSONEq(t, `{
+		"window_start_utc":"2023-11-14T22:15:00Z",
+		"window_end_utc":"2023-11-14T22:15:00.01Z",
 		"attempts":[{
 			"method":"range",
 			"remote":"10.244.0.22:3379",
@@ -149,6 +153,8 @@ func TestRPCAttemptDiagnosticsFailClosedOnInvalidRemoteAndTime(t *testing.T) {
 	recorder.HandleRPC(ctx, &stats.End{Client: true, BeginTime: base, EndTime: base.Add(-time.Millisecond), Error: context.DeadlineExceeded})
 
 	require.JSONEq(t, `{
+		"window_start_utc":"2023-11-14T22:16:40Z",
+		"window_end_utc":"2023-11-14T22:16:41Z",
 		"attempts":[{
 			"method":"put",
 			"remote":"unknown",
@@ -187,8 +193,20 @@ func TestRPCAttemptDiagnosticsReportRingOverwrite(t *testing.T) {
 	require.Equal(t, 1, report.RingOverwrites)
 
 	recorder.reset()
-	require.JSONEq(t, `{"attempts":[],"omitted":0,"ring_overwrites":0}`,
+	require.JSONEq(t, `{"window_start_utc":"2023-11-14T22:18:20Z","window_end_utc":"2023-11-14T22:18:21Z","attempts":[],"omitted":0,"ring_overwrites":0}`,
 		recorder.formatEvidence(base, base.Add(time.Second), 8))
+}
+
+func TestRPCAttemptDiagnosticsWindowSurvivesDelayedFormatting(t *testing.T) {
+	start := time.Date(2026, 9, 13, 8, 0, 0, 123456789, time.FixedZone("UTC+8", 8*60*60))
+	end := start.Add(8533710699 * time.Nanosecond)
+	// Formatting may happen long after the operation, including after cleanup.
+	recorder := newRPCAttemptRecorder(1, func() time.Time { return end.Add(time.Hour) })
+	var report rpcAttemptEvidenceReport
+	require.NoError(t, json.Unmarshal([]byte(recorder.formatEvidence(start, end, 0)), &report))
+	require.Equal(t, "2026-09-13T00:00:00.123456789Z", report.WindowStartUTC)
+	require.Equal(t, "2026-09-13T00:00:08.657167488Z", report.WindowEndUTC)
+	require.Empty(t, report.Attempts)
 }
 
 type invalidDiagnosticAddress string

@@ -82,6 +82,11 @@ type rpcAttemptEvidence struct {
 }
 
 type rpcAttemptEvidenceReport struct {
+	// Wall-clock anchors correlate the operation with server logs, not the
+	// later error print after deferred fixture cleanup. Latency gates continue
+	// to use monotonic time; these timestamps do not prove cross-node clock sync.
+	WindowStartUTC string               `json:"window_start_utc"`
+	WindowEndUTC   string               `json:"window_end_utc"`
 	Attempts       []rpcAttemptEvidence `json:"attempts"`
 	Omitted        int                  `json:"omitted"`
 	RingOverwrites int                  `json:"ring_overwrites"`
@@ -311,7 +316,11 @@ func (recorder *rpcAttemptRecorder) formatEvidence(windowStart, windowEnd time.T
 	for _, record := range matching {
 		evidence = append(evidence, record.evidence(windowStart))
 	}
-	report := rpcAttemptEvidenceReport{Attempts: evidence, Omitted: omitted, RingOverwrites: ringOverwrites}
+	report := rpcAttemptEvidenceReport{
+		WindowStartUTC: windowStart.UTC().Format(time.RFC3339Nano),
+		WindowEndUTC:   windowEnd.UTC().Format(time.RFC3339Nano),
+		Attempts:       evidence, Omitted: omitted, RingOverwrites: ringOverwrites,
+	}
 	encoded, err := json.Marshal(report)
 	if err != nil {
 		return `{"attempts":[],"omitted":0,"ring_overwrites":0}`
