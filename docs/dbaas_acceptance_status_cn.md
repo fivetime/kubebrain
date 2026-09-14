@@ -43,6 +43,30 @@ image `34804907645` 成功；registry 已确认
 `ghcr.io/fivetime/kubebrain@sha256:dd7acdd05c888412235962c45ff96cd0543a86c90f83a9b00fe82d81ed32e40f`。
 该镜像尚未部署专用测试集群，也没有重新执行正式 6000/900s 升级验收。
 
+Txn compare guard TiKV 冲突保护修复（2026-09-14）：提交 `63db41cb`
+修复 `TxnApply` 用户写事务里的 compare-only guard。旧实现只在 TiKV
+transaction 内读取不属于写集合的 guard key；而项目 storage 接口已明确
+不能假设裸读参与 TiKV optimistic 2PC 冲突检测，存在 compare key 并发变化
+但另一 key 写入仍提交的 write-skew 风险。修复后 present guard 在 atomic
+callback 内同值重写 revision index，absent guard 执行 put+delete 控制值，
+最终逻辑值不变但提交时会与并发 writer 冲突；与 internal-only metadata
+事务的既有保护方式一致。新增 `TestTxnAtomicStagesGuardMutationsForTikVConflictDetection`
+锁定 present/absent 两类 guard mutation。本机验证：目标 backend race
+通过，`go test -race ./pkg/backend -count=1 -timeout=12m` 通过（74.725s），
+目标 server/etcd Txn race 通过，完整
+`go test -race ./pkg/server/etcd -count=1 -timeout=12m` 通过（323.126s），
+`go vet ./pkg/backend ./pkg/server/etcd` 与 `git diff --check` 通过。
+无 guard 的写成本基准保持原存储读数：QuotaDisabled/TxnApply 为 3 次
+storage Get、1 次 BatchGet、3 次 atomic Get、1 次 commit；
+Quota2GiB/TxnApply 为 2 次 storage Get、2 次 BatchGet、4 次 atomic Get、
+1 次 commit。远端 Backend protocol integration `34807638253` 成功，
+Rollout probe regression `34807638357` 成功，Build & Push image
+`34807638263` 成功并将 `dbaas` tag 推广到
+`ghcr.io/fivetime/kubebrain@sha256:3d86851f0cfab3d33132c5a4fb615ebc151fe470adcd296a59393ba44913db25`
+（amd64 子镜像 `sha256:4a4b534c9ccfef9a3a3a8352303c134cb7c9bf2667c3b8c1c7fd48f383412a67`，
+arm64 子镜像 `sha256:de8408db87c3a9dfdd12b68911b9d0c2739ec6c7da9385aca33fae92cf4d5603`）。
+本轮仍未部署专用测试集群，也没有重新执行正式 6000/900s 升级验收。
+
 恢复验证 auth token 隔离修复（2026-09-14）：官方 etcd issue
 [#18437](https://github.com/etcd-io/etcd/issues/18437) 已由维护者确认
 simple token 在多成员场景下会因 API 层 token 校验不受线性屏障保护而出现

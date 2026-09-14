@@ -6,12 +6,14 @@
 
 网络恢复后仅完成远端 CI 与镜像发布确认，未连接专用集群执行部署、
 回滚或 6000/900s 正式验收。最新已验证并推广到 `dbaas` tag 的镜像为
-`ghcr.io/fivetime/kubebrain@sha256:dd7acdd05c888412235962c45ff96cd0543a86c90f83a9b00fe82d81ed32e40f`，
-来源提交 `406cddd634011f594cfca8bf0c539cd607840b84`；Rollout probe
-regression `34804907641` 与 Build & Push image `34804907645` 均成功。
-该提交只清理普通无租约 native Put 路径里重复的 quota 状态读取；后端
-TxnApply 存储访问基准仍为每次 2 次 Get、2 次 BatchGet、4 次 atomic Get、
-1 次 commit，不代表已解决 6000/900s 验收失败。
+`ghcr.io/fivetime/kubebrain@sha256:3d86851f0cfab3d33132c5a4fb615ebc151fe470adcd296a59393ba44913db25`，
+来源提交 `63db41cb9041b96885e79b1e95e2ca638557ee13`；Backend protocol
+integration `34807638253`、Rollout probe regression `34807638357` 与
+Build & Push image `34807638263` 均成功。该提交修复 TiKV optimistic
+2PC 下 Txn compare-only guard 只读不写导致的潜在 write-skew 风险：present
+guard 会同值重写 revision index，absent guard 会 put+delete 控制值以形成
+提交冲突保护。此前 `406cddd6` 的普通无租约 native Put quota 重复读取清理
+仍包含在该镜像内；该类小步修复不代表已解决 6000/900s 验收失败。
 该镜像尚未部署到本测试集群；下一次真实执行前仍必须实时核验
 StatefulSet spec/UID/generation、三个 Pod Ready、实际运行 imageID、
 测试资源清理状态和 StorageClass 使用情况。继续只允许使用消费者
