@@ -5,6 +5,17 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+后续探针诊断补充（尚未用于集群验收）：`PROBE_PROGRESS` 新增
+`put_sdk_calls/errors/ms` 与 `confirm_sdk_calls/errors/ms`（实际字段分别为
+`put_sdk_calls`、`put_sdk_errors`、`put_sdk_ms`、`confirm_sdk_calls`、
+`confirm_sdk_errors`、`confirm_sdk_ms`），将 Put SDK 调用和不确定结果确认
+Get 分开累计。SDK 内部可能重试，这些不是 wire RPC 次数，也不是服务端
+处理耗时。错误计数只统计 SDK 返回错误，不包括随后响应语义校验失败；
+后者仍会进入既有确认路径。未完成操作的调用也会计入，而原有
+`put_resolve_ms` 仅在完成写入和 Watch 校验后累加，两者在失败退出时不能
+直接相减解释为重试等待。所有字段仅诊断，不改变截止时间、重试或验收结果，
+不可给上一次候选的历史日志回填这些字段。
+
 网络恢复后重试（2026-09-14 12:36–12:57 UTC）：三个 worker 的同一候选
 `35eaac08` 镜像预拉取全部通过（`PREPULL_READY`／`PREPULL_VERIFIED`）。
 三项 CI、OCI 平台摘要、原镜像基线、六块消费者 rook-ceph Retain 卷及

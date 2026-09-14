@@ -9,10 +9,33 @@ import (
 // Diagnostic evidence only: never changes deadlines, pacing or success checks.
 // Emit at most 100 periodic records plus a final record, regardless of run size.
 type probeProgress struct {
-	started                         time.Time
-	total, completed, stride        int
-	backend, public, direct, pacing time.Duration
-	putResolve, watchAfterPut       time.Duration
+	started                          time.Time
+	total, completed, stride         int
+	backend, public, direct, pacing  time.Duration
+	putResolve, watchAfterPut        time.Duration
+	putCalls, confirmCalls           int
+	putCallErrors, confirmCallErrors int
+	putCallTime, confirmCallTime     time.Duration
+}
+
+// These count client SDK calls, not wire attempts: the etcd client may retry within
+// one call. Confirmation reads include only the uncertainty-resolution path.
+// Count transport/API errors before semantic response validation separately
+// from the existing end-to-end putResolve timer.
+func (p *probeProgress) recordPutCall(elapsed time.Duration, err error) {
+	p.putCalls++
+	p.putCallTime += elapsed
+	if err != nil {
+		p.putCallErrors++
+	}
+}
+
+func (p *probeProgress) recordConfirmCall(elapsed time.Duration, err error) {
+	p.confirmCalls++
+	p.confirmCallTime += elapsed
+	if err != nil {
+		p.confirmCallErrors++
+	}
 }
 
 // put includes retry/confirmation reads when a Put response is uncertain; it
@@ -39,8 +62,9 @@ func (p *probeProgress) write(w io.Writer, now time.Time, final bool) error {
 	if !final && (p.completed == 0 || p.completed%p.stride != 0) {
 		return nil
 	}
-	_, err := fmt.Fprintf(w, "PROBE_PROGRESS at=%s completed=%d total=%d elapsed_ms=%d backend_ms=%d public_ms=%d put_resolve_ms=%d watch_after_put_ms=%d direct_wait_ms=%d pacing_ms=%d final=%t scope=diagnostic_only\n",
+	_, err := fmt.Fprintf(w, "PROBE_PROGRESS at=%s completed=%d total=%d elapsed_ms=%d backend_ms=%d public_ms=%d put_resolve_ms=%d watch_after_put_ms=%d direct_wait_ms=%d pacing_ms=%d put_sdk_calls=%d put_sdk_errors=%d put_sdk_ms=%d confirm_sdk_calls=%d confirm_sdk_errors=%d confirm_sdk_ms=%d final=%t scope=diagnostic_only\n",
 		now.UTC().Format(time.RFC3339Nano), p.completed, p.total, now.Sub(p.started).Milliseconds(),
-		p.backend.Milliseconds(), p.public.Milliseconds(), p.putResolve.Milliseconds(), p.watchAfterPut.Milliseconds(), p.direct.Milliseconds(), p.pacing.Milliseconds(), final)
+		p.backend.Milliseconds(), p.public.Milliseconds(), p.putResolve.Milliseconds(), p.watchAfterPut.Milliseconds(), p.direct.Milliseconds(), p.pacing.Milliseconds(),
+		p.putCalls, p.putCallErrors, p.putCallTime.Milliseconds(), p.confirmCalls, p.confirmCallErrors, p.confirmCallTime.Milliseconds(), final)
 	return err
 }

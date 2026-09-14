@@ -1564,7 +1564,9 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		var putRevision int64
 		for {
 			opCtx, cancel = context.WithDeadline(ctx, deadline)
+			putCallStarted := time.Now()
 			putResponse, putErr := client.Put(opCtx, watchKey, value)
+			progress.recordPutCall(time.Since(putCallStarted), putErr)
 			cancel()
 			if putErr == nil {
 				putRevision, putErr = validatePutResponse(putResponse, clusterID, lastRevision)
@@ -1573,7 +1575,9 @@ func run(ctx context.Context, cfg config) (retErr error) {
 				}
 			}
 			opCtx, cancel = context.WithDeadline(ctx, deadline)
+			confirmCallStarted := time.Now()
 			observed, getErr := client.Get(opCtx, watchKey)
+			progress.recordConfirmCall(time.Since(confirmCallStarted), getErr)
 			cancel()
 			if getErr == nil {
 				putRevision, getErr = validateObservedPut(observed, clusterID, lastRevision, watchKey, value)
