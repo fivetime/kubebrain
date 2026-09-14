@@ -5,6 +5,19 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+回滚后的 Region 布局只读核验（2026-09-14）：PD Pod UID 核验后读取
+`GET /pd/api/v1/regions`，共 9 个 Region；未修改既有受限 PD 健康检查入口，
+未执行 split/merge/leader transfer。用锁定版本 SDK 的 memcomparable 解码器
+逐项验证边界往返编码，并验证全空间连续、无重叠；用项目实际 Keyspace/Coder
+构造代表键：本次探针 revision index 落在 Region 34013，latest metadata 和
+event-log metadata 落在 34017，二者当前 leader 均为 store 2004。Region
+31005 的起点落在本次探针对象的版本序列内部，不能假定同一逻辑 key 的所有
+版本永久共属一个 Region。这也说明不能把“两个预写分组”直接解释成两个
+leader 节点，更不能为追求单 Region 而改变 MVCC 键序或强制合并数据。
+这是回滚清理后的快照，不证明验收期间每个 RPC 的 Region/leader；代表键
+清单也不是完整 mutation 集合。原始响应、离线解码源码和输出保留于
+`/root/.local/state/kubebrain/region-layout.Ll1o2BJW/`，无新增集群写入。
+
 同一稳定窗口的提交诊断补充（2026-09-14，样本 5→18）：4411 个前台 Put
 batch 的 prewrite Region 分组计数总和 8822，`le=1` 桶增量 0、`le=2.5`
 增量 4411；结合整数计数，全部观察为 2 个 SDK Region 分组。该指标在重试时
