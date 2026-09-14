@@ -5,6 +5,22 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+探针 CI 夹具准备超时调查（2026-09-14）：`d0e5a8f6` 的协议 CI
+`34859958924` 已通过普通／race 和中断清理；探针 CI `34859959142` 失败于
+`TestExternalFixtureCleanupRecoversWithoutPublicOwnershipKey` 第 144 行，
+创建 Snapshot readwriter 用户时返回 context deadline exceeded，而非 race
+检测报告。该用例使用上游内嵌 etcd，不使用 KubeBrain backend；相关探针源码
+较上一轮通过版本未变。本地原样五轮 race 通过（81.491s），未复现 CI 超时，
+因此不将 CPU 竞争或 bcrypt 耗时断言为已证实根因。
+
+候选调整仅在 `startFixtureOwnershipEtcd` 测试夹具将 bcrypt 成本设为 MinCost，
+保留真实 UserAdd、持久认证状态、所有权／碰撞／清理断言；原单 RPC 3 秒和
+总体 30 秒预算不变。该夹具不测试密码哈希成本；产品认证设置及独立 Snapshot
+认证测试配置不变，更未修改远端 30 秒门限或 6000 次／900 秒验收要求。
+调整后两项恢复用例各五轮 race 通过（合计 11.050s），vet 和 diff 检查通过；
+完整探针 race 通过（364.592s）；新源码远端 CI 尚待验证，不能宣称原 CI
+失败已经解决。
+
 旧对象预取规模保护（2026-09-14，尚未部署）：可选预取最多覆盖 16 个用户键，
 第 17 个用户键使本次预取在发出 BatchGet 之前回退到原有逐键准备路径，
 不拒绝事务、不限制其合法写入数量。预取键 slice 的初始容量也限制为 16。

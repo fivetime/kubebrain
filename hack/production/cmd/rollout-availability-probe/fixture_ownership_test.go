@@ -26,6 +26,7 @@ import (
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func startFixtureOwnershipEtcd(t *testing.T) (*clientv3.Client, context.Context) {
@@ -35,6 +36,11 @@ func startFixtureOwnershipEtcd(t *testing.T) (*clientv3.Client, context.Context)
 	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
 	require.NoError(t, err)
 	cfg := embed.NewConfig()
+	// This fixture tests ownership recovery and bounded cleanup, not password
+	// hashing cost. Keep real UserAdd/auth state without making its setup depend
+	// on default-cost bcrypt fitting a 3s RPC budget under race/runner contention.
+	// Production auth settings and the separate snapshot auth fixtures are unchanged.
+	cfg.BcryptCost = uint(bcrypt.MinCost)
 	cfg.Name = "fixture-ownership"
 	cfg.Dir = t.TempDir()
 	cfg.ListenClientUrls = []url.URL{clientURL}
