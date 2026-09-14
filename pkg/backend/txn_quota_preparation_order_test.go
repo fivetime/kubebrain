@@ -43,8 +43,9 @@ func TestTxnQuotaAdmissionObservesChangesAfterIndexPreparation(t *testing.T) {
 				return batch.Commit(callbackCtx)
 			}
 			marked := context.WithValue(ctx, txnPreparationContextKey{}, s)
-			_, _, err = b.TxnApply(marked, []TxnWriteOp{{Key: key, Value: []byte("after")}}, nil)
+			_, rejectedRevision, err := b.TxnApply(marked, []TxnWriteOp{{Key: key, Value: []byte("after")}}, nil)
 			require.ErrorIs(t, err, wantErr)
+			require.Equal(t, revision, rejectedRevision, "quota rejection must not return a rolled-back allocation")
 			require.EqualValues(t, 1, s.batchReads.Load(), "must inject after the actual index snapshot")
 			value, gotRevision := liveValue(t, b, ctx, key)
 			require.Equal(t, "before", value)

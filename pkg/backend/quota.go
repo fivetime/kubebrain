@@ -223,6 +223,12 @@ func (b *backend) readTxnQuotaState(ctx context.Context, hasPut bool) ([]byte, i
 			}
 		}
 	}
+	return b.readTxnQuotaStateWith(hasPut, read)
+}
+
+// The reader may belong to the commit transaction. Keep validation identical
+// without opening a second transaction while an engine's Atomic lock is held.
+func (b *backend) readTxnQuotaStateWith(hasPut bool, read func([]byte) ([]byte, error)) ([]byte, int64, error) {
 	// Preserve preparation's validation order: alarm before tracking and usage.
 	// Deletes may reclaim space even while the sticky NOSPACE alarm is active.
 	if hasPut {

@@ -200,7 +200,7 @@ func verifyProtocolMultiPreviousReads(t *testing.T, ctx context.Context, b backe
 	if client != nil {
 		require.Equal(t, protocolLatencyStats{Prewrite: samples, Commit: samples}, client.snapshot())
 		attempts := client.requestSnapshot()
-		require.Equal(t, map[string]int{"batch_get": 4 * samples, "prewrite": samples, "commit": samples}, attempts,
+		require.Equal(t, map[string]int{"batch_get": 3 * samples, "prewrite": samples, "commit": samples}, attempts,
 			"single-Region 2PC must batch both previous objects, with no point reads or retries")
 		t.Logf("PROTOCOL_MULTI_PREVIOUS_RPC_ATTEMPTS samples=%d keys_per_txn=2 counts=%v scope=marked_foreground_only", samples, attempts)
 	}
@@ -286,7 +286,7 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	require.Equal(t, samples, attempts["prewrite"], "include unsuccessful RPC attempts, not only successful responses")
 	require.Equal(t, want.Commit, attempts["commit"])
 	require.Equal(t, samples, attempts["get"], "only the previous object needs a point read; revision index shares the alarm batch")
-	require.Equal(t, 3*samples, attempts["batch_get"], "prefetch must not add an extra wire request")
+	require.Equal(t, 2*samples, attempts["batch_get"], "quota admission must share the commit snapshot prefetch")
 	observationMu.Lock()
 	observed := append([]storage.BatchCommitObservation(nil), observations...)
 	observationMu.Unlock()

@@ -5,6 +5,38 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+提交事务内配额读取候选（2026-09-14，尚未部署）：普通用户写入的 tracking／
+usage／alarm admission 改为使用提交事务快照，加入 allocator 已有预取；
+固定时间戳调用保留原准备读取路径。usage 比较与更新、用户 index CAS、
+2PC 默认协议和提交后可见性等待不变。容量溢出使事务回滚，随后才在回调外
+持久化 NOSPACE，避免嵌套引擎事务；既有 NOSPACE 下 Delete 仍可回收。
+新增回归锁定独立读取减少、分配器回滚／无 revision 空洞和告警持久化；
+并发 usage 测试改为在 index 准备后注入真实存储写入，必须从提交快照保留
+其 40 字节并加上本次 2 字节，且断言注入确实执行。既有 stageTxnAtomic
+stale-usage 比较回归继续保留。首轮旧注入点因独立 quota BatchGet 已删除而
+未触发并失败，未作为产品通过结果；更新后定向 race 通过（3.687s），完整
+backend race 通过（77.981s），backend vet 和 diff 检查通过。
+
+同款 100 次内存基准显示独立 BatchGet 从 2 降至 1，Get=1、commit=1 不变，
+atomic Get 从 4 增至 7；这不是延迟改善结论。真实 TiKV/PD 17 项 race 协议
+测试均通过，单键 20 次前台更新实测 BatchGet=40（此前 60）、Get=20、
+Prewrite=20、Commit=20；双键两次更新实测 BatchGet=6（此前 8）、
+Prewrite=2、Commit=2。证据 `/tmp/kubebrain-real-protocol.gSlasSVxPZ/`，
+`result=0 cleanup_failed=0`。服务层完整 race 尚在执行，未取得本候选远端
+CI 或正式 6000 次／900 秒验收结果；不能据此宣称生产性能缺口关闭。
+后续错误路径复查新增返回 revision 断言，复现 NOSPACE／dirty admission 拒绝
+仍返回已回滚候选 revision 的问题（原 101，错误返回 102）；已改为保留原
+revision。回调内 admission 失败发生在用户 mutation staging 之前，不进入
+uncertain-write resolver；超额告警仍在 Atomic 返回后单独持久化。
+该修正后定向 quota／atomic 比较 race 三轮通过（8.436s）；最终 backend
+完整 race 通过（77.929s）。最终代码再次运行真实 TiKV/PD 的 17 项 race 协议
+测试全部通过，`/tmp/kubebrain-real-protocol.1CdPZ8f7yR/`，
+`result=0 cleanup_failed=0`；单键／双键前台 RPC 数量与上述候选一致。
+上述较早的 77.981s 结果对应错误返回修正前的候选；该候选服务层全量 race
+通过（323.996s）。最终代码另行执行服务层 quota／NoSpace 定向 race 通过
+（2.952s），backend／TiKV storage／etcd 服务层 vet 及 diff 检查通过。
+最终错误返回修正没有重新执行服务层全量，不将定向结果表述成全量结果。
+
 单键提交路径重新测量（2026-09-14，源码 `54cf71f3`）：运行
 `go test ./pkg/backend -run '^$' -bench '^BenchmarkBackendWriteStorageCalls/Quota2GiB/TxnApply$' -benchtime=100x -count=1`
 通过，100 次调用均值为 storage Get=1、BatchGet=2、atomic Get=4、commit=1、
@@ -12,7 +44,7 @@ Iter=0。该内存引擎基准只统计带标记的前台存储 API，不是网�
 当前 `readTxnQuotaState` 在准备之后独立读取 tracking／usage／alarm；提交内
 又读取 usage 并 CAS，而 `stageNextDurableRevisionAfter` 已支持同事务批量预取。
 下一候选是把配额 admission 延后至该提交事务的快照并复用预取，而不是提前到
-index 准备快照；尚未实施。必须覆盖：准备后告警／dirty 变更仍被拒绝、无关键
+index 准备快照；此时尚未实施，后续候选及验证见上文。必须覆盖：准备后告警／dirty 变更仍被拒绝、无关键
 并发用量与本次 delta 原子相加、同键竞争重新准备旧值、Delete 在 NOSPACE 下
 仍可回收、容量溢出回滚后再持久化告警、失败不推进公开 revision／事件，以及
 固定快照和无预取引擎的语义。尤其不能在 Atomic 回调持有引擎锁时调用

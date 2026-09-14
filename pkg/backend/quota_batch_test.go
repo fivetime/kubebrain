@@ -26,11 +26,12 @@ type quotaStatusReadStore struct {
 
 type txnQuotaChangedContextKey struct{}
 
-// Simulate another writer changing usage immediately after the preparation
-// snapshot was obtained. The callback returns the old snapshot deliberately.
+// Change usage after the index preparation snapshot. Quota admission must use
+// the later commit snapshot, not the index snapshot or a cached usage total.
 type txnQuotaChangedStore struct {
 	storage.KvStorage
 	usageKey []byte
+	target   []byte
 	armed    atomic.Bool
 	reads    atomic.Int32
 }
@@ -41,7 +42,7 @@ func (s *txnQuotaChangedStore) BatchGet(ctx context.Context, keys [][]byte) (map
 		return values, err
 	}
 	for _, key := range keys {
-		if !bytes.Equal(key, s.usageKey) {
+		if !bytes.Equal(key, s.target) {
 			continue
 		}
 		s.reads.Add(1)
@@ -57,7 +58,7 @@ func (s *txnQuotaChangedStore) BatchGet(ctx context.Context, keys [][]byte) (map
 	return values, nil
 }
 
-func TestTxnQuotaBatchSnapshotStillRequiresAtomicUsageGuard(t *testing.T) {
+func TestTxnQuotaCommitSnapshotIncludesConcurrentUsage(t *testing.T) {
 	store := &txnQuotaChangedStore{KvStorage: memkv.NewKvStorage()}
 	t.Cleanup(func() { require.NoError(t, store.Close()) })
 	b := NewBackend(store, Config{
@@ -67,18 +68,20 @@ func TestTxnQuotaBatchSnapshotStillRequiresAtomicUsageGuard(t *testing.T) {
 	b.SetCurrentRevision(100)
 	require.NoError(t, b.EnsureQuotaInitialized(context.Background()))
 	store.usageKey = b.ks.EncodeInternalKey(quotaUsageKey)
+	store.target = b.coder.EncodeRevisionKey([]byte("k"))
 	store.armed.Store(true)
 	ctx := context.WithValue(context.Background(), txnQuotaChangedContextKey{}, store)
 	results, revision, err := b.TxnApply(ctx, []TxnWriteOp{{Key: []byte("k"), Value: []byte("v")}}, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
-	require.EqualValues(t, 101, revision, "rejected stale preparation must not consume a public revision")
+	require.EqualValues(t, 101, revision, "usage change must not consume another public revision")
 	usage, quota, alarm, err := b.QuotaStatus(context.Background())
 	require.NoError(t, err)
 	require.EqualValues(t, 42, usage, "must retain concurrent usage and add this key/value, not overwrite with stale total 2")
 	require.EqualValues(t, 100, quota)
 	require.False(t, alarm)
-	require.EqualValues(t, 2, store.reads.Load(), "stale snapshot must cause a fresh preparation attempt")
+	require.EqualValues(t, 1, store.reads.Load(), "commit snapshot must include concurrent usage without re-preparing")
+	require.False(t, store.armed.Load(), "the concurrent usage write must actually execute")
 }
 
 func (s *quotaStatusReadStore) Get(ctx context.Context, key []byte) ([]byte, error) {

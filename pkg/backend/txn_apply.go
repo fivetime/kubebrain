@@ -783,11 +783,17 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			break
 		}
 	}
-	quotaUsageRaw, currentUsage, quotaErr := b.readTxnQuotaState(ctx, hasPut)
-	if quotaErr != nil {
-		return nil, baseRevision, false, quotaErr
-	}
-	if b.config.QuotaBackendBytes > 0 {
+	var quotaUsageRaw []byte
+	quotaExceeded := false
+	var quotaAdmissionErr error
+	prepareQuota := func(raw []byte, currentUsage int64, readErr error) error {
+		if readErr != nil {
+			return readErr
+		}
+		quotaUsageRaw = raw
+		if b.config.QuotaBackendBytes <= 0 {
+			return nil
+		}
 		delta := int64(0)
 		for i := range preps {
 			p := &preps[i]
@@ -807,16 +813,28 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		}
 		nextQuotaUsage = currentUsage + delta
 		if nextQuotaUsage < 0 {
-			return nil, baseRevision, false, fmt.Errorf(
+			return fmt.Errorf(
 				"quota usage underflow: current=%d delta=%d", currentUsage, delta,
 			)
 		}
 		if hasPut && (currentUsage >= b.config.QuotaBackendBytes ||
 			nextQuotaUsage > b.config.QuotaBackendBytes) {
-			if alarmErr := b.activateNoSpace(ctx); alarmErr != nil {
-				return nil, baseRevision, false, alarmErr
+			quotaExceeded = true
+			return ErrNoSpace
+		}
+		return nil
+	}
+	// Pinned callers retain the original read dispatch. Ordinary writes read
+	// quota at the later commit snapshot, alongside the allocator and guards.
+	_, pinnedQuota := storage.SnapshotTimestampFromContext(ctx)
+	if pinnedQuota {
+		if quotaErr := prepareQuota(b.readTxnQuotaState(ctx, hasPut)); quotaErr != nil {
+			if quotaExceeded {
+				if alarmErr := b.activateNoSpace(ctx); alarmErr != nil {
+					return nil, baseRevision, false, alarmErr
+				}
 			}
-			return nil, baseRevision, false, ErrNoSpace
+			return nil, baseRevision, false, quotaErr
 		}
 	}
 
@@ -839,13 +857,43 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	// one storage transaction. A definite conflict rolls back the allocation, so
 	// it creates no collector hole and must not publish an invalid event.
 	batch := b.kv.BeginBatchWrite()
+	readKeys := b.txnAtomicReadKeys(preps, guardPreps, corruptGuard)
+	if !pinnedQuota {
+		if hasPut {
+			readKeys = append(readKeys, b.ks.EncodeInternalKey(quotaAlarmKey))
+		}
+		if b.config.QuotaBackendBytes > 0 {
+			// usage is already included in txnAtomicReadKeys.
+			readKeys = append(readKeys, b.ks.EncodeInternalKey(quotaTrackingKey))
+		}
+	}
 	allocated := b.stageNextDurableRevisionAfter(batch, baseRevision, func(callbackCtx context.Context, txn storage.AtomicBatch, revision uint64) error {
+		if !pinnedQuota {
+			read := func(key []byte) ([]byte, error) {
+				return txn.Get(callbackCtx, b.ks.EncodeInternalKey(key))
+			}
+			quotaAdmissionErr = prepareQuota(b.readTxnQuotaStateWith(hasPut, read))
+			if quotaAdmissionErr != nil {
+				return quotaAdmissionErr
+			}
+		}
 		return b.stageTxnAtomic(callbackCtx, txn, preps, guardPreps, revision, quotaUsageRaw, nextQuotaUsage, corruptGuard)
-	}, b.txnAtomicReadKeys(preps, guardPreps, corruptGuard)...)
+	}, readKeys...)
 	cerr := b.commitUserBatch(ctx, batch)
 	newRevision = *allocated
 	discardTxnPutPreviousValues(preps)
 	if cerr != nil {
+		if quotaAdmissionErr != nil {
+			// The Atomic callback rejected admission before staging user data.
+			// Its allocator write rolled back too: do not expose that candidate
+			// revision or send a read failure to uncertain-write resolution.
+			if quotaExceeded && errors.Is(cerr, ErrNoSpace) {
+				if alarmErr := b.activateNoSpace(ctx); alarmErr != nil {
+					return nil, baseRevision, false, alarmErr
+				}
+			}
+			return nil, baseRevision, false, cerr
+		}
 		if errors.Is(cerr, storage.ErrUncertainResult) && txnHasEffectiveUserWrite(preps) {
 			// Some storage failures happen before the Atomic callback starts. No
 			// candidate revision was derived or written in that case, so there is
