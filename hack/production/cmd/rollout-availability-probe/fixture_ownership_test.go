@@ -31,6 +31,7 @@ import (
 
 func startFixtureOwnershipEtcd(t *testing.T) (*clientv3.Client, context.Context) {
 	t.Helper()
+	started := time.Now()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
 	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
@@ -62,7 +63,18 @@ func startFixtureOwnershipEtcd(t *testing.T) (*clientv3.Client, context.Context)
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	logFixtureOwnershipPhase(t, ctx, started, "embedded etcd ready and client created")
 	return client, ctx
+}
+
+// Keep the original shared deadline. Phase timings distinguish startup/seed
+// budget exhaustion from an individual auth or cleanup RPC timing out on CI.
+func logFixtureOwnershipPhase(t *testing.T, ctx context.Context, started time.Time, phase string) {
+	t.Helper()
+	deadline, ok := ctx.Deadline()
+	require.True(t, ok, "ownership fixture must retain a bounded context")
+	t.Logf("ownership phase=%q elapsed=%s remaining=%s context_error=%v",
+		phase, time.Since(started), time.Until(deadline), ctx.Err())
 }
 
 func testFixtureOwnerIdentity() fixtureOwnerIdentity {
@@ -73,35 +85,42 @@ func testFixtureOwnerIdentity() fixtureOwnerIdentity {
 }
 
 func TestOwnedFixtureCleanupRecoversAbruptProbeState(t *testing.T) {
+	started := time.Now()
 	client, ctx := startFixtureOwnershipEtcd(t)
 	identity := testFixtureOwnerIdentity()
 	prefix := fixturePrefixRoot + identity.ProbePod + "/"
 	ownership, err := newFixtureOwnership(prefix, identity)
 	require.NoError(t, err)
 	clusterID, revision, err := ownership.claim(ctx, client)
+	logFixtureOwnershipPhase(t, ctx, started, "ownership claim returned")
 	require.NoError(t, err)
 	require.NotZero(t, clusterID)
 
 	leaseIDs := make([]clientv3.LeaseID, 0, 3)
 	for _, ttl := range []int64{15, 900, 960} {
 		lease, grantErr := client.Grant(ctx, ttl)
+		logFixtureOwnershipPhase(t, ctx, started, "lease grant returned")
 		require.NoError(t, grantErr)
 		leaseIDs = append(leaseIDs, lease.ID)
 		revision, err = ownership.recordLease(ctx, client, lease.ID, clusterID, max(revision, lease.ResponseHeader.Revision))
+		logFixtureOwnershipPhase(t, ctx, started, "lease receipt returned")
 		require.NoError(t, err)
 	}
 	_, err = client.Put(ctx, prefix+"lease", "alive", clientv3.WithLease(leaseIDs[0]))
 	require.NoError(t, err)
 	_, err = client.Put(ctx, prefix+"persistent", "fixture")
 	require.NoError(t, err)
+	logFixtureOwnershipPhase(t, ctx, started, "seed writes complete; installing auth fixture")
 
 	fixture := newSnapshotAuthFixture(prefix)
 	_, err = fixture.install(ctx, client, clusterID, revision, 3*time.Second)
+	logFixtureOwnershipPhase(t, ctx, started, "auth fixture install returned")
 	require.NoError(t, err)
 
 	// Do not call either in-process cleanup method. This is the state left by
 	// SIGKILL after the durable ownership receipt and fixture mutations.
 	summary, err := cleanupOwnedFixture(ctx, client, prefix, identity, 3*time.Second)
+	logFixtureOwnershipPhase(t, ctx, started, "first recovery returned")
 	require.NoError(t, err)
 	require.Equal(t, fixtureCleanupSummary{
 		Status: "recovered", OwnerUID: identity.ProbePodUID, Keys: 2,

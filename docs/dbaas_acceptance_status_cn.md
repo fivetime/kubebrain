@@ -5,7 +5,7 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-DBaaS 分支 CI 覆盖补齐（2026-09-14，工作流修复尚未远端验证）：发现
+DBaaS 分支 CI 覆盖补齐（2026-09-14，工作流修复已远端验证）：发现
 `backend-integration.yml` 虽由 backend 文件变更触发，但此前只运行 build、
 TiKV 适配器和真实协议夹具，不运行 `pkg/backend` 的测试文件；`ci.yml` 的
 全包测试仅由 main push、PR 或手动调用触发。因此不能把既有协议 CI 通过
@@ -13,6 +13,28 @@ TiKV 适配器和真实协议夹具，不运行 `pkg/backend` 的测试文件；
 （`-count=1 -timeout=5m`）及 vet，仍使用 self-hosted，失败不允许继续。
 工作流契约测试先因缺少此命令失败，补齐后完整 build race 通过（2.397s）。
 此前本机 backend 完整 race 的 77.270s 结果仍仅为本机证据。
+后续精确提交 `726c88481d8659e29af926a88563154fc0362878` 的
+[协议 CI 34875212751](https://github.com/fivetime/kubebrain/actions/runs/34875212751)
+已整体成功，新增完整 backend race 实际执行并通过（80.474s），vet 步骤通过。
+普通／race 真实协议夹具均返回 `result=0 cleanup_failed=0`，证据目录分别为
+`/tmp/kubebrain-real-protocol.ZwHYIvtaiY`、`/tmp/kubebrain-real-protocol.hmuMrzzfM3`；
+PD／TiKV 启动中断测试均返回 `exit=143 resources_absent=true`。
+因此本提交的配额回归已进入远端完整 backend 门禁；这些结果不代表远端
+6000 次／900 秒滚动验收通过，也不代表候选镜像已经部署。
+
+同提交的[探针 CI 34875212575](https://github.com/fivetime/kubebrain/actions/runs/34875212575)
+随后失败（完整包 413.484s）：`TestOwnedFixtureCleanupRecoversAbruptProbeState`
+在 `fixture_ownership_test.go:100` 的 Snapshot 夹具安装返回
+`read auth status before Snapshot fixture: context deadline exceeded`。
+日志中该用例开始到报错恰为 30 秒；共享上下文预算已耗尽，不能据此判断
+AuthStatus 单 RPC 耗时，更不能归因于密码哈希（失败位置在创建用户之前）。
+此前失败的 external cleanup 用例本轮通过（6.89s）。本机未改用例五轮 race
+通过（5.737s），尚未复现；本轮补充启动、ownership claim、逐个 lease grant／
+receipt、seed、auth install 和 recovery 阶段耗时与剩余预算日志，保持原 30 秒
+上下文和 3 秒 RPC 门限。该改动仅用于下一轮定位，不视为修复；本提交不能
+宣称全部 CI 通过，也不以镜像构建成功代替探针门禁。
+补充诊断后的同一用例五轮 race 通过（3.957s），探针 vet 和 diff 检查通过；
+尚未取得含新阶段日志的远端执行结果。
 
 配额读取合并的并发边界（2026-09-14）：新增回归在实际 index 准备快照返回后、
 后续 quota admission 之前，直接提交 NOSPACE 告警或 dirty tracking，保持 usage 不变。
