@@ -26,6 +26,23 @@ registry 侧已确认 `ghcr.io/fivetime/kubebrain:dbaas` 指向同一 digest。
 本轮没有修改专用测试集群，没有开启 1PC/async commit，也没有执行新的
 6000/900s 正式升级验收。
 
+随后提交 `406cddd6` 在普通无租约、无 PrevKv、无 IgnoreValue/IgnoreLease
+的 native Put 路径中复用外层 quota 预检结果，避免进入租约锁后再做一次
+`QuotaStatus` 读取；租约、PrevKv、IgnoreValue/IgnoreLease 路径仍保留原
+二次检查。新增测试锁定普通路径只有一次 quota 状态读取，而带旧值或
+ignore 选项的路径仍为两次。本机验证：目标 server race 用例通过，后端
+quota/TxnApply 相关 race 用例通过，完整
+`go test -race ./pkg/server/etcd -count=1 -timeout=12m` 通过（337.738s），
+`go vet ./pkg/server/etcd ./pkg/backend` 与 `git diff --check` 通过。
+后端 `BenchmarkBackendWriteStorageCalls/Quota2GiB/TxnApply` 100 次运行仍为
+每次 2 次 storage Get、2 次 BatchGet、4 次 atomic Get、1 次 commit，
+说明该提交只减少 server Put admission 的重复读取，不改变后端 TxnApply
+存储结构。远端 Rollout probe regression `34804907641` 成功，Build & Push
+image `34804907645` 成功；registry 已确认
+`ghcr.io/fivetime/kubebrain:dbaas` 推广到
+`ghcr.io/fivetime/kubebrain@sha256:dd7acdd05c888412235962c45ff96cd0543a86c90f83a9b00fe82d81ed32e40f`。
+该镜像尚未部署专用测试集群，也没有重新执行正式 6000/900s 升级验收。
+
 恢复验证 auth token 隔离修复（2026-09-14）：官方 etcd issue
 [#18437](https://github.com/etcd-io/etcd/issues/18437) 已由维护者确认
 simple token 在多成员场景下会因 API 层 token 校验不受线性屏障保护而出现

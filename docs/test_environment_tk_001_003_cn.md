@@ -6,9 +6,12 @@
 
 网络恢复后仅完成远端 CI 与镜像发布确认，未连接专用集群执行部署、
 回滚或 6000/900s 正式验收。最新已验证并推广到 `dbaas` tag 的镜像为
-`ghcr.io/fivetime/kubebrain@sha256:9f407129b81e3d3b73381745e175f2f2fb19172ec96d2a6b8c16fdf68720c754`，
-来源提交 `9ab8caf53cc1446ab9d52b42fb7d198322a93448`；Rollout probe
-regression `34802462127` 与 Build & Push image `34802462128` 均成功。
+`ghcr.io/fivetime/kubebrain@sha256:dd7acdd05c888412235962c45ff96cd0543a86c90f83a9b00fe82d81ed32e40f`，
+来源提交 `406cddd634011f594cfca8bf0c539cd607840b84`；Rollout probe
+regression `34804907641` 与 Build & Push image `34804907645` 均成功。
+该提交只清理普通无租约 native Put 路径里重复的 quota 状态读取；后端
+TxnApply 存储访问基准仍为每次 2 次 Get、2 次 BatchGet、4 次 atomic Get、
+1 次 commit，不代表已解决 6000/900s 验收失败。
 该镜像尚未部署到本测试集群；下一次真实执行前仍必须实时核验
 StatefulSet spec/UID/generation、三个 Pod Ready、实际运行 imageID、
 测试资源清理状态和 StorageClass 使用情况。继续只允许使用消费者
