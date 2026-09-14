@@ -323,6 +323,9 @@ func metricHelp(name string) string {
 	if strings.HasPrefix(formatName(name), "write_batch_lock_rpc_") {
 		return "Batch phase context lock RPC observations completed before phase closure; unmarked and late calls excluded. Requests and transport_errors are counts per batch; latency is summed RPC wall seconds, including overlaps, not logical lock wait. Zero samples included; success labels batch outcome, not RPC outcome."
 	}
+	if strings.HasPrefix(formatName(name), "write_batch_prewrite_rpc_") {
+		return "Batch-scoped Prewrite transport calls completed before synchronous Commit closure, including retries and all outcomes; unmarked and late calls excluded. Counts are per batch, total_latency sums overlapping RPC seconds, max_latency is the longest individual RPC in seconds, not a transaction critical path. Zero samples included; success labels batch outcome."
+	}
 	switch formatName(name) {
 	case "write_batch_prewrite_region_groups":
 		return "SDK prewrite Region groups per observed storage batch, including retries; not distinct Regions, RPC counts, or a commit protocol verdict."

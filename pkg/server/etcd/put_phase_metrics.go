@@ -29,6 +29,20 @@ func observePutBatchCommits(ctx context.Context, metricCli metrics.Metrics) cont
 		}
 		if o.CommitAttempted {
 			emit("commit", o.Commit)
+			if o.HasPrewriteRPCDetails {
+				p := o.PrewriteRPCs
+				for _, field := range []struct {
+					name  string
+					value float64
+				}{
+					{"requests", float64(p.Requests)}, {"transport_errors", float64(p.TransportErrors)},
+					{"region_errors", float64(p.RegionErrors)}, {"key_errors", float64(p.KeyErrors)},
+					{"missing_responses", float64(p.MissingResponses)},
+					{"total_latency", p.Duration.Seconds()}, {"max_latency", p.MaxDuration.Seconds()},
+				} {
+					_ = metricCli.EmitHistogram("write.batch.prewrite_rpc."+field.name, field.value, tags...)
+				}
+			}
 			emitPrimaryWriteSample(metricCli, o.PrimaryWrite, tags)
 		}
 		if o.HasWriteDetails {

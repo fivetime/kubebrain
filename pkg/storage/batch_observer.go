@@ -19,9 +19,20 @@ type BatchCommitObservation struct {
 	// including retries. It is not a distinct-Region count or a protocol verdict.
 	PrewriteRegionGroups      int32
 	PrimaryWrite              PrimaryWriteObservation
+	HasPrewriteRPCDetails     bool
+	PrewriteRPCs              PrewriteRPCObservation
 	HasLockRPCDetails         bool
 	PrepareLocks, CommitLocks LockRPCObservation
 	Err                       error
+}
+
+// PrewriteRPCObservation covers marked transport calls completed before the
+// synchronous batch Commit returns, including retries and all reply outcomes.
+// Duration sums overlapping calls; MaxDuration is the longest individual call,
+// not the whole prewrite phase or a proven transaction critical path.
+type PrewriteRPCObservation struct {
+	Requests, TransportErrors, RegionErrors, KeyErrors, MissingResponses uint64
+	Duration, MaxDuration                                                time.Duration
 }
 
 // LockRPCObservation counts transport calls carrying a batch phase context

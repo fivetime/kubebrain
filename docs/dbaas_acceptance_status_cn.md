@@ -5,6 +5,20 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+批次 Prewrite RPC 观测候选（未部署）：在同步批次 Commit 返回前
+记录带批次上下文的 Prewrite RPC 数、transport／Region／key／缺失响应
+分类及总／最大单次 RPC 耗时。含重试与零请求批次；总耗时包含并发重叠，
+最大值不是完整 prewrite 阶段或已证明的关键路径。观测不依赖服务端明细
+是否合法，不增加原始键、Region ID 或地址标签，不改变转发或重试协议。
+首轮 mock 测试因绕过响应包装层计数为零而失败，补齐生产包装层后，定向
+存储／服务层 race 通过，存储全量 race 7.905s、指标全量 race 1.086s 通过。
+真实 TiKV/PD 隔离环境的 17 项协议 race 随后全部通过，证据
+`/tmp/kubebrain-real-protocol.hEFDtqkjWY/`，`result=0 cleanup_failed=0`。
+实际 20 次标记写入均观测到一次 Prewrite、正耗时、sum=max、错误数为零。
+后端全量 race 通过（77.391s），响应透传／未标记及晚到排除专项通过
+（1.176s），vet 通过；服务层全量 race 随后通过（317.050s）。
+此候选仅补齐诊断，尚无远端验收或性能改善结论。
+
 批次锁 RPC 归因候选（2026-09-14，未部署）：对带观察器的 TiKV 批次分别
 记录 prepare／commit 上下文内的 CheckTxnStatus、ResolveLock 请求数、传输
 错误数和 RPC 耗时总和。未标记和阶段关闭后完成的请求不计入；统计含零请求

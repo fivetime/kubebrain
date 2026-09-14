@@ -9,6 +9,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"github.com/tikv/client-go/v2/tikvrpc"
 )
@@ -72,5 +73,34 @@ func TestLockRPCTransportIdentityAndUnmarkedExclusion(t *testing.T) {
 			require.Equal(t, observed, tracker.finish())
 			require.Equal(t, 3, stub.calls, "no retries and no dropped forwarding")
 		}
+	}
+}
+
+func TestPrewriteRPCTransportIdentityAndUnmarkedExclusion(t *testing.T) {
+	for _, transportErr := range []error{nil, errors.New("private transport error")} {
+		response := &tikvrpc.Response{Resp: &kvrpcpb.PrewriteResponse{}}
+		stub := &protocolResponseStub{response: response, err: transportErr}
+		client := &writeResponseClient{Client: stub, metrics: newWriteResponseMetrics(prometheus.NewRegistry())}
+		tracker := &primaryWriteTracker{}
+		ctx := context.WithValue(context.Background(), primaryWriteTrackerKey{}, tracker)
+		request := tikvrpc.NewRequest(tikvrpc.CmdPrewrite, &kvrpcpb.PrewriteRequest{StartVersion: 123, PrimaryLock: []byte("primary")})
+		got, err := client.SendRequest(context.Background(), "unused", request, time.Second)
+		require.Same(t, response, got)
+		require.True(t, err == transportErr)
+		require.Zero(t, tracker.prewriteSnapshot().Requests)
+		got, err = client.SendRequest(ctx, "unused", request, time.Second)
+		require.Same(t, response, got)
+		require.True(t, err == transportErr)
+		tracker.finish()
+		frozen := tracker.prewriteSnapshot()
+		require.EqualValues(t, 1, frozen.Requests)
+		if transportErr != nil {
+			require.EqualValues(t, 1, frozen.TransportErrors)
+		} else {
+			require.Zero(t, frozen.TransportErrors)
+		}
+		_, _ = client.SendRequest(ctx, "unused", request, time.Second)
+		require.Equal(t, frozen, tracker.prewriteSnapshot())
+		require.Equal(t, 3, stub.calls)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	tikvconfig "github.com/tikv/client-go/v2/config"
 	"github.com/tikv/client-go/v2/testutils"
@@ -114,7 +115,8 @@ func TestProtocolProductionFencedShape(t *testing.T) {
 						if fenced && splitVersions {
 							rpc.firstPrewriteBarrier = make(chan struct{})
 						}
-						store, err := clienttikv.NewKVStore("fenced-shape", clienttikv.NewCodecPDClient(clienttikv.ModeTxn, pd), clienttikv.NewMockSafePointKV(), rpc)
+						observedRPC := &writeResponseClient{Client: rpc, metrics: newWriteResponseMetrics(prometheus.NewRegistry())}
+						store, err := clienttikv.NewKVStore("fenced-shape", clienttikv.NewCodecPDClient(clienttikv.ModeTxn, pd), clienttikv.NewMockSafePointKV(), observedRPC)
 						require.NoError(t, err)
 						kv := NewKvStoreWithStorage([]*clienttikv.KVStore{store})
 						b := backend.NewBackend(kv, backend.Config{
@@ -163,6 +165,11 @@ func TestProtocolProductionFencedShape(t *testing.T) {
 							require.NoError(t, o.Err)
 							require.True(t, o.HasWriteDetails)
 							require.Equal(t, groups, o.PrewriteRegionGroups)
+							require.True(t, o.HasPrewriteRPCDetails)
+							require.EqualValues(t, groups, o.PrewriteRPCs.Requests)
+							require.Positive(t, o.PrewriteRPCs.MaxDuration)
+							require.GreaterOrEqual(t, o.PrewriteRPCs.Duration, o.PrewriteRPCs.MaxDuration)
+							require.Zero(t, o.PrewriteRPCs.TransportErrors+o.PrewriteRPCs.RegionErrors+o.PrewriteRPCs.KeyErrors+o.PrewriteRPCs.MissingResponses)
 						}
 						require.Equal(t, int(3*groups), rpc.requestSnapshot()["prewrite"])
 						require.Zero(t, rpc.snapshot().OnePC, "both layouts are multi-Region even when 1PC is enabled")

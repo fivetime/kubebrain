@@ -71,6 +71,13 @@ func (c *writeResponseClient) SendRequest(ctx context.Context, addr string, req 
 	response, err := c.Client.SendRequest(ctx, addr, req, timeout)
 	elapsed := time.Since(start)
 	c.metrics.observe(method, response, err, elapsed)
+	if tracker != nil && method == "prewrite" {
+		var result *kvrpcpb.PrewriteResponse
+		if response != nil {
+			result, _ = response.Resp.(*kvrpcpb.PrewriteResponse)
+		}
+		tracker.observePrewrite(result, err, elapsed)
+	}
 	if tracker != nil && method == "commit" {
 		commit, _ := req.Req.(*kvrpcpb.CommitRequest)
 		var result *kvrpcpb.CommitResponse

@@ -19,6 +19,44 @@ func newPrimaryTrackerFixture() (*primaryWriteTracker, *kvrpcpb.CommitRequest, *
 		&kvrpcpb.CommitResponse{ExecDetailsV2: &kvrpcpb.ExecDetailsV2{WriteDetail: &kvrpcpb.WriteDetail{PersistLogNanos: 10, RaftDbSyncLogNanos: 4, CommitLogNanos: 12}}}
 }
 
+func TestPrewriteRPCObservationOutcomesAndClosure(t *testing.T) {
+	tracker := &primaryWriteTracker{}
+	tracker.observePrewrite(&kvrpcpb.PrewriteResponse{}, nil, 2*time.Millisecond)
+	tracker.observePrewrite(nil, errors.New("transport"), 3*time.Millisecond)
+	tracker.observePrewrite(nil, nil, 4*time.Millisecond)
+	tracker.observePrewrite(&kvrpcpb.PrewriteResponse{RegionError: &errorpb.Error{}}, nil, 5*time.Millisecond)
+	tracker.observePrewrite(&kvrpcpb.PrewriteResponse{Errors: []*kvrpcpb.KeyError{{}}}, nil, 6*time.Millisecond)
+	tracker.observePrewrite(nil, nil, -time.Second)
+	tracker.finish()
+	want := tracker.prewriteSnapshot()
+	require.EqualValues(t, 5, want.Requests)
+	require.EqualValues(t, 1, want.TransportErrors)
+	require.EqualValues(t, 1, want.RegionErrors)
+	require.EqualValues(t, 1, want.KeyErrors)
+	require.EqualValues(t, 1, want.MissingResponses)
+	require.Equal(t, 20*time.Millisecond, want.Duration)
+	require.Equal(t, 6*time.Millisecond, want.MaxDuration)
+	tracker.observePrewrite(nil, nil, time.Hour)
+	require.Equal(t, want, tracker.prewriteSnapshot())
+}
+
+func TestPrewriteRPCObservationConcurrentFinish(t *testing.T) {
+	tracker := &primaryWriteTracker{}
+	var workers sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			tracker.observePrewrite(&kvrpcpb.PrewriteResponse{}, nil, time.Millisecond)
+		}()
+	}
+	tracker.finish()
+	snapshot := tracker.prewriteSnapshot()
+	workers.Wait()
+	require.Equal(t, snapshot, tracker.prewriteSnapshot())
+	require.Equal(t, time.Duration(snapshot.Requests)*time.Millisecond, snapshot.Duration)
+}
+
 func TestPrimaryWriteTrackerRejectsUnrelatedAndFailedResponses(t *testing.T) {
 	for _, name := range []string{"secondary", "transaction", "transport", "region", "key", "missing", "negative"} {
 		t.Run(name, func(t *testing.T) {

@@ -296,7 +296,13 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 		require.True(t, o.CommitAttempted)
 		require.True(t, o.HasWriteDetails)
 		require.EqualValues(t, 1, o.PrewriteRegionGroups, "single-Region fixture without retries")
+		require.True(t, o.HasPrewriteRPCDetails)
+		require.EqualValues(t, 1, o.PrewriteRPCs.Requests)
+		require.Positive(t, o.PrewriteRPCs.MaxDuration)
+		require.Equal(t, o.PrewriteRPCs.Duration, o.PrewriteRPCs.MaxDuration, "one actual Prewrite RPC, so sum equals maximum")
+		require.Zero(t, o.PrewriteRPCs.TransportErrors+o.PrewriteRPCs.RegionErrors+o.PrewriteRPCs.KeyErrors+o.PrewriteRPCs.MissingResponses)
 	}
+	t.Logf("PROTOCOL_PREWRITE_RPC_SCOPE samples=%d each=1 sum_equals_max=true errors=0 scope=marked_foreground_only", len(observed))
 	t.Logf("PROTOCOL_BATCH_REGION_GROUPS samples=%d each=1 scope=marked_foreground_only", len(observed))
 	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, warmup, samples, len(value), quota, durations, stats)
 	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_foreground_only excludes=background_and_unmarked_work", attempts)

@@ -24,6 +24,29 @@ func TestPutBackendPhaseMetricsPairUnitsAndOutcome(t *testing.T) {
 	require.NotPanics(t, func() { emitPutBackendPhaseDurations(nil, 0, 0, nil) })
 }
 
+func TestBatchPrewriteRPCMetricsUnitsAndPopulation(t *testing.T) {
+	for _, attempted := range []bool{false, true} {
+		rec := &recordingMetrics{}
+		callback := storage.BatchCommitObserverFromContext(observePutBatchCommits(context.Background(), rec))
+		callback(storage.BatchCommitObservation{CommitAttempted: attempted, HasPrewriteRPCDetails: true,
+			PrewriteRPCs: storage.PrewriteRPCObservation{Requests: 4, RegionErrors: 1, Duration: 25 * time.Millisecond, MaxDuration: 10 * time.Millisecond}})
+		values := map[string]interface{}{}
+		for _, h := range rec.histograms {
+			values[h.name] = h.value
+		}
+		if !attempted {
+			require.NotContains(t, values, "write.batch.prewrite_rpc.requests")
+			continue
+		}
+		require.Equal(t, float64(4), values["write.batch.prewrite_rpc.requests"])
+		require.Equal(t, float64(1), values["write.batch.prewrite_rpc.region_errors"])
+		require.Equal(t, float64(0), values["write.batch.prewrite_rpc.transport_errors"])
+		require.Equal(t, .025, values["write.batch.prewrite_rpc.total_latency"])
+		require.Equal(t, .010, values["write.batch.prewrite_rpc.max_latency"])
+		require.Len(t, rec.histograms, 10)
+	}
+}
+
 func TestBatchLockRPCMetricsUnitsAndZeroPopulation(t *testing.T) {
 	rec := &recordingMetrics{}
 	callback := storage.BatchCommitObserverFromContext(observePutBatchCommits(context.Background(), rec))

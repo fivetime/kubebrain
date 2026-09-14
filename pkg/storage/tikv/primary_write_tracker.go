@@ -21,15 +21,50 @@ type primaryWriteTrackerKey struct{}
 
 // primaryWriteTracker belongs to exactly one storage batch. SDK requests can
 // race with each other and with finish; late/background observations are ignored.
-// A contradictory transaction identity invalidates all samples, not just the
-// latest one. Identity is learned before sending Prewrite, never from its result.
+// A contradictory transaction identity invalidates primary Commit selection,
+// not the context-scoped Prewrite transport counts. Identity is learned before
+// sending Prewrite, never from its result.
 type primaryWriteTracker struct {
-	mu      sync.Mutex
-	start   uint64
-	primary []byte
-	invalid bool
-	closed  bool
-	sample  primaryWriteSample
+	mu        sync.Mutex
+	start     uint64
+	primary   []byte
+	invalid   bool
+	closed    bool
+	sample    primaryWriteSample
+	prewrites storage.PrewriteRPCObservation
+}
+
+func (t *primaryWriteTracker) observePrewrite(response *kvrpcpb.PrewriteResponse, err error, elapsed time.Duration) {
+	if elapsed < 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return
+	}
+	s := &t.prewrites
+	s.Requests++
+	s.Duration += elapsed
+	if elapsed > s.MaxDuration {
+		s.MaxDuration = elapsed
+	}
+	switch {
+	case err != nil:
+		s.TransportErrors++
+	case response == nil:
+		s.MissingResponses++
+	case response.RegionError != nil:
+		s.RegionErrors++
+	case len(response.Errors) != 0:
+		s.KeyErrors++
+	}
+}
+
+func (t *primaryWriteTracker) prewriteSnapshot() storage.PrewriteRPCObservation {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.prewrites
 }
 
 func (t *primaryWriteTracker) register(prewrite *kvrpcpb.PrewriteRequest) {

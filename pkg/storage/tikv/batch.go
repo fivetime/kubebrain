@@ -260,6 +260,8 @@ func (b *batch) Commit(ctx context.Context) (err error) {
 		commitLocks.finish()
 		observation.Commit = time.Since(commitStart)
 		observation.PrimaryWrite = primaryTracker.finish()
+		observation.HasPrewriteRPCDetails = true
+		observation.PrewriteRPCs = primaryTracker.prewriteSnapshot()
 	}
 
 	if err != nil {
