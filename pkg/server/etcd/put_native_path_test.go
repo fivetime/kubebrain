@@ -12,14 +12,19 @@ import (
 
 type nativePutRouteRecorder struct {
 	BackendShim
-	txns, puts int
-	ops        []backend.TxnWriteOp
-	txnErr     error
+	txns, puts, quotaStatus int
+	ops                     []backend.TxnWriteOp
+	txnErr                  error
 }
 
 func (s *nativePutRouteRecorder) Put(ctx context.Context, r *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
 	s.puts++
 	return s.BackendShim.Put(ctx, r)
+}
+
+func (s *nativePutRouteRecorder) QuotaStatus(ctx context.Context) (usage, quota int64, noSpace bool, err error) {
+	s.quotaStatus++
+	return s.BackendShim.QuotaStatus(ctx)
 }
 
 func (s *nativePutRouteRecorder) TxnApply(ctx context.Context, ops []backend.TxnWriteOp, guards []backend.TxnGuard, prev []bool) ([]*etcdserverpb.ResponseOp, uint64, []backend.TxnWriteResult, error) {
@@ -84,9 +89,11 @@ func TestPlainPutUsesNativeTransactionOnlyWithoutPreviousStateOptions(t *testing
 				require.True(t, recorder.ops[0].PrevLeaseKnown)
 				require.Zero(t, recorder.ops[0].PrevLease)
 				require.True(t, recorder.ops[0].DiscardPrevValue)
+				require.Equal(t, 1, recorder.quotaStatus, "plain native Put should rely on TxnApply quota validation after the outer quota preflight")
 			} else {
 				require.Zero(t, recorder.txns)
 				require.Equal(t, 1, recorder.puts)
+				require.Equal(t, 2, recorder.quotaStatus, "previous-state Put paths keep the lease-locked NOSPACE check before materializing old state")
 			}
 		})
 	}

@@ -1970,12 +1970,27 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	if authErr = s.authorizePut(caller, r); authErr != nil {
 		return nil, authErr
 	}
-	_, _, noSpace, quotaErr := s.backend.QuotaStatus(ctx)
-	if quotaErr != nil {
-		return nil, mapFenceErr(quotaErr)
+	prevLease := int64(0)
+	prevLeaseKnown := false
+	plainUnleasedNativePut := !r.PrevKv && !r.IgnoreValue && !r.IgnoreLease && r.Lease == 0
+	if plainUnleasedNativePut {
+		prevLease = s.leaseIDForKey(string(r.Key))
+		prevLeaseKnown = true
 	}
-	if noSpace {
-		return nil, rpctypes.ErrGRPCNoSpace
+	// configuredQuotaUnavailable above preserves etcd's outer-quota error order.
+	// For the common unleased native TxnApply path, do not read the same quota
+	// state a second time under the lease lock: TxnApply's preparation still
+	// checks sticky NOSPACE, exact logical usage, and atomically CASes quota usage
+	// with the write. Leased/ignore/PrevKv paths retain the pre-existing cap
+	// check before they materialize previous state or validate leases.
+	if !(plainUnleasedNativePut && prevLease == 0) {
+		_, _, noSpace, quotaErr := s.backend.QuotaStatus(ctx)
+		if quotaErr != nil {
+			return nil, mapFenceErr(quotaErr)
+		}
+		if noSpace {
+			return nil, rpctypes.ErrGRPCNoSpace
+		}
 	}
 	put, err := s.putWithEffectiveOptions(ctx, r)
 	if err != nil {
@@ -1992,7 +2007,10 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	var response *etcdserverpb.PutResponse
 	ctx = observePutBatchCommits(ctx, s.metricCli)
 	backendStart := time.Now()
-	if prevLease := s.leaseIDForKey(string(put.Key)); put.Lease != 0 || prevLease != 0 {
+	if !prevLeaseKnown {
+		prevLease = s.leaseIDForKey(string(put.Key))
+	}
+	if put.Lease != 0 || prevLease != 0 {
 		response, err = s.putLeasedAtomic(ctx, put, prevLease)
 	} else if !r.PrevKv && !r.IgnoreValue && !r.IgnoreLease {
 		// All admission checks above and the lease attachment barrier remain
