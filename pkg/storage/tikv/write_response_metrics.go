@@ -45,6 +45,14 @@ type writeResponseClient struct {
 }
 
 func (c *writeResponseClient) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
+	if req.Type == tikvrpc.CmdCheckTxnStatus || req.Type == tikvrpc.CmdResolveLock {
+		if tracker, _ := ctx.Value(lockRPCTrackerKey{}).(*lockRPCTracker); tracker != nil {
+			start := time.Now()
+			response, err := c.Client.SendRequest(ctx, addr, req, timeout)
+			tracker.observe(req.Type, time.Since(start), err)
+			return response, err
+		}
+	}
 	method := ""
 	switch req.Type {
 	case tikvrpc.CmdPrewrite:

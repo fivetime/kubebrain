@@ -189,8 +189,14 @@ func (b *batch) Commit(ctx context.Context) (err error) {
 	var observation storage.BatchCommitObservation
 	var primaryTracker *primaryWriteTracker
 	var detail *util.CommitDetails
+	var prepareLocks, commitLocks *lockRPCTracker
+	phaseParent := ctx
 	if observer != nil {
+		prepareLocks, commitLocks = &lockRPCTracker{}, &lockRPCTracker{}
+		observation.HasLockRPCDetails = true
 		defer func() {
+			observation.PrepareLocks = prepareLocks.finish()
+			observation.CommitLocks = commitLocks.finish()
 			observation.Err = err
 			// These scalar durations are finalized by the synchronous Commit
 			// path. Do not read background-updated request/backoff details.
@@ -221,17 +227,23 @@ func (b *batch) Commit(ctx context.Context) (err error) {
 			return err
 		}
 	}
+	if observer != nil {
+		ctx = context.WithValue(ctx, lockRPCTrackerKey{}, prepareLocks)
+	}
 	prepareStart := time.Now()
 	for _, f := range b.list {
 		err = f(ctx)
 		if err != nil {
 			if observer != nil {
+				prepareLocks.finish()
 				observation.Prepare = time.Since(prepareStart)
 			}
 			return err
 		}
 	}
 	if observer != nil {
+		prepareLocks.finish()
+		ctx = context.WithValue(phaseParent, lockRPCTrackerKey{}, commitLocks)
 		observation.Prepare = time.Since(prepareStart)
 		observation.CommitAttempted = true
 		primaryTracker = &primaryWriteTracker{}
@@ -245,6 +257,7 @@ func (b *batch) Commit(ctx context.Context) (err error) {
 	commitStart := time.Now()
 	err = b.txn.Commit(ctx)
 	if observer != nil {
+		commitLocks.finish()
 		observation.Commit = time.Since(commitStart)
 		observation.PrimaryWrite = primaryTracker.finish()
 	}

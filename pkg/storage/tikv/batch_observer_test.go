@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"github.com/tikv/client-go/v2/testutils"
 	clienttikv "github.com/tikv/client-go/v2/tikv"
+	"github.com/tikv/client-go/v2/tikvrpc"
 	"github.com/tikv/client-go/v2/txnkv"
 	"github.com/tikv/client-go/v2/util"
 )
@@ -36,6 +38,8 @@ func TestBatchObserverEarlyFailuresKeepErrorAndSkipCommit(t *testing.T) {
 			require.ErrorIs(t, observations[0].Err, want)
 			require.False(t, observations[0].CommitAttempted)
 			require.False(t, observations[0].HasWriteDetails)
+			require.True(t, observations[0].HasLockRPCDetails)
+			require.Zero(t, observations[0].CommitLocks)
 			require.Zero(t, observations[0].Commit)
 		})
 	}
@@ -66,6 +70,13 @@ func TestBatchObserverRealClientWriteEmptyAndCallerSink(t *testing.T) {
 				return store.Begin()
 			}}
 			key := []byte("batch-observer/" + mode)
+			var preparationTracker *lockRPCTracker
+			b.list = append(b.list, func(phaseCtx context.Context) error {
+				preparationTracker, _ = phaseCtx.Value(lockRPCTrackerKey{}).(*lockRPCTracker)
+				require.NotNil(t, preparationTracker)
+				preparationTracker.observe(tikvrpc.CmdResolveLock, time.Millisecond, nil)
+				return nil
+			})
 			if mode != "empty" {
 				b.Put(key, []byte("value"), 0)
 			}
@@ -78,6 +89,11 @@ func TestBatchObserverRealClientWriteEmptyAndCallerSink(t *testing.T) {
 			}
 			err := b.Commit(ctx)
 			require.Len(t, observations, 1)
+			require.True(t, observations[0].HasLockRPCDetails)
+			require.EqualValues(t, 1, observations[0].PrepareLocks.ResolveLock.Requests)
+			require.Zero(t, observations[0].CommitLocks, "preparation must not leak into commit")
+			preparationTracker.observe(tikvrpc.CmdResolveLock, time.Second, nil)
+			require.Equal(t, observations[0].PrepareLocks, preparationTracker.finish(), "observer sees a closed snapshot")
 			o := observations[0]
 			if mode == "prepare_failure" {
 				require.ErrorIs(t, err, prepareErr)

@@ -24,6 +24,26 @@ func TestPutBackendPhaseMetricsPairUnitsAndOutcome(t *testing.T) {
 	require.NotPanics(t, func() { emitPutBackendPhaseDurations(nil, 0, 0, nil) })
 }
 
+func TestBatchLockRPCMetricsUnitsAndZeroPopulation(t *testing.T) {
+	rec := &recordingMetrics{}
+	callback := storage.BatchCommitObserverFromContext(observePutBatchCommits(context.Background(), rec))
+	callback(storage.BatchCommitObservation{HasLockRPCDetails: true, CommitAttempted: true,
+		PrepareLocks: storage.LockRPCObservation{ResolveLock: storage.LockRPCSample{Requests: 2, TransportErrors: 1, Duration: 25 * time.Millisecond}},
+	})
+	values := map[string]interface{}{}
+	for _, h := range rec.histograms {
+		values[h.name] = h.value
+	}
+	require.Equal(t, float64(2), values["write.batch.lock_rpc.prepare.resolve_lock.requests"])
+	require.Equal(t, float64(1), values["write.batch.lock_rpc.prepare.resolve_lock.transport_errors"])
+	require.Equal(t, .025, values["write.batch.lock_rpc.prepare.resolve_lock.latency"])
+	require.Equal(t, float64(0), values["write.batch.lock_rpc.commit.resolve_lock.requests"])
+	require.Len(t, rec.histograms, 15)
+	rec.histograms = nil
+	callback(storage.BatchCommitObservation{HasLockRPCDetails: true, Err: errors.New("private")})
+	require.Len(t, rec.histograms, 8, "early failure has prepare samples but no attempted commit phase")
+}
+
 func TestPutBatchMetricsUnitsPopulationAndOutcome(t *testing.T) {
 	ctx := context.Background()
 	require.True(t, ctx == observePutBatchCommits(ctx, nil))

@@ -17,9 +17,24 @@ type BatchCommitObservation struct {
 	Prewrite, CommitTS, PrimaryCommit time.Duration
 	// PrewriteRegionGroups sums SDK prewrite Region groups across attempts,
 	// including retries. It is not a distinct-Region count or a protocol verdict.
-	PrewriteRegionGroups int32
-	PrimaryWrite         PrimaryWriteObservation
-	Err                  error
+	PrewriteRegionGroups      int32
+	PrimaryWrite              PrimaryWriteObservation
+	HasLockRPCDetails         bool
+	PrepareLocks, CommitLocks LockRPCObservation
+	Err                       error
+}
+
+// LockRPCObservation counts transport calls carrying a batch phase context
+// that finish before that phase closes. Unmarked and late calls are excluded.
+// Durations sum RPC wall time (including overlaps), not logical lock wait.
+// TransportErrors does not include key/Region errors in successful responses.
+type LockRPCObservation struct {
+	CheckTxnStatus, ResolveLock LockRPCSample
+}
+
+type LockRPCSample struct {
+	Requests, TransportErrors uint64
+	Duration                  time.Duration
 }
 
 // PrimaryWriteObservation selects the slowest successful primary Commit RPC

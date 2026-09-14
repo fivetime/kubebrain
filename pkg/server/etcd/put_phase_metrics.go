@@ -21,6 +21,12 @@ func observePutBatchCommits(ctx context.Context, metricCli metrics.Metrics) cont
 		}
 		emit("begin", o.Begin)
 		emit("prepare", o.Prepare)
+		if o.HasLockRPCDetails {
+			emitBatchLockRPCs(metricCli, "prepare", o.PrepareLocks, tags)
+			if o.CommitAttempted {
+				emitBatchLockRPCs(metricCli, "commit", o.CommitLocks, tags)
+			}
+		}
 		if o.CommitAttempted {
 			emit("commit", o.Commit)
 			emitPrimaryWriteSample(metricCli, o.PrimaryWrite, tags)
@@ -34,6 +40,20 @@ func observePutBatchCommits(ctx context.Context, metricCli metrics.Metrics) cont
 			_ = metricCli.EmitHistogram("write.batch.prewrite_region_groups", float64(o.PrewriteRegionGroups), tags...)
 		}
 	})
+}
+
+func emitBatchLockRPCs(metricCli metrics.Metrics, phase string, o storage.LockRPCObservation, tags []metrics.T) {
+	for _, rpc := range []struct {
+		name   string
+		sample storage.LockRPCSample
+	}{
+		{"check_txn_status", o.CheckTxnStatus}, {"resolve_lock", o.ResolveLock},
+	} {
+		prefix := "write.batch.lock_rpc." + phase + "." + rpc.name
+		_ = metricCli.EmitHistogram(prefix+".requests", float64(rpc.sample.Requests), tags...)
+		_ = metricCli.EmitHistogram(prefix+".transport_errors", float64(rpc.sample.TransportErrors), tags...)
+		_ = metricCli.EmitHistogram(prefix+".latency", rpc.sample.Duration.Seconds(), tags...)
+	}
 }
 
 func emitPrimaryWriteSample(metricCli metrics.Metrics, sample storage.PrimaryWriteObservation, tags []metrics.T) {

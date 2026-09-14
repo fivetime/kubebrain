@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -216,6 +217,34 @@ func TestRealTiKVReadBypassesPendingSecondaryCleanup(t *testing.T) {
 	hold.mu.Unlock()
 	readCtx, stopRead := context.WithTimeout(context.WithValue(ctx, protocolSecondaryReadMarker{}, true), 5*time.Second)
 	defer stopRead()
+	// Exercise actual lock-status RPCs through the production batch phase
+	// context. Abort preparation deliberately after the successful read: no
+	// mutation or synthetic server response is needed for this observation.
+	var lockObservations []storage.BatchCommitObservation
+	observedRead := storage.WithBatchCommitObserver(readCtx, func(o storage.BatchCommitObservation) {
+		lockObservations = append(lockObservations, o)
+	})
+	readBatch := kv.BeginBatchWrite()
+	stopAfterRead := errors.New("protocol fixture: stop after observed read")
+	readBatch.Atomic(func(callbackCtx context.Context, atomic storage.AtomicBatch) error {
+		value, readErr := atomic.Get(callbackCtx, secondary)
+		if readErr != nil {
+			return readErr
+		}
+		require.Equal(t, []byte("committed"), value)
+		return stopAfterRead
+	})
+	require.ErrorIs(t, readBatch.Commit(observedRead), stopAfterRead)
+	require.Len(t, lockObservations, 1)
+	lockObservation := lockObservations[0]
+	require.True(t, lockObservation.HasLockRPCDetails)
+	require.False(t, lockObservation.CommitAttempted)
+	require.Positive(t, lockObservation.PrepareLocks.CheckTxnStatus.Requests)
+	require.Zero(t, lockObservation.PrepareLocks.CheckTxnStatus.TransportErrors)
+	require.Zero(t, lockObservation.PrepareLocks.ResolveLock.Requests)
+	require.Zero(t, lockObservation.CommitLocks)
+	t.Logf("BATCH_LOCK_RPC_SCOPE_CONFIRMED prepare_checks=%d prepare_resolves=%d commit_attempted=false scope=mechanism_only",
+		lockObservation.PrepareLocks.CheckTxnStatus.Requests, lockObservation.PrepareLocks.ResolveLock.Requests)
 	value, err := kv.Get(readCtx, secondary)
 	require.NoError(t, err)
 	require.Equal(t, []byte("committed"), value)

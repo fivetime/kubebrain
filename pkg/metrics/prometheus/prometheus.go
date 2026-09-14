@@ -320,6 +320,9 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 }
 
 func metricHelp(name string) string {
+	if strings.HasPrefix(formatName(name), "write_batch_lock_rpc_") {
+		return "Batch phase context lock RPC observations completed before phase closure; unmarked and late calls excluded. Requests and transport_errors are counts per batch; latency is summed RPC wall seconds, including overlaps, not logical lock wait. Zero samples included; success labels batch outcome, not RPC outcome."
+	}
 	switch formatName(name) {
 	case "write_batch_prewrite_region_groups":
 		return "SDK prewrite Region groups per observed storage batch, including retries; not distinct Regions, RPC counts, or a commit protocol verdict."

@@ -5,6 +5,18 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+批次锁 RPC 归因候选（2026-09-14，未部署）：对带观察器的 TiKV 批次分别
+记录 prepare／commit 上下文内的 CheckTxnStatus、ResolveLock 请求数、传输
+错误数和 RPC 耗时总和。未标记和阶段关闭后完成的请求不计入；统计含零请求
+批次，success 标签仅表示批次结果，RPC 时长可重叠，不等于逻辑锁等待。
+Begin 上下文、传输返回值、重试和提交协议保持不变。存储／指标包全量 race
+及服务层定向测试通过；真实 TiKV/PD 17 项 race 协议测试均通过，实际批次
+读取观察到 prepare CheckTxnStatus=1、ResolveLock=0、未进入 commit，后台
+secondary／ResolveLock 仍被测试阻断。证据 `/tmp/kubebrain-real-protocol.BhWaSfGzRU/`，
+`result=0 cleanup_failed=0`；vet 通过，后端全量 race 通过（76.907s），服务层
+全量 race 通过（323.054s）。
+此候选仅增加诊断能力，不作为性能改善或原滚动验收通过结论。
+
 提交事务内配额读取候选（2026-09-14，尚未部署）：普通用户写入的 tracking／
 usage／alarm admission 改为使用提交事务快照，加入 allocator 已有预取；
 固定时间戳调用保留原准备读取路径。usage 比较与更新、用户 index CAS、
