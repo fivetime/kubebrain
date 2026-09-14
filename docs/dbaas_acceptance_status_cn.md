@@ -47,7 +47,13 @@ receipt、seed、auth install 和 recovery 阶段耗时与剩余预算日志，�
 宣称全部 CI 通过，也不以镜像构建成功代替探针门禁。
 补充诊断后的同一用例五轮 race 通过（3.957s），探针 vet 和 diff 检查通过；
 随后完整探针 race 通过（357.140s，`-count=1 -timeout=20m`，执行 exit 0）。
-尚未取得含新阶段日志的远端执行结果；本机通过不撤销上述远端失败。
+后续精确提交 `98608fb3ff4fc5c2ec70df59c9b609dcbd1fb022` 的
+[探针 CI 34880348899](https://github.com/fivetime/kubebrain/actions/runs/34880348899)
+已成功，完整 race 通过（361.346s）。原失败用例本轮通过（3.28s）：启动及
+客户端创建累计 1.729s；seed 完成累计 1.850s、剩余 28.150s；auth install
+返回累计 2.499s；首次 recovery 返回累计 3.213s、剩余 26.787s，各阶段
+context error 均为 nil。这验证了诊断日志实际进入 CI，未复现预算耗尽；
+不撤销上述历史失败，也不能根据本轮耗时推断历史是哪一步耗尽预算。
 
 配额读取合并的并发边界（2026-09-14）：新增回归在实际 index 准备快照返回后、
 后续 quota admission 之前，直接提交 NOSPACE 告警或 dirty tracking，保持 usage 不变。
