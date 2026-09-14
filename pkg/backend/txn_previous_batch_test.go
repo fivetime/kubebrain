@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -66,6 +67,27 @@ func TestTxnPreviousObjectsBatchRead(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTxnPreviousObjectsBatchBound(t *testing.T) {
+	s := &txnPreparationTestStore{KvStorage: memkv.NewKvStorage()}
+	b := NewBackend(s, Config{Prefix: "/previous-bound", EnableEtcdCompatibility: true}, mock.NewMinimalMetrics(gomock.NewController(t))).(*backend)
+	t.Cleanup(func() { require.NoError(t, b.Close()) })
+	ctx := context.WithValue(context.Background(), txnPreparationContextKey{}, s)
+	ops := make([]TxnWriteOp, maxTxnPreviousPrefetchKeys+1)
+	indexes := make(map[string][]byte, len(ops))
+	for i := range ops {
+		ops[i] = TxnWriteOp{Key: []byte(fmt.Sprintf("/bound/%d", i))}
+		indexes[string(b.coder.EncodeRevisionKey(ops[i].Key))] = binary.BigEndian.AppendUint64(nil, 100)
+	}
+	s.target = b.coder.EncodeObjectKey(ops[0].Key, 100)
+	values, err := b.prefetchTxnPreviousObjects(ctx, ops, indexes)
+	require.NoError(t, err)
+	require.Nil(t, values)
+	require.Zero(t, s.batchReads.Load(), "oversized prefetch must fall back before reading any old values")
+	_, err = b.prefetchTxnPreviousObjects(ctx, ops[:maxTxnPreviousPrefetchKeys], indexes)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, s.batchReads.Load(), "the inclusive boundary remains eligible")
 }
 
 func TestTxnPreviousObjectsBatchFallback(t *testing.T) {

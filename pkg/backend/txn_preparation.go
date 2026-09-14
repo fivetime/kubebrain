@@ -38,6 +38,12 @@ func (b *backend) txnPreparationKeys(ctx context.Context, ops []TxnWriteOp, guar
 	return keys
 }
 
+// Limit eager old-value retention independently of the RPC transaction limit:
+// backend callers and expanded range deletes can contain more operations, and
+// a small new request does not bound the size of the old values. This is a key
+// count bound, not a byte bound; large transactions keep the ordered read path.
+const maxTxnPreviousPrefetchKeys = 16
+
 // Batch immutable previous-version reads only after the index snapshot is
 // available. Commit still compares every index. Ambiguous/legacy index states
 // and pinned snapshots retain the original ordered preparation path.
@@ -52,10 +58,13 @@ func (b *backend) prefetchTxnPreviousObjects(ctx context.Context, ops []TxnWrite
 	if !ok {
 		return nil, nil
 	}
-	keys := make([][]byte, 0, len(ops))
+	keys := make([][]byte, 0, min(len(ops), maxTxnPreviousPrefetchKeys))
 	for _, op := range ops {
 		if op.Internal {
 			continue
+		}
+		if len(keys) == maxTxnPreviousPrefetchKeys {
+			return nil, nil
 		}
 		raw, exists := indexes[string(b.coder.EncodeRevisionKey(op.Key))]
 		if !exists {
