@@ -2,9 +2,21 @@
 
 最后文档更新：2026-09-14。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
+## 2026-09-14：消费者卷追加／覆盖对照完成
+
+网络恢复后已连接专用集群，在三个 worker 上分别新建独立消费者 rook-ceph
+测试 PVC，完成 append/overwrite/overwrite/append 四组同步写对照。
+12 组均完成；结果和解释边界见 [验收状态](dbaas_acceptance_status_cn.md)。
+临时 Pod/PVC 已按 UID 删除，PV 已回收，独立查询确认无残留；本地两个
+编译二进制已清理。证据与可审计执行脚本位于
+`/root/.local/state/kubebrain/storage-sync-paired.JxxyuxU4/`。
+未部署新 KubeBrain 镜像或修改数据库／Ceph 配置。实验后 KubeBrain
+generation/observed=50/50、Ready=3，镜像仍为 `0ce85e66`；PD/TiKV
+均为 3/3 Ready。本对照不替代 6000/900s 正式验收。
+
 ## 2026-09-14：网络恢复后的 CI-only 状态
 
-网络恢复后仅完成远端 CI 与镜像发布确认，未连接专用集群执行部署、
+此前网络恢复后仅完成远端 CI 与镜像发布确认，未连接专用集群执行部署、
 回滚或 6000/900s 正式验收。最新已验证并推广到 `dbaas` tag 的镜像为
 `ghcr.io/fivetime/kubebrain@sha256:3d86851f0cfab3d33132c5a4fb615ebc151fe470adcd296a59393ba44913db25`，
 来源提交 `63db41cb9041b96885e79b1e95e2ca638557ee13`；Backend protocol

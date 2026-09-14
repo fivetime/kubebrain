@@ -5,6 +5,36 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+独立消费者卷追加／覆盖对照（2026-09-14）：完成此前待执行的无文件增长
+对照。探针源码 `0dac8a22`（构建记录 `vcs.modified=false`），每个 worker
+新建独立 1Gi PVC，核验 StorageClass UID、consumer `rook-ceph` CSI 身份及
+实际 ext4 挂载。在同一个卷上按 append、overwrite、overwrite、append
+顺序各执行 256 次 4096 字节随机写 + fdatasync；overwrite 先写满 1MiB
+并同步，准备耗时单列。12 组全部完成，测量样本共 3072 个。下表每种模式
+合并同节点两组原始样本，共 512 个，p99 为排序后第 507 个样本，非两组
+p99 的平均，也不包含准备同步：
+
+| Worker | append 均值 / p99 (ms) | overwrite 均值 / p99 (ms) |
+| --- | ---: | ---: |
+| k8s3-worker1 | 20.856 / 57.080 | 6.837 / 24.248 |
+| k8s3-worker2 | 29.722 / 117.452 | 8.731 / 20.267 |
+| k8s3-worker3 | 35.754 / 198.662 | 11.061 / 87.968 |
+
+三个节点均显示覆盖写同步成本较低，支持文件增长相关开销对该独立负载
+有明显影响；不能把旧追加样本的全部延迟归因于物理设备。仍有时间波动：
+worker3 两组 overwrite 均值分别为 5.716 / 16.406ms，p99 为
+19.145 / 156.322ms。小规模平衡顺序不能隔离全部缓存、共享负载及元数据
+因素，也不是 TiKV 日志分配算法的复刻；不得拿不同日期的均值直接作性能
+改善结论。本实验不证明 TiKV 提交延迟根因，下一步仍需对齐真实请求窗口
+的提交阶段与存储同步证据，不能据此调整持久性设置或关闭 6000/900s 失败。
+
+三组 Pod/PVC 按 UID 删除，PV 自动回收，独立 API 查询确认无残留；两个
+本地工具二进制已删除，保留脚本、构建信息、身份和原始 JSON：
+`/root/.local/state/kubebrain/storage-sync-paired.JxxyuxU4/`。探针与 UID
+删除工具 race 测试通过。实验后 KubeBrain generation/observed=50/50、
+Ready=3，仍运行 `0ce85e66` 基线；PD/TiKV 均 Ready=3。未更换服务镜像，
+未更改 TiKV/PD/Ceph 配置，也未开启 1PC/async commit。
+
 Txn compare guard 真实协议回归（2026-09-14）：新增
 `TestTiKVTxnCompareCommitConflict` 与 `TestRealTiKVTxnCompareCommitConflict`，
 覆盖 present、missing、tombstone 三类 compare-only guard。无竞争时事务
