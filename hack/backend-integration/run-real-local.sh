@@ -151,9 +151,11 @@ for test_name in TestRealTiKVProtocolSmoke TestRealTiKVOnePCResponseLoss \
   TestRealTiKVBackendRetriesUndeliveredOnePC TestRealTiKVBackendRegionSplitFallback \
   TestRealTiKVBackendNoRPCRetryCommittedOnePC TestRealTiKVBackendNoRPCRetryUndeliveredOnePC \
   TestRealTiKVReadBypassesPendingSecondaryCleanup TestRealTiKVBackendProtocolLatency TestRealTiKVBackendConcurrentWrites \
-  TestRealTiKVBackendProductionFences TestRealTiKVPrefetchedLeadershipConflict TestRealTiKVPrefetchedRestorationConflict; do
+  TestRealTiKVBackendProductionFences TestRealTiKVPrefetchedLeadershipConflict TestRealTiKVPrefetchedRestorationConflict \
+  TestRealTiKVTxnCompareCommitConflict; do
   nonce="$(openssl rand -hex 16)"
   protocol_mode=1pc
+  if [[ "$test_name" == TestRealTiKVTxnCompareCommitConflict ]]; then protocol_mode=2pc; fi
   if [[ "$test_name" == TestRealTiKVReadBypassesPendingSecondaryCleanup || "$test_name" == TestRealTiKVBackendProtocolLatency || "$test_name" == TestRealTiKVBackendConcurrentWrites || "$test_name" == TestRealTiKVBackendProductionFences || "$test_name" == TestRealTiKVPrefetchedLeadershipConflict || "$test_name" == TestRealTiKVPrefetchedRestorationConflict ]]; then protocol_mode=2pc; fi
   case_result=0
   KUBEBRAIN_TIKV_PROTOCOL_PD="$pd_endpoint" KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID="$cluster_id" \

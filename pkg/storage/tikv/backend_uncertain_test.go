@@ -222,7 +222,7 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
-	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
+	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "compare-conflict", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
 	fenced := scenario == "fenced" || strings.HasPrefix(scenario, "fenced-")
 	retrying := strings.HasPrefix(scenario, "retry-")
 	noRPCRetry := strings.HasPrefix(scenario, "no-retry-")
@@ -241,7 +241,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	expected, err := validateProtocolSmokeScope(os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID"), prefix, os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE"))
 	require.NoError(t, err)
 	mode := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE")
-	if scenario == "concurrent" || fenced {
+	if scenario == "concurrent" || scenario == "compare-conflict" || fenced {
 		require.Equal(t, "2pc", mode)
 	} else if scenario != "latency" {
 		require.Equal(t, "1pc", mode)
@@ -306,7 +306,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	var latencyClient *protocolLatencyClient
 	var splitClient *protocolRegionSplit
 	var quota int64
-	if scenario == "latency" || scenario == "concurrent" || fenced {
+	if scenario == "latency" || scenario == "concurrent" || scenario == "compare-conflict" || fenced {
 		latencyClient = &protocolLatencyClient{Client: client.GetTiKVClient()}
 		client.SetTiKVClient(latencyClient)
 		quota = 2 << 30
@@ -321,6 +321,11 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	}
 	m := &protocolResolutionMetrics{Metrics: metricmock.NewMinimalMetrics(ctrl)}
 	backendKV := kv
+	var compareConflict *compareChangeStorage
+	if scenario == "compare-conflict" {
+		compareConflict = &compareChangeStorage{KvStorage: kv}
+		backendKV = compareConflict
+	}
 	var conflict *fenceChangeAfterPrefetch
 	if strings.HasPrefix(scenario, "fenced-") {
 		conflict = &fenceChangeAfterPrefetch{KvStorage: kv, target: prefix + "backend/" + strings.TrimPrefix(scenario, "fenced-") + "/"}
@@ -332,6 +337,11 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	}, m)
 	closer = b.(interface{ Close() error })
 	b.SetCurrentRevision(100)
+	if compareConflict != nil {
+		require.NoError(t, b.EnsureQuotaInitialized(ctx))
+		verifyTxnCompareCommitConflict(t, ctx, b, compareConflict, ks)
+		return
+	}
 	if conflict != nil {
 		verifyRealProtocolFenceConflict(t, ctx, b, conflict, ks, strings.TrimPrefix(scenario, "fenced-"))
 		return

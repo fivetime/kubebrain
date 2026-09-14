@@ -5,6 +5,26 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+Txn compare guard 真实协议回归（2026-09-14）：新增
+`TestTiKVTxnCompareCommitConflict` 与 `TestRealTiKVTxnCompareCommitConflict`，
+覆盖 present、missing、tombstone 三类 compare-only guard。无竞争时事务
+成功且 guard 物理状态保持不变；竞争事务在原 atomic callback 完成后、
+prewrite 前仅修改 guard revision index，不触碰共享 revision/quota，
+避免共享计数器的冲突掩盖 guard 漏保护。断言原事务返回
+`ErrTxnGuardConflict`，不发布用户 index/object/event，不推进可见 revision，
+不修改 committed revision/quota，并保留竞争者的已提交 index。
+这是物理索引层的确定性冲突注入，不是完整 Kubernetes 并发验收。
+
+本机 `go test -race ./build ./pkg/storage/tikv -count=1 -timeout=8m`
+通过（2.407s／6.971s），`go vet ./pkg/storage/tikv` 通过。独立本机容器
+`bash hack/backend-integration/run-real-local.sh --allow-local-containers --race`
+全部通过，新增真实用例固定 2PC、async commit 关闭，执行器已纳入该用例。
+日志 `/tmp/kubebrain-real-protocol.ZHVhw78PTK/`，最终
+`LOCAL_PROTOCOL_END result=0 cleanup_failed=0`；本轮临时容器、网络和编译
+二进制已清理。用 Go overlay 加载 `63db41cb^` 的旧 `txn_apply.go`
+运行相同客户端回归，三种状态均在“预期 guard conflict、实际 nil”处失败，
+确认测试能检出旧缺陷。该验证未部署专用集群，未重跑 6000/900s 验收。
+
 网络恢复后的 CI-only 核验（2026-09-14）：网络恢复后继续追踪
 `dbaas` 分支。提交 `4a6b7a5e` 的 Rollout probe regression
 `34801087499` 失败于 `TestRestoredAuthOfficialConcurrentStreamRefresh`：
