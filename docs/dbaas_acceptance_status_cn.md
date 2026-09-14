@@ -30,6 +30,19 @@ Rollout probe regression `34798433112` 成功，contracts/vet 与 full race
 `ghcr.io/fivetime/kubebrain@sha256:28e970ed2e0bd3140e1d5016d2b1203e758db1e6fe232ae0d96f5d6a166de1d8`，
 `dbaas` tag 已确认指向该 digest。本段为 docs-only 记录，不改变已验证代码树。
 
+普通 Put native 路径小幅清理（2026-09-14）：确认 2026-09-12 的临时
+1PC 实验已经完整执行并恢复，且未通过原 6000/900s 门限，因此不重复同一
+实验。当前产品改动只在无租约、无 PrevKv、无 IgnoreValue/IgnoreLease 的
+native TxnApply Put 路径设置 `DiscardPrevValue=true`，因为该公共 Put
+响应不会观察旧值；这不减少 TiKV 读取／提交轮次，也不代表升级验收通过。
+路由测试新增断言锁定该标志。验证：目标服务包 race 三轮通过；目标后端
+race 三轮通过；`BenchmarkBackendWriteStorageCalls/Quota2GiB/TxnApply`
+100 次运行仍显示每次 2 次 storage Get、2 次 BatchGet、4 次 atomic Get、
+1 次 commit，说明该改动只是保留对象清理，不是 I/O 轮次优化；相关后端
+race 三轮、`go vet ./pkg/server/etcd ./pkg/backend`、`git diff --check`
+均通过；完整 `go test -race ./pkg/server/etcd -count=1 -timeout=12m`
+通过（326.160s）。本轮未部署测试集群，未修改 1PC/async commit 状态。
+
 真实 Raft follower 应用窗口复现（2026-09-14）：本机三成员官方恢复集群
 中，只在一个 follower 应用 Authenticate 前用测试日志 hook 暂停，另外两
 成员继续完成真实 Raft 提交与认证响应。观察到 token_index=10、该条

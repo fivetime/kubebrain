@@ -2001,7 +2001,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		// Preserve authoritative zero-lease provenance for legacy envelopes.
 		var responses []*etcdserverpb.ResponseOp
 		responses, _, _, err = s.backend.TxnApply(ctx, []backend.TxnWriteOp{{
-			Key: put.Key, Value: put.Value, PrevLeaseKnown: true, PrevLease: 0,
+			Key: put.Key, Value: put.Value, PrevLeaseKnown: true, PrevLease: 0, DiscardPrevValue: true,
 		}}, nil, []bool{false})
 		if err == nil {
 			if len(responses) != 1 || responses[0].GetResponsePut() == nil {

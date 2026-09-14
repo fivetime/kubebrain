@@ -83,6 +83,7 @@ func TestPlainPutUsesNativeTransactionOnlyWithoutPreviousStateOptions(t *testing
 				require.Len(t, recorder.ops, 1)
 				require.True(t, recorder.ops[0].PrevLeaseKnown)
 				require.Zero(t, recorder.ops[0].PrevLease)
+				require.True(t, recorder.ops[0].DiscardPrevValue)
 			} else {
 				require.Zero(t, recorder.txns)
 				require.Equal(t, 1, recorder.puts)
