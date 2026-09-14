@@ -172,6 +172,35 @@ func TestTxnAtomicPrefetchPreservesComparisonsAndMutations(t *testing.T) {
 	}
 }
 
+func TestTxnAtomicStagesGuardMutationsForTikVConflictDetection(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	presentGuardKey := b.coder.EncodeRevisionKey([]byte("present-guard"))
+	absentGuardKey := b.coder.EncodeRevisionKey([]byte("absent-guard"))
+	presentGuardValue := []byte("revision-bytes")
+	corruptGuard := corruptAlarmCommitGuard{key: []byte("corrupt"), exists: true, expected: []byte("clean")}
+	recorder := &atomicPrefetchRecorder{values: map[string][]byte{
+		string(b.ks.EncodeInternalKey(corruptGuard.key)): corruptGuard.expected,
+		string(presentGuardKey):                          presentGuardValue,
+	}}
+	preps := []txnPrep{{
+		op:        TxnWriteOp{Key: []byte("written-key"), Value: []byte("value")},
+		effective: true,
+		create:    true,
+	}}
+	guardPreps := []txnGuardPrep{
+		{key: presentGuardKey, rvBytes: presentGuardValue},
+		{key: absentGuardKey, missing: true},
+	}
+
+	require.NoError(t, b.stageTxnAtomic(ctx, recorder, preps, guardPreps, 10, nil, 0, corruptGuard))
+	require.Contains(t, recorder.writes, "put:"+string(presentGuardKey)+":"+string(presentGuardValue))
+	require.Contains(t, recorder.writes, "put:"+string(absentGuardKey)+":"+string([]byte{0}))
+	require.Contains(t, recorder.writes, "del:"+string(absentGuardKey))
+	require.Equal(t, presentGuardValue, recorder.values[string(presentGuardKey)])
+	_, absentPresent := recorder.values[string(absentGuardKey)]
+	require.False(t, absentPresent, "absent guard must remain absent after the conflict-protecting put/delete")
+}
+
 func TestTxnAtomicPrefetchErrorStopsBeforeReadsAndWrites(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)
 	want := errors.New("prefetch failed")

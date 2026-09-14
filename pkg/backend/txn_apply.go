@@ -317,6 +317,21 @@ func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, p
 		if err := atomicExpect(ctx, txn, gp.key, gp.rvBytes, gp.missing); err != nil {
 			return err
 		}
+		// TiKV optimistic transactions do not make an arbitrary read key part of
+		// commit conflict detection. Stage an idempotent mutation for every
+		// compare-only guard, matching the internal-only path above: present
+		// guards rewrite the same revision-index bytes; absent guards create and
+		// delete a legacy control value so the key remains absent after commit.
+		if gp.missing {
+			if err := txn.Put(gp.key, []byte{0}, 0); err != nil {
+				return err
+			}
+			if err := txn.Del(gp.key); err != nil {
+				return err
+			}
+		} else if err := txn.Put(gp.key, gp.rvBytes, 0); err != nil {
+			return err
+		}
 	}
 
 	eventTotal := uint32(txnEffectiveUserWriteCount(preps))
