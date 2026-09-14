@@ -21,7 +21,14 @@ KubeBrain 数据面、不修改官方依赖、不部署测试集群。
 与 self-hosted CI 同款的 `go test -race -count=1 -timeout=20m -v
 ./hack/production/cmd/rollout-availability-probe` 通过（339.004s）。其中
 client-only TLS 恢复已启用 auth 的子用例通过（19.13s），此前失败的 TLS
-权限矩阵也在 JWT 验证路径下通过。远端 CI 仍需按 push 后实际任务单独核验。
+权限矩阵也在 JWT 验证路径下通过。
+
+远端 CI 核验（2026-09-14）：代码提交 `d16c4edb34a38` 的
+Rollout probe regression `34798433112` 成功，contracts/vet 与 full race
+均绿（job 9m21s，race step 02:15:54-02:22:17 UTC）。Build & Push image
+`34798433113` 成功（30m39s），验证并推广的 DBaaS 镜像为
+`ghcr.io/fivetime/kubebrain@sha256:28e970ed2e0bd3140e1d5016d2b1203e758db1e6fe232ae0d96f5d6a166de1d8`，
+`dbaas` tag 已确认指向该 digest。本段为 docs-only 记录，不改变已验证代码树。
 
 真实 Raft follower 应用窗口复现（2026-09-14）：本机三成员官方恢复集群
 中，只在一个 follower 应用 Authenticate 前用测试日志 hook 暂停，另外两
