@@ -30,8 +30,10 @@ func TestRestoredAuthTokensAcrossAllMemberPairs(t *testing.T) {
 	testRestoredAuthMemberClients(t, false, false)
 }
 
-// Complement raw member-edge coverage with the official client's shared token
-// refresh path. Success here does not reproduce or resolve the deployed failure.
+// Complement raw member-edge coverage with the production restore verifier's
+// JWT-backed official client path. Simple-token's multi-member apply window is
+// locked by TestRestoredAuthDelayedFollowerApplyWindow instead of making this
+// concurrent stream refresh check flaky.
 func TestRestoredAuthOfficialConcurrentStreamRefresh(t *testing.T) {
 	testRestoredAuthMemberClients(t, true, false)
 }
@@ -73,10 +75,13 @@ func testRestoredAuthMemberClients(t *testing.T, officialRefresh, delayedApply b
 	require.NoError(t, artifact.Sync())
 	require.NoError(t, artifact.Close())
 	verifier := func(ctx context.Context, cfg restoredSnapshotConfig, _ []streamProbeExpectation, _ int64) error {
-		// These tests characterize upstream simple-token behavior. The
-		// production restore verifier uses JWT to avoid etcd's known
-		// multi-member simple-token apply window.
-		cfg.authToken = "simple"
+		// The raw cross-member tests characterize upstream simple-token
+		// behavior. The production restore verifier uses JWT to avoid etcd's
+		// known multi-member simple-token apply window, so keep the official
+		// concurrent refresh check on the default restored Snapshot JWT token.
+		if !officialRefresh {
+			cfg.authToken = "simple"
+		}
 		servers := make([]*embed.Etcd, len(cfg.members))
 		defer func() {
 			for _, server := range servers {
