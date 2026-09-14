@@ -35,7 +35,40 @@ uncertain-write resolver；超额告警仍在 Atomic 返回后单独持久化。
 上述较早的 77.981s 结果对应错误返回修正前的候选；该候选服务层全量 race
 通过（323.996s）。最终代码另行执行服务层 quota／NoSpace 定向 race 通过
 （2.952s），backend／TiKV storage／etcd 服务层 vet 及 diff 检查通过。
-最终错误返回修正没有重新执行服务层全量，不将定向结果表述成全量结果。
+最终提交 `909e8de3` 随后补跑服务层全量 race，通过（321.453s，退出码 0）；
+远端 backend CI `34885866331` 随后通过：backend 全量 race 73.648s，
+真实协议普通／race 两轮均 `result=0 cleanup_failed=0`，PD／TiKV 启动中断
+清理验证均通过（退出 143、`resources_absent=true`）。探针 CI `34885866191`
+全量 race 通过（385.671s），历史失败的 abrupt fixture cleanup 用例本次
+通过（2.70s）。镜像 CI `34885866353` 随后也完成并成功，本机独立镜像核验
+已通过（`result=0 cleanup_failed=0`），实际 amd64 版本、源码与 fork 依赖
+一致；镜像索引为 `sha256:23657b61c872feeddccde5a9f84f5b6dc7132ca393b1824f3a58c145f651eb06`。
+只读部署预检通过（`cluster_mutations=0`），随后启动本次预拉取／滚动验收；
+本轮随后因未在原 900 秒完成窗口内完成 6000 次操作而失败（退出码 1），
+默认 2PC 未变。自动回滚至原镜像，generation=56，三个副本全部 Ready；
+测试数据与预拉取资源清理均确认成功，诊断采样进程已结束。
+本轮预拉取在三个 worker 均成功，不再将网络拉取作为本次失败原因。
+同一候选 Pod／容器身份的指标样本 0 至 13 覆盖 4549 次成功 Put，后端
+平均约 53.1ms，其中提交约 44.9ms；嵌套阶段不可相加，亦非分位数或受控
+A/B 性能结论。减少配额准备读取尚不足以关闭原完成时限缺口。
+提交调度源码复查：实际依赖的 client-go `2pc.go` 已对多批 Prewrite 使用
+并发 batch executor，不能把当前两组 Prewrite 简化归因为串行发送；普通
+2PC 仍先同步确认 primary，再后台提交 secondary，此后台路径不等于启用
+experimental async commit。后续需分析有效的写入阶段／锁处理指标，而非
+跳过 primary 持久确认。完整窗口和阶段均值保存在上述证据目录的
+`latency-analysis.md`。
+同窗口 primary 明细有效 2607 条、无效 1942 条（42.69%），有效子集平均
+RPC 16.83ms／persist 12.35ms／Raft sync 7.85ms，不能外推全部写入。
+全局 ResolveLock 9673 次、CheckTxnStatus 9738 次，但包含后台读取；全部
+已暴露 SDK backoff 增量为零亦不能证明没有传输重试。当前生产 RPC 诊断仅
+覆盖 Prewrite／Commit，后续需先区分前台锁处理与后台流量，不能直接把全局
+锁解析耗时计入 Put。
+
+最终提交 `909e8de3` 的本机发布执行器回归亦通过：构建 race、分片完整性
+检查及全部 724 项发布脚本测试；四个分片分别为 175／199／184／166 项，
+耗时 481.085s／534.032s／394.608s／763.435s，最终退出码 0。证据目录
+`/root/.local/state/kubebrain/quota-commit-release.iQNOaFnc/`。
+这属于发布脚本回归，不是测试集群 6000 次／900 秒滚动升级验收。
 
 单键提交路径重新测量（2026-09-14，源码 `54cf71f3`）：运行
 `go test ./pkg/backend -run '^$' -bench '^BenchmarkBackendWriteStorageCalls/Quota2GiB/TxnApply$' -benchtime=100x -count=1`
