@@ -5,6 +5,18 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+认证故障归属复核（2026-09-14）：以下证据不得混为同一个产品缺陷。
+历史恢复权限矩阵的 invalid-token 发生于消费 Snapshot 的官方 embedded etcd；
+`TestRestoredAuthDelayedFollowerApplyWindow` 显式使用上游 `simple` 并延迟
+follower 应用，复现其 token 索引窗口。当前 `stream_integrity.go` 的恢复验证
+在有 auth 期望时默认生成共享 HS256 JWT 配置，相关完整 CI 已有通过记录（见下文）；
+机制复现仍不能证明此前每次自然失败都由同一窗口造成。
+KubeBrain 自身 `auth_token.go` 使用共享签名密钥和用户 generation，或显式 JWT
+provider，不使用上述上游 Raft simple-token 索引分配路径；不能将上游窗口直接
+认定为 KubeBrain token 实现缺陷。近期 `34875212575` 则是另一项内嵌 etcd
+夹具安装前 AuthStatus 的 deadline exceeded，不是 invalid-token，也不是新增
+KubeBrain 数据面失败证据。三类证据分开跟踪，仍保留正式恢复／滚动验收要求。
+
 DBaaS 分支 CI 覆盖补齐（2026-09-14，工作流修复已远端验证）：发现
 `backend-integration.yml` 虽由 backend 文件变更触发，但此前只运行 build、
 TiKV 适配器和真实协议夹具，不运行 `pkg/backend` 的测试文件；`ci.yml` 的
