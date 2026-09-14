@@ -32,7 +32,15 @@ func (s *previousConflictStore) BatchGet(ctx context.Context, keys [][]byte) (ma
 			}
 		}
 	}
-	return s.KvStorage.(storage.BatchGetter).BatchGet(ctx, keys)
+	values, err := s.KvStorage.(storage.BatchGetter).BatchGet(ctx, keys)
+	if err == nil && ctx.Value(previousConflictContext{}) == s {
+		if _, found := values[string(s.target)]; found && s.armed.CompareAndSwap(true, false) {
+			if err := s.concurrentWrite(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return values, err
 }
 
 func (s *previousConflictStore) Get(ctx context.Context, key []byte) ([]byte, error) {
@@ -51,10 +59,14 @@ func (s *previousConflictStore) Get(ctx context.Context, key []byte) ([]byte, er
 }
 
 func TestTxnPreviousObjectReadRevisionConflict(t *testing.T) {
-	for _, deleting := range []bool{false, true} {
+	for _, scenario := range []struct{ deleting, multi bool }{{false, false}, {true, false}, {false, true}, {true, true}} {
+		deleting := scenario.deleting
 		name := "update"
 		if deleting {
 			name = "delete"
+		}
+		if scenario.multi {
+			name += "-batch-previous"
 		}
 		t.Run(name, func(t *testing.T) {
 			raw := memkv.NewKvStorage()
@@ -66,7 +78,11 @@ func TestTxnPreviousObjectReadRevisionConflict(t *testing.T) {
 			other := NewBackend(raw, cfg, metric).(*backend)
 			first.SetCurrentRevision(100)
 			key := []byte("/previous-conflict/key")
-			_, seedRev, err := first.TxnApply(context.Background(), []TxnWriteOp{{Key: key, Value: []byte("seed")}}, nil)
+			seedOps := []TxnWriteOp{{Key: key, Value: []byte("seed")}}
+			if scenario.multi {
+				seedOps = append(seedOps, TxnWriteOp{Key: []byte("/previous-conflict/other"), Value: []byte("other")})
+			}
+			_, seedRev, err := first.TxnApply(context.Background(), seedOps, nil)
 			require.NoError(t, err)
 			other.SetCurrentRevision(seedRev)
 			store.target = first.coder.EncodeObjectKey(key, seedRev)
@@ -88,9 +104,13 @@ func TestTxnPreviousObjectReadRevisionConflict(t *testing.T) {
 			}
 			store.armed.Store(true)
 			ctx := context.WithValue(context.Background(), previousConflictContext{}, store)
-			result, revision, err := first.TxnApply(ctx, []TxnWriteOp{{Key: key, Value: []byte("final"), Delete: deleting}}, nil)
+			ops := []TxnWriteOp{{Key: key, Value: []byte("final"), Delete: deleting}}
+			if scenario.multi {
+				ops = append(ops, TxnWriteOp{Key: []byte("/previous-conflict/other"), Value: []byte("other-final")})
+			}
+			result, revision, err := first.TxnApply(ctx, ops, nil)
 			require.NoError(t, err)
-			require.Len(t, result, 1)
+			require.Len(t, result, len(ops))
 			require.False(t, store.armed.Load())
 			require.Equal(t, seedRev+1, competingRevision)
 			require.Equal(t, competingRevision+1, revision)

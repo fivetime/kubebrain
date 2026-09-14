@@ -5,6 +5,28 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+多键旧对象批读候选（2026-09-14，尚未部署）：在已有 index/alarm 快照之后，
+仅对至少两个用户键且全部为有效 live index 的事务合并旧版本读取。
+单键、固定时间戳、无 BatchGetter、缺失／损坏／墓碑 index 保留原路径；
+批读缺项继续 point/historical lookup。提交仍比较全部 index，旧值仍验证元数据
+及损坏见证。实际竞争写入测试覆盖更新／删除的双键事务，要求恰一次重新准备、
+返回竞争写入后的 PrevValue；异常批读不得发布任何写入或分配 revision。
+
+这会提前读取本次事务全部旧值，峰值内存可能高于逐键读取；消费后从独占 map
+删除引用只缩短保留时间，不代表峰值不变。批读失败直接返回存储错误、不静默
+重试或降级，因此该错误可能早于逐键准备中的后续元数据错误返回；未成功读取
+和见证的损坏不能据此宣称已检测。成功读取的损坏仍走独立见证和 CORRUPT。
+该优化不是单键 6000 次／900 秒验收超时的解决证据，也未改变 2PC 默认协议。
+
+最终定向 race 三轮通过（4.011s），包含批读缺项回退及消费后释放引用。
+最终 backend／TiKV storage 完整 race 通过（77.228s／7.364s），
+backend／TiKV storage／etcd server 的 `go vet` 及 `git diff --check` 通过。
+完整服务层 race 通过（317.281s，该次构建早于释放引用的小改动）。
+隔离本机真实 TiKV/PD 的 17 项 race 协议用例全部通过，包括多键并发、
+提交 compare 冲突和单键 RPC 次数断言；`cleanup_failed=0`，测试容器、网络、
+编译二进制均已清理，证据 `/tmp/kubebrain-real-protocol.ZiWpv2Xp5J/`。
+真实协议测试不替代远端滚动升级、故障域或长期 soak 验收。
+
 事务准备优化边界回归（2026-09-14）：旧对象读取仍承担 inline 元数据验证、
 损坏见证及必要的配额／旧格式信息，不能因普通 Put 不返回 PrevKv 而跳过。
 `TestTxnApplyArmsCorruptForWitnessedPreviousObject` 新增与 native unleased

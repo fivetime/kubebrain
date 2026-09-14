@@ -494,6 +494,10 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	if len(members) != 0 {
 		return nil, baseRevision, false, ErrCorruptAlarmActive
 	}
+	previousObjects, previousErr := b.prefetchTxnPreviousObjects(ctx, ops, prefetched)
+	if previousErr != nil {
+		return nil, baseRevision, false, previousErr
+	}
 
 	// Phase 1: read each key's current revision-key state (and, for
 	// update/delete, its previous value + metadata).
@@ -555,7 +559,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			// deleting an absent or already-tombstoned key is a no-op
 			p.effective = !p.create
 			if p.effective {
-				val, verr := b.readTxnPreviousObject(ctx, op.Key, p.curRev)
+				val, verr := b.readPrefetchedTxnPreviousObject(ctx, op.Key, p.curRev, previousObjects)
 				if verr != nil {
 					return nil, 0, false, verr
 				}
@@ -597,7 +601,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		} else {
 			p.effective = true
 			if !p.create {
-				val, verr := b.readTxnPreviousObject(ctx, op.Key, p.curRev)
+				val, verr := b.readPrefetchedTxnPreviousObject(ctx, op.Key, p.curRev, previousObjects)
 				if verr != nil {
 					return nil, 0, false, verr
 				}
