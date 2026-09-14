@@ -35,6 +35,7 @@ import (
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	etcdutlsnapshot "go.etcd.io/etcd/etcdutl/v3/snapshot"
+	"go.etcd.io/etcd/server/v3/auth"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -864,6 +865,34 @@ func TestRestoredSnapshotQuotaBytes(t *testing.T) {
 	cfg.quotaBackendBytes = 3 * 1024 * 1024 * 1024
 	embedCfg := newRestoredSnapshotEmbedConfig(cfg, cfg.members[0], cfg.initialCluster)
 	require.Equal(t, cfg.quotaBackendBytes, embedCfg.QuotaBackendBytes)
+}
+
+func TestRestoredSnapshotAuthUsesJWTProvider(t *testing.T) {
+	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, &restoredSnapshotAuthExpectation{})
+	require.NoError(t, err)
+	require.Contains(t, cfg.authToken, "jwt,")
+	require.Contains(t, cfg.authToken, "sign-method=HS256")
+	require.Contains(t, cfg.authToken, "ttl="+restoredSnapshotVerificationTimeout.String())
+	var keyPath string
+	for _, option := range strings.Split(cfg.authToken, ",") {
+		if strings.HasPrefix(option, "priv-key=") {
+			keyPath = strings.TrimPrefix(option, "priv-key=")
+		}
+	}
+	require.NotEmpty(t, keyPath)
+	info, err := os.Stat(keyPath)
+	require.NoError(t, err)
+	require.True(t, info.Mode().IsRegular())
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	require.Equal(t, int64(restoredSnapshotJWTSecretBytes), info.Size())
+	_, err = auth.NewTokenProvider(zap.NewNop(), cfg.authToken, func(uint64) <-chan struct{} {
+		ready := make(chan struct{})
+		close(ready)
+		return ready
+	}, time.Minute)
+	require.NoError(t, err)
+	embedCfg := newRestoredSnapshotEmbedConfig(cfg, cfg.members[0], cfg.initialCluster)
+	require.Equal(t, cfg.authToken, embedCfg.AuthToken)
 }
 
 func TestRestoredStatusRevisionRequirement(t *testing.T) {

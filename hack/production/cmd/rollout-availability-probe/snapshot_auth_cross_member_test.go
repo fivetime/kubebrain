@@ -27,16 +27,20 @@ import (
 // Raw generated RPC clients have no etcd-client token refresh or retry wrapper.
 // This local test does not claim to reproduce the intermittent deployed failure.
 func TestRestoredAuthTokensAcrossAllMemberPairs(t *testing.T) {
-	testRestoredAuthMemberClients(t, false)
+	testRestoredAuthMemberClients(t, false, false)
 }
 
 // Complement raw member-edge coverage with the official client's shared token
 // refresh path. Success here does not reproduce or resolve the deployed failure.
 func TestRestoredAuthOfficialConcurrentStreamRefresh(t *testing.T) {
-	testRestoredAuthMemberClients(t, true)
+	testRestoredAuthMemberClients(t, true, false)
 }
 
-func testRestoredAuthMemberClients(t *testing.T, officialRefresh bool) {
+func TestRestoredAuthDelayedFollowerApplyWindow(t *testing.T) {
+	testRestoredAuthMemberClients(t, false, true)
+}
+
+func testRestoredAuthMemberClients(t *testing.T, officialRefresh, delayedApply bool) {
 	t.Helper()
 	const prefix = "/probe/auth-cross-member/"
 	fixture := newSnapshotAuthFixture(prefix)
@@ -69,6 +73,10 @@ func testRestoredAuthMemberClients(t *testing.T, officialRefresh bool) {
 	require.NoError(t, artifact.Sync())
 	require.NoError(t, artifact.Close())
 	verifier := func(ctx context.Context, cfg restoredSnapshotConfig, _ []streamProbeExpectation, _ int64) error {
+		// These tests characterize upstream simple-token behavior. The
+		// production restore verifier uses JWT to avoid etcd's known
+		// multi-member simple-token apply window.
+		cfg.authToken = "simple"
 		servers := make([]*embed.Etcd, len(cfg.members))
 		defer func() {
 			for _, server := range servers {
@@ -120,6 +128,10 @@ func testRestoredAuthMemberClients(t *testing.T, officialRefresh bool) {
 				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig.Clone())),
 				grpc.WithAuthority(cfg.localTLS.server.ServerName))
 			require.NoError(t, err)
+		}
+		if delayedApply {
+			verifyRestoredAuthDelayedApply(t, ctx, adminConfig, servers, connections, indexes, fixture)
+			return nil
 		}
 		watchEdges, leaseEdges := 0, 0
 		for source, authConn := range connections {

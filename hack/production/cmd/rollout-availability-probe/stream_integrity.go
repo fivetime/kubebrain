@@ -16,6 +16,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -71,6 +72,7 @@ const (
 	// verification instead of turning a valid artifact into a false NOSPACE RED.
 	restoredSnapshotDefaultQuotaBytes = int64(2 * 1024 * 1024 * 1024)
 	restoredSnapshotMinQuotaHeadroom  = int64(64 * 1024 * 1024)
+	restoredSnapshotJWTSecretBytes    = 32
 )
 
 type streamProbeExpectation struct {
@@ -306,6 +308,7 @@ type restoredSnapshotConfig struct {
 	tls                 restoredSnapshotTLSConfig
 	localTLS            *restoredSnapshotLocalTLS
 	auth                *restoredSnapshotAuthExpectation
+	authToken           string
 }
 
 type restoredSnapshotMemberConfig struct {
@@ -352,6 +355,9 @@ func (cfg restoredSnapshotConfig) validate() error {
 		cfg.localTLS.server.ServerName != "localhost" || cfg.localTLS.server.TrustedCAFile == "" || !cfg.localTLS.server.ClientCertAuth ||
 		cfg.localTLS.passwordClient.CertFile == "" || cfg.localTLS.passwordClient.KeyFile == "") {
 		return errors.New("restored Snapshot TLS requires an independent loopback server identity and source client authentication")
+	}
+	if cfg.auth != nil && cfg.authToken == "" {
+		return errors.New("restored Snapshot auth verification requires an explicit auth token provider")
 	}
 	return nil
 }
@@ -573,6 +579,11 @@ func newRestoredSnapshotConfig(restoreRoot string, memberCount int, tlsCfg resto
 		members: members, initialCluster: strings.Join(initialCluster, ","), initialClusterToken: restoreName,
 		tls: tlsCfg, auth: auth,
 	}
+	authToken, err := newRestoredSnapshotAuthToken(restoreRoot, auth)
+	if err != nil {
+		return restoredSnapshotConfig{}, err
+	}
+	cfg.authToken = authToken
 	if tlsCfg.enabled() {
 		serverTLS, err := newRestoredSnapshotServerTLS(restoreRoot, tlsCfg.caFile)
 		if err != nil {
@@ -584,6 +595,21 @@ func newRestoredSnapshotConfig(restoreRoot string, memberCount int, tlsCfg resto
 		return restoredSnapshotConfig{}, err
 	}
 	return cfg, nil
+}
+
+func newRestoredSnapshotAuthToken(restoreRoot string, auth *restoredSnapshotAuthExpectation) (string, error) {
+	if auth == nil {
+		return "", nil
+	}
+	secret := make([]byte, restoredSnapshotJWTSecretBytes)
+	if _, err := rand.Read(secret); err != nil {
+		return "", fmt.Errorf("generate restored Snapshot JWT secret: %w", err)
+	}
+	keyPath := filepath.Join(restoreRoot, "auth-token-hs256.key")
+	if err := os.WriteFile(keyPath, secret, 0o600); err != nil {
+		return "", fmt.Errorf("write restored Snapshot JWT secret: %w", err)
+	}
+	return fmt.Sprintf("jwt,priv-key=%s,sign-method=HS256,ttl=%s", keyPath, restoredSnapshotVerificationTimeout), nil
 }
 
 func newRestoredSnapshotEmbedConfig(cfg restoredSnapshotConfig, member restoredSnapshotMemberConfig,
@@ -601,6 +627,9 @@ func newRestoredSnapshotEmbedConfig(cfg restoredSnapshotConfig, member restoredS
 	embedCfg.InitialClusterToken = cfg.initialClusterToken
 	embedCfg.QuotaBackendBytes = cfg.quotaBackendBytes
 	embedCfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
+	if cfg.authToken != "" {
+		embedCfg.AuthToken = cfg.authToken
+	}
 	if cfg.tls.enabled() {
 		embedCfg.ClientTLSInfo = cfg.localTLS.server
 	}

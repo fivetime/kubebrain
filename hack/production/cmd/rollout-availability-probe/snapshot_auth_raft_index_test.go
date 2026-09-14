@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"testing"
 
@@ -16,7 +17,17 @@ import (
 type restoredAuthRaftIndexCore struct {
 	mu                  sync.Mutex
 	entry, authenticate uint64
+	gate                *restoredAuthApplyGate
 }
+
+type restoredAuthApplyGate struct {
+	ctx     context.Context
+	reached chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (g *restoredAuthApplyGate) open() { g.once.Do(func() { close(g.release) }) }
 
 func (c *restoredAuthRaftIndexCore) Enabled(zapcore.Level) bool        { return true }
 func (c *restoredAuthRaftIndexCore) With([]zapcore.Field) zapcore.Core { return c }
@@ -29,7 +40,7 @@ func (c *restoredAuthRaftIndexCore) Check(e zapcore.Entry, checked *zapcore.Chec
 }
 func (c *restoredAuthRaftIndexCore) Write(e zapcore.Entry, fields []zapcore.Field) error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	var gate *restoredAuthApplyGate
 	if e.Message == "Applying entry" {
 		c.entry = 0 // Missing/changed upstream fields must not reuse a stale index.
 		for _, field := range fields {
@@ -42,8 +53,17 @@ func (c *restoredAuthRaftIndexCore) Write(e zapcore.Entry, fields []zapcore.Fiel
 			if field.Key == "raftReq" {
 				if request, ok := field.Interface.(*etcdserverpb.InternalRaftRequest); ok && request != nil && request.Authenticate != nil {
 					c.authenticate = c.entry
+					gate, c.gate = c.gate, nil
 				}
 			}
+		}
+	}
+	c.mu.Unlock()
+	if gate != nil {
+		close(gate.reached)
+		select {
+		case <-gate.release:
+		case <-gate.ctx.Done():
 		}
 	}
 	return nil

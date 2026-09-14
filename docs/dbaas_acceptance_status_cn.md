@@ -5,6 +5,41 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+恢复验证 auth token 隔离修复（2026-09-14）：官方 etcd issue
+[#18437](https://github.com/etcd-io/etcd/issues/18437) 已由维护者确认
+simple token 在多成员场景下会因 API 层 token 校验不受线性屏障保护而出现
+`invalid auth token`，simple token 不推荐生产使用，生产建议 JWT。为避免
+KubeBrain Snapshot 兼容性验证继续随机踩该已知上游窗口，官方恢复验证器在
+存在 auth 期望时改为为临时 restore 目录生成 0600、32 字节 HS256 secret，
+三成员 embedded etcd 共用 `jwt,sign-method=HS256`；验证结束随 restore
+目录清理。simple-token 相关测试显式固定 `simple`，继续锁定上游行为差异，
+不把它们作为产品通过条件。该改动只影响本地/CI 的官方恢复验证服务器，不修改
+KubeBrain 数据面、不修改官方依赖、不部署测试集群。
+
+本轮本机门禁（2026-09-14）：`go test -race -count=1 ./build` 通过
+（2.621s）；`go vet ./hack/...` 通过；探针包非 race 全量通过（250.666s）；
+与 self-hosted CI 同款的 `go test -race -count=1 -timeout=20m -v
+./hack/production/cmd/rollout-availability-probe` 通过（339.004s）。其中
+client-only TLS 恢复已启用 auth 的子用例通过（19.13s），此前失败的 TLS
+权限矩阵也在 JWT 验证路径下通过。远端 CI 仍需按 push 后实际任务单独核验。
+
+真实 Raft follower 应用窗口复现（2026-09-14）：本机三成员官方恢复集群
+中，只在一个 follower 应用 Authenticate 前用测试日志 hook 暂停，另外两
+成员继续完成真实 Raft 提交与认证响应。观察到 token_index=10、该条
+entry_index=11；目标已应用到 token 所指旧索引，却尚未分配该次 token。
+同一 token 的原始 Watch 和 LeaseKeepAlive 均在上下文未超时时返回
+invalid auth token；释放暂停并等待应用后，两者均成功，不重新认证、不加
+应用层重试。首轮 race 通过（9.463s），5 轮 race 通过（42.095s），且纳入
+探针全包 race 后通过。暂停有 8 秒上下文上限，
+且断言失败也先释放再清理成员。这构成该机制的真实 Raft 端到端复现，
+但未直接捕获此前自然 CI 故障的暂停窗口，也未修改官方依赖或产品逻辑。
+证据：`/root/.local/state/kubebrain/auth-delayed-follower-race.log`。
+
+第二轮探针 CI `34743500974`（源码 `f61e989d`）仍失败：TLS 权限矩阵的
+exact-reader Watch 和 client-only TLS 恢复的 union 用户 KeepAliveOnce
+再次返回 invalid auth token，上下文均有效；不以新增诊断通过覆盖原失败。
+日志：`/root/.local/state/kubebrain/probe-ci-34743500974-failed.log`。
+
 真实 Raft 认证索引观测（2026-09-13）：在既有三成员恢复测试内，增加只
 丢弃不编码日志字段的测试 core，将顺序 Authenticate 与源成员实际应用
 日志索引关联；只保存数字，不保存请求指针、不格式化字段、不输出 token。
