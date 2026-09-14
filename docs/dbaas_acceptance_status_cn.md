@@ -18,8 +18,37 @@
 总体 30 秒预算不变。该夹具不测试密码哈希成本；产品认证设置及独立 Snapshot
 认证测试配置不变，更未修改远端 30 秒门限或 6000 次／900 秒验收要求。
 调整后两项恢复用例各五轮 race 通过（合计 11.050s），vet 和 diff 检查通过；
-完整探针 race 通过（364.592s）；新源码远端 CI 尚待验证，不能宣称原 CI
-失败已经解决。
+完整探针 race 通过（364.592s）。后续精确源码
+`a61fdf5f4b8c26cd88b60fffad65cf80ad217167` 的
+[探针 CI 34864657910](https://github.com/fivetime/kubebrain/actions/runs/34864657910)
+已成功：原失败用例通过（1.78s），完整探针 race 通过（333.280s）。
+这验证了测试夹具调整在本轮 CI 上通过，不证明历史超时根因或生产性能已修复。
+该提交相对 `d0e5a8f6` 仅变更夹具测试及本页，产品／后端源码不变；
+未命中 backend workflow 的 push paths，因此不宣称本提交新跑了一轮协议 CI。
+16:31 UTC 后复核，[镜像 CI 34864657854](https://github.com/fivetime/kubebrain/actions/runs/34864657854)
+已成功完成，包含测试镜像验证和发布到 `dbaas`。对应上述精确源码的不可变索引为
+`ghcr.io/fivetime/kubebrain@sha256:10d3a590e8e15d23538a5eb9909d419d07ad6a87886782a2b6bf63b14209a9a7`。
+后续本机独立核验通过：直接读取索引并核对其摘要、双平台映射及 `dbaas` 发布标签，
+实际拉取 amd64 镜像，以无网络／只读／无附加 capability 方式运行版本命令，
+确认完整源码 SHA、Go 版本、非 root 用户、OCI 标签及 fork 客户端模块版本；
+提取二进制检查已有诊断字段。证据位于
+`/root/.local/state/kubebrain/multi-previous-release.F1fDcYju/image-audit.CJ7qgPUEXH9R/`，
+`PUBLISHED_IMAGE_IDENTITY_VERIFIED`，`cleanup_failed=0`；本次提取的两个二进制及
+检查容器已清理，日志／校验和保留。本机未执行 arm64 二进制。
+worker 隔离预拉取和新候选部署尚未完成；镜像身份核验不证明
+6000 次／900 秒验收已通过，也不证明新多键优化在远端已生效。
+
+网络重试范围（2026-09-14 16:16 UTC）：本机 `ghcr.io` 解析得到
+`20.27.177.117`，HTTPS HEAD `/v2/` 返回 405；仅证明本机 DNS／HTTPS 可达，
+不证明 registry 鉴权或完整镜像拉取。测试集群 API 可达，KubeBrain、PD、TiKV
+各 3/3 Ready；PD/TiKV 各容器 restart 为 1，KubeBrain 为 0，不能沿用旧快照
+的全部 restart 0 结论。三个 worker IP 的 SSH 检查均在 host key verification
+阶段退出，未执行远端 DNS／拉取命令，也未覆盖主机密钥或修改集群。
+worker 预拉取恢复仍须以精确候选的新鲜隔离预拉取回执证明。
+SSH 检查失败不是预拉取流程的前置阻塞：仓库内 `image-prepull` 通过显式
+kubeconfig/context 访问 Kubernetes API，在目标节点创建隔离 holder Job，
+不依赖 worker SSH。下一次候选取得独立 OCI 核验后，沿用该路径验证实际
+CRI 拉取与运行时摘要；不为诊断网络而跳过主机密钥检查或复用旧 attempt。
 
 旧对象预取规模保护（2026-09-14，尚未部署）：可选预取最多覆盖 16 个用户键，
 第 17 个用户键使本次预取在发出 BatchGet 之前回退到原有逐键准备路径，
