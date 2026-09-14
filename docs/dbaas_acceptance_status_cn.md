@@ -5,6 +5,13 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+配额读取合并的并发边界（2026-09-14）：新增回归在实际 index 准备快照返回后、
+后续 quota admission 之前，直接提交 NOSPACE 告警或 dirty tracking，保持 usage 不变。
+两条路径均须拒绝待提交 Put，保留旧值、旧修订号及 usage；三轮定向 race 通过
+（1.388s），全部 `TestTxnQuota` race 通过（1.854s），完整 backend race 通过
+（77.270s），backend vet 通过。该测试说明仅凭 usage CAS 不能把后续配额检查
+替换为更早快照中的状态；尚未实现读取合并，也没有新增性能改善结论。
+
 探针 CI 夹具准备超时调查（2026-09-14）：`d0e5a8f6` 的协议 CI
 `34859958924` 已通过普通／race 和中断清理；探针 CI `34859959142` 失败于
 `TestExternalFixtureCleanupRecoversWithoutPublicOwnershipKey` 第 144 行，
