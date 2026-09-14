@@ -5,6 +5,21 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+单键提交路径重新测量（2026-09-14，源码 `54cf71f3`）：运行
+`go test ./pkg/backend -run '^$' -bench '^BenchmarkBackendWriteStorageCalls/Quota2GiB/TxnApply$' -benchtime=100x -count=1`
+通过，100 次调用均值为 storage Get=1、BatchGet=2、atomic Get=4、commit=1、
+Iter=0。该内存引擎基准只统计带标记的前台存储 API，不是网络 RPC／生产延迟。
+当前 `readTxnQuotaState` 在准备之后独立读取 tracking／usage／alarm；提交内
+又读取 usage 并 CAS，而 `stageNextDurableRevisionAfter` 已支持同事务批量预取。
+下一候选是把配额 admission 延后至该提交事务的快照并复用预取，而不是提前到
+index 准备快照；尚未实施。必须覆盖：准备后告警／dirty 变更仍被拒绝、无关键
+并发用量与本次 delta 原子相加、同键竞争重新准备旧值、Delete 在 NOSPACE 下
+仍可回收、容量溢出回滚后再持久化告警、失败不推进公开 revision／事件，以及
+固定快照和无预取引擎的语义。尤其不能在 Atomic 回调持有引擎锁时调用
+`activateNoSpace`（其内部启动另一笔 CAS），也不能将已分配但回滚的候选 revision
+当作提交成功。现有 2PC 和提交后可见性等待保持不变；该候选最多减少准备读取，
+不预先声称能够解决以持久提交耗时为主的 6000 次／900 秒验收缺口。
+
 认证故障归属复核（2026-09-14）：以下证据不得混为同一个产品缺陷。
 历史恢复权限矩阵的 invalid-token 发生于消费 Snapshot 的官方 embedded etcd；
 `TestRestoredAuthDelayedFollowerApplyWindow` 显式使用上游 `simple` 并延迟
