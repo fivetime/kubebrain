@@ -28,6 +28,8 @@ type fencedShapeClient struct {
 	coordinationPrefix             string
 	leadership, restoration        atomic.Int32
 	fenceBatchGets, fencePointGets atomic.Int32
+	firstPrewriteBarrier           chan struct{}
+	prewritesAtBarrier             atomic.Int32
 }
 
 func (c *fencedShapeClient) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
@@ -50,6 +52,19 @@ func (c *fencedShapeClient) SendRequest(ctx context.Context, addr string, req *t
 		}
 	}
 	if ctx.Value(protocolLatencyMarker{}) == true && req.Type == tikvrpc.CmdPrewrite {
+		if c.firstPrewriteBarrier != nil {
+			// No first-wave RPC may reach the mock server until all four
+			// groups have entered SendRequest. Serial dispatch cannot pass
+			// this barrier; the caller's deadline bounds a broken scheduler.
+			if c.prewritesAtBarrier.Add(1) == 4 {
+				close(c.firstPrewriteBarrier)
+			}
+			select {
+			case <-c.firstPrewriteBarrier:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
 		for _, mutation := range req.Prewrite().Mutations {
 			if strings.HasPrefix(string(mutation.Key), prefix+"/election-fence/") {
 				c.leadership.Add(1)
@@ -96,6 +111,9 @@ func TestProtocolProductionFencedShape(t *testing.T) {
 							cluster.Split(last, versions, ks.NewCoder().EncodeObjectKey(key, 1), []uint64{versionPeer}, versionPeer)
 						}
 						rpc := &fencedShapeClient{protocolLatencyClient: &protocolLatencyClient{Client: client}}
+						if fenced && splitVersions {
+							rpc.firstPrewriteBarrier = make(chan struct{})
+						}
 						store, err := clienttikv.NewKVStore("fenced-shape", clienttikv.NewCodecPDClient(clienttikv.ModeTxn, pd), clienttikv.NewMockSafePointKV(), rpc)
 						require.NoError(t, err)
 						kv := NewKvStoreWithStorage([]*clienttikv.KVStore{store})
@@ -124,6 +142,9 @@ func TestProtocolProductionFencedShape(t *testing.T) {
 							_, revision, err := b.TxnApply(measured, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
 							require.NoError(t, err)
 							require.EqualValues(t, 101+i, revision)
+							if i == 0 && rpc.firstPrewriteBarrier != nil {
+								require.EqualValues(t, 4, rpc.prewritesAtBarrier.Load(), "four first-write groups reached transport before any response")
+							}
 							got, err := b.Get(ctx, &proto.GetRequest{Key: key})
 							require.NoError(t, err)
 							require.NotNil(t, got.Kv)

@@ -53,6 +53,10 @@ revision-zero 索引与所有测试版本之间建立 mock Region 边界，覆�
 101–103 和写后读取值均正确，两类 fence mutation 每笔保留，跨 Region
 时未发生 1PC 提交。仅本地 mock 配置变化，未在远端启用 1PC。此结果验证
 分组机制，不是实际 Raft 持久性、远端历史重放或生产性能改善结论。
+随后增加首笔四组 Prewrite 的传输入口同步屏障：任何请求返回之前必须
+四组全部到达，且首笔请求数严格为四。八种组合连续三轮 race 通过
+（3.390s），证明该受控路径实际并发调度；不能把四组直接解释为四次串行
+网络往返。屏障不模拟真实 Raft／磁盘延迟，最慢分组的持久确认仍待分析。
 本轮证据：`/root/.local/state/kubebrain/lock-rpc-release.PRHSrF3H/`，
 运行时回滚／清理证据：`/tmp/tmp.tgK8brpyCr/`。
 
