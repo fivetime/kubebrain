@@ -54,6 +54,12 @@ receipt、seed、auth install 和 recovery 阶段耗时与剩余预算日志，�
 返回累计 2.499s；首次 recovery 返回累计 3.213s、剩余 26.787s，各阶段
 context error 均为 nil。这验证了诊断日志实际进入 CI，未复现预算耗尽；
 不撤销上述历史失败，也不能根据本轮耗时推断历史是哪一步耗尽预算。
+同一精确提交的[镜像 CI 34880348965](https://github.com/fivetime/kubebrain/actions/runs/34880348965)
+随后成功完成发布后校验及 `dbaas` 标签提升，CI 记录的索引摘要为
+`ghcr.io/fivetime/kubebrain@sha256:80a0e90796de94d044fbeebf1350e097a23e9c6ae780ce7ef0eabd8a4ead21c3`。
+此处仅记录 CI 发布证据，未对该摘要做本机独立审计或测试集群部署；不能替代
+正式 6000 次／900 秒验收。本轮相对 `726c8848` 仅增加测试诊断及文档，
+没有新的产品性能修改，也未触发 backend workflow 的 push paths。
 
 配额读取合并的并发边界（2026-09-14）：新增回归在实际 index 准备快照返回后、
 后续 quota admission 之前，直接提交 NOSPACE 告警或 dirty tracking，保持 usage 不变。
