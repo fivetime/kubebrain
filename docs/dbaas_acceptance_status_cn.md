@@ -5,6 +5,15 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+DBaaS 分支 CI 覆盖补齐（2026-09-14，工作流修复尚未远端验证）：发现
+`backend-integration.yml` 虽由 backend 文件变更触发，但此前只运行 build、
+TiKV 适配器和真实协议夹具，不运行 `pkg/backend` 的测试文件；`ci.yml` 的
+全包测试仅由 main push、PR 或手动调用触发。因此不能把既有协议 CI 通过
+解释为新增配额回归已在远端执行。现增加独立 backend 完整 race 步骤
+（`-count=1 -timeout=5m`）及 vet，仍使用 self-hosted，失败不允许继续。
+工作流契约测试先因缺少此命令失败，补齐后完整 build race 通过（2.397s）。
+此前本机 backend 完整 race 的 77.270s 结果仍仅为本机证据。
+
 配额读取合并的并发边界（2026-09-14）：新增回归在实际 index 准备快照返回后、
 后续 quota admission 之前，直接提交 NOSPACE 告警或 dirty tracking，保持 usage 不变。
 两条路径均须拒绝待提交 Put，保留旧值、旧修订号及 usage；三轮定向 race 通过

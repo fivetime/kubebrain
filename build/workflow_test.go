@@ -160,6 +160,8 @@ func TestBackendCIExecutesIsolatedRealProtocolGate(t *testing.T) {
 	}
 	for _, command := range []string{
 		"go test -race ./build\n",
+		"go test -race -count=1 -timeout=5m ./pkg/backend\n",
+		"go vet ./pkg/backend\n",
 		"go vet ./pkg/storage/tikv\n",
 		"bash hack/backend-integration/run-real-local.sh --allow-local-containers\n",
 		"bash hack/backend-integration/run-real-local.sh --allow-local-containers --race\n",
