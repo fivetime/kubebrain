@@ -5,6 +5,15 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+事务准备优化边界回归（2026-09-14）：旧对象读取仍承担 inline 元数据验证、
+损坏见证及必要的配额／旧格式信息，不能因普通 Put 不返回 PrevKv 而跳过。
+`TestTxnApplyArmsCorruptForWitnessedPreviousObject` 新增与 native unleased
+Put 相同的 `DiscardPrevValue=true, PrevLeaseKnown=true, PrevLease=0`
+用例；更新／删除／native 三条路径均断言损坏对象和 revision index 不变、
+不分配新 revision、激活 CORRUPT、拒绝未修复解除告警，修复后解除并恢复写入。
+最终测试树的目标 race 用例三轮通过（1.751s），`git diff --check` 通过。
+本轮仅加强回归测试，未改变产品读取或提交协议，未部署集群，不宣称性能改善。
+
 回滚后的 Region 布局只读核验（2026-09-14）：PD Pod UID 核验后读取
 `GET /pd/api/v1/regions`，共 9 个 Region；未修改既有受限 PD 健康检查入口，
 未执行 split/merge/leader transfer。用锁定版本 SDK 的 memcomparable 解码器

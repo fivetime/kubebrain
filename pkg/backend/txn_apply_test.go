@@ -916,6 +916,11 @@ func TestTxnApplyArmsCorruptForWitnessedPreviousObject(t *testing.T) {
 		op   func([]byte) TxnWriteOp
 	}{
 		{name: "update", op: func(key []byte) TxnWriteOp { return TxnWriteOp{Key: key, Value: []byte("v2")} }},
+		// Native unleased Put does not return the previous value, but must
+		// still witness corruption before overwriting its current object.
+		{name: "native-discard-previous", op: func(key []byte) TxnWriteOp {
+			return TxnWriteOp{Key: key, Value: []byte("v2"), DiscardPrevValue: true, PrevLeaseKnown: true, PrevLease: 0}
+		}},
 		{name: "delete", op: func(key []byte) TxnWriteOp { return TxnWriteOp{Key: key, Delete: true} }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -929,6 +934,9 @@ func TestTxnApplyArmsCorruptForWitnessedPreviousObject(t *testing.T) {
 			objectKey := b.coder.EncodeObjectKey(key, created.Header.Revision)
 			objectValue, err := b.kv.Get(ctx, objectKey)
 			require.NoError(t, err)
+			indexKey := b.coder.EncodeRevisionKey(key)
+			indexValue, err := b.kv.Get(ctx, indexKey)
+			require.NoError(t, err)
 			corrupt := b.kv.BeginBatchWrite()
 			corrupt.Put(objectKey, []byte{0, 'k', 'b', 3}, 0)
 			require.NoError(t, corrupt.Commit(ctx))
@@ -938,6 +946,12 @@ func TestTxnApplyArmsCorruptForWitnessedPreviousObject(t *testing.T) {
 			require.Nil(t, results)
 			require.Zero(t, revision)
 			require.Equal(t, before, b.GetCurrentRevision(), "corruption must fail before revision allocation")
+			stillCorrupt, readErr := b.kv.Get(ctx, objectKey)
+			require.NoError(t, readErr)
+			require.Equal(t, []byte{0, 'k', 'b', 3}, stillCorrupt, "failed Put must not conceal witnessed corruption")
+			unchangedIndex, readErr := b.kv.Get(ctx, indexKey)
+			require.NoError(t, readErr)
+			require.Equal(t, indexValue, unchangedIndex, "failed Put must not replace the current revision index")
 			alarms, alarmErr := b.CorruptAlarms(ctx)
 			require.NoError(t, alarmErr)
 			require.Equal(t, []uint64{b.localAlarmMemberID()}, alarms)
