@@ -5,6 +5,34 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+事务准备索引与告警批读合并（2026-09-14）：`TxnApply` 将写入键和
+compare-only guard 的物理索引加入既有 CORRUPT 告警 BatchGet，准备阶段
+复用同一快照，去除逐键 Get。用户索引与 Internal key 分开编码并去重；
+固定 engine snapshot 和没有 BatchGetter 的存储保留逐键分派。批读失败
+直接返回，不换快照回退；缺失索引的旧对象恢复流程、告警检查、提交时的
+guard／revision／quota 比较和幂等冲突保护保持原样。
+
+新增回归覆盖写键及比较键预取、批读后比较键变化、批读错误无写入、
+固定快照／无批读能力回退及键族去重。既有双实例更新／删除冲突回归保留
+“恰好两次索引准备”断言，计数器增加 BatchGet 观测。私有 Go overlay
+撤去预取后，新增写键回归在预期一次批读、实际零次处失败。
+后端全包 race 通过（82.854s），TiKV 适配全包 race 通过（7.103s），
+etcd 接入层全包 race 通过（324.489s），
+backend/server-etcd/storage-tikv vet 通过。真实本机 PD/TiKV race 协议
+套件首轮在单 Region 更新用例的旧 RPC 计数断言处失败：20 次更新预期
+40 次 Get，实际为 20；
+将计数要求收紧为每次恰好一次 Get 后，全套通过，仍要求 3 次 BatchGet
+RPC 和原 2PC prewrite/commit 数量，无失败重试。比较 guard、生产 fence、
+不确定结果等真实用例均通过。证据：
+`/tmp/kubebrain-real-protocol.CEn8xXGTdO/`（首轮失败）和
+`/tmp/kubebrain-real-protocol.OkSwwuWoRU/`（通过，cleanup_failed=0）。
+
+存储 API 调用基准 100 次更新：QuotaDisabled/TxnApply 从每次 3 次 Get
+降为 2 次；Quota2GiB/TxnApply 从 2 次降为 1 次。BatchGet 分别仍为
+1／2 次，Atomic Get 仍为 3／4 次，commit 仍为 1 次。上述接口计数与
+真实协议的 RPC 计数分开记录，不等同于专用集群延迟收益；本改动尚未
+部署专用集群，不能据此关闭 6000/900s 正式验收失败。
+
 独立消费者卷追加／覆盖对照（2026-09-14）：完成此前待执行的无文件增长
 对照。探针源码 `0dac8a22`（构建记录 `vcs.modified=false`），每个 worker
 新建独立 1Gi PVC，核验 StorageClass UID、consumer `rook-ceph` CSI 身份及

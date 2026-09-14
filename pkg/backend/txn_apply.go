@@ -487,7 +487,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	preps := make([]txnPrep, 0, len(ops))
 	prepByKey := make(map[string]*txnPrep, len(ops))
 	baseRevision := b.GetCurrentRevision()
-	members, _, _, corruptGuard, alarmErr := b.readCorruptAlarmCommitState(ctx)
+	members, _, _, corruptGuard, prefetched, alarmErr := b.readCorruptAlarmCommitStateWithPrefetch(ctx, b.txnPreparationKeys(ctx, ops, guards))
 	if alarmErr != nil {
 		return nil, baseRevision, false, alarmErr
 	}
@@ -501,7 +501,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 		p := txnPrep{op: op}
 		if op.Internal {
 			rawKey := b.ks.EncodeInternalKey(op.Key)
-			rv, gerr := b.kv.Get(ctx, rawKey)
+			rv, gerr := b.readTxnPreparationKey(ctx, rawKey, prefetched)
 			switch {
 			case errors.Is(gerr, storage.ErrKeyNotFound):
 				p.effective = !op.Delete
@@ -516,7 +516,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			continue
 		}
 		revisionKey := b.coder.EncodeRevisionKey(op.Key)
-		rv, gerr := b.kv.Get(ctx, revisionKey)
+		rv, gerr := b.readTxnPreparationKey(ctx, revisionKey, prefetched)
 		absent, tombstone := false, false
 		switch {
 		case errors.Is(gerr, storage.ErrKeyNotFound):
@@ -677,7 +677,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 			continue
 		}
 		gp := txnGuardPrep{guard: g, key: b.coder.EncodeRevisionKey(g.Key)}
-		rv, gerr := b.kv.Get(ctx, gp.key)
+		rv, gerr := b.readTxnPreparationKey(ctx, gp.key, prefetched)
 		if errors.Is(gerr, storage.ErrKeyNotFound) {
 			gp.missing = true
 			if !g.Absent {

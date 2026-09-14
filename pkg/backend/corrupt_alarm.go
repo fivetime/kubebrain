@@ -124,14 +124,22 @@ func (b *backend) readStableCorruptAlarmState(ctx context.Context) ([]uint64, []
 // transactions previously paid by every user write. Decorated or legacy
 // storages without BatchGetter retain the seqlock-based fallback.
 func (b *backend) readCorruptAlarmCommitState(ctx context.Context) ([]uint64, []byte, bool, corruptAlarmCommitGuard, error) {
+	members, generation, exists, guard, _, err := b.readCorruptAlarmCommitStateWithPrefetch(ctx, nil)
+	return members, generation, exists, guard, err
+}
+
+// Extra keys share the alarm snapshot; they remain protected by the caller's
+// atomic comparisons at commit. A nil prefetch result requests ordinary reads.
+func (b *backend) readCorruptAlarmCommitStateWithPrefetch(ctx context.Context, extraKeys [][]byte) ([]uint64, []byte, bool, corruptAlarmCommitGuard, map[string][]byte, error) {
+	var prefetched map[string][]byte
 	batchGetter, ok := storage.FindCapability[storage.BatchGetter](b.kv)
 	if !ok {
 		members, generationRaw, generationExists, err := b.readStableCorruptAlarmState(ctx)
 		if err != nil {
-			return nil, nil, false, corruptAlarmCommitGuard{}, err
+			return nil, nil, false, corruptAlarmCommitGuard{}, prefetched, err
 		}
 		guard, err := b.corruptAlarmCommitGuardFor(ctx, generationRaw, generationExists)
-		return members, generationRaw, generationExists, guard, err
+		return members, generationRaw, generationExists, guard, prefetched, err
 	}
 
 	shard := b.corruptAlarmFenceShard.Add(1) - 1
@@ -142,9 +150,17 @@ func (b *backend) readCorruptAlarmCommitState(ctx context.Context) ([]uint64, []
 		b.ks.EncodeInternalKey(corruptAlarmFenceControlKey),
 		b.ks.EncodeInternalKey(shardKey),
 	}
+	keys = append(keys, extraKeys...)
 	values, err := batchGetter.BatchGet(ctx, keys)
 	if err != nil {
-		return nil, nil, false, corruptAlarmCommitGuard{}, err
+		return nil, nil, false, corruptAlarmCommitGuard{}, prefetched, err
+	}
+
+	if len(extraKeys) > 0 {
+		prefetched = values
+		if prefetched == nil {
+			prefetched = make(map[string][]byte)
+		}
 	}
 
 	alarmRaw, alarmExists := values[string(keys[0])]
@@ -152,11 +168,11 @@ func (b *backend) readCorruptAlarmCommitState(ctx context.Context) ([]uint64, []
 	if alarmExists {
 		members, err = decodeCorruptAlarmMembers(alarmRaw)
 		if err != nil {
-			return nil, nil, false, corruptAlarmCommitGuard{}, fmt.Errorf("decode corrupt alarm metadata: %w", err)
+			return nil, nil, false, corruptAlarmCommitGuard{}, prefetched, fmt.Errorf("decode corrupt alarm metadata: %w", err)
 		}
 		for i := 1; i < len(members); i++ {
 			if members[i-1] >= members[i] {
-				return nil, nil, false, corruptAlarmCommitGuard{}, invalidAlarmMetadataf("corrupt alarm metadata is not strictly ordered")
+				return nil, nil, false, corruptAlarmCommitGuard{}, prefetched, invalidAlarmMetadataf("corrupt alarm metadata is not strictly ordered")
 			}
 		}
 	}
@@ -164,27 +180,27 @@ func (b *backend) readCorruptAlarmCommitState(ctx context.Context) ([]uint64, []
 	generationRaw, generationExists := values[string(keys[1])]
 	if generationExists {
 		if _, err := decodeCorruptAlarmGeneration(generationRaw); err != nil {
-			return nil, nil, false, corruptAlarmCommitGuard{}, err
+			return nil, nil, false, corruptAlarmCommitGuard{}, prefetched, err
 		}
 	}
 	control, controlExists := values[string(keys[2])]
 	if !controlExists {
-		return members, generationRaw, generationExists, corruptAlarmCommitGuard{key: corruptAlarmFenceControlKey}, nil
+		return members, generationRaw, generationExists, corruptAlarmCommitGuard{key: corruptAlarmFenceControlKey}, prefetched, nil
 	}
 	if !bytes.Equal(control, []byte{1}) {
-		return nil, nil, false, corruptAlarmCommitGuard{}, invalidAlarmMetadataf("corrupt alarm fence version is %x", control)
+		return nil, nil, false, corruptAlarmCommitGuard{}, prefetched, invalidAlarmMetadataf("corrupt alarm fence version is %x", control)
 	}
 	if !generationExists {
-		return nil, nil, false, corruptAlarmCommitGuard{}, invalidAlarmMetadataf("corrupt alarm fence exists without generation")
+		return nil, nil, false, corruptAlarmCommitGuard{}, prefetched, invalidAlarmMetadataf("corrupt alarm fence exists without generation")
 	}
 	shardRaw, shardExists := values[string(keys[3])]
 	if !shardExists {
-		return nil, nil, false, corruptAlarmCommitGuard{}, invalidAlarmMetadataf("corrupt alarm fence shard %02x is missing", shard%corruptAlarmFenceShardCount)
+		return nil, nil, false, corruptAlarmCommitGuard{}, prefetched, invalidAlarmMetadataf("corrupt alarm fence shard %02x is missing", shard%corruptAlarmFenceShardCount)
 	}
 	if !bytes.Equal(shardRaw, generationRaw) {
-		return nil, nil, false, corruptAlarmCommitGuard{}, invalidAlarmMetadataf("corrupt alarm fence shard %02x generation mismatch", shard%corruptAlarmFenceShardCount)
+		return nil, nil, false, corruptAlarmCommitGuard{}, prefetched, invalidAlarmMetadataf("corrupt alarm fence shard %02x generation mismatch", shard%corruptAlarmFenceShardCount)
 	}
-	return members, generationRaw, generationExists, corruptAlarmCommitGuard{key: shardKey, expected: shardRaw, exists: true}, nil
+	return members, generationRaw, generationExists, corruptAlarmCommitGuard{key: shardKey, expected: shardRaw, exists: true}, prefetched, nil
 }
 
 func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, error) {

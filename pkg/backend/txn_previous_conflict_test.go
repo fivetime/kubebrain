@@ -24,6 +24,17 @@ type previousConflictStore struct {
 }
 
 func (s *previousConflictStore) UnwrapKvStorage() storage.KvStorage { return s.KvStorage }
+func (s *previousConflictStore) BatchGet(ctx context.Context, keys [][]byte) (map[string][]byte, error) {
+	if ctx.Value(previousConflictContext{}) == s {
+		for _, key := range keys {
+			if bytes.Equal(key, s.revisionKey) {
+				s.indexReads.Add(1)
+			}
+		}
+	}
+	return s.KvStorage.(storage.BatchGetter).BatchGet(ctx, keys)
+}
+
 func (s *previousConflictStore) Get(ctx context.Context, key []byte) ([]byte, error) {
 	value, err := s.KvStorage.Get(ctx, key)
 	if ctx.Value(previousConflictContext{}) == s {
