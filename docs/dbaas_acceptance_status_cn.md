@@ -35,8 +35,15 @@
 `/root/.local/state/kubebrain/multi-previous-release.F1fDcYju/image-audit.CJ7qgPUEXH9R/`，
 `PUBLISHED_IMAGE_IDENTITY_VERIFIED`，`cleanup_failed=0`；本次提取的两个二进制及
 检查容器已清理，日志／校验和保留。本机未执行 arm64 二进制。
-worker 隔离预拉取和新候选部署尚未完成；镜像身份核验不证明
-6000 次／900 秒验收已通过，也不证明新多键优化在远端已生效。
+后续隔离预拉取已完成：新鲜准入 dry-run 通过后，三个 holder 分别运行于
+`k8s3-worker1/2/3`，精确候选返回 `PREPULL_READY`、`PREPULL_VERIFIED`，
+随后按本次 UID 清理并返回 `PREPULL_CLEANUP_CONFIRMED`（执行 exit 0）。
+回执及阶段日志位于
+`/root/.local/state/kubebrain/multi-previous-release.F1fDcYju/prepull.oaTEf4B1/`。
+这直接验证了三个 worker 本轮拉取与运行时摘要，不再将 SSH 检查失败视为网络阻塞。
+业务 StatefulSet 保持 generation 54、Ready 3 及原 `0ce85e66…` 镜像。
+新候选尚未部署；预拉取不证明 6000 次／900 秒验收已通过，也不证明新多键优化
+在远端已生效。该 attempt 已清理，不能复用于后续部署准入。
 
 网络重试范围（2026-09-14 16:16 UTC）：本机 `ghcr.io` 解析得到
 `20.27.177.117`，HTTPS HEAD `/v2/` 返回 405；仅证明本机 DNS／HTTPS 可达，
@@ -44,11 +51,11 @@ worker 隔离预拉取和新候选部署尚未完成；镜像身份核验不证�
 各 3/3 Ready；PD/TiKV 各容器 restart 为 1，KubeBrain 为 0，不能沿用旧快照
 的全部 restart 0 结论。三个 worker IP 的 SSH 检查均在 host key verification
 阶段退出，未执行远端 DNS／拉取命令，也未覆盖主机密钥或修改集群。
-worker 预拉取恢复仍须以精确候选的新鲜隔离预拉取回执证明。
+该时点尚无 worker 恢复证明；后续三个 worker 的实际通过回执见上文。
 SSH 检查失败不是预拉取流程的前置阻塞：仓库内 `image-prepull` 通过显式
 kubeconfig/context 访问 Kubernetes API，在目标节点创建隔离 holder Job，
-不依赖 worker SSH。下一次候选取得独立 OCI 核验后，沿用该路径验证实际
-CRI 拉取与运行时摘要；不为诊断网络而跳过主机密钥检查或复用旧 attempt。
+不依赖 worker SSH。本轮随后已沿用该路径验证实际 CRI 拉取与运行时摘要；
+未为诊断网络跳过主机密钥检查或复用旧 attempt。
 
 旧对象预取规模保护（2026-09-14，尚未部署）：可选预取最多覆盖 16 个用户键，
 第 17 个用户键使本次预取在发出 BatchGet 之前回退到原有逐键准备路径，
