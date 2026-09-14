@@ -34,7 +34,8 @@ receipt、seed、auth install 和 recovery 阶段耗时与剩余预算日志，�
 上下文和 3 秒 RPC 门限。该改动仅用于下一轮定位，不视为修复；本提交不能
 宣称全部 CI 通过，也不以镜像构建成功代替探针门禁。
 补充诊断后的同一用例五轮 race 通过（3.957s），探针 vet 和 diff 检查通过；
-尚未取得含新阶段日志的远端执行结果。
+随后完整探针 race 通过（357.140s，`-count=1 -timeout=20m`，执行 exit 0）。
+尚未取得含新阶段日志的远端执行结果；本机通过不撤销上述远端失败。
 
 配额读取合并的并发边界（2026-09-14）：新增回归在实际 index 准备快照返回后、
 后续 quota admission 之前，直接提交 NOSPACE 告警或 dirty tracking，保持 usage 不变。
