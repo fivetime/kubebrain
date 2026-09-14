@@ -17,6 +17,38 @@ secondary／ResolveLock 仍被测试阻断。证据 `/tmp/kubebrain-real-protoco
 全量 race 通过（323.054s）。
 此候选仅增加诊断能力，不作为性能改善或原滚动验收通过结论。
 
+后续实际验收（源码 `8aa33bec`）：本机全部 724 项发布脚本测试、backend／
+probe CI 及镜像 CI `34896762868` 均通过，独立镜像核验与只读部署预检通过。
+三个 worker 实际拉取候选镜像均成功，耗时约 98–100 秒，未复现 DNS 超时。
+候选索引为 `sha256:56596f0df3c28457d6070152d16c7a933c4ad703774fe8ba434c00bcbca33c16`。
+generation 57 三个副本完成更新，但原 6000 次／900 秒完成窗口仍超时，
+执行器退出 1。已自动回滚至原镜像，generation 58、3 Ready／3 updated；
+fixture 的 keys／users／roles／leases 均为零，探针和本轮预拉取 Pod／Job
+不存在，诊断采集已停止。未启用 1PC 或 async commit，也未放宽原门限。
+
+回滚前样本 5 至 18（21:54:33.606898050Z 至 22:08:18.588898185Z）
+三个 Pod／容器身份在窗口端点一致，覆盖 4484 次成功 Put 批次。prepare
+阶段 CheckTxnStatus 共 6 次、RPC 时长总和约 8.34ms，ResolveLock 为零；
+commit 阶段两类锁 RPC 均为零，所观测传输错误为零。这仅约束带阶段上下文
+且阶段关闭前结束的请求，不能排除批次之外或未标记的锁处理。后端总耗时
+246.774s，commit 209.108s，prewrite 129.959s，primary commit 76.3892s；
+阶段嵌套，不可相加，也不是分位数或受控 A/B 比较。
+
+同窗口 SDK Prewrite 分组累计 17936／4484，均值为 4（此前 `909e8de3`
+窗口为 2）。实际依赖源码在每次分组执行时累加 `len(groups)`，包括重试；
+不能直接把该指标等同于去重后的物理 Region 数。回滚后的 PD 只读查询显示
+11 个 Region，部分边界包含本轮测试前缀；这是当前拓扑，不足以证明测试
+窗口内的准确分裂时间、每笔事务的 Region 映射或性能因果。下一步核对
+布局与提交分组来源，不以跳过持久确认或关闭验收项绕过性能缺口。
+离线使用实际 coder／SDK 字节编码补全代表性键映射：默认租户协调前缀的
+leadership／restoration fence 位于 Region 9001，内部计数／配额／提交见证
+及代表性 event log 位于 35017，watch 键索引位于 35029，代表性 revision
+200000 的版本键位于 35033。当前拓扑因此具备产生四组的布局条件；这不是
+对历史事务修订号和分组的重放，不能据此证明全部 4484 笔均访问这些 Region，
+亦不能以代表性映射排除重试。分析程序与原始拓扑快照保存在本轮证据目录。
+本轮证据：`/root/.local/state/kubebrain/lock-rpc-release.PRHSrF3H/`，
+运行时回滚／清理证据：`/tmp/tmp.tgK8brpyCr/`。
+
 提交事务内配额读取候选（2026-09-14，尚未部署）：普通用户写入的 tracking／
 usage／alarm admission 改为使用提交事务快照，加入 allocator 已有预取；
 固定时间戳调用保留原准备读取路径。usage 比较与更新、用户 index CAS、
