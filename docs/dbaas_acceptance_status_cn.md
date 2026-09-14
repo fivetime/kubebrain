@@ -46,6 +46,13 @@ leadership／restoration fence 位于 Region 9001，内部计数／配额／提�
 200000 的版本键位于 35033。当前拓扑因此具备产生四组的布局条件；这不是
 对历史事务修订号和分组的重放，不能据此证明全部 4484 笔均访问这些 Region，
 亦不能以代表性映射排除重试。分析程序与原始拓扑快照保存在本轮证据目录。
+受控机制回归随后扩展 `TestProtocolProductionFencedShape`：在同一用户键
+revision-zero 索引与所有测试版本之间建立 mock Region 边界，覆盖 fence
+开／关及客户端 1PC 开／关的八种组合，race 通过（1.946s）。三次写入在
+生产 fence 下的 Prewrite 请求从 9 增至 12，每批分组从 3 增至 4；修订号
+101–103 和写后读取值均正确，两类 fence mutation 每笔保留，跨 Region
+时未发生 1PC 提交。仅本地 mock 配置变化，未在远端启用 1PC。此结果验证
+分组机制，不是实际 Raft 持久性、远端历史重放或生产性能改善结论。
 本轮证据：`/root/.local/state/kubebrain/lock-rpc-release.PRHSrF3H/`，
 运行时回滚／清理证据：`/tmp/tmp.tgK8brpyCr/`。
 

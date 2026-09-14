@@ -74,76 +74,88 @@ func TestProtocolProductionFencedShape(t *testing.T) {
 				c.EnableAsyncCommit = false
 			}))
 			for _, fenced := range []bool{false, true} {
-				t.Run(fmt.Sprintf("production_fences=%t", fenced), func(t *testing.T) {
-					ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-					defer cancel()
-					ks, err := coder.NewKeyspace("fenced-shape")
-					require.NoError(t, err)
-					key := []byte("/probe/watch")
-					client, cluster, pd, err := testutils.NewMockTiKV("", nil)
-					require.NoError(t, err)
-					_, _, first := testutils.BootstrapWithSingleStore(cluster)
-					middle, peer := cluster.AllocID(), cluster.AllocID()
-					cluster.Split(first, middle, ks.EventLogRangeStart(0), []uint64{peer}, peer)
-					last, peer := cluster.AllocID(), cluster.AllocID()
-					cluster.Split(middle, last, ks.NewCoder().EncodeRevisionKey(key), []uint64{peer}, peer)
-					rpc := &fencedShapeClient{protocolLatencyClient: &protocolLatencyClient{Client: client}}
-					store, err := clienttikv.NewKVStore("fenced-shape", clienttikv.NewCodecPDClient(clienttikv.ModeTxn, pd), clienttikv.NewMockSafePointKV(), rpc)
-					require.NoError(t, err)
-					kv := NewKvStoreWithStorage([]*clienttikv.KVStore{store})
-					b := backend.NewBackend(kv, backend.Config{
-						Prefix: "/kubebrain-internal/ks-fenced-shape", Keyspace: ks.Name(), Identity: "leader",
-						EnableEtcdCompatibility: true, QuotaBackendBytes: 2 << 30,
-					}, metricmock.NewMinimalMetrics(gomock.NewController(t)))
-					t.Cleanup(func() { require.NoError(t, b.(interface{ Close() error }).Close()) })
-					b.SetCurrentRevision(100)
-					require.NoError(t, b.EnsureQuotaInitialized(ctx))
-					if fenced {
-						require.NoError(t, b.GetResourceLock().Create(ctx, resourcelock.LeaderElectionRecord{HolderIdentity: "leader", LeaseDurationSeconds: 30}))
-						_, _, ok := b.GetResourceLock().(election.StorageFenceTokenProvider).StorageFenceToken(0)
-						require.True(t, ok)
-						_, _, ok = b.GetResourceLock().(election.RestorationFenceTokenProvider).RestorationFenceToken(0)
-						require.True(t, ok)
-						b.SetLeadershipFence(func() (uint64, bool) { return 1, true })
-						ctx = backend.WithLeadershipEpoch(ctx, 1)
-					}
-					var observations []storage.BatchCommitObservation
-					measured := storage.WithBatchCommitObserver(context.WithValue(ctx, protocolLatencyMarker{}, true), func(o storage.BatchCommitObservation) {
-						observations = append(observations, o)
+				for _, splitVersions := range []bool{false, true} {
+					t.Run(fmt.Sprintf("production_fences=%t/split_versions=%t", fenced, splitVersions), func(t *testing.T) {
+						ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+						defer cancel()
+						ks, err := coder.NewKeyspace("fenced-shape")
+						require.NoError(t, err)
+						key := []byte("/probe/watch")
+						client, cluster, pd, err := testutils.NewMockTiKV("", nil)
+						require.NoError(t, err)
+						_, _, first := testutils.BootstrapWithSingleStore(cluster)
+						middle, peer := cluster.AllocID(), cluster.AllocID()
+						cluster.Split(first, middle, ks.EventLogRangeStart(0), []uint64{peer}, peer)
+						last, peer := cluster.AllocID(), cluster.AllocID()
+						cluster.Split(middle, last, ks.NewCoder().EncodeRevisionKey(key), []uint64{peer}, peer)
+						if splitVersions {
+							// Keep the revision-zero index in last, but place every
+							// measured user version (101+) in a fourth Region. This
+							// models a split inside one user's MVCC version run.
+							versions, versionPeer := cluster.AllocID(), cluster.AllocID()
+							cluster.Split(last, versions, ks.NewCoder().EncodeObjectKey(key, 1), []uint64{versionPeer}, versionPeer)
+						}
+						rpc := &fencedShapeClient{protocolLatencyClient: &protocolLatencyClient{Client: client}}
+						store, err := clienttikv.NewKVStore("fenced-shape", clienttikv.NewCodecPDClient(clienttikv.ModeTxn, pd), clienttikv.NewMockSafePointKV(), rpc)
+						require.NoError(t, err)
+						kv := NewKvStoreWithStorage([]*clienttikv.KVStore{store})
+						b := backend.NewBackend(kv, backend.Config{
+							Prefix: "/kubebrain-internal/ks-fenced-shape", Keyspace: ks.Name(), Identity: "leader",
+							EnableEtcdCompatibility: true, QuotaBackendBytes: 2 << 30,
+						}, metricmock.NewMinimalMetrics(gomock.NewController(t)))
+						t.Cleanup(func() { require.NoError(t, b.(interface{ Close() error }).Close()) })
+						b.SetCurrentRevision(100)
+						require.NoError(t, b.EnsureQuotaInitialized(ctx))
+						if fenced {
+							require.NoError(t, b.GetResourceLock().Create(ctx, resourcelock.LeaderElectionRecord{HolderIdentity: "leader", LeaseDurationSeconds: 30}))
+							_, _, ok := b.GetResourceLock().(election.StorageFenceTokenProvider).StorageFenceToken(0)
+							require.True(t, ok)
+							_, _, ok = b.GetResourceLock().(election.RestorationFenceTokenProvider).RestorationFenceToken(0)
+							require.True(t, ok)
+							b.SetLeadershipFence(func() (uint64, bool) { return 1, true })
+							ctx = backend.WithLeadershipEpoch(ctx, 1)
+						}
+						var observations []storage.BatchCommitObservation
+						measured := storage.WithBatchCommitObserver(context.WithValue(ctx, protocolLatencyMarker{}, true), func(o storage.BatchCommitObservation) {
+							observations = append(observations, o)
+						})
+						for i := 0; i < 3; i++ {
+							value := []byte(fmt.Sprintf("value-%d", i))
+							_, revision, err := b.TxnApply(measured, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
+							require.NoError(t, err)
+							require.EqualValues(t, 101+i, revision)
+							got, err := b.Get(ctx, &proto.GetRequest{Key: key})
+							require.NoError(t, err)
+							require.NotNil(t, got.Kv)
+							require.Equal(t, revision, got.Kv.Revision)
+							require.Equal(t, value, backend.StripInlineValue(got.Kv.Value))
+						}
+						groups := int32(2)
+						if fenced {
+							groups = 3
+						}
+						if splitVersions {
+							groups++
+						}
+						require.Len(t, observations, 3)
+						for _, o := range observations {
+							require.NoError(t, o.Err)
+							require.True(t, o.HasWriteDetails)
+							require.Equal(t, groups, o.PrewriteRegionGroups)
+						}
+						require.Equal(t, int(3*groups), rpc.requestSnapshot()["prewrite"])
+						require.Zero(t, rpc.snapshot().OnePC, "both layouts are multi-Region even when 1PC is enabled")
+						fenceMutations := int32(0)
+						if fenced {
+							fenceMutations = 3
+						}
+						require.Equal(t, fenceMutations, rpc.leadership.Load(), "every measured batch must carry its leadership CAS mutation")
+						require.Equal(t, fenceMutations, rpc.restoration.Load(), "every measured batch must carry its restoration CAS mutation")
+						require.Equal(t, fenceMutations, rpc.fenceBatchGets.Load(), "guard pair shares one snapshot BatchGet per attempt")
+						require.Zero(t, rpc.fencePointGets.Load(), "CAS still executes but reads the prefetched snapshot")
+						t.Logf("FENCED_SHAPE_RPC_ATTEMPTS onepc_enabled=%t fenced=%t split_versions=%t counts=%v", onePC, fenced, splitVersions, rpc.requestSnapshot())
 					})
-					for i := 0; i < 3; i++ {
-						value := []byte(fmt.Sprintf("value-%d", i))
-						_, revision, err := b.TxnApply(measured, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
-						require.NoError(t, err)
-						require.EqualValues(t, 101+i, revision)
-						got, err := b.Get(ctx, &proto.GetRequest{Key: key})
-						require.NoError(t, err)
-						require.NotNil(t, got.Kv)
-						require.Equal(t, revision, got.Kv.Revision)
-						require.Equal(t, value, backend.StripInlineValue(got.Kv.Value))
-					}
-					groups := int32(2)
-					if fenced {
-						groups = 3
-					}
-					require.Len(t, observations, 3)
-					for _, o := range observations {
-						require.NoError(t, o.Err)
-						require.True(t, o.HasWriteDetails)
-						require.Equal(t, groups, o.PrewriteRegionGroups)
-					}
-					require.Equal(t, int(3*groups), rpc.requestSnapshot()["prewrite"])
-					require.Zero(t, rpc.snapshot().OnePC, "both layouts are multi-Region even when 1PC is enabled")
-					fenceMutations := int32(0)
-					if fenced {
-						fenceMutations = 3
-					}
-					require.Equal(t, fenceMutations, rpc.leadership.Load(), "every measured batch must carry its leadership CAS mutation")
-					require.Equal(t, fenceMutations, rpc.restoration.Load(), "every measured batch must carry its restoration CAS mutation")
-					require.Equal(t, fenceMutations, rpc.fenceBatchGets.Load(), "guard pair shares one snapshot BatchGet per attempt")
-					require.Zero(t, rpc.fencePointGets.Load(), "CAS still executes but reads the prefetched snapshot")
-					t.Logf("FENCED_SHAPE_RPC_ATTEMPTS onepc_enabled=%t fenced=%t counts=%v", onePC, fenced, rpc.requestSnapshot())
-				})
+				}
 			}
 		})
 	}
