@@ -355,6 +355,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	if scenario == "concurrent" {
 		require.NoError(t, b.EnsureQuotaInitialized(ctx))
 		verifyProtocolConcurrentWrites(t, ctx, b)
+		verifyProtocolMultiPreviousReads(t, ctx, b, latencyClient)
 		return
 	}
 	if scenario == "latency" {

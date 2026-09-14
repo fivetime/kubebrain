@@ -154,9 +154,56 @@ func TestProtocolConcurrentFixtureBound(t *testing.T) {
 	b.SetCurrentRevision(100)
 	require.NoError(t, b.EnsureQuotaInitialized(ctx))
 	verifyProtocolConcurrentWrites(t, ctx, b)
+	verifyProtocolMultiPreviousReads(t, ctx, b, nil)
 	keys, err := protocolBackendKeys(ctx, kv, prefix)
 	require.NoError(t, err)
 	require.LessOrEqual(t, len(keys), 100)
+}
+
+// Reuse the two live rows after the contention check, without concurrent writers
+// or retries in this measured window. Keep the original single-key measurement
+// separate: this verifies multi-key dispatch, not rollout latency acceptance.
+func verifyProtocolMultiPreviousReads(t *testing.T, ctx context.Context, b backend.Backend, client *protocolLatencyClient) {
+	t.Helper()
+	keys := [][]byte{[]byte("/integration/contention/left"), []byte("/integration/contention/right")}
+	previous := make([][]byte, len(keys))
+	last := b.GetCurrentRevision()
+	for i, key := range keys {
+		got, err := b.Get(ctx, &proto.GetRequest{Key: key})
+		require.NoError(t, err)
+		require.NotNil(t, got.Kv)
+		require.Equal(t, last, got.Kv.Revision)
+		previous[i] = bytes.Clone(backend.StripInlineValue(got.Kv.Value))
+	}
+	measured := context.WithValue(ctx, protocolLatencyMarker{}, true)
+	const samples = 2
+	for i := 0; i < samples; i++ {
+		value := []byte{byte('x' + i)}
+		result, revision, err := b.TxnApply(measured, []backend.TxnWriteOp{
+			{Key: keys[0], Value: value}, {Key: keys[1], Value: value},
+		}, nil)
+		require.NoError(t, err)
+		require.Equal(t, last+1, revision)
+		require.Len(t, result, len(keys))
+		for j, key := range keys {
+			require.Equal(t, previous[j], backend.StripInlineValue(result[j].PrevValue))
+			require.Equal(t, last, result[j].PrevRevision)
+			got, err := b.Get(ctx, &proto.GetRequest{Key: key})
+			require.NoError(t, err)
+			require.NotNil(t, got.Kv)
+			require.Equal(t, revision, got.Kv.Revision)
+			require.Equal(t, value, backend.StripInlineValue(got.Kv.Value))
+			previous[j] = bytes.Clone(value)
+		}
+		last = revision
+	}
+	if client != nil {
+		require.Equal(t, protocolLatencyStats{Prewrite: samples, Commit: samples}, client.snapshot())
+		attempts := client.requestSnapshot()
+		require.Equal(t, map[string]int{"batch_get": 4 * samples, "prewrite": samples, "commit": samples}, attempts,
+			"single-Region 2PC must batch both previous objects, with no point reads or retries")
+		t.Logf("PROTOCOL_MULTI_PREVIOUS_RPC_ATTEMPTS samples=%d keys_per_txn=2 counts=%v scope=marked_foreground_only", samples, attempts)
+	}
 }
 
 func TestProtocolLatencyFixtureBound(t *testing.T) {

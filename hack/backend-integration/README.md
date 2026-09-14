@@ -64,6 +64,12 @@ BatchGet、Prewrite、Commit 等计数，不记录键或请求内容。单 Regio
 `/tmp/kubebrain-real-protocol.0qhMwcpnxl/`。旧远端十三例结果不包含新增三例。
 
 第十三例 `TestRealTiKVBackendConcurrentWrites` 显式使用 2PC，在独立前缀中
+完成原并发验证后，对已有双键再做两次顺序更新，标记上下文的真实 RPC 必须
+恰为 8 次 BatchGet、2 次 Prewrite、2 次 Commit，无 Get 或其他请求／重试。
+逐键检查 PrevValue、PrevRevision 和最终读回，锁定旧对象合并读取的实际路径；
+计数排除并发阶段、读回及后台工作。内存夹具同时验证追加操作仍在原清理预算内。
+这是单 Region 双键事务的读取形态回归，不是远端滚动升级延迟验收。
+原并发阶段在独立前缀中
 同步放行四个竞争事务，每个事务写入相同的两个键。校验四个唯一且连续的
 revision、每个 revision 的双键 Watch 批次、最终两键版本和值一致，以及配额
 只计最终键值。后续增加同时放行的十六次 Range，逐次检查结果为空或完整的
