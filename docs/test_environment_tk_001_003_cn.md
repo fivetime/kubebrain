@@ -1,6 +1,18 @@
 # tk-001-003 测试环境交接记录
 
-最后核验：2026-09-12。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
+最后文档更新：2026-09-14。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
+
+## 2026-09-14：网络恢复后的 CI-only 状态
+
+网络恢复后仅完成远端 CI 与镜像发布确认，未连接专用集群执行部署、
+回滚或 6000/900s 正式验收。最新已验证并推广到 `dbaas` tag 的镜像为
+`ghcr.io/fivetime/kubebrain@sha256:9f407129b81e3d3b73381745e175f2f2fb19172ec96d2a6b8c16fdf68720c754`，
+来源提交 `9ab8caf53cc1446ab9d52b42fb7d198322a93448`；Rollout probe
+regression `34802462127` 与 Build & Push image `34802462128` 均成功。
+该镜像尚未部署到本测试集群；下一次真实执行前仍必须实时核验
+StatefulSet spec/UID/generation、三个 Pod Ready、实际运行 imageID、
+测试资源清理状态和 StorageClass 使用情况。继续只允许使用消费者
+rook-ceph StorageClass，不得使用 `rook-ceph-secondary`。
 
 ## 最新状态：Region 观测版失败并恢复（2026-09-12）
 

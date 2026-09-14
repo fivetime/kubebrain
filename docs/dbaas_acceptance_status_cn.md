@@ -1,9 +1,30 @@
 # DBaaS 验收状态
 
-核验日期：2026-09-12。当前验收环境为 `tk-001-003`；旧 `kind-kubebrain-dbaas` 结果单独保留在本页历史部分，不作为新环境现状。
+核验日期：2026-09-14。当前验收环境为 `tk-001-003`；旧 `kind-kubebrain-dbaas` 结果单独保留在本页历史部分，不作为新环境现状。
 产品要求及兼容性矩阵见 [兼容性计划](dbaas_compatibility_plan_cn.md)。本页列出当前证据的边界与下一步验收条件，不能代替完整矩阵。
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
+
+网络恢复后的 CI-only 核验（2026-09-14）：网络恢复后继续追踪
+`dbaas` 分支。提交 `4a6b7a5e` 的 Rollout probe regression
+`34801087499` 失败于 `TestRestoredAuthOfficialConcurrentStreamRefresh`：
+官方恢复集群的 LeaseKeepAlive 在上下文未超时时返回
+`etcdserver: invalid auth token`；同提交的镜像构建 `34801087497`
+最终为 cancelled，避免旧提交晚完成后覆盖 `dbaas` tag。原因是该官方
+并发刷新用例仍强制 simple token，继续踩上游 simple-token 多成员应用窗口；
+simple-token 相关回归仍保留在专门用例中。
+
+修复提交 `9ab8caf5` 只让官方客户端并发刷新用例使用恢复验证默认 JWT，
+不修改 KubeBrain 数据面、不修改官方依赖、不部署测试集群。验证：
+本机 CI 等价探针全包
+`go test -race -count=1 -timeout=20m -v ./hack/production/cmd/rollout-availability-probe`
+通过（396.402s）；远端 Rollout probe regression `34802462127`
+成功（job 8m59s）；Build & Push image `34802462128` 成功
+（03:24:24-03:54:04 UTC）。CI 验证并推广的镜像为
+`ghcr.io/fivetime/kubebrain@sha256:9f407129b81e3d3b73381745e175f2f2fb19172ec96d2a6b8c16fdf68720c754`，
+registry 侧已确认 `ghcr.io/fivetime/kubebrain:dbaas` 指向同一 digest。
+本轮没有修改专用测试集群，没有开启 1PC/async commit，也没有执行新的
+6000/900s 正式升级验收。
 
 恢复验证 auth token 隔离修复（2026-09-14）：官方 etcd issue
 [#18437](https://github.com/etcd-io/etcd/issues/18437) 已由维护者确认
