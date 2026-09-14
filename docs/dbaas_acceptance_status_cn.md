@@ -5,6 +5,33 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+事务准备批读候选发布及预拉取失败（2026-09-14）：源码 `35eaac08` 的
+后端协议 CI `34810975398`、探针 CI `34810975325`、镜像 CI
+`34810975301` 全部成功。部署执行器 724 项测试四分片全部通过
+（474.470／518.928／387.799／751.245s），build race 及测试清单门禁通过。
+独立检查 registry index／promotion、双架构摘要、实际 amd64 版本、非 root
+用户、TiKV fork 模块和观测字段通过；核验容器及提取二进制清理成功。
+候选镜像为
+`ghcr.io/fivetime/kubebrain@sha256:ab9a79b3eaaa2618a223e04df0c5f79f8878b8b7f4adceeed34bee97742cbc25`，
+amd64 子摘要 `04f961123e5e91a43a9ef1a03a726d22f0989cb8cb4eced77100770f67162a38`，
+arm64 子摘要 `35606364e5c72297cd4cbfb08dae934a7c44a94bde0bc4504f26dbd8fca17830`。
+
+只读升级预检及后端健康门禁通过后，实际执行于 06:23:28 UTC 退出 1：
+三个 worker 的隔离预拉取容器均发生 ErrImagePull。Kubernetes Events
+明确记录向 IPv6 DNS `2400:2410:ef28:2a00::254` 查询 `ghcr.io` 时 UDP
+读取超时，失败发生在取得 GHCR token 之前，不是鉴权拒绝或镜像不存在。
+这是节点侧镜像拉取 DNS 路径失败；不能用本机拉取成功证明节点网络正常。
+本轮没有修改 StatefulSet，没有启动 6000 次探针，也不是 900s 门限失败。
+执行器及独立 API 查询均确认本次预拉取 Pod/Job 已清理；基线仍为
+generation/observed=50/50、Ready=3、原 `0ce85e66` 镜像，六个消费者
+rook-ceph 数据卷身份／Retain 保留策略不变。
+
+证据目录：`/root/.local/state/kubebrain/txn-preparation-release.vD3qzE32/`，
+包含 image-audit.30VYfBrC4gdC、pipeline 阶段退出码、prepull-events.json、
+prepull-cleanup-inventory.json 和 baseline.g59vPsee；运行时证据
+`/tmp/tmp.3renFPN3Uh`。本次执行前缀已消费，不得重用；需先恢复或验证
+worker 的 GHCR DNS／拉取路径，再创建新的隔离尝试，继续原验收门限。
+
 事务准备索引与告警批读合并（2026-09-14）：`TxnApply` 将写入键和
 compare-only guard 的物理索引加入既有 CORRUPT 告警 BatchGet，准备阶段
 复用同一快照，去除逐键 Get。用户索引与 Internal key 分开编码并去重；

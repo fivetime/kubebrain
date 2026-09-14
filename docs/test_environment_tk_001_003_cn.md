@@ -2,6 +2,20 @@
 
 最后文档更新：2026-09-14。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
+## 2026-09-14：新候选预拉取因节点 DNS 超时失败
+
+源码 `35eaac08` 的三项 CI 及 724 项部署执行器测试均已通过，独立镜像
+核验通过。最新已验证发布镜像为
+`ghcr.io/fivetime/kubebrain@sha256:ab9a79b3eaaa2618a223e04df0c5f79f8878b8b7f4adceeed34bee97742cbc25`。
+正式执行入口于 06:23:28 UTC 在预拉取阶段退出 1：三个 worker 查询
+`ghcr.io` 的 IPv6 DNS `2400:2410:ef28:2a00::254` 超时，导致 ErrImagePull。
+尚未修改 StatefulSet 或启动 6000 次探针。预拉取 Pod/Job 清理经独立 API
+确认；基线仍为 generation/observed=50/50、Ready=3、原 `0ce85e66` 镜像。
+详情见 [验收状态](dbaas_acceptance_status_cn.md)，证据保存在
+`/root/.local/state/kubebrain/txn-preparation-release.vD3qzE32/`。
+连续流程 session 53766 已终止，不能把旧状态记录当成后台仍在部署。
+下一次必须重新验证节点镜像拉取网络，创建新尝试前缀，不复用已消费入口。
+
 ## 2026-09-14：消费者卷追加／覆盖对照完成
 
 网络恢复后已连接专用集群，在三个 worker 上分别新建独立消费者 rook-ceph
