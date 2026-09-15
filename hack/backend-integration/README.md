@@ -62,6 +62,13 @@ absent=0，发布同修订号 101 的双键 CREATE 事件，读回两键一致�
 写入／清理仍是 2PC。该例复用原不确定结果夹具，不安装完整领导权防护，
 不替代完整防护下的跨 Region 部分送达、进程重启或多副本恢复实验。
 
+第十八例另加入存储层跨 Region 部分送达：真实 secondary async Prewrite
+成功后才丢弃尚未送达的 primary Prewrite，并取消调用者。必须观察到实际
+secondary 接受、primary 阻断、目标事务零 Commit RPC；调用者收到不确定
+结果后，新的上下文读取两键仍为旧值，不能发布半笔事务。注入器只匹配
+目标 startTS，等待 secondary 有 10 秒上限，不伪造服务端成功响应。它验证
+存储层两 Region 的受控失败，不等于完整后端防护、重启或 Raft 故障验收。
+
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键
 Commit 和后台 ResolveLock。读取仍返回已提交值，且观察到主键状态查询。

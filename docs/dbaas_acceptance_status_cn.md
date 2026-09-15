@@ -147,6 +147,23 @@ committed=1／absent=0；修订号 101 的两个 CREATE 事件和两键读回一
 异步成功及防护冲突实验，不包含随后本机新增的两层响应丢失验证。该次镜像
 和探针 CI 仍需各自核验，不把单条后端 CI 当作整个发布或生产验收通过。
 
+随后核验 `f3563f7d` 探针 CI `34913452181` 成功，完整 race 327.407 秒，
+此前出现过超时的 `TestSnapshotAuthFixtureInstallCleanupAndCollisionOwnership`
+本次 17.94 秒通过；这不解释或抹除历史失败。日志保存在
+`/tmp/kubebrain-f3563f7d-probe-ci.kwZF60.log`。镜像 CI `34913452184` 当次查询
+仍在 Build and push TiKV test image 阶段，尚无整轮通过结论。
+
+存储层跨 Region 部分送达扩展：第十八例增加真实 secondary async Prewrite
+接受后才阻断尚未送达的 primary Prewrite，并取消调用者。适配器返回不确定
+结果，实际 secondary 接受和 primary 阻断计数均为正、目标 Commit RPC 为零；
+随后新上下文读取两键仍为原值，不发布半笔事务。普通／race 各 22 项通过，
+扩展例分别 12.11／12.28 秒；证据分别为
+`/tmp/kubebrain-real-protocol.bHYV3M1UMy/`、
+`/tmp/kubebrain-real-protocol.kIdJUU6HgS/`。两轮退出 0、`cleanup_failed=0`，
+独立核验容器／网络为空、编译测试文件不存在。存储／build 全量 race
+7.681／2.507 秒通过，vet 通过。该受控两 Region 失败不证明完整后端防护、
+进程重启、多副本 Raft 恢复或生产性能通过。
+
 网络复查（2026-09-15）：直接 SSH 到 `k8s3-worker1/2/3`（10.32.32.70–72），
 三个节点均可解析 ghcr.io，HTTPS registry 返回预期的未认证 401，公开镜像
 token 接口返回 200；未复现历史 IPv6 DNS 超时。本次仅复查连通性，没有
