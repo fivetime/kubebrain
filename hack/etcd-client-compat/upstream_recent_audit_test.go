@@ -3722,7 +3722,7 @@ func TestGRPCSecurityBaselineIsPinnedAcrossModules(t *testing.T) {
 	} {
 		contents, err := os.ReadFile(modulePath)
 		require.NoError(t, err, modulePath)
-		require.Contains(t, string(contents), "google.golang.org/grpc v1.83.0", modulePath)
+		require.Contains(t, string(contents), "google.golang.org/grpc v1.83.2", modulePath)
 	}
 }
 
