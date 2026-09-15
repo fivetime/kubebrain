@@ -185,6 +185,21 @@ committed=1／absent=0；修订号 101 的两个 CREATE 事件和两键读回一
 存储／build 全量 race 8.136／2.564 秒通过，vet 通过。覆盖仍为一次性单副本
 存储层受控实验，不代表完整后端防护、重启或多副本持久性通过。
 
+完整防护下的已提交响应丢失扩展：新增
+`TestRealTiKVAsyncExperimentGuardedResponseLoss`，安装领导权／恢复两族
+token，携带领导权 epoch，并核对实际成对预取、零防护单键 Get 及两族
+Prewrite mutation。仅目标事务使用 async，丢失的成功 Prewrite 必须包含
+整笔事务；复用 committed=1／absent=0、修订号 101 双键 CREATE／读回及
+下一次 102 PUT 的验证。沿用 640-key 清理预算，初始化／清理保持 2PC。
+收紧实际 RPC 断言后的普通 23 项通过，新增例 5.81 秒，证据
+`/tmp/kubebrain-real-protocol.TByxPTSC4k/`，退出 0、`cleanup_failed=0`。
+存储／build 全量 race 8.141／2.543 秒通过，vet 通过。此单 Region 用例不包含
+并发防护 token 变化、跨 Region 部分送达、进程重启或多副本故障。
+同版最终 race 23 项通过，新增例 5.96 秒，证据
+`/tmp/kubebrain-real-protocol.HXXUONTV4T/`，退出 0、`cleanup_failed=0`。
+普通／race 两轮均独立确认容器／网络为空、编译测试文件不存在；两种
+见证解析与完整防护明确日志已核对，不沿用未收紧 RPC 断言的初轮结果。
+
 网络复查（2026-09-15）：直接 SSH 到 `k8s3-worker1/2/3`（10.32.32.70–72），
 三个节点均可解析 ghcr.io，HTTPS registry 返回预期的未认证 401，公开镜像
 token 接口返回 200；未复现历史 IPv6 DNS 超时。本次仅复查连通性，没有

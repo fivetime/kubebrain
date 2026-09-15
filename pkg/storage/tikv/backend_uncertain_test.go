@@ -222,6 +222,10 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
+	guardedAsync := scenario == "async-guarded-committed"
+	if guardedAsync {
+		scenario = "async-committed"
+	}
 	asyncExperiment := strings.HasPrefix(scenario, "async-")
 	if asyncExperiment {
 		if os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_ASYNC_EXPERIMENT") != "1" {
@@ -231,7 +235,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		require.Contains(t, []string{"committed", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard"}, scenario)
 	}
 	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "compare-conflict", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
-	fenced := scenario == "fenced" || strings.HasPrefix(scenario, "fenced-")
+	fenced := guardedAsync || scenario == "fenced" || strings.HasPrefix(scenario, "fenced-")
 	retrying := strings.HasPrefix(scenario, "retry-")
 	noRPCRetry := strings.HasPrefix(scenario, "no-retry-")
 	splitting := scenario == "split"
@@ -326,6 +330,11 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		client.SetTiKVClient(splitClient)
 	} else {
 		client.SetTiKVClient(loss)
+	}
+	var guardedRPC *fencedShapeClient
+	if guardedAsync {
+		guardedRPC = &fencedShapeClient{protocolLatencyClient: latencyClient, coordinationPrefix: prefix + "backend"}
+		client.SetTiKVClient(guardedRPC)
 	}
 	m := &protocolResolutionMetrics{Metrics: metricmock.NewMinimalMetrics(ctrl)}
 	backendKV := kv
@@ -424,7 +433,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		}
 		return
 	}
-	if fenced {
+	if fenced && !guardedAsync {
 		rpc := &fencedShapeClient{protocolLatencyClient: latencyClient, coordinationPrefix: prefix + "backend"}
 		client.SetTiKVClient(rpc)
 		verifyRealProtocolProductionFences(t, ctx, b, rpc, asyncExperiment)
@@ -447,6 +456,10 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	if scenario == "latency" {
 		measureProtocolBackendLatency(t, ctx, b, latencyClient, mode)
 		return
+	}
+	if guardedAsync {
+		ctx = installRealProtocolFences(t, ctx, b)
+		commitCtx = backend.WithLeadershipEpoch(context.WithValue(commitCtx, protocolLatencyMarker{}, true), 1)
 	}
 	watch, err := b.Watch(ctx, "/integration/onepc/", 101)
 	require.NoError(t, err)
@@ -482,6 +495,13 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		require.EqualValues(t, 1, asyncLoss.drops.Load())
 		require.EqualValues(t, asyncMutationCount(), asyncLoss.mutations.Load(), "lost successful Prewrite must contain the complete backend transaction")
 		verifyAsyncBackendResolution(t, ctx, b, m, watch, left, right)
+		if guardedAsync {
+			require.Positive(t, guardedRPC.fenceBatchGets.Load())
+			require.Zero(t, guardedRPC.fencePointGets.Load())
+			require.Positive(t, guardedRPC.leadership.Load(), "real Prewrite must include leadership guard mutation")
+			require.Positive(t, guardedRPC.restoration.Load(), "real Prewrite must include restoration guard mutation")
+			t.Log("PROTOCOL_ASYNC_GUARDED_RESOLVED_OK leadership_guard=true restoration_guard=true")
+		}
 		return
 	}
 	stats := loss.snapshot()

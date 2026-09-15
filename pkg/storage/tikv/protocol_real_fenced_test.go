@@ -33,6 +33,18 @@ func TestRealTiKVPrefetchedRestorationConflict(t *testing.T) {
 	testRealTiKVBackendScenario(t, "fenced-restoration-fence-shard")
 }
 
+func installRealProtocolFences(t *testing.T, ctx context.Context, b backend.Backend) context.Context {
+	t.Helper()
+	require.NoError(t, b.EnsureQuotaInitialized(ctx))
+	require.NoError(t, b.GetResourceLock().Create(ctx, resourcelock.LeaderElectionRecord{HolderIdentity: b.GetResourceLock().Identity(), LeaseDurationSeconds: 30}))
+	_, _, ok := b.GetResourceLock().(election.StorageFenceTokenProvider).StorageFenceToken(0)
+	require.True(t, ok)
+	_, _, ok = b.GetResourceLock().(election.RestorationFenceTokenProvider).RestorationFenceToken(0)
+	require.True(t, ok)
+	b.SetLeadershipFence(func() (uint64, bool) { return 1, true })
+	return backend.WithLeadershipEpoch(ctx, 1)
+}
+
 func verifyRealProtocolFenceConflict(t *testing.T, ctx context.Context, b backend.Backend, wrapped *fenceChangeAfterPrefetch, ks *coder.Keyspace, target string) {
 	t.Helper()
 	// Registered after the scenario cleanup: restore our exact modification

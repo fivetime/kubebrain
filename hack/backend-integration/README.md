@@ -74,6 +74,14 @@ secondary 接受、primary 阻断、目标事务零 Commit RPC；调用者收到
 以及 primary 已接受而 secondary 未送达。分别核对对应接受／阻断计数，
 另一类 Prewrite 接受数必须为零；两种方向都要求零 Commit RPC 和两键旧值。
 
+`TestRealTiKVAsyncExperimentGuardedResponseLoss` 将已提交但丢响应的场景
+扩展到完整领导权／恢复防护。入口共 23 例，此例同样在主动分裂前运行，
+使用 640-key 清理预算。安装两族 token 并携带领导权 epoch，实际 RPC 要求
+成对预取、零防护单键 Get，以及两族 guard mutation；被丢弃的成功 Prewrite
+必须包含整笔事务。复用见证解析、双键 Watch／读回、下一修订号和防重复
+发布检查。仍只在用户目标事务开启 async，初始化／清理保持 2PC；没有
+注入并发领导权切换、跨 Region 部分送达、进程崩溃或多副本故障。
+
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键
 Commit 和后台 ResolveLock。读取仍返回已提交值，且观察到主键状态查询。
