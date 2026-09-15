@@ -5,6 +5,14 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+29 项协议用例进一步加强部分送达的持久状态断言：在两个方向分别比较
+`revision/committed`、`quota/usage` 的值和缺失状态，直接核对底层
+revision-index／object／event 键均不存在，不能仅凭用户 Get 为空判断原子性。
+加强后普通／race 全通过，证据 `/tmp/kubebrain-real-protocol.0CPB7Dvp9z`
+及 `/tmp/kubebrain-real-protocol.UTui71AJVX`，均 result=0、cleanup_failed=0；
+独立 owner 容器／网络为空、测试二进制不存在。storage／build race
+8.161／2.574 秒及 vet 通过。未改变生产逻辑或远端配置。
+
 最新本地真实协议覆盖为 29 项，普通／race 均通过，补齐主键未送达、
 secondary 已接受的反向后端解析。两个部分送达方向均检查 absent=1、
 committed=0、无用户数据／事件、修订号复用，并在恢复及下一写入后复核

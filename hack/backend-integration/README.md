@@ -130,7 +130,9 @@ secondary 未接受和零 Commit，后台解析结果为 absent，用户数据�
 `TestRealTiKVAsyncProcessGuardedMissingPrimary` 覆盖反向顺序：secondary
 实际接受后才阻断主键，必须观察主键未接受；后端仍须解析 absent、保持数据
 与事件未发布并复用候选修订号。两例还在恢复和下一次写入后重新检查目标
-事务 Commit RPC 为零。两例仍保留两类写防护，但不同时改变防护 token；
+事务 Commit RPC 为零。失败前后还逐项比对持久 committed revision 和 quota
+usage 的值／缺失状态，并直接检查底层 revision-index、object、event 键均不存在，
+避免仅凭高层读取为空漏掉残留对象或配额变化。两例仍保留两类写防护，但不同时改变防护 token；
 不证明网络分区、进程重启或多副本故障恢复。
 
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：

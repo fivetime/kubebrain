@@ -519,7 +519,15 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	watch, err := b.Watch(ctx, "/integration/onepc/", 101)
 	require.NoError(t, err)
 	left, right := []byte("/integration/onepc/left"), []byte("/integration/onepc/right")
+	partialMetadata := make(map[string][]byte)
+	partialMetadataAbsent := make(map[string]bool)
 	if partialAsync {
+		for _, name := range []string{"revision/committed", "quota/usage"} {
+			value, err := kv.Get(ctx, ks.EncodeInternalKey([]byte(name)))
+			require.True(t, err == nil || errors.Is(err, storage.ErrKeyNotFound))
+			partialMetadata[name] = bytes.Clone(value)
+			partialMetadataAbsent[name] = errors.Is(err, storage.ErrKeyNotFound)
+		}
 		// Both event mutations belong to this transaction. Split between them,
 		// not before the first event where all mutations may remain on one side.
 		_, err := client.SplitRegions(ctx, [][]byte{ks.EncodeEventLogKey(101, right)}, false, nil)
@@ -570,12 +578,23 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		require.Eventually(t, func() bool { return m.absent.Load() == 1 }, 10*time.Second, 10*time.Millisecond)
 		require.Zero(t, m.committed.Load())
 		require.EqualValues(t, 100, b.GetCurrentRevision())
+		for name, before := range partialMetadata {
+			value, err := kv.Get(ctx, ks.EncodeInternalKey([]byte(name)))
+			if partialMetadataAbsent[name] {
+				require.ErrorIs(t, err, storage.ErrKeyNotFound, name)
+			} else {
+				require.NoError(t, err, name)
+				require.Equal(t, before, value, "failed transaction must not change %s", name)
+			}
+		}
 		for _, key := range [][]byte{left, right} {
 			got, err := b.Get(ctx, &proto.GetRequest{Key: key})
 			require.NoError(t, err)
 			require.Nil(t, got.Kv)
-			_, err = kv.Get(ctx, ks.EncodeEventLogKey(101, key))
-			require.ErrorIs(t, err, storage.ErrKeyNotFound)
+			for _, physical := range [][]byte{ks.NewCoder().EncodeRevisionKey(key), ks.NewCoder().EncodeObjectKey(key, 101), ks.EncodeEventLogKey(101, key)} {
+				_, err = kv.Get(ctx, physical)
+				require.ErrorIs(t, err, storage.ErrKeyNotFound)
+			}
 		}
 		_, nextRevision, err := b.TxnApply(ctx, []backend.TxnWriteOp{{Key: left, Value: []byte("next")}}, nil)
 		require.NoError(t, err)
