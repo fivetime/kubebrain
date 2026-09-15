@@ -77,6 +77,10 @@ func TestRealTiKVAsyncExperimentLeadershipConflict(t *testing.T) {
 	testRealTiKVBackendScenario(t, "async-fenced-election-fence")
 }
 
+func TestRealTiKVAsyncExperimentBackendPublication(t *testing.T) {
+	testRealTiKVBackendScenario(t, "async-fenced")
+}
+
 func TestRealTiKVAsyncExperimentRestorationConflict(t *testing.T) {
 	testRealTiKVBackendScenario(t, "async-fenced-restoration-fence-shard")
 }

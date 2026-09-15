@@ -153,11 +153,12 @@ for test_name in TestRealTiKVProtocolSmoke TestRealTiKVOnePCResponseLoss \
   TestRealTiKVReadBypassesPendingSecondaryCleanup TestRealTiKVBackendProtocolLatency TestRealTiKVBackendConcurrentWrites \
   TestRealTiKVBackendProductionFences TestRealTiKVPrefetchedLeadershipConflict TestRealTiKVPrefetchedRestorationConflict \
   TestRealTiKVTxnCompareCommitConflict TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup \
-  TestRealTiKVAsyncExperimentLeadershipConflict TestRealTiKVAsyncExperimentRestorationConflict; do
+  TestRealTiKVAsyncExperimentLeadershipConflict TestRealTiKVAsyncExperimentRestorationConflict \
+  TestRealTiKVAsyncExperimentBackendPublication; do
   nonce="$(openssl rand -hex 16)"
   protocol_mode=1pc
   async_experiment=0
-  if [[ "$test_name" == TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup || "$test_name" == TestRealTiKVAsyncExperimentLeadershipConflict || "$test_name" == TestRealTiKVAsyncExperimentRestorationConflict ]]; then protocol_mode=2pc; async_experiment=1; fi
+  if [[ "$test_name" == TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup || "$test_name" == TestRealTiKVAsyncExperimentLeadershipConflict || "$test_name" == TestRealTiKVAsyncExperimentRestorationConflict || "$test_name" == TestRealTiKVAsyncExperimentBackendPublication ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVTxnCompareCommitConflict ]]; then protocol_mode=2pc; fi
   if [[ "$test_name" == TestRealTiKVReadBypassesPendingSecondaryCleanup || "$test_name" == TestRealTiKVBackendProtocolLatency || "$test_name" == TestRealTiKVBackendConcurrentWrites || "$test_name" == TestRealTiKVBackendProductionFences || "$test_name" == TestRealTiKVPrefetchedLeadershipConflict || "$test_name" == TestRealTiKVPrefetchedRestorationConflict ]]; then protocol_mode=2pc; fi
   case_result=0

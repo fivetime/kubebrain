@@ -99,6 +99,18 @@ startTS，保留实际 async Prewrite、零 Commit RPC 和原后端未发布断�
 这补齐两类受控真实后端 token 冲突，不证明成功异步事务的完整后端发布路径、
 响应丢失解析、多副本故障恢复或原 6000 次／900 秒验收。
 
+成功路径扩展：第二十一例 `TestRealTiKVAsyncExperimentBackendPublication`
+只为三次标记用户事务启用 async，初始化／清理仍是 2PC；逐事务核对真实
+Prewrite 的正 `MinCommitTS` 与 Region 错误重试，禁止静默回退混入通过结果。
+普通／race 各 21 项通过，新例分别 0.27／0.70 秒；证据目录分别为
+`/tmp/kubebrain-real-protocol.ij3Ngpxxjg/`、
+`/tmp/kubebrain-real-protocol.CCBh9NTxTX/`。两轮退出 0、`cleanup_failed=0`。
+三次成对防护预取、两族各三次防护 mutation 被实际观测；重复更新后的
+修订号连续为 101–103，写后读一致，领导权初始化的持久见证扫描后修订号
+和最终值仍正确、损坏告警为零。存储／build 全量 race 分别 9.731／3.024 秒
+通过，vet 通过。该单副本成功路径仍不覆盖独立 Watch 历史、进程重启、
+响应丢失恢复或多副本持久性，不能替代生产性能验收。
+
 网络复查（2026-09-15）：直接 SSH 到 `k8s3-worker1/2/3`（10.32.32.70–72），
 三个节点均可解析 ghcr.io，HTTPS registry 返回预期的未认证 401，公开镜像
 token 接口返回 200；未复现历史 IPv6 DNS 超时。本次仅复查连通性，没有

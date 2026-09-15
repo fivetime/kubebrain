@@ -228,7 +228,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 			t.Skip("explicit async experiment consent required")
 		}
 		scenario = strings.TrimPrefix(scenario, "async-")
-		require.Contains(t, []string{"fenced-election-fence", "fenced-restoration-fence-shard"}, scenario)
+		require.Contains(t, []string{"fenced", "fenced-election-fence", "fenced-restoration-fence-shard"}, scenario)
 	}
 	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "compare-conflict", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
 	fenced := scenario == "fenced" || strings.HasPrefix(scenario, "fenced-")
@@ -339,6 +339,29 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		conflict = &fenceChangeAfterPrefetch{KvStorage: kv, target: prefix + "backend/" + strings.TrimPrefix(scenario, "fenced-") + "/"}
 		backendKV = conflict
 	}
+	var asyncWrites []*protocolAsyncCommitHold
+	if asyncExperiment && scenario == "fenced" {
+		wrapped := &fenceChangeAfterPrefetch{KvStorage: kv}
+		wrapped.beforeAtomic = func(callCtx context.Context, atomic storage.AtomicBatch) {
+			if callCtx.Value(protocolLatencyMarker{}) != true {
+				return
+			}
+			txn := atomic.(atomicBatch).txn
+			for _, tracked := range asyncWrites {
+				if tracked.startTS == txn.StartTS() {
+					return
+				}
+			}
+			txn.SetEnable1PC(false)
+			txn.SetEnableAsyncCommit(true)
+			tracked := &protocolAsyncCommitHold{Client: client.GetTiKVClient(), startTS: txn.StartTS(),
+				held: make(chan struct{}), release: make(chan struct{}), asyncRegions: make(map[uint64]struct{})}
+			close(tracked.release) // observe real replies; do not delay backend commits
+			client.SetTiKVClient(tracked)
+			asyncWrites = append(asyncWrites, tracked)
+		}
+		backendKV = wrapped
+	}
 	b := backend.NewBackend(backendKV, backend.Config{
 		Prefix: prefix + "backend", Keyspace: ks.Name(), Identity: ks.Name(),
 		EnableEtcdCompatibility: true, StorageGCLifetime: 0, QuotaBackendBytes: quota,
@@ -383,7 +406,15 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	if fenced {
 		rpc := &fencedShapeClient{protocolLatencyClient: latencyClient, coordinationPrefix: prefix + "backend"}
 		client.SetTiKVClient(rpc)
-		verifyRealProtocolProductionFences(t, ctx, b, rpc)
+		verifyRealProtocolProductionFences(t, ctx, b, rpc, asyncExperiment)
+		if asyncExperiment {
+			require.Len(t, asyncWrites, 3)
+			for _, tracked := range asyncWrites {
+				require.Positive(t, tracked.asyncResponses.Load(), "real server must accept async commit")
+				require.Equal(t, tracked.prewrites.Load(), tracked.asyncResponses.Load()+tracked.regionErrors.Load(), "no silent fallback or unaccounted Prewrite reply")
+			}
+			t.Log("PROTOCOL_ASYNC_BACKEND_PUBLICATION_OK transactions=3 actual_async_accepted=true witness_validation=true")
+		}
 		return
 	}
 	if scenario == "concurrent" {

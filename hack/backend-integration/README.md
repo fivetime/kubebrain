@@ -37,6 +37,14 @@ Region 的写入不能发布。该冲突覆盖不替代完整后端 fence／响�
 沿用原夹具断言：用户索引、对象及事件不存在，公共修订号、持久修订号和
 配额不变。这是两类安排好的事务竞争，不是响应丢失、故障恢复或性能验收。
 
+第二十一例 `TestRealTiKVAsyncExperimentBackendPublication` 沿用完整防护成功
+路径，只有三次带测量上下文的用户事务启用 async commit。每个事务都要收到
+真实 TiKV 的正 `MinCommitTS`；Region 错误重试单独核对，不能将静默回退
+当作 async 成功。验证连续修订号 101–103、重复更新同一键的写后读，以及
+领导权初始化扫描持久见证后修订号／最终值一致且无损坏告警。后台主键
+Commit 不进入前台主提交观测；默认 2PC 例保留原服务端主提交明细断言。
+该用例不注入故障，不覆盖独立 Watch 历史、进程重启或多副本持久性。
+
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键
 Commit 和后台 ResolveLock。读取仍返回已提交值，且观察到主键状态查询。
