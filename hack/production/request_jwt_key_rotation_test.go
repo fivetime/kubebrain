@@ -109,6 +109,13 @@ func TestRequestJWTKeyRotationRejectsUnsafeInputsBeforeKubernetes(t *testing.T) 
 			dir := t.TempDir()
 			oldKey, newKey := filepath.Join(dir, "old.key"), filepath.Join(dir, "new.key")
 			require.NoError(t, os.WriteFile(oldKey, []byte("old"), tc.mode))
+			// WriteFile's creation mode is filtered by the caller's umask.
+			// This fixture deliberately exercises an unsafe mode, so establish
+			// and verify it explicitly even under a restrictive test runner.
+			require.NoError(t, os.Chmod(oldKey, tc.mode))
+			info, err := os.Stat(oldKey)
+			require.NoError(t, err)
+			require.Equal(t, tc.mode, info.Mode().Perm())
 			require.NoError(t, os.WriteFile(newKey, []byte("new"), 0o600))
 			oldExport, newExport, publicKey := filepath.Join(dir, "old-export.json"), filepath.Join(dir, "new-export.json"), filepath.Join(dir, "kms-public.pem")
 			require.NoError(t, os.WriteFile(oldExport, []byte("old-export"), 0o600))
