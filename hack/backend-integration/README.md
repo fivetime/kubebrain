@@ -7,12 +7,35 @@
 
 `backend-integration.yml` 新增独立 `real-protocol` 门禁：在可信 self-hosted
 Linux amd64 Runner 上拉取入口使用的固定镜像摘要，运行构建契约、vet、
-十三例真实协议普通版与 race 版，以及两个启动阶段的中断清理测试。每次入口
+入口列出的真实协议普通版与 race 版，以及两个启动阶段的中断清理测试。每次入口
 使用全新的临时集群，不能用同一前缀的 `-count` 重复 Region 分裂测试。
 主 CI 通过仓库内可复用工作流调用同一门禁，旧 mock 门禁已移除。
 Runner 在 `a5f8e0bd` 的作业 `103343113136` 已完成：普通/race 各十项
 明确 PASS，两阶段启动中断清理通过；完整日志已留存，不将单副本临时测试
 描述为生产性能或多副本持久性验收。
+
+第十八例 `TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup` 是独立协议实验，
+需要额外的 `KUBEBRAIN_TIKV_PROTOCOL_ASYNC_EXPERIMENT=1`；本机入口只为该例
+设置此值。夹具初始化与清理仍用 2PC，仅目标事务使用 SDK 的事务级 async
+commit 开关。真实分裂两个 Region，要求两个 Region 的 Prewrite 都接受 async
+commit；路由错误重试单独计数，不将请求尝试数当作 Region 数。该事务的全部
+Commit RPC（含主键）被阻断时，批次必须已成功返回，读取两键必须得到提交值
+并查询异步 secondary lock；还要确认后台主键清理未被计入前台主提交指标。
+测试结束释放所有后台 RPC，再按原 ownership fence 清理。模拟 TiKV 的响应
+不提供所需的 `MinCommitTS`，不能用该 mock 证明 async 路径，也不能伪造响应
+替代真实实验。此例不启用任何产品开关、不改变专用 Kubernetes 集群，不证明
+多副本持久性、故障恢复或性能达标。此例还固定旧快照，再让另一 2PC 事务
+更新 CAS 目标键；异步批次必须实际进入 Prewrite 后返回 CAS 冲突，且同批另一
+Region 的写入不能发布。该冲突覆盖不替代完整后端 fence／响应丢失验证。
+
+第十九／二十例 `TestRealTiKVAsyncExperimentLeadershipConflict`／
+`TestRealTiKVAsyncExperimentRestorationConflict` 复用完整后端防护夹具和
+640-key 有界清理预算，同样需要上述额外实验许可。只在带实验上下文的目标
+事务执行 Atomic 回调时启用事务级 async commit，初始化、竞争事务及清理
+仍为 2PC。真实预取后更改对应防护 token，原事务必须实际发出 async Prewrite，
+返回对应 LeadershipFenced／RestorationFenced，且该事务 Commit RPC 为零。
+沿用原夹具断言：用户索引、对象及事件不存在，公共修订号、持久修订号和
+配额不变。这是两类安排好的事务竞争，不是响应丢失、故障恢复或性能验收。
 
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键

@@ -1,11 +1,11 @@
 # DBaaS 验收状态
 
-核验日期：2026-09-14。当前验收环境为 `tk-001-003`；旧 `kind-kubebrain-dbaas` 结果单独保留在本页历史部分，不作为新环境现状。
+核验日期：2026-09-15。当前验收环境为 `tk-001-003`；旧 `kind-kubebrain-dbaas` 结果单独保留在本页历史部分，不作为新环境现状。
 产品要求及兼容性矩阵见 [兼容性计划](dbaas_compatibility_plan_cn.md)。本页列出当前证据的边界与下一步验收条件，不能代替完整矩阵。
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-批次 Prewrite RPC 观测候选（未部署）：在同步批次 Commit 返回前
+批次 Prewrite RPC 观测候选（后续远端验收未通过）：在同步批次 Commit 返回前
 记录带批次上下文的 Prewrite RPC 数、transport／Region／key／缺失响应
 分类及总／最大单次 RPC 耗时。含重试与零请求批次；总耗时包含并发重叠，
 最大值不是完整 prewrite 阶段或已证明的关键路径。观测不依赖服务端明细
@@ -17,7 +17,92 @@
 实际 20 次标记写入均观测到一次 Prewrite、正耗时、sum=max、错误数为零。
 后端全量 race 通过（77.391s），响应透传／未标记及晚到排除专项通过
 （1.176s），vet 通过；服务层全量 race 随后通过（317.050s）。
-此候选仅补齐诊断，尚无远端验收或性能改善结论。
+此候选仅补齐诊断，不作为性能改善结论；后续远端验收结果见下文。
+
+候选源码 `8c99bf9d` 的发布前检查：本机 build race、测试分片清单校验及
+全部 724 项发布脚本回归通过（分片 175／199／184／166 项，分别耗时
+489.144／535.131／399.192／761.750 秒）；真实后端协议 CI
+`34904718206` 通过。探针 CI `34904718146` 首次执行失败：
+`TestSnapshotAuthFixtureInstallCleanupAndCollisionOwnership` 在完成清理后的
+最后一次 `AuthStatus` 返回 `context deadline exceeded`，测试耗时 20.95 秒，
+未报告数据竞争。该测试从 embedded etcd 启动前开始共用 20 秒 context，
+而清理使用独立的命令 context；现有日志不足以定位耗时来源，不能归因于
+KubeBrain、网络或 Runner 负载。同一源码本机 race 重复 5 次均通过
+（13.47–15.63 秒），未调整截止时间或断言；保留首次失败日志后发起一次
+同源码 CI 重跑，第二次执行通过（全量 race 355.139 秒，原失败用例
+13.98 秒通过）；这不能解释或抹除首次超时。镜像 CI `34904718182` 已通过，
+含双平台发布验证与 `dbaas` 标签更新；本机独立核验通过且临时提取文件与
+容器清理成功，只读部署预检通过（`cluster_mutations=0`）。候选索引为
+`sha256:19f4bcda9c9e47775f87a7878788b0788a9de1ddfac16743af5f3e81672a4258`。
+本轮预拉取／滚动验收保持默认 2PC、6000 次／900 秒门限。工作证据目录：
+`/root/.local/state/kubebrain/prewrite-rpc-release.PXcc6a7t/`。
+
+2026-09-15 收尾结果：三个 worker 拉取成功（161–163 秒），预检清理 Pod
+在 `k8s3-compute1` 冷拉取耗时 440 秒后成功。generation 59 三副本完成更新，
+但滚动完成后的原 900 秒窗口仍未完成 6000 次操作；执行器退出 1。
+最后一次明确在回滚前读取的进度为 00:01:43Z、5160/6000、Put 最终错误数 0；
+回滚期间继续增长的计数不计作候选验收通过。已自动恢复原镜像，generation 60、
+3 Ready／3 updated、current/update 均为 `kubebrain-855b5bfb88`。夹具清理确认
+keys／users／roles／leases 均为零，`PREPULL_CLEANUP_CONFIRMED` 已返回；
+独立查询本轮 Pod／Job 均不存在，两个诊断采集进程均退出 0。
+
+回滚前配对窗口为 2026-09-14 23:47:40.802429865Z 至 2026-09-15
+00:01:20.281688358Z，三个 Pod／容器端点身份一致，覆盖 4466 个成功 Put 批次。
+Prewrite phase 累计 127.041 秒，每批最大 Prewrite RPC 累计 126.158 秒，
+均值分别约 28.45／28.25 毫秒；13398 次 scoped RPC 与 Region group 计数一致，
+均为每批平均 3 次，transport／Region／key／缺失响应错误均为 0。
+RPC 总时长 318.489 秒包含并发重叠，不能与阶段时长相加；这支持进一步检查
+transport／服务端路径，不能据此定位具体慢 Region 或证明服务端因果。
+prepare CheckTxnStatus 仅 4 次、合计 0.002644 秒，其他 scoped lock RPC 为零。
+这些是均值与有界上下文样本，不是百分位、全局锁活动或受控 A/B 性能结论。
+详细原始差值和分析保存在上述目录的 `prewrite-paired-delta.json` 与
+`prewrite-window-analysis.md`；生产就绪仍未通过。
+
+后续仅本机协议实验：新增显式 opt-in 的
+`TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup`，只为显式实验事务启用 SDK
+async commit，未修改产品默认值或专用 Kubernetes 集群。最初的 mock 因不返回
+`MinCommitTS` 而回退 2PC，不能验证该协议；改用一次性真实 TiKV/PD 后，首次
+精确 RPC 数断言被 Region 分裂后的路由重试打破，现分别校验两个真实接受
+async 的 Region 与所有 RPC 尝试／错误数，不忽略重试。随后全部 18 项真实
+协议 race 通过（新用例 4.42 秒），证据 `/tmp/kubebrain-real-protocol.xIHoSihs9X/`，
+`result=0 cleanup_failed=0`。实验中主、次 Commit RPC 均被暂停时，批次已返回
+成功，读取仍看到两键提交值并执行 secondary lock 检查，后台主提交不计入
+前台主提交观测。后续加入旧快照 CAS 冲突：先由另一真实 2PC 事务更新目标键，
+异步批次必须实际进入 Prewrite 后返回 `ErrCASFailed`，错误观测包含 key error，
+不发送 Commit，且同批另一 Region 的写入未发布。该版本 18 项真实协议 race
+通过（新用例 4.17 秒），证据 `/tmp/kubebrain-real-protocol.iJjb45rlNr/`，
+终态 `result=0 cleanup_failed=0`，独立查询该所有权的容器和网络均不存在。
+这些结果不覆盖多副本持久性、完整后端 fence、响应丢失及恢复矩阵，不作为
+生产启用 async commit 或性能达标的依据。
+随后将 secondary lock 检查收紧为同一事务 startTS，普通／race 各 18 项再次
+通过（新用例分别 4.22／4.43 秒），证据分别为
+`/tmp/kubebrain-real-protocol.NJQPfaZcxr/`、
+`/tmp/kubebrain-real-protocol.XhR4PObQ53/`。两轮均退出 0、`cleanup_failed=0`，
+独立核验对应容器、网络及编译测试文件均已清理；保留日志。存储层／build
+全量 race 分别 7.992／2.504 秒通过，存储层 vet 通过。尚未将这些本机新实验
+结果算作远端 CI 或部署验收结果。
+
+异步防护实验扩展：增加独立领导权／恢复防护冲突用例，沿用真实后端的
+预取后竞争、用户数据／事件／revision／quota 未发布检查及 640-key 清理预算。
+额外许可只为这两个用例启用，且仅目标事务使用事务级 async；初始化、
+竞争事务及清理保持 2PC。首轮 race 在新增领导权例失败：夹具错误地把多个
+Atomic 回调当作多个事务，在发送 Prewrite 前触发断言；不是防护协议失败。
+失败证据 `/tmp/kubebrain-real-protocol.smlkKTPBN4/`，退出 1、
+`cleanup_failed=0`，恢复防护新例尚未执行。修正为多次回调必须属于同一
+startTS，保留实际 async Prewrite、零 Commit RPC 和原后端未发布断言。
+修正后普通／race 各 20 项全部通过，两类新例均输出
+`PROTOCOL_ASYNC_FENCE_OK actual_async_prewrite=true commit_rpcs=0`（日志另含
+具体 scenario）。普通证据 `/tmp/kubebrain-real-protocol.l8bel6WlO3/`，领导权／
+恢复例分别 0.28／0.26 秒；race 证据 `/tmp/kubebrain-real-protocol.LJmnbbIhVE/`，
+分别 0.46／0.69 秒。两轮均退出 0、`cleanup_failed=0`，独立资源清单为空，
+编译测试文件不存在。存储／build 全量 race 8.424／2.538 秒通过，vet 通过。
+这补齐两类受控真实后端 token 冲突，不证明成功异步事务的完整后端发布路径、
+响应丢失解析、多副本故障恢复或原 6000 次／900 秒验收。
+
+网络复查（2026-09-15）：直接 SSH 到 `k8s3-worker1/2/3`（10.32.32.70–72），
+三个节点均可解析 ghcr.io，HTTPS registry 返回预期的未认证 401，公开镜像
+token 接口返回 200；未复现历史 IPv6 DNS 超时。本次仅复查连通性，没有
+重启已终止的发布执行器或再次执行完整镜像预拉取。
 
 批次锁 RPC 归因候选（2026-09-14，未部署）：对带观察器的 TiKV 批次分别
 记录 prepare／commit 上下文内的 CheckTxnStatus、ResolveLock 请求数、传输

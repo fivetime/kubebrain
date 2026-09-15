@@ -27,6 +27,7 @@ type fenceChangeAfterPrefetch struct {
 	armed                atomic.Bool
 	target               string
 	changedKey, oldValue []byte
+	beforeAtomic         func(context.Context, storage.AtomicBatch)
 }
 
 func (s *fenceChangeAfterPrefetch) UnwrapKvStorage() storage.KvStorage { return s.KvStorage }
@@ -41,6 +42,9 @@ type fenceChangeBatch struct {
 
 func (b *fenceChangeBatch) Atomic(fn func(context.Context, storage.AtomicBatch) error) {
 	b.BatchWrite.Atomic(func(ctx context.Context, txn storage.AtomicBatch) error {
+		if b.owner.beforeAtomic != nil {
+			b.owner.beforeAtomic(ctx, txn)
+		}
 		return fn(ctx, fenceChangeTxn{AtomicBatch: txn, owner: b.owner})
 	})
 }

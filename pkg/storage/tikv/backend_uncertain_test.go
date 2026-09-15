@@ -222,6 +222,14 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
+	asyncExperiment := strings.HasPrefix(scenario, "async-")
+	if asyncExperiment {
+		if os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_ASYNC_EXPERIMENT") != "1" {
+			t.Skip("explicit async experiment consent required")
+		}
+		scenario = strings.TrimPrefix(scenario, "async-")
+		require.Contains(t, []string{"fenced-election-fence", "fenced-restoration-fence-shard"}, scenario)
+	}
 	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "compare-conflict", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
 	fenced := scenario == "fenced" || strings.HasPrefix(scenario, "fenced-")
 	retrying := strings.HasPrefix(scenario, "retry-")
@@ -343,7 +351,33 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		return
 	}
 	if conflict != nil {
+		var asyncRPC *protocolAsyncCommitHold
+		if asyncExperiment {
+			conflict.beforeAtomic = func(callCtx context.Context, atomic storage.AtomicBatch) {
+				if callCtx.Value(protocolLatencyMarker{}) != true || !conflict.armed.Load() {
+					return
+				}
+				txn := atomic.(atomicBatch).txn
+				if asyncRPC != nil {
+					// One backend transaction can stage several Atomic callbacks.
+					require.Equal(t, asyncRPC.startTS, txn.StartTS(), "exactly one experimental backend transaction")
+					return
+				}
+				txn.SetEnable1PC(false)
+				txn.SetEnableAsyncCommit(true)
+				asyncRPC = &protocolAsyncCommitHold{Client: client.GetTiKVClient(), startTS: txn.StartTS(),
+					held: make(chan struct{}), release: make(chan struct{}), asyncRegions: make(map[uint64]struct{})}
+				close(asyncRPC.release)
+				client.SetTiKVClient(asyncRPC)
+			}
+		}
 		verifyRealProtocolFenceConflict(t, ctx, b, conflict, ks, strings.TrimPrefix(scenario, "fenced-"))
+		if asyncExperiment {
+			require.NotNil(t, asyncRPC)
+			require.Positive(t, asyncRPC.asyncAttempts.Load(), "fenced transaction must attempt real async Prewrite")
+			require.Zero(t, asyncRPC.commitsForwarded.Load(), "fenced transaction must never commit")
+			t.Logf("PROTOCOL_ASYNC_FENCE_OK scenario=%s actual_async_prewrite=true commit_rpcs=0", scenario)
+		}
 		return
 	}
 	if fenced {

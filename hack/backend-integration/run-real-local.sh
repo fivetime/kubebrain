@@ -152,14 +152,18 @@ for test_name in TestRealTiKVProtocolSmoke TestRealTiKVOnePCResponseLoss \
   TestRealTiKVBackendNoRPCRetryCommittedOnePC TestRealTiKVBackendNoRPCRetryUndeliveredOnePC \
   TestRealTiKVReadBypassesPendingSecondaryCleanup TestRealTiKVBackendProtocolLatency TestRealTiKVBackendConcurrentWrites \
   TestRealTiKVBackendProductionFences TestRealTiKVPrefetchedLeadershipConflict TestRealTiKVPrefetchedRestorationConflict \
-  TestRealTiKVTxnCompareCommitConflict; do
+  TestRealTiKVTxnCompareCommitConflict TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup \
+  TestRealTiKVAsyncExperimentLeadershipConflict TestRealTiKVAsyncExperimentRestorationConflict; do
   nonce="$(openssl rand -hex 16)"
   protocol_mode=1pc
+  async_experiment=0
+  if [[ "$test_name" == TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup || "$test_name" == TestRealTiKVAsyncExperimentLeadershipConflict || "$test_name" == TestRealTiKVAsyncExperimentRestorationConflict ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVTxnCompareCommitConflict ]]; then protocol_mode=2pc; fi
   if [[ "$test_name" == TestRealTiKVReadBypassesPendingSecondaryCleanup || "$test_name" == TestRealTiKVBackendProtocolLatency || "$test_name" == TestRealTiKVBackendConcurrentWrites || "$test_name" == TestRealTiKVBackendProductionFences || "$test_name" == TestRealTiKVPrefetchedLeadershipConflict || "$test_name" == TestRealTiKVPrefetchedRestorationConflict ]]; then protocol_mode=2pc; fi
   case_result=0
   KUBEBRAIN_TIKV_PROTOCOL_PD="$pd_endpoint" KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID="$cluster_id" \
     KUBEBRAIN_TIKV_PROTOCOL_ALLOW_REGION_SPLIT=1 \
+    KUBEBRAIN_TIKV_PROTOCOL_ASYNC_EXPERIMENT="$async_experiment" \
     KUBEBRAIN_TIKV_PROTOCOL_ENABLE_TEST_FAILPOINTS=1 \
     KUBEBRAIN_TIKV_PROTOCOL_PREFIX="kubebrain/protocol-smoke/$nonce/" KUBEBRAIN_TIKV_PROTOCOL_MODE="$protocol_mode" \
     timeout --signal=TERM --kill-after=10s 130s "$evidence/protocol.test" \
