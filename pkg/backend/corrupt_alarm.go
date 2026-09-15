@@ -90,11 +90,38 @@ func (b *backend) CorruptAlarms(ctx context.Context) ([]uint64, error) {
 	return members, err
 }
 
-// readStableCorruptAlarmState uses the generation as a seqlock around the
-// separately-read member set. Arm/Disarm update both keys atomically and always
-// advance the generation, so equal before/after generations certify one logical
-// alarm state even though KvStorage.Get calls use separate snapshots.
+// readStableCorruptAlarmState reads one batch snapshot when available, or uses
+// the generation as a seqlock around the separately-read member set. Arm/Disarm
+// update both keys atomically and always advance the generation, so equal
+// before/after generations certify one logical alarm state in the fallback.
 func (b *backend) readStableCorruptAlarmState(ctx context.Context) ([]uint64, []byte, bool, error) {
+	// One snapshot certifies the same atomic member/generation state without
+	// three serial reads. Keep explicit historical snapshots on InternalGet's
+	// timestamp-aware path; BatchGetter alone cannot promise that timestamp.
+	if _, pinned := storage.SnapshotTimestampFromContext(ctx); !pinned {
+		if getter, ok := storage.FindCapability[storage.BatchGetter](b.kv); ok {
+			keys := [][]byte{b.ks.EncodeInternalKey(corruptAlarmGenerationKey), b.ks.EncodeInternalKey(corruptAlarmKey)}
+			values, err := getter.BatchGet(ctx, keys)
+			if err != nil {
+				return nil, nil, false, err
+			}
+			generation, exists := values[string(keys[0])]
+			// Preserve the fallback's generation-before-members validation order.
+			if exists {
+				if _, err := decodeCorruptAlarmGeneration(generation); err != nil {
+					return nil, nil, false, err
+				}
+			}
+			var members []uint64
+			if raw, present := values[string(keys[1])]; present {
+				members, err = decodeOrderedCorruptAlarmMembers(raw)
+				if err != nil {
+					return nil, nil, false, err
+				}
+			}
+			return members, generation, exists, nil
+		}
+	}
 	for {
 		_, beforeRaw, beforeExists, err := b.readCorruptAlarmGeneration(ctx)
 		if err != nil {
@@ -315,16 +342,24 @@ func (b *backend) readCorruptAlarms(ctx context.Context) ([]uint64, []byte, bool
 	if err != nil {
 		return nil, nil, false, err
 	}
+	members, err := decodeOrderedCorruptAlarmMembers(raw)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return members, raw, true, nil
+}
+
+func decodeOrderedCorruptAlarmMembers(raw []byte) ([]uint64, error) {
 	members, err := decodeCorruptAlarmMembers(raw)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("decode corrupt alarm metadata: %w", err)
+		return nil, fmt.Errorf("decode corrupt alarm metadata: %w", err)
 	}
 	for i := 1; i < len(members); i++ {
 		if members[i-1] >= members[i] {
-			return nil, nil, false, invalidAlarmMetadataf("corrupt alarm metadata is not strictly ordered")
+			return nil, invalidAlarmMetadataf("corrupt alarm metadata is not strictly ordered")
 		}
 	}
-	return members, raw, true, nil
+	return members, nil
 }
 
 func decodeCorruptAlarmMembers(raw []byte) ([]uint64, error) {

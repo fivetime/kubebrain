@@ -616,8 +616,8 @@ func TestLeadershipRevisionIndexValidationUsesBoundedBatchGets(t *testing.T) {
 	store.calls.Store(0)
 
 	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
-	require.Equal(t, int32(4), store.calls.Load(),
-		"leadership index/object validation must use two bounded phases, not issue N+1 reads per witness")
+	require.Equal(t, int32(5), store.calls.Load(),
+		"leadership must use one alarm snapshot plus four bounded index/object batches, not N+1 reads per witness")
 }
 
 func TestLeadershipRevisionIndexValidationDeduplicatesReadsNotExpectations(t *testing.T) {
@@ -675,8 +675,8 @@ func TestLeadershipRevisionIndexValidationBoundsSingleLargeTransactionBatch(t *t
 	store.maxKeys.Store(0)
 
 	require.NoError(t, b.InitializeLeadershipRevision(ctx, 0))
-	require.Equal(t, int32(4), store.calls.Load(),
-		"one large transaction must be split into bounded two-phase index/object batches")
+	require.Equal(t, int32(5), store.calls.Load(),
+		"leadership must use one alarm snapshot plus four bounded batches for the large transaction")
 	require.LessOrEqual(t, store.maxKeys.Load(), int32(eventLogBatchGetSize))
 
 	store.calls.Store(0)
