@@ -5,6 +5,24 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+最新本地协议覆盖扩展到 26 项：增加进程 SDK async 默认模式下预取后领导权、
+恢复 token 竞争，目标事务不单独设置协议，要求实际 async Prewrite、零 Commit，
+用户数据／事件／修订号／配额不变；初始化、竞争和清理仍沿用进程默认模式。
+普通与 race 全部通过，证据分别为 `/tmp/kubebrain-real-protocol.BXiO9sGfDW`
+和 `/tmp/kubebrain-real-protocol.1rfpnYPQ9V`，均 `result=0 cleanup_failed=0`。
+独立检查两个 owner 的容器／网络为空，测试二进制已删除。此结果不证明多副本
+恢复、生产二进制完整启动或性能验收，远端仍未启用 async。
+
+源码 `d16dffda` 的 backend CI `34916835426` 在 backend race 阶段失败，
+失败项为 `TestSlowWatcherBeyondRingDropped`，不能记为 CI 协议验证通过。
+日志显示消费者恢复而非关闭：原测试允许 catch-up 在淘汰前取得缓存快照，
+因此开始读取输出后合法追平。现为该测试增加缓存查询屏障，先实际淘汰 missed
+tail 再允许查询，并断言真实 ring 返回 low；未增加超时、修改产品丢弃逻辑或
+放宽结果断言。修复后慢消费者定向 race 连续 30 轮通过（1.776 秒）；
+完整 backend／storage／option／build race 分别 78.190／8.409／1.286／2.519 秒
+通过，相关 vet、脚本语法与 diff 检查通过。日志
+`/tmp/kubebrain-process-fences-backend-race.log`；这些是本地证据，不替代新提交 CI。
+
 新增本地启动实验开关 `--experimental-tikv-enable-async-commit`，默认关闭，
 与实验 1PC 互斥。配置冲突必须在创建客户端前拒绝，不能改变既有 SDK 全局
 状态。开关仅启动时应用，影响进程全部新事务；关闭后需重启恢复默认 2PC。

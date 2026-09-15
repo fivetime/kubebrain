@@ -3,7 +3,7 @@
 本目录维护根模块的本机真实 PD/TiKV 测试入口；旧独立 SQL mock 模块已退役。
 不接入 Kubernetes，不需要 kubeconfig。
 
-当前入口共 24 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
+当前入口共 26 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
 当前执行顺序。两个单 Region 后端响应丢失用例先于主动 Region 分裂执行；
 后续增加用例时以入口中的测试名清单及明确 PASS 回执为准，不累加历史轮次。
 
@@ -104,6 +104,14 @@ secondary 接受、primary 阻断、目标事务零 Commit RPC；调用者收到
 都使用 async。清理前后实际 Prewrite 成功数必须增加。该实验直接设置 SDK
 默认值，配合选项层开关映射单测，不等于启动生产二进制的完整端到端验收，
 也不覆盖该模式下所有后台、备份／恢复或故障路径。
+
+`TestRealTiKVAsyncProcessLeadershipConflict`／
+`TestRealTiKVAsyncProcessRestorationConflict` 补充进程默认模式的两类防护
+冲突。初始化、竞争事务、token 恢复与有界清理全程保留该 SDK 默认值，
+目标事务不调用协议 setter，必须实际发出 async Prewrite，返回对应防护
+错误且没有 Commit RPC；用户数据、事件、修订号和配额沿用原未发布断言。
+内部事务／owner claim 的 async 响应和清理 Prewrite 也要核对。它们仍是
+受控 token 竞争，不代表生产二进制的领导权交接、网络分区或多副本恢复。
 
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键

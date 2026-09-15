@@ -366,6 +366,15 @@ func TestSlowWatcherBeyondRingDropped(t *testing.T) {
 	initWatcherSlowConsumerMetrics(rec)
 	hub, ring := newRecordedCatchUpHub(1, 4, rec) // tiny ring: 4 events
 
+	// Do not let catch-up snapshot the still-retained tail while the producer
+	// is filling the ring. Such a snapshot can legitimately survive eviction
+	// and let the subscriber recover when the assertion starts draining it.
+	evicted := make(chan struct{})
+	hub.ringLookup = func(rev uint64) *FindRet {
+		<-evicted
+		return ring.FindEvents(rev)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	sub, err := hub.AddWatcher(ctx, nil)
@@ -376,6 +385,8 @@ func TestSlowWatcherBeyondRingDropped(t *testing.T) {
 	for rev := uint64(1); rev <= 9; rev++ {
 		feed(hub, ring, batch(rev))
 	}
+	close(evicted)
+	require.True(t, ring.FindEvents(2).low, "the missed tail must be evicted before catch-up reads it")
 
 	require.Eventually(t, func() bool {
 		select {

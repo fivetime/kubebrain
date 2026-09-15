@@ -222,9 +222,10 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
-	processAsync := scenario == "async-process-fenced"
+	processAsync := strings.HasPrefix(scenario, "async-process-")
 	if processAsync {
-		scenario = "async-fenced"
+		scenario = "async-" + strings.TrimPrefix(scenario, "async-process-")
+		require.Contains(t, []string{"async-fenced", "async-fenced-election-fence", "async-fenced-restoration-fence-shard"}, scenario)
 	}
 	guardedAsync := scenario == "async-guarded-committed"
 	if guardedAsync {
@@ -440,10 +441,12 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 					require.Equal(t, asyncRPC.startTS, txn.StartTS(), "exactly one experimental backend transaction")
 					return
 				}
-				txn.SetEnable1PC(false)
-				txn.SetEnableAsyncCommit(true)
 				asyncRPC = &protocolAsyncCommitHold{Client: client.GetTiKVClient(), startTS: txn.StartTS(),
 					held: make(chan struct{}), release: make(chan struct{}), asyncRegions: make(map[uint64]struct{})}
+				if !processAsync {
+					txn.SetEnable1PC(false)
+					txn.SetEnableAsyncCommit(true)
+				}
 				close(asyncRPC.release)
 				client.SetTiKVClient(asyncRPC)
 			}
@@ -454,6 +457,11 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 			require.Positive(t, asyncRPC.asyncAttempts.Load(), "fenced transaction must attempt real async Prewrite")
 			require.Zero(t, asyncRPC.commitsForwarded.Load(), "fenced transaction must never commit")
 			t.Logf("PROTOCOL_ASYNC_FENCE_OK scenario=%s actual_async_prewrite=true commit_rpcs=0", scenario)
+			if processAsync {
+				require.Positive(t, processRPC.unmarkedAsync.Load())
+				require.Positive(t, cleanupRPC.unmarkedAsync.Load())
+				t.Log("PROTOCOL_PROCESS_ASYNC_FENCE_OK per_transaction_override=false")
+			}
 		}
 		return
 	}
