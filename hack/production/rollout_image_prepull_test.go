@@ -164,7 +164,7 @@ func TestRolloutImagePrepullExitContainment(t *testing.T) {
 		{"holder cleanup failure", "return 0", "return 1", "0", "1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			command := exec.Command("bash", "-c", "set -euo pipefail\nstop_rollout_observer() { :; }\ncleanup() { "+tc.cleanup+"; }\n"+
+			command := exec.Command("bash", "-c", "set -euo pipefail\nrecord_rollout_diagnostic_phase() { :; }\nstop_rollout_sampler() { :; }\nstop_rollout_observer() { :; }\ncleanup() { "+tc.cleanup+"; }\n"+
 				"image_prepull_cleanup() { echo HOLDER_CLEANUP_CALLED; "+tc.prepull+"; }\n"+
 				source[start:end]+"trap rollout_exit EXIT\nexit "+tc.original)
 			output, err := command.CombinedOutput()
@@ -188,7 +188,7 @@ func TestRolloutImagePrepullReapsObserverInItsParentBeforeCleanup(t *testing.T) 
 	require.Greater(t, exitEnd, exitStart)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "bash", "-c", "set -euo pipefail\n"+source[stopStart:stopEnd]+source[exitStart:exitEnd]+`
+	command := exec.CommandContext(ctx, "bash", "-c", "set -euo pipefail\nrecord_rollout_diagnostic_phase() { :; }\nstop_rollout_sampler() { :; }\n"+source[stopStart:stopEnd]+source[exitStart:exitEnd]+`
 sleep 30 &
 rollout_observer_pid=$!
 observed_pid=$!

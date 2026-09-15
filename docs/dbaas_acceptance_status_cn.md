@@ -5,7 +5,77 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-## 2026-09-15 后端 Watch 分发分段指标（本地，未部署）
+自动采样本地验证通过（尚无本轮 CI／部署结果）：完整回归会话 `33610`
+exit 0，734 项普通测试四分片 176/202/187/169 全部通过，耗时分别
+501.639/564.422/391.114/764.273s；构建契约 race 2.466s，前后源码
+哈希一致且与当前文件一致。证据 `automatic-sampler-recheck.5drmoddk`。
+这些结果不表示原 6000/900s 集群验收通过。
+滚动脚本新增私有证据目录内原子更新的
+`diagnostic-phase.json`，记录 stable／cleanup、探针 UID、StatefulSet UID
+及候选镜像。stable 在原完成截止时间设置后写入，不延长窗口；cleanup
+在退出处理触发恢复前写入。写入失败尝试移除旧标记，不阻止清理。
+该记录不替代实际 Pod／容器前后身份核验。现已接入可选周期调度器：
+`ROLLOUT_DIAGNOSTIC_SAMPLER` 必须是可信的绝对路径可执行文件，参数为
+新样本目录与 phase receipt；该程序负责只读抓取以及实际运行身份验证。
+默认不启用。最多 8 次、每次 60 秒限时、完成后间隔 120 秒；调度器由
+独立 timeout 进程组限制总时长，退出处理在恢复前终止并回收它。
+前后阶段一致且回调成功才写 `capture-complete`；该标记不表示验收成功。
+采样失败不改变原验收状态，失败／未完成的样本不能作为有效配对证据。
+现已新增 `capture-rollout-tls-metrics.sh` 回调：限制单文件 4 MiB、单命令
+20 秒，校验命名空间／不可变 CA ConfigMap UID，验证 TLS CA，经探针
+固定访问各服务 Pod IP，核对候选 imageID、owner、探针 UID 及各 Pod
+前后 containerID／restartCount，保存原始指标和进度。实际 TLS 握手与
+集群采集尚未执行，不能把本地模拟 kubectl 测试当作线上验证。
+首轮完整回归三个分片通过，一个因旧抽取式测试夹具缺少新增函数失败，
+已修复。新增完整脚本流程测试进一步发现嵌套 timeout 的回调进程组残留，
+已补显式终止／回收，并在成功路径删除探针前停止采样；TLS 回调的 kubectl
+timeout 使用 foreground，不再另建进程组。相关定向 race 46.537s 通过，
+TLS 回调后续定向 race 3.743s 通过。修复后的完整回归已通过，仍需 CI。
+定向测试覆盖阶段切换、非法
+阶段、rename 失败移除旧 stable、成功／失败／阶段变更／标记缺失的回调、
+有界次数、相对路径拒绝、后台子进程回收及 deadline／cleanup 调用顺序。
+
+启用方式：将 `ROLLOUT_DIAGNOSTIC_SAMPLER` 设为仓库内该回调的绝对可执行
+路径，并显式导出 `DIAGNOSTIC_NAMESPACE_UID`、`DIAGNOSTIC_INFO_CA_UID`，
+以及执行器原有的 kubeconfig／context、namespace／StatefulSet、probe、
+CA ConfigMap／TLS server name、runtime digest、replica／info port 配置。
+回调不读取 Secret 正文，不绕过证书验证，不继承隐式 Kubernetes context。
+`DIAGNOSTIC_KUBECTL_BIN` 仅用于可信工具／测试替换。模拟测试覆盖正常抓取、
+重启、探针替换和命名空间替换，校验发出的 TLS 参数及 CA 输入。
+
+最新实验终态：`80406caa` 的镜像 CI 第 2 次、独立镜像审计和预检通过后
+执行了临时 async commit／1PC 关闭实验，但仍未在滚动后 900 秒内完成
+6000 次操作。执行器 `76705` exit 1；已独立核对原完整 spec、固定镜像
+及实际 imageID 恢复，generation 72/72、Ready/updated 3/3、默认 2PC。
+临时资源及两个可重建辅助二进制已清理。证据为
+`watch-dispatch-release.KJUy3Bx8/execute.BlQUI0Cx` 与执行日志。
+本轮没有稳定窗口的分段指标样本，不能据此归因；后续实验需要将采样
+自动绑定到滚动完成至恢复开始的生命周期。下方“CI 失败／未部署”为历史。
+
+## 2026-09-15 后端 Watch 分发分段指标（已构建、实验失败并恢复）
+
+发布进展：源码 `80406caa68ee262152b4bed248811c4b98577676` 已推送。
+后端 CI `34947914683` 和探针 CI `34947914722` 已成功并下载日志核验：
+后端 race 78.301s，29 项真实协议用例各普通／race 两轮通过，正常及
+中断场景的临时 PD/TiKV 清理成功；代理 race 3.267s、探针 race 436.108s。
+镜像 CI `34947914698` 第 2 次重试成功，GitHub 状态已于 14:23:05 UTC
+更新为 completed/success，源码仍为上述提交；独立镜像审计、预检及
+实验恢复结论见本页顶部。以下为第 1 次尝试的历史，不是当前阻塞项。
+第 1 次尝试失败（09:18:28 UTC）：GitHub 注释报告
+self-hosted Runner `raas-1844` 与服务端失联，最后步骤为发布镜像校验，
+未完成标签推广。不能据此认定是代码断言失败或确定失联根因。
+运行／作业状态及失败注释已保存；下载完整日志返回 log not found／404。
+仓库级 Runner API 当前返回空列表，不代表组织级 Runner 全局清单。
+遵照用户要求未继续排查 Runner；重试通过后才部署，未绕过失败 CI。
+两个已校验哈希的可重建临时辅助二进制已删除（约 52 MiB），脚本及证据保留。
+本地部署脚本四分片已全部通过：
+727 项普通测试（非 race），各 176/200/184/167 项，耗时分别
+511.547/539.248/394.332/772.133s；构建契约 race 2.475s。
+执行器 `95022` exit 0，各结果文件及前后源码身份均已核对。
+第 1 次尝试失败时尚未执行独立镜像审计、新预检或部署；后续已完成，
+但原门限验收未通过。发布证据目录：
+`/root/.local/state/kubebrain/watch-dispatch-release.KJUy3Bx8`。
+下方“尚无该版本 CI”为提交前阶段，不代表最新 CI 状态。
 
 补充两项按批次计数的直方图，Prometheus 导出名称为：
 

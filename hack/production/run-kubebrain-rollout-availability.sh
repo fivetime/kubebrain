@@ -43,6 +43,13 @@ PROBE_READY_TIMEOUT="${PROBE_READY_TIMEOUT:-60s}"
 # neither budget changes the 5-second online operation SLO.
 PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-90s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-900s}"
+# Optional trusted executable; accepts output-directory and phase-receipt.
+ROLLOUT_DIAGNOSTIC_SAMPLER="${ROLLOUT_DIAGNOSTIC_SAMPLER:-}"
+if [[ -n "$ROLLOUT_DIAGNOSTIC_SAMPLER" ]] &&
+  [[ "$ROLLOUT_DIAGNOSTIC_SAMPLER" != /* || ! -f "$ROLLOUT_DIAGNOSTIC_SAMPLER" || ! -x "$ROLLOUT_DIAGNOSTIC_SAMPLER" ]]; then
+  echo 'ROLLOUT_DIAGNOSTIC_SAMPLER must be an absolute executable file' >&2
+  exit 2
+fi
 PROBE_DELETE_TIMEOUT="${PROBE_DELETE_TIMEOUT:-60s}"
 ROLLOUT_TIMEOUT="${ROLLOUT_TIMEOUT:-300s}"
 KUBECTL_EVIDENCE_REQUEST_TIMEOUT="${KUBECTL_EVIDENCE_REQUEST_TIMEOUT:-10s}"
@@ -779,7 +786,34 @@ fixture_cleanup_evidence_verified=false
 fixture_cleanup_ready=false
 fixture_cleanup_verified=false
 rollout_observer_pid=""
+rollout_sampler_pid=""
 probe_failure_evidence_needed=false
+
+# Diagnostic lifecycle only. Consumers must still verify actual Pod/container
+# identities around every capture; this file is not a deployment authority.
+# Rename within the private evidence directory prevents partial JSON reads.
+record_rollout_diagnostic_phase() {
+  local phase="$1" temporary="$runtime_evidence_dir/diagnostic-phase.next"
+  case "$phase" in stable|cleanup) ;; *) return 2 ;; esac
+  if ! jq -n --arg phase "$phase" --arg probe_uid "$probe_pod_uid" \
+    --arg statefulset_uid "$statefulset_uid" --arg image "$TARGET_IMAGE" \
+    '{format:"kubebrain.rollout-diagnostic-phase.v1",phase:$phase,probe_uid:$probe_uid,
+      statefulset_uid:$statefulset_uid,image:$image}' > "$temporary" ||
+    ! mv -- "$temporary" "$runtime_evidence_dir/diagnostic-phase.json"; then
+    # Invalidate any prior stable marker rather than leave it authoritative.
+    rm -f -- "$runtime_evidence_dir/diagnostic-phase.json" "$temporary"
+    return 1
+  fi
+}
+
+stop_rollout_sampler() {
+  [[ -n "$rollout_sampler_pid" ]] || return 0
+  # The direct child is timeout, owning the worker command group. Its kill-after
+  # bounds even an unresponsive sampler; only this parent waits/reaps it.
+  kill -TERM "$rollout_sampler_pid" 2>/dev/null || true
+  wait "$rollout_sampler_pid" 2>/dev/null || true
+  rollout_sampler_pid=""
+}
 
 stop_rollout_observer() {
   [[ -n "$rollout_observer_pid" ]] || return 0
@@ -1203,10 +1237,12 @@ cleanup() {
 rollout_exit() {
   local status=$? cleanup_status
   trap - EXIT
+  record_rollout_diagnostic_phase cleanup || echo 'rollout diagnostic phase unavailable' >&2
   # Contain even an explicit exit from legacy fixture diagnostics/cleanup so
   # it cannot skip independently receipted image-holder cleanup. Do not put
   # the subshell in an if/|| list: that would disable its errexit semantics.
   set +e
+  stop_rollout_sampler
   # Only this parent owns the background observer and can wait/reap it. A
   # subshell inherits the PID value but cannot wait for that non-child.
   stop_rollout_observer
@@ -1806,6 +1842,14 @@ if [[ "$OBSERVE_ONLY" != true ]]; then
 fi
 probe_complete_seconds="$(duration_ceil_seconds "$PROBE_COMPLETE_TIMEOUT")"
 probe_complete_deadline=$((SECONDS + probe_complete_seconds))
+record_rollout_diagnostic_phase stable || echo 'rollout diagnostic phase unavailable' >&2
+if [[ -n "$ROLLOUT_DIAGNOSTIC_SAMPLER" ]]; then
+  (
+    exec timeout --signal=TERM --kill-after=2s "${probe_complete_seconds}s" \
+      bash "$PRODUCTION_DIR/rollout-diagnostic-sampler.sh" "$runtime_evidence_dir" "$ROLLOUT_DIAGNOSTIC_SAMPLER"
+  ) > "$runtime_evidence_dir/diagnostic-sampler.log" 2>&1 &
+  rollout_sampler_pid=$!
+fi
 probe_phase_attempt=0
 abort_probe_complete_timeout() {
   # Do not spend the exhausted completion budget on diagnostics. The EXIT
@@ -1967,6 +2011,9 @@ if ! jq -e --arg uid "$headless_service_uid" --arg resource_version "$headless_s
   exit 1
 fi
 
+# Success also leaves the observation window before deleting any fixture.
+record_rollout_diagnostic_phase cleanup || echo 'rollout diagnostic phase unavailable' >&2
+stop_rollout_sampler
 if ! delete_probe_pod; then
   echo "failed to delete rollout availability probe Pod ${KUBEBRAIN_NAMESPACE}/${PROBE_POD}" >&2
   exit 1
