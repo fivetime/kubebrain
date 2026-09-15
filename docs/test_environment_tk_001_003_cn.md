@@ -2,7 +2,26 @@
 
 最后文档更新：2026-09-15。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
-## 2026-09-15 最新状态：诊断实验失败，已恢复 generation 64
+## 2026-09-15 最新结果：360e9456 实验失败，已恢复 generation 66
+
+用户明确允许仅在专用测试集群临时启用 async commit、关闭 1PC，保持原
+验收门限，结束后恢复原固定镜像和默认 2PC。源码 `360e9456b155` 的三项
+CI 和独立镜像核验通过后，唯一执行会话 `15887` 已结束 exit 1；不得重复执行。
+实验未在滚动后 900s 内完成 6000 次操作，验收未通过。
+原门限为 6000 次、操作后 100ms、公共 5s／直连流 30s、滚动后 900s。
+证据：`/root/.local/state/kubebrain/watch-compact-release.6MezCmTN/execute.ZCzrLoHg`，
+运行时 `/tmp/tmp.FCzguPgI0u`。已独立核实完整 spec 与实际 imageID 恢复至
+实验前，原固定镜像、默认 2PC，generation/observed 66/66、Ready/updated 3/3。
+探针、夹具、预拉取对象均已按名称与 UID 清单核实清理，夹具
+keys/users/roles/leases 均为 0，预拉取回执全部 removed=true。当前无活动实验。
+本次两个辅助二进制经哈希核对后已删除，可从源码重建；保留日志与证据。
+
+下一候选已补充客户端 Watch 接收诊断，完整探针 race 332.445s 通过，
+尚未部署、尚无新 CI 或镜像校验结果。不得因本地测试通过而直接部署，
+也不得复用已消费的执行器。交接记录为 `watch-delivery-release.UtTUj7ba/STATUS.md`。
+诊断范围与本地测试证据见[验收状态](dbaas_acceptance_status_cn.md)。
+
+## 2026-09-15 历史状态：诊断实验失败，已恢复 generation 64
 
 候选源码 `3779c99180ff` 的执行会话 `68567` 已结束 exit 1，未在滚动后
 原 900 秒内完成 6000 次操作。完整 spec 和实际镜像身份已恢复至实验前，
@@ -12,6 +31,11 @@
 及 `/tmp/tmp.aujwpC4TMG/`，指标及局限见[验收状态](dbaas_acceptance_status_cn.md)。
 该尝试执行权已消费；后续不得沿用 generation 62/63 或重跑其 execute。
 本次本地预拉取及 UID 删除辅助程序已移除，保留证据文件。
+
+后续候选 `360e9456b155` 的三项 CI 及独立镜像身份核验已通过，固定索引
+`sha256:696756c00bc1c6cba6ddb50d593f400909e3330dcf0456971bdc721194df6101`。
+发布证据目录 `/root/.local/state/kubebrain/watch-compact-release.6MezCmTN/`。
+此处为执行前记录；本次实验现状以上方 360e9456 记录为准。
 
 ## 2026-09-15 历史记录：临时 async commit 实验失败，恢复 generation 62
 

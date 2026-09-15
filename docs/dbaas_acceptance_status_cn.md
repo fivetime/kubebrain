@@ -5,7 +5,50 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-## 2026-09-15 最新结果：响应头诊断实验失败，已恢复 generation 64
+## 2026-09-15 最新结果：PrevKV 压缩水位诊断实验未通过，已恢复 generation 66
+
+源码 `360e9456b155ff1a8ba04aad23d2eb2af8809379` 的 backend
+`34930444626`、probe `34930444620`、image `34930444602` 三项 CI
+及独立镜像核验均成功后，按用户授权在专用集群临时启用 async commit、
+关闭 1PC。固定镜像索引为
+`sha256:696756c00bc1c6cba6ddb50d593f400909e3330dcf0456971bdc721194df6101`。
+实验未在滚动后原 900s 内完成 6000 次操作，执行器最终 exit 1；公共 5s、
+直连流 30s、操作后 100ms 等门限均未放宽。恢复后进度不计入候选验收。
+
+首组 `sample.X3CQ9Pbx` 与第五组 `sample.x0Ik8i0a` 的探针及三个
+服务容器身份一致。6918 次成功的 PrevKV 新鲜压缩水位读取累计
+16.608570412s，平均约 2.4ms；仅 1 次落在 25–50ms，无观测超过 50ms。
+该窗口不支持此读取通常耗时约 40ms 的假设，但不能排除其他 Watch 阶段。
+同窗成功 Put 后端计数 2307、累计 124.752s，提交 101.538s、Prewrite
+99.722s；这些阶段存在包含关系，不能相加。async 成功计数增加 3726，
+2PC／1PC 未增加；内部事务计数不等于用户 Put 次数。诊断指标不是性能修复。
+
+证据根目录 `/root/.local/state/kubebrain/watch-compact-release.6MezCmTN/`，
+执行目录 `execute.ZCzrLoHg`，运行时 `/tmp/tmp.FCzguPgI0u`。
+本次尝试执行权已消费，禁止重复执行。完整 spec 与实际 imageID 已独立
+核对恢复至实验前，原固定镜像、默认 2PC，generation/observed 66/66、
+Ready/updated 3/3。夹具 keys/users/roles/leases 均为 0，预拉取回执均为
+removed=true；独立清单按名称、UID、ownerReferences 确认实验对象不存在。
+本次两个本地辅助二进制经哈希核对后已删除，可由对应源码重建；保留全部证据。
+
+后续本地改动（未部署）：在 rollout 探针增加 `PROBE_WATCH_DELIVERY`，
+用官方 clientv3 的 gRPC InPayload 回调与本次唯一测试键的事件修订配对，
+将匹配样本的 Put 返回后等待拆成回调前、回调后两段。回调时间是客户端
+解码后的本地观测，不是服务端发送或网卡收包时间；不能据此直接声称网络瓶颈。
+仅保留固定 256 槽的修订、时间与重复标志，不记录值或响应对象；缺失、
+重复、异常时间样本单独统计，回调早于 Put 返回时只分配返回后的重叠区间。
+每个诊断系列最多 100 条周期记录及一条最终记录，不修改原门限和验收摘要。
+过滤、容量、配对、并发、原 unary 诊断转发、输出节奏及真实 TCP/gRPC +
+clientv3 测试通过；相关 race 1.268s，新增测试重复 20 次 race 2.396s，
+探针 vet 和 build 契约测试 1.264s 通过。本地单线程微基准约 406–442ns/次、
+0 分配，仅测诊断回调与取出，不代表集群延迟或高并发开销。
+完整探针包 race（`-count=1 -timeout=20m`）通过，耗时 332.445s，
+会话 `94575` exit 0，日志 `/tmp/kubebrain-watch-delivery-full-race.log`；
+四个被测源码文件哈希复核一致。新源码 CI／镜像核验及后续授权实验尚未执行；
+集群仍为 generation 66 默认 2PC。交接记录：
+`/root/.local/state/kubebrain/watch-delivery-release.UtTUj7ba/STATUS.md`。
+
+## 2026-09-15 历史结果：响应头诊断实验失败，已恢复 generation 64
 
 源码 `3779c99180ffb7aa0e9db41236da94ee73b77ff4` 经三项 CI 和独立镜像
 核验后，在专用集群临时启用 async commit、关闭 1PC，沿用 6000 次、
@@ -42,6 +85,16 @@ Prometheus 包 race 已通过（1.074 秒），读取语义与领导权检查 ra
 通过（1.736 秒），相关 Watch／PrevKV／压缩 race 通过（4.528 秒），
 etcd 和 Prometheus 包 vet 通过；完整 etcd 包 race 通过（323.294 秒）。
 这些本地测试不代表新提交的 CI 或集群性能验收通过。
+
+后续发布证据：源码 `360e9456b155ff1a8ba04aad23d2eb2af8809379` 的
+协议 CI `34930444626`、探针 CI `34930444620`、镜像 CI `34930444602`
+全部成功。协议 29 项普通及 29 项 race 通过，清理检查通过；探针完整
+race 406.019 秒。独立镜像核验 exit 0，索引为
+`sha256:696756c00bc1c6cba6ddb50d593f400909e3330dcf0456971bdc721194df6101`，
+验证双架构索引、发布标签及实际 amd64 版本、fork 依赖和新指标名称。
+证据目录 `/root/.local/state/kubebrain/watch-compact-release.6MezCmTN/`。
+临时审计容器、复制的程序及本地辅助程序已清理，日志和哈希保留。
+该版本尚未部署，新指标尚无集群采样；发布成功不改变上方性能验收失败结论。
 
 ## 2026-09-15 前次结果：async commit 生效，但原完成门限失败
 

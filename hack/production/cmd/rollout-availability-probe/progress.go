@@ -7,7 +7,8 @@ import (
 )
 
 // Diagnostic evidence only: never changes deadlines, pacing or success checks.
-// Emit at most 100 periodic records plus a final record, regardless of run size.
+// Emit at most 100 periodic records plus a final record per diagnostic family,
+// regardless of run size.
 type probeProgress struct {
 	started                          time.Time
 	total, completed, stride         int
@@ -16,6 +17,7 @@ type probeProgress struct {
 	putCalls, confirmCalls           int
 	putCallErrors, confirmCallErrors int
 	putCallTime, confirmCallTime     time.Duration
+	watchDelivery                    *watchDeliveryProgress
 }
 
 // These count client SDK calls, not wire attempts: the etcd client may retry within
@@ -66,5 +68,8 @@ func (p *probeProgress) write(w io.Writer, now time.Time, final bool) error {
 		now.UTC().Format(time.RFC3339Nano), p.completed, p.total, now.Sub(p.started).Milliseconds(),
 		p.backend.Milliseconds(), p.public.Milliseconds(), p.putResolve.Milliseconds(), p.watchAfterPut.Milliseconds(), p.direct.Milliseconds(), p.pacing.Milliseconds(),
 		p.putCalls, p.putCallErrors, p.putCallTime.Milliseconds(), p.confirmCalls, p.confirmCallErrors, p.confirmCallTime.Milliseconds(), final)
-	return err
+	if err != nil || p.watchDelivery == nil {
+		return err
+	}
+	return p.watchDelivery.write(w, final)
 }

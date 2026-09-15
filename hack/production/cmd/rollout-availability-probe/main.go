@@ -828,8 +828,10 @@ func run(ctx context.Context, cfg config) (retErr error) {
 	}
 	publicDialCount := &successfulTCPDialCounter{timeout: cfg.dialTimeout}
 	publicRPCAttempts := newRPCAttemptRecorder(publicRPCAttemptRingCapacity, time.Now)
+	watchKey := cfg.prefix + "watch"
+	publicWatchDelivery := &watchDeliveryRecorder{Handler: publicRPCAttempts, key: []byte(watchKey), now: time.Now}
 	publicClientConfig := cfg.kubeBrainClientConfigWithDialCounter(cfg.endpoint, tlsConfig, publicDialCount)
-	publicClientConfig.DialOptions = append(publicClientConfig.DialOptions, grpc.WithStatsHandler(publicRPCAttempts))
+	publicClientConfig.DialOptions = append(publicClientConfig.DialOptions, grpc.WithStatsHandler(publicWatchDelivery))
 	client, err := clientv3.New(publicClientConfig)
 	if err != nil {
 		return fmt.Errorf("create client: %w", err)
@@ -1385,7 +1387,6 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		createRevision: lastRevision, version: 1,
 	})
 
-	watchKey := cfg.prefix + "watch"
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	defer stopWatch()
 	watch := client.Watch(watchCtx, watchKey, clientv3.WithCreatedNotify())
@@ -1505,6 +1506,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 
 	fmt.Println("PROBE_STARTED")
 	progress := newProbeProgress(time.Now(), cfg.iterations)
+	progress.watchDelivery = &watchDeliveryProgress{}
 	defer func() {
 		retErr = errors.Join(retErr, progress.write(os.Stdout, time.Now(), true))
 	}()
@@ -1614,6 +1616,7 @@ func run(ctx context.Context, cfg config) (retErr error) {
 			return fmt.Errorf("iteration=%d watch timed out (put=%s grpc_state=%s successful_tcp_dials=%d public_rpc_attempts=%s)", i, putLatency, client.ActiveConnection().GetState(), publicDialCount.count.Load(), publicAttemptEvidence(ended))
 		}
 		watchResumeLatency := watchReceived.Sub(putResolved)
+		progress.watchDelivery.record(publicWatchDelivery, putRevision, putResolved, watchReceived)
 		if watchResumeLatency > maxWatchResumeLatency {
 			maxWatchResumeLatency = watchResumeLatency
 		}
