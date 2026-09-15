@@ -309,6 +309,10 @@ func TestRealTiKVAsyncProcessGuardedResponseLoss(t *testing.T) {
 	testRealTiKVBackendScenario(t, "async-process-guarded-committed")
 }
 
+func TestRealTiKVAsyncProcessGuardedPartialDelivery(t *testing.T) {
+	testRealTiKVBackendScenario(t, "async-process-guarded-partial")
+}
+
 func verifyAsyncBackendResolution(t *testing.T, ctx context.Context, b backend.Backend, metrics *protocolResolutionMetrics, watch <-chan []*proto.Event, left, right []byte) {
 	t.Helper()
 	require.Eventually(t, func() bool { return metrics.committed.Load() == 1 && b.GetCurrentRevision() == 101 }, 10*time.Second, 10*time.Millisecond)

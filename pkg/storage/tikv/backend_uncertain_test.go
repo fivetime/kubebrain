@@ -222,6 +222,10 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
+	partialAsync := scenario == "async-process-guarded-partial"
+	if partialAsync {
+		scenario = "async-process-guarded-committed"
+	}
 	processAsync := strings.HasPrefix(scenario, "async-process-")
 	if processAsync {
 		scenario = "async-" + strings.TrimPrefix(scenario, "async-process-")
@@ -251,7 +255,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	if pd == "" {
 		t.Skip("explicit protocol PD endpoint required")
 	}
-	if splitting {
+	if splitting || partialAsync {
 		require.Equal(t, "1", os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_ALLOW_REGION_SPLIT"), "Region split requires explicit disposable-cluster consent")
 	}
 	prefix := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PREFIX")
@@ -373,6 +377,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	}
 	var asyncWrites []*protocolAsyncCommitHold
 	var asyncLoss *protocolAsyncResponseLoss
+	var asyncPartial *protocolAsyncPartialLoss
 	var asyncMutationCount func() int
 	if asyncExperiment && scenario == "committed" {
 		wrapped := &fenceChangeAfterPrefetch{KvStorage: kv}
@@ -381,6 +386,16 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 				return
 			}
 			txn := atomic.(atomicBatch).txn
+			if partialAsync {
+				if asyncPartial != nil {
+					require.Equal(t, asyncPartial.startTS, txn.StartTS())
+					return
+				}
+				asyncPartial = &protocolAsyncPartialLoss{Client: client.GetTiKVClient(), startTS: txn.StartTS(), cancel: cancelCommit,
+					peerReady: make(chan struct{}), acceptPrimary: true}
+				client.SetTiKVClient(asyncPartial)
+				return
+			}
 			if asyncLoss != nil {
 				require.Equal(t, asyncLoss.startTS, txn.StartTS())
 				return
@@ -503,6 +518,10 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	watch, err := b.Watch(ctx, "/integration/onepc/", 101)
 	require.NoError(t, err)
 	left, right := []byte("/integration/onepc/left"), []byte("/integration/onepc/right")
+	if partialAsync {
+		_, err := client.SplitRegions(ctx, [][]byte{ks.EncodeEventLogKey(101, left)}, false, nil)
+		require.NoError(t, err)
+	}
 	// Each real fixture case runs in its own process. Read the SDK counter,
 	// rather than substituting a fake health endpoint for the actual TiKV server.
 	// The SDK increments this only when its gRPC Check reports SERVING.
@@ -529,6 +548,36 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		}
 	}
 	require.EqualValues(t, 101, revision)
+	if partialAsync {
+		require.NotNil(t, asyncPartial)
+		require.Positive(t, asyncPartial.primaryAccepted.Load())
+		require.Positive(t, asyncPartial.secondaryBlocked.Load())
+		require.Zero(t, asyncPartial.secondaryAccepted.Load())
+		require.Zero(t, asyncPartial.commits.Load())
+		require.Eventually(t, func() bool { return m.absent.Load() == 1 }, 10*time.Second, 10*time.Millisecond)
+		require.Zero(t, m.committed.Load())
+		require.EqualValues(t, 100, b.GetCurrentRevision())
+		for _, key := range [][]byte{left, right} {
+			got, err := b.Get(ctx, &proto.GetRequest{Key: key})
+			require.NoError(t, err)
+			require.Nil(t, got.Kv)
+			_, err = kv.Get(ctx, ks.EncodeEventLogKey(101, key))
+			require.ErrorIs(t, err, storage.ErrKeyNotFound)
+		}
+		_, nextRevision, err := b.TxnApply(ctx, []backend.TxnWriteOp{{Key: left, Value: []byte("next")}}, nil)
+		require.NoError(t, err)
+		require.Equal(t, revision, nextRevision, "absent candidate must be reused")
+		next := protocolNextMutation(t, ctx, watch)
+		require.Len(t, next, 1, "partial transaction must not publish events")
+		require.Equal(t, proto.Event_CREATE, next[0].Type)
+		require.Equal(t, nextRevision, next[0].Revision)
+		require.Equal(t, left, next[0].Kv.Key)
+		require.Equal(t, []byte("next"), backend.StripInlineValue(next[0].Kv.Value))
+		require.EqualValues(t, 1, m.absent.Load())
+		require.Zero(t, m.committed.Load())
+		t.Log("PROTOCOL_PROCESS_ASYNC_PARTIAL_OK primary_accepted=true secondary_delivered=false absent=1 revision_reused=true")
+		return
+	}
 	if asyncExperiment {
 		require.NotNil(t, asyncLoss)
 		require.EqualValues(t, 1, asyncLoss.drops.Load())
