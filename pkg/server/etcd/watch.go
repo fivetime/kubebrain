@@ -143,11 +143,9 @@ func (w *watcher) responseRevision() uint64 {
 	return rev
 }
 
-// clientCancelResponseRevision reports the latest committed revision. Unlike a
-// created or progress response, a canceled watch is terminal and cannot cause
-// a client to skip an undelivered event, so etcd exposes the current revision
-// even while the watch publication pipeline is catching up.
-func (w *watcher) clientCancelResponseRevision() uint64 {
+// committedResponseRevision is the store revision used by etcd's created and
+// canceled controls. It is NOT a delivered-event watermark for progress.
+func (w *watcher) committedResponseRevision() uint64 {
 	rev := w.backend.GetCurrentRevision()
 	if control := atomic.LoadUint64(&w.controlRev); control > rev {
 		rev = control
@@ -935,26 +933,16 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 	}
 	id, _ := w.allocateWatchIDLocked(r.WatchId)
 
-	// Seed syncedRev with the revision the watch is guaranteed to be caught up
-	// through before any event is delivered: StartRevision-1 for a historical
-	// watch (it will deliver events >= StartRevision), or the published revision
-	// for a watch that starts from "now" (StartRevision == 0). Negative start
-	// revisions are rejected upstream, so they never reach here.
-	//
-	// For the from-now case seed from the published revision, not the current one:
-	// GetCurrentRevision is advanced (SetCurrentRevision) before the corresponding
-	// events are published to the watch pipeline, so a freshly-registered
-	// subscriber can still receive an event whose revision <= the current
-	// revision — seeding at current would over-report it. GetPublishedRevision is
-	// by construction below every such still-in-flight event, so any event the new
-	// sub receives has revision > seed and cannot be skipped. Follower from-now
-	// requests are rewritten to the synchronized leader fence R+1 before Start,
-	// so both leader and follower watches use a published registration floor.
+	// Freeze the creation boundary once. From-now watches replay explicitly
+	// from this boundary+1, so publication lag must not make Created report an
+	// older revision than an already acknowledged write. Historical (including
+	// internally rewritten follower) requests retain their own replay floor.
+	createdRev := w.committedResponseRevision()
 	var initSyncedRev uint64
 	if r.StartRevision > 0 {
 		initSyncedRev = uint64(r.StartRevision) - 1
 	} else if r.StartRevision == 0 {
-		initSyncedRev = w.backend.GetPublishedRevision()
+		initSyncedRev = createdRev
 	}
 	generation := &watch{
 		cancel: cancel,
@@ -980,13 +968,9 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 	w.Unlock()
 	w.metricCli.EmitGauge("watch.watch_id", id)
 
-	// Report the store's current published revision in the created response header
-	// (previously 0). etcd clientv3 records the created header revision as the
-	// resume point for a from-now (StartRevision == 0) watch, so a disconnect
-	// after "created" but before the first event would otherwise resume from 0 and
-	// could skip events. The published revision is at/below every still-in-flight
-	// event (see initSyncedRev above), so it is a safe, non-skipping resume floor.
-	createdRev := w.responseRevision()
+	// clientv3 uses Created as the resume boundary for a from-now watch. Use
+	// exactly the same snapshot for its header, initial watermark and replay
+	// start; do not resample after exposing this generation in w.watches.
 	generation.createdRevision = createdRev
 	if r.StartRevision == 0 {
 		// Register from-now watches as an explicit historical watch from the
@@ -1139,7 +1123,7 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 			generation.cancelPending.CompareAndSwap(false, true) {
 			w.Unlock()
 			response := &etcdserverpb.WatchResponse{
-				Header: txnHeader(int64(w.clientCancelResponseRevision())), Canceled: true, WatchId: id,
+				Header: txnHeader(int64(w.committedResponseRevision())), Canceled: true, WatchId: id,
 			}
 			if w.queueDeferredDirectControl(response, generation) {
 				return
@@ -1208,7 +1192,7 @@ func (w *watcher) cancel(id int64, expected *watch, err error, compact, clientRe
 	}
 	header := &etcdserverpb.ResponseHeader{}
 	if clientRequest {
-		header = txnHeader(int64(w.clientCancelResponseRevision()))
+		header = txnHeader(int64(w.committedResponseRevision()))
 	}
 	response := &etcdserverpb.WatchResponse{
 		Header:          header,
