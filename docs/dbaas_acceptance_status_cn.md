@@ -175,6 +175,16 @@ committed=1／absent=0；修订号 101 的两个 CREATE 事件和两键读回一
 独立资源清单为空且编译测试文件不存在。存储／build 全量 race
 9.003／2.503 秒通过，vet 通过；没有将单测或夹具加固记作产品性能改善。
 
+部分送达方向补齐：同一存储层实验现在分别执行 secondary 已接受／primary
+未送达，以及 primary 已接受／secondary 未送达。两种方向都要求被允许一侧
+实际返回正 MinCommitTS、另一侧接受计数为零、阻断计数为正、Commit RPC 为
+零，随后两键仍为旧值。普通／race 各 22 项通过，扩展例分别 16.74／16.56 秒；
+证据分别为 `/tmp/kubebrain-real-protocol.XUTlYWN0du/`、
+`/tmp/kubebrain-real-protocol.gOBIfoH8um/`，两种方向的明确日志均已核对。
+两轮退出 0、`cleanup_failed=0`，独立资源清单为空、编译测试文件不存在；
+存储／build 全量 race 8.136／2.564 秒通过，vet 通过。覆盖仍为一次性单副本
+存储层受控实验，不代表完整后端防护、重启或多副本持久性通过。
+
 网络复查（2026-09-15）：直接 SSH 到 `k8s3-worker1/2/3`（10.32.32.70–72），
 三个节点均可解析 ghcr.io，HTTPS registry 返回预期的未认证 401，公开镜像
 token 接口返回 200；未复现历史 IPv6 DNS 超时。本次仅复查连通性，没有

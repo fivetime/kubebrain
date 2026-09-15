@@ -48,15 +48,17 @@ type protocolAsyncResponseLoss struct {
 	mutations atomic.Int32
 }
 
-// Permit a real secondary Prewrite, then fail the primary before delivery.
-// This deliberately produces a partial async transaction, not lost success.
+// Accept one real Prewrite group, then fail the other before delivery. Test
+// both missing-primary and missing-secondary outcomes, not lost success.
 type protocolAsyncPartialLoss struct {
 	clienttikv.Client
 	startTS                                    uint64
 	cancel                                     context.CancelFunc
-	secondaryReady                             chan struct{}
+	peerReady                                  chan struct{}
+	acceptPrimary                              bool
 	once                                       sync.Once
 	secondaryAccepted, primaryBlocked, commits atomic.Int32
+	primaryAccepted, secondaryBlocked          atomic.Int32
 }
 
 func (c *protocolAsyncPartialLoss) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
@@ -71,14 +73,18 @@ func (c *protocolAsyncPartialLoss) SendRequest(ctx context.Context, addr string,
 	for _, mutation := range req.Prewrite().Mutations {
 		primary = primary || bytes.Equal(mutation.Key, req.Prewrite().PrimaryLock)
 	}
-	if primary {
+	if primary != c.acceptPrimary {
 		timer := time.NewTimer(10 * time.Second)
 		defer timer.Stop()
 		select {
-		case <-c.secondaryReady:
-			c.primaryBlocked.Add(1)
+		case <-c.peerReady:
+			if primary {
+				c.primaryBlocked.Add(1)
+			} else {
+				c.secondaryBlocked.Add(1)
+			}
 			c.cancel()
-			return nil, errors.New("injected async primary failure before delivery after secondary acceptance")
+			return nil, errors.New("injected async Prewrite failure before delivery after peer acceptance")
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timer.C:
@@ -88,8 +94,12 @@ func (c *protocolAsyncPartialLoss) SendRequest(ctx context.Context, addr string,
 	response, err := c.Client.SendRequest(ctx, addr, req, timeout)
 	if err == nil && response != nil && req.Prewrite().UseAsyncCommit {
 		if r, ok := response.Resp.(*kvrpcpb.PrewriteResponse); ok && r != nil && r.RegionError == nil && len(r.Errors) == 0 && r.MinCommitTs > c.startTS {
-			c.secondaryAccepted.Add(1)
-			c.once.Do(func() { close(c.secondaryReady) })
+			if primary {
+				c.primaryAccepted.Add(1)
+			} else {
+				c.secondaryAccepted.Add(1)
+			}
+			c.once.Do(func() { close(c.peerReady) })
 		}
 	}
 	return response, err
@@ -100,7 +110,7 @@ func TestProtocolAsyncPartialLossScope(t *testing.T) {
 	defer cancel()
 	accepted := &tikvrpc.Response{Resp: &kvrpcpb.PrewriteResponse{MinCommitTs: 20}}
 	stub := &protocolResponseStub{response: accepted}
-	loss := &protocolAsyncPartialLoss{Client: stub, startTS: 10, cancel: cancel, secondaryReady: make(chan struct{})}
+	loss := &protocolAsyncPartialLoss{Client: stub, startTS: 10, cancel: cancel, peerReady: make(chan struct{})}
 	prewrite := func(start uint64, async, primary bool) *tikvrpc.Request {
 		key := []byte("s")
 		if primary {
@@ -465,27 +475,36 @@ func TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup(t *testing.T) {
 	}
 	t.Log("PROTOCOL_ASYNC_RESPONSE_LOSS_OK uncertain=true both_mutations_visible=true caller_cancelled=true")
 
-	partialTxn, err := client.BeginWithContext(ctx)
-	require.NoError(t, err)
-	partialTxn.SetEnable1PC(false)
-	partialTxn.SetEnableAsyncCommit(true)
-	partialCtx, cancelPartial := context.WithCancel(ctx)
-	defer cancelPartial()
-	partial := &protocolAsyncPartialLoss{Client: client.GetTiKVClient(), startTS: partialTxn.StartTS(), cancel: cancelPartial, secondaryReady: make(chan struct{})}
-	client.SetTiKVClient(partial)
-	partialBatch := &batch{txn: partialTxn}
-	partialBatch.Put(data, []byte("must-not-publish-primary"), 0)
-	partialBatch.Put(witness, []byte("must-not-publish-secondary"), 0)
-	err = partialBatch.Commit(partialCtx)
-	require.ErrorIs(t, err, storage.ErrUncertainResult)
-	require.ErrorIs(t, partialCtx.Err(), context.Canceled)
-	require.Positive(t, partial.secondaryAccepted.Load(), "real secondary must accept async before primary is dropped")
-	require.Positive(t, partial.primaryBlocked.Load())
-	require.Zero(t, partial.commits.Load())
-	for key, want := range map[string]string{string(data): "after-loss", string(witness): "right"} {
-		got, err := kv.Get(ctx, []byte(key))
+	for _, acceptPrimary := range []bool{false, true} {
+		partialTxn, err := client.BeginWithContext(ctx)
 		require.NoError(t, err)
-		require.Equal(t, want, string(got), "partial async transaction must publish neither mutation")
+		partialTxn.SetEnable1PC(false)
+		partialTxn.SetEnableAsyncCommit(true)
+		partialCtx, cancelPartial := context.WithCancel(ctx)
+		defer cancelPartial()
+		partial := &protocolAsyncPartialLoss{Client: client.GetTiKVClient(), startTS: partialTxn.StartTS(), cancel: cancelPartial, peerReady: make(chan struct{}), acceptPrimary: acceptPrimary}
+		client.SetTiKVClient(partial)
+		partialBatch := &batch{txn: partialTxn}
+		partialBatch.Put(data, []byte("must-not-publish-primary"), 0)
+		partialBatch.Put(witness, []byte("must-not-publish-secondary"), 0)
+		err = partialBatch.Commit(partialCtx)
+		require.ErrorIs(t, err, storage.ErrUncertainResult)
+		require.ErrorIs(t, partialCtx.Err(), context.Canceled)
+		if acceptPrimary {
+			require.Positive(t, partial.primaryAccepted.Load(), "real primary must accept async before secondary is dropped")
+			require.Positive(t, partial.secondaryBlocked.Load())
+			require.Zero(t, partial.secondaryAccepted.Load())
+		} else {
+			require.Positive(t, partial.secondaryAccepted.Load(), "real secondary must accept async before primary is dropped")
+			require.Positive(t, partial.primaryBlocked.Load())
+			require.Zero(t, partial.primaryAccepted.Load())
+		}
+		require.Zero(t, partial.commits.Load())
+		for key, want := range map[string]string{string(data): "after-loss", string(witness): "right"} {
+			got, err := kv.Get(ctx, []byte(key))
+			require.NoError(t, err)
+			require.Equal(t, want, string(got), "partial async transaction must publish neither mutation")
+		}
+		t.Logf("PROTOCOL_ASYNC_PARTIAL_DELIVERY_OK primary_accepted=%t secondary_accepted=%t both_mutations_unpublished=true", acceptPrimary, !acceptPrimary)
 	}
-	t.Log("PROTOCOL_ASYNC_PARTIAL_DELIVERY_OK secondary_accepted=true primary_undelivered=true both_mutations_unpublished=true")
 }

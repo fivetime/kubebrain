@@ -70,6 +70,9 @@ secondary 接受、primary 阻断、目标事务零 Commit RPC；调用者收到
 单测还确认 Region/key/transport 错误和非正 MinCommitTS 不释放 secondary
 屏障。等待 secondary 有 10 秒上限，不伪造服务端成功响应。它验证
 存储层两 Region 的受控失败，不等于完整后端防护、重启或 Raft 故障验收。
+该场景随后按两个方向各执行一次：secondary 已接受而 primary 未送达，
+以及 primary 已接受而 secondary 未送达。分别核对对应接受／阻断计数，
+另一类 Prewrite 接受数必须为零；两种方向都要求零 Commit RPC 和两键旧值。
 
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键
