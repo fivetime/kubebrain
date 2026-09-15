@@ -156,11 +156,12 @@ for test_name in TestRealTiKVAsyncProcessGuardedResponseLoss TestRealTiKVAsyncEx
   TestRealTiKVTxnCompareCommitConflict TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup \
   TestRealTiKVAsyncExperimentLeadershipConflict TestRealTiKVAsyncExperimentRestorationConflict \
   TestRealTiKVAsyncExperimentBackendPublication TestRealTiKVAsyncExperimentProcessDefaults \
-  TestRealTiKVAsyncProcessLeadershipConflict TestRealTiKVAsyncProcessRestorationConflict TestRealTiKVAsyncProcessGuardedPartialDelivery; do
+  TestRealTiKVAsyncProcessLeadershipConflict TestRealTiKVAsyncProcessRestorationConflict \
+  TestRealTiKVAsyncProcessGuardedPartialDelivery TestRealTiKVAsyncProcessGuardedMissingPrimary; do
   nonce="$(openssl rand -hex 16)"
   protocol_mode=1pc
   async_experiment=0
-  if [[ "$test_name" == TestRealTiKVAsyncProcessGuardedPartialDelivery ]]; then protocol_mode=2pc; async_experiment=1; fi
+  if [[ "$test_name" == TestRealTiKVAsyncProcessGuardedPartialDelivery || "$test_name" == TestRealTiKVAsyncProcessGuardedMissingPrimary ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVAsyncExperimentProcessDefaults || "$test_name" == TestRealTiKVAsyncProcessLeadershipConflict || "$test_name" == TestRealTiKVAsyncProcessRestorationConflict ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVAsyncExperimentBackendResponseLoss || "$test_name" == TestRealTiKVAsyncExperimentGuardedResponseLoss || "$test_name" == TestRealTiKVAsyncProcessGuardedResponseLoss ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup || "$test_name" == TestRealTiKVAsyncExperimentLeadershipConflict || "$test_name" == TestRealTiKVAsyncExperimentRestorationConflict || "$test_name" == TestRealTiKVAsyncExperimentBackendPublication ]]; then protocol_mode=2pc; async_experiment=1; fi

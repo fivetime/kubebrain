@@ -3,7 +3,7 @@
 本目录维护根模块的本机真实 PD/TiKV 测试入口；旧独立 SQL mock 模块已退役。
 不接入 Kubernetes，不需要 kubeconfig。
 
-当前入口共 28 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
+当前入口共 29 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
 当前执行顺序。三个单 Region 后端响应丢失用例先于主动 Region 分裂执行；
 后续增加用例时以入口中的测试名清单及明确 PASS 回执为准，不累加历史轮次。
 
@@ -127,8 +127,11 @@ secondary 接受、primary 阻断、目标事务零 Commit RPC；调用者收到
 Prewrite 回复后，阻断其余组的送达并取消调用者。必须观察主键已接受、
 secondary 未接受和零 Commit，后台解析结果为 absent，用户数据与事件未发布，
 可见修订号仍为 100；随后写入复用候选 101，Watch 只收到该次写入的 CREATE。
-该场景仍保留两类写防护，但不同时改变防护 token；不证明网络分区、重启、
-主键未送达的反向后端路径或多副本故障恢复。
+`TestRealTiKVAsyncProcessGuardedMissingPrimary` 覆盖反向顺序：secondary
+实际接受后才阻断主键，必须观察主键未接受；后端仍须解析 absent、保持数据
+与事件未发布并复用候选修订号。两例还在恢复和下一次写入后重新检查目标
+事务 Commit RPC 为零。两例仍保留两类写防护，但不同时改变防护 token；
+不证明网络分区、进程重启或多副本故障恢复。
 
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键

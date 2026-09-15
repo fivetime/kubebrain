@@ -222,7 +222,8 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
-	partialAsync := scenario == "async-process-guarded-partial"
+	missingPrimary := scenario == "async-process-guarded-missing-primary"
+	partialAsync := missingPrimary || scenario == "async-process-guarded-partial"
 	if partialAsync {
 		scenario = "async-process-guarded-committed"
 	}
@@ -392,7 +393,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 					return
 				}
 				asyncPartial = &protocolAsyncPartialLoss{Client: client.GetTiKVClient(), startTS: txn.StartTS(), cancel: cancelCommit,
-					peerReady: make(chan struct{}), acceptPrimary: true}
+					peerReady: make(chan struct{}), acceptPrimary: !missingPrimary}
 				client.SetTiKVClient(asyncPartial)
 				return
 			}
@@ -519,7 +520,9 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	require.NoError(t, err)
 	left, right := []byte("/integration/onepc/left"), []byte("/integration/onepc/right")
 	if partialAsync {
-		_, err := client.SplitRegions(ctx, [][]byte{ks.EncodeEventLogKey(101, left)}, false, nil)
+		// Both event mutations belong to this transaction. Split between them,
+		// not before the first event where all mutations may remain on one side.
+		_, err := client.SplitRegions(ctx, [][]byte{ks.EncodeEventLogKey(101, right)}, false, nil)
 		require.NoError(t, err)
 	}
 	// Each real fixture case runs in its own process. Read the SDK counter,
@@ -534,6 +537,10 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	result, revision, err := b.TxnApply(commitCtx, []backend.TxnWriteOp{
 		{Key: left, Value: []byte("left-value")}, {Key: right, Value: []byte("right-value")},
 	}, nil)
+	if partialAsync && asyncPartial != nil {
+		t.Logf("PROTOCOL_PARTIAL_DELIVERY_OBSERVED primary_accepted=%d secondary_accepted=%d primary_blocked=%d secondary_blocked=%d commits=%d",
+			asyncPartial.primaryAccepted.Load(), asyncPartial.secondaryAccepted.Load(), asyncPartial.primaryBlocked.Load(), asyncPartial.secondaryBlocked.Load(), asyncPartial.commits.Load())
+	}
 	if retrying || splitting {
 		require.NoError(t, err, "real server must confirm the retried single transaction")
 		require.Len(t, result, 2)
@@ -550,9 +557,15 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	require.EqualValues(t, 101, revision)
 	if partialAsync {
 		require.NotNil(t, asyncPartial)
-		require.Positive(t, asyncPartial.primaryAccepted.Load())
-		require.Positive(t, asyncPartial.secondaryBlocked.Load())
-		require.Zero(t, asyncPartial.secondaryAccepted.Load())
+		if missingPrimary {
+			require.Positive(t, asyncPartial.secondaryAccepted.Load())
+			require.Positive(t, asyncPartial.primaryBlocked.Load())
+			require.Zero(t, asyncPartial.primaryAccepted.Load())
+		} else {
+			require.Positive(t, asyncPartial.primaryAccepted.Load())
+			require.Positive(t, asyncPartial.secondaryBlocked.Load())
+			require.Zero(t, asyncPartial.secondaryAccepted.Load())
+		}
 		require.Zero(t, asyncPartial.commits.Load())
 		require.Eventually(t, func() bool { return m.absent.Load() == 1 }, 10*time.Second, 10*time.Millisecond)
 		require.Zero(t, m.committed.Load())
@@ -575,7 +588,8 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		require.Equal(t, []byte("next"), backend.StripInlineValue(next[0].Kv.Value))
 		require.EqualValues(t, 1, m.absent.Load())
 		require.Zero(t, m.committed.Load())
-		t.Log("PROTOCOL_PROCESS_ASYNC_PARTIAL_OK primary_accepted=true secondary_delivered=false absent=1 revision_reused=true")
+		require.Zero(t, asyncPartial.commits.Load(), "the failed transaction must not commit during recovery or the next write")
+		t.Logf("PROTOCOL_PROCESS_ASYNC_PARTIAL_OK primary_accepted=%t secondary_accepted=%t absent=1 revision_reused=true", !missingPrimary, missingPrimary)
 		return
 	}
 	if asyncExperiment {

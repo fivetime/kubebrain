@@ -5,6 +5,23 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+最新本地真实协议覆盖为 29 项，普通／race 均通过，补齐主键未送达、
+secondary 已接受的反向后端解析。两个部分送达方向均检查 absent=1、
+committed=0、无用户数据／事件、修订号复用，并在恢复及下一写入后复核
+目标 Commit 为零。首轮普通通过，但 race 在正向用例未触发故障而返回成功，
+证据 `/tmp/kubebrain-real-protocol.tT8jvFz1G1`（result=1、cleanup_failed=0）；
+不抹除该失败。分裂点从第一个事件之前改为两个目标事件之间，避免不能保证
+变更分处两侧的边界，并增加实际接受／阻断日志。修正后普通证据
+`/tmp/kubebrain-real-protocol.SKyqXeiSUn`，race 证据
+`/tmp/kubebrain-real-protocol.F4lx7hDg6P`，均 result=0、cleanup_failed=0；
+两个方向 race 用例 6.09／6.03 秒，独立资源检查为空、测试二进制已清理。
+storage／build race 8.500／2.528 秒及 vet 通过，尚非多副本或性能验收。
+
+已推送源码 `1a6388df` 的 backend CI `34918109011` 和 probe CI
+`34918109027` 均成功；backend 日志包含真实协议与 PD／TiKV 启动中断清理
+成功回执。它们验证 27 项版本，不包含上述尚在本地的两个部分送达用例。
+镜像 CI `34918109021` 仍运行中，无新部署或远端协议开关变更。
+
 最新本地真实协议覆盖为 28 项，普通／race 均通过。新增进程默认 async、
 两类写防护均安装时的后端部分送达：实际分裂 Region，主键组真实接受后
 阻断其他组，调用者取消并得到不确定结果；后台解析 absent=1、committed=0，
