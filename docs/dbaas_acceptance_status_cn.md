@@ -111,6 +111,23 @@ Prewrite 的正 `MinCommitTS` 与 Region 错误重试，禁止静默回退混入
 通过，vet 通过。该单副本成功路径仍不覆盖独立 Watch 历史、进程重启、
 响应丢失恢复或多副本持久性，不能替代生产性能验收。
 
+异步响应丢失扩展（本机，尚不属于 `f3563f7d` 的 CI）：在同 Region 双键
+Prewrite 被真实服务端接受后，仅丢弃一次正 `MinCommitTS` 响应并取消调用者，
+要求适配器保留 `ErrUncertainResult`，随后用未取消的上下文读到两键提交值。
+首轮 race 的协议断言通过，但新增辅助键不在原固定清理清单内，最终空前缀
+断言失败，不能计作整轮通过。证据 `/tmp/kubebrain-real-protocol.tI4YypOnbG/`，
+退出 1；外层已销毁一次性容器／网络（`cleanup_failed=0` 仅指外层资源清理）。
+修正为先用同事务 owner CAS 和精确键删除清理辅助键，再执行原固定清理，
+没有扩大共享清理清单或去掉最终空前缀断言。另加入故障注入器单测，确认
+其他事务、普通 2PC、async 回退响应均不触发故障，成功响应只丢弃一次。
+修正后普通／race 各 21 项通过，扩展用例分别 8.15／8.66 秒，证据分别为
+`/tmp/kubebrain-real-protocol.DAz5KQ4xQV/`、
+`/tmp/kubebrain-real-protocol.bBG0Ddsefx/`；两轮退出 0、`cleanup_failed=0`，
+独立核验对应容器／网络为空、编译测试文件不存在。最终存储／build 全量
+race 7.738／2.501 秒通过，vet 通过。该结果只覆盖同 Region 的存储适配器
+响应丢失与 SDK 读取恢复，不替代后端持久见证解析、多 Region 部分送达、
+进程重启或多副本持久性验证。
+
 网络复查（2026-09-15）：直接 SSH 到 `k8s3-worker1/2/3`（10.32.32.70–72），
 三个节点均可解析 ghcr.io，HTTPS registry 返回预期的未认证 401，公开镜像
 token 接口返回 200；未复现历史 IPv6 DNS 超时。本次仅复查连通性，没有

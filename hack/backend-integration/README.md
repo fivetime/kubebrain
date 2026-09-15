@@ -45,6 +45,14 @@ Region 的写入不能发布。该冲突覆盖不替代完整后端 fence／响�
 Commit 不进入前台主提交观测；默认 2PC 例保留原服务端主提交明细断言。
 该用例不注入故障，不覆盖独立 Watch 历史、进程重启或多副本持久性。
 
+第十八例后续还覆盖同一 Region 的双键 async Prewrite 成功响应丢失：仅在
+真实服务端接受目标事务、返回正 `MinCommitTS` 后丢弃一次响应并取消调用者，
+适配器必须返回 `ErrUncertainResult`，新上下文读取仍须得到两键完整提交值。
+断言被丢弃响应对应两项 mutation，不能把部分跨 Region 预写误当作已提交。
+辅助键由独立的精确键删除和同事务 owner CAS 清理，原固定清理清单和最终
+空前缀断言不变。该场景验证存储适配器与 SDK 读取恢复，不等于完整后端的
+持久见证不确定结果解析或多 Region 部分送达恢复。
+
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键
 Commit 和后台 ResolveLock。读取仍返回已提交值，且观察到主键状态查询。

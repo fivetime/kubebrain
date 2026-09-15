@@ -3,6 +3,7 @@ package tikv
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -31,6 +32,73 @@ type protocolAsyncCommitHold struct {
 	asyncAttempts                                                atomic.Int32
 	regionsMu                                                    sync.Mutex
 	asyncRegions                                                 map[uint64]struct{}
+}
+
+// Lose a real successful async Prewrite response for one exact transaction.
+// Cancellation prevents a subsequent retry from confirming it to the caller.
+type protocolAsyncResponseLoss struct {
+	clienttikv.Client
+	startTS   uint64
+	cancel    context.CancelFunc
+	drops     atomic.Int32
+	mutations atomic.Int32
+}
+
+func (c *protocolAsyncResponseLoss) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
+	response, err := c.Client.SendRequest(ctx, addr, req, timeout)
+	if req.Type != tikvrpc.CmdPrewrite || req.Prewrite().StartVersion != c.startTS || !req.Prewrite().UseAsyncCommit || err != nil || response == nil {
+		return response, err
+	}
+	r, ok := response.Resp.(*kvrpcpb.PrewriteResponse)
+	if !ok || r == nil || r.RegionError != nil || len(r.Errors) != 0 || r.MinCommitTs <= c.startTS {
+		return response, err
+	}
+	if c.drops.CompareAndSwap(0, 1) {
+		c.mutations.Store(int32(len(req.Prewrite().Mutations)))
+		c.cancel()
+		return nil, errors.New("injected loss of real successful async Prewrite response")
+	}
+	return response, err
+}
+
+func TestProtocolAsyncResponseLossScope(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		start, minCommit uint64
+		async, drop      bool
+	}{
+		{"other-transaction", 11, 20, true, false},
+		{"ordinary-2pc", 10, 20, false, false},
+		{"async-fallback", 10, 0, true, false},
+		{"invalid-minimum", 10, 10, true, false},
+		{"accepted-async", 10, 20, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			response := &tikvrpc.Response{Resp: &kvrpcpb.PrewriteResponse{MinCommitTs: tc.minCommit}}
+			stub := &protocolResponseStub{response: response}
+			loss := &protocolAsyncResponseLoss{Client: stub, startTS: 10, cancel: cancel}
+			req := tikvrpc.NewRequest(tikvrpc.CmdPrewrite, &kvrpcpb.PrewriteRequest{StartVersion: tc.start, UseAsyncCommit: tc.async})
+			got, err := loss.SendRequest(ctx, "unused", req, time.Second)
+			if tc.drop {
+				require.Nil(t, got)
+				require.ErrorContains(t, err, "injected loss")
+				require.ErrorIs(t, ctx.Err(), context.Canceled)
+				require.EqualValues(t, 1, loss.drops.Load())
+			} else {
+				require.NoError(t, err)
+				require.Same(t, response, got)
+				require.NoError(t, ctx.Err())
+				require.Zero(t, loss.drops.Load())
+			}
+			// This fault is one-shot; it must never fabricate a retry response.
+			got, err = loss.SendRequest(context.Background(), "unused", req, time.Second)
+			require.NoError(t, err)
+			require.Same(t, response, got)
+			require.Equal(t, 2, stub.calls)
+		})
+	}
 }
 
 func (c *protocolAsyncCommitHold) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
@@ -211,4 +279,42 @@ func TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup(t *testing.T) {
 		require.Equal(t, want, string(got), "failed async batch must not publish either mutation")
 	}
 	t.Log("PROTOCOL_ASYNC_CONFLICT_OK stale_snapshot=true prewrite_conflict=true sibling_write_unpublished=true")
+
+	// Both keys are below the earlier split boundary. Require both mutations in
+	// the lost successful Prewrite so partial multi-Region prewrite cannot be
+	// mistaken for a transaction that was already logically committed.
+	lostTxn, err := client.BeginWithContext(ctx)
+	require.NoError(t, err)
+	lostTxn.SetEnable1PC(false)
+	lostTxn.SetEnableAsyncCommit(true)
+	lossCtx, cancelLoss := context.WithCancel(ctx)
+	defer cancelLoss()
+	loss := &protocolAsyncResponseLoss{Client: client.GetTiKVClient(), startTS: lostTxn.StartTS(), cancel: cancelLoss}
+	client.SetTiKVClient(loss)
+	other := []byte(prefix + "data-loss")
+	// Registered after the original fixed-key cleanup, so this exact extra key
+	// is deleted first while the owner claim still exists. Never broaden the
+	// shared smoke cleanup's deletion set or drop its empty-prefix assertion.
+	t.Cleanup(func() {
+		cleanupCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		cleanup := kv.BeginBatchWrite()
+		cleanup.CAS([]byte(prefix+"owner"), owner, owner, 0)
+		cleanup.Del(other)
+		require.NoError(t, cleanup.Commit(cleanupCtx))
+	})
+	lostBatch := &batch{txn: lostTxn}
+	lostBatch.Put(data, []byte("after-loss"), 0)
+	lostBatch.Put(other, []byte("paired-after-loss"), 0)
+	err = lostBatch.Commit(lossCtx)
+	require.ErrorIs(t, err, storage.ErrUncertainResult)
+	require.ErrorIs(t, lossCtx.Err(), context.Canceled)
+	require.EqualValues(t, 1, loss.drops.Load())
+	require.EqualValues(t, 2, loss.mutations.Load(), "both mutations must be accepted in the lost reply")
+	for key, want := range map[string]string{string(data): "after-loss", string(other): "paired-after-loss"} {
+		got, err := kv.Get(ctx, []byte(key))
+		require.NoError(t, err)
+		require.Equal(t, want, string(got), "lost success response must not roll back committed async data")
+	}
+	t.Log("PROTOCOL_ASYNC_RESPONSE_LOSS_OK uncertain=true both_mutations_visible=true caller_cancelled=true")
 }
