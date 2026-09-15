@@ -19,7 +19,7 @@ import (
 )
 
 func TestCaptureRolloutTLSMetricsIdentity(t *testing.T) {
-	for _, mode := range []string{"stable", "restart", "wrong-probe", "wrong-namespace"} {
+	for _, mode := range []string{"stable", "restart", "wrong-probe", "wrong-namespace", "bad-tikv-receipt", "tikv-stable", "tikv-probe-restart"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			write := func(name, content string) string {
@@ -48,18 +48,33 @@ case "$1/$2" in
     uid=ns-uid; [[ "$MODE" != wrong-namespace ]] || uid=other
     if [[ "$*" == *jsonpath* ]]; then printf '%s' "$uid"; else jq -cn --arg uid "$uid" '{metadata:{uid:$uid}}'; fi ;;
   get/configmap) cat "$FIXTURE/ca.json" ;;
+  get/statefulset)
+    jq -cn '{metadata:{uid:"tikv-sts-uid",generation:1},spec:{replicas:1},status:{readyReplicas:1,observedGeneration:1}}' ;;
   get/pod)
     pod=$3; uid="$pod-uid"; count=0
+    if [[ "$pod" == tikv-0 ]]; then
+      jq -cn --arg digest "$DIGEST" '{metadata:{uid:"tikv-uid",ownerReferences:[{uid:"tikv-sts-uid",controller:true}]},spec:{containers:[{name:"tikv",image:"tikv:test"}]},status:{phase:"Running",containerStatuses:[{name:"tikv",ready:true,containerID:"tikv-container",imageID:$digest,restartCount:0,state:{running:{startedAt:"start"}}}]}}'
+      exit 0
+    fi
     [[ ! -f "$FIXTURE/$pod.count" ]] || count=$(<"$FIXTURE/$pod.count")
     echo $((count+1)) > "$FIXTURE/$pod.count"
     restart=0
     if [[ "$MODE" == restart && "$pod" == brain-0 && "$count" -gt 0 ]]; then restart=1; fi
+    if [[ "$MODE" == tikv-probe-restart && "$pod" == probe && -f "$FIXTURE/tikv-collected" ]]; then restart=1; fi
     if [[ "$MODE" == wrong-probe && "$pod" == probe ]]; then uid=other; fi
     jq -cn --arg uid "$uid" --arg image "$IMAGE" --arg digest "$DIGEST" --argjson restart "$restart" '
       {metadata:{uid:$uid,ownerReferences:[{uid:"sts-uid",controller:true}]},spec:{containers:[{image:$image}]},
        status:{phase:"Running",podIP:"127.0.0.1",containerStatuses:[{name:"main",ready:true,containerID:"container",imageID:$digest,restartCount:$restart,state:{running:{startedAt:"start"}}}]}}' ;;
   logs/*) printf 'PROBE_PROGRESS scope=diagnostic_only\nPROBE_WATCH_DELIVERY scope=diagnostic_only\n' ;;
   exec/*)
+    if [[ "$2" == tikv-0 ]]; then
+      [[ "$*" == 'exec tikv-0 -c tikv -- curl --fail --silent --show-error --max-time 10 http://127.0.0.1:20180/metrics' ]]
+      touch "$FIXTURE/tikv-collected"
+      for family in raft_engine_sync_log_duration_seconds tikv_grpc_msg_duration_seconds tikv_scheduler_command_duration_seconds; do
+        printf '# TYPE %s histogram\n%s_count 1\n' "$family" "$family"
+      done
+      exit 0
+    fi
     [[ "$*" == *'--cacert /dev/stdin'* && "$*" == *'--connect-to service.test:8080:127.0.0.1:8080'* && "$*" == *'https://service.test:8080/metrics'* ]]
     incoming=$(cat)
     [[ "$incoming" == "$(<"$FIXTURE/ca.crt")" ]]
@@ -68,17 +83,30 @@ case "$1/$2" in
 esac
 `)
 			cmd := exec.Command("bash", "capture-rollout-tls-metrics.sh", dir, phase)
+			tikvReceipt := ""
+			if mode == "bad-tikv-receipt" {
+				tikvReceipt = filepath.Join(dir, "missing-receipt.json")
+			} else if strings.HasPrefix(mode, "tikv-") {
+				tikvReceipt = write("tikv-receipt.json", `{"format":"kubebrain.tikv-metrics-receipt.v1","namespace":"test","namespace_uid":"ns-uid","statefulset":{"name":"tikv","uid":"tikv-sts-uid"},"pods":[{"name":"tikv-0","uid":"tikv-uid","container":"tikv","image":"tikv:test","imageID":"`+digest+`","containerID":"tikv-container","restartCount":0,"startedAt":"start"}]}`)
+			}
 			cmd.Env = append(os.Environ(), "FIXTURE="+dir, "MODE="+mode, "IMAGE="+image, "DIGEST="+digest,
+				"DIAGNOSTIC_TIKV_RECEIPT="+tikvReceipt,
 				"KUBECONFIG="+write("config", "unused"), "KUBECTL_CONTEXT=test", "KUBEBRAIN_NAMESPACE=test", "KUBEBRAIN_STATEFULSET=brain", "PROBE_POD=probe",
 				"PROBE_INFO_CA_CONFIGMAP=ca", "PROBE_INFO_TLS_SERVER_NAME=service.test", "TARGET_RUNTIME_DIGESTS="+digest,
 				"EXPECTED_REPLICAS=1", "EXPECTED_INFO_PORT=8080", "DIAGNOSTIC_NAMESPACE_UID=ns-uid", "DIAGNOSTIC_INFO_CA_UID=ca-uid", "DIAGNOSTIC_KUBECTL_BIN="+mock)
 			out, err := cmd.CombinedOutput()
-			if mode == "stable" {
+			if mode == "stable" || mode == "tikv-stable" {
 				require.NoError(t, err, string(out))
 				require.FileExists(t, filepath.Join(dir, "capture", "ended-at"))
+				if mode == "tikv-stable" {
+					require.FileExists(t, filepath.Join(dir, "capture", "tikv", "ended-at"))
+				}
 			} else {
 				require.Error(t, err, string(out))
 				require.NoFileExists(t, filepath.Join(dir, "capture", "ended-at"))
+				if mode == "tikv-probe-restart" {
+					require.FileExists(t, filepath.Join(dir, "capture", "tikv", "ended-at"), "must reject after successful TiKV collection")
+				}
 			}
 		})
 	}

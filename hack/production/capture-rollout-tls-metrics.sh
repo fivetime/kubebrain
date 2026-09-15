@@ -70,6 +70,11 @@ for ((ordinal=0; ordinal<EXPECTED_REPLICAS; ordinal++)); do
     rg -q "^tikv_client_go_${family}\\{type=\"ok\"\\}" "$directory/$pod-metrics.txt"
   done
 done
+if [[ -n "${DIAGNOSTIC_TIKV_RECEIPT:-}" ]]; then
+  bash "$(dirname "$0")/capture-rollout-tikv-metrics.sh" "$directory" "$DIAGNOSTIC_TIKV_RECEIPT"
+fi
+# Fence the probe across the optional extension too: its successful capture
+# must not hide a probe restart before the overall sample completes.
 capture "$directory/probe-after.json" identity "$probe"
 capture "$directory/probe-progress-after.log" kctl logs "$probe" --tail=10
 cmp "$directory/probe-before.json" "$directory/probe-after.json"
