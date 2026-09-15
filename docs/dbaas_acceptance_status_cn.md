@@ -5,6 +5,140 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+## 2026-09-15 follower Watch 排查：废弃订阅上下文回收
+
+最新补充 `TestWatchAbandonedGenerationSendsWireCancel`：不替换 clientv3
+Watcher，以真实 TCP/gRPC 和可控 Watch 服务端验证旧 ID 的 CancelRequest、
+新代从 revision 43 续传并收到 PUT，以及共享连接上另一条 Watch 仍能收到
+显式 progress。测试主动保持旧 multiplexed stream 存活，避免把关闭整个
+client 误当作取消单个订阅。它不模拟完整 TiKV 或真实选主过程。
+上下文与线路测试共同重复 20 次通过（6.242s，
+`/tmp/kubebrain-watch-generation-wire-repeat.log`）；整个代理包 race 再次
+通过（会话 `21762` exit 0，3.345s，
+`/tmp/kubebrain-watch-generation-wire-package-race.log`），vet 和 diff 检查通过。
+本轮将本地基准和订阅回收修复分别提交保存，尚未推送或触发对应 CI；
+集群未部署新候选，以下“尚未提交”保留为前一阶段记录。
+
+实际 `etcdProxy.Watch` 各 backend generation 直接复用逻辑 Watch 上下文；
+重连分支离开旧 inputCh 时没有取消单独订阅。共享 client 没关闭时，旧订阅
+可能继续接收并积累无人消费的数据。官方 clientv3 v3.7.1 的 `watch.go`
+订阅循环在 `ws.initReq.ctx.Done()` 退出，未消费响应则进入 `ws.buf`。
+
+新增 `TestWatchAbandonedGenerationCancelsSubscription`，用真实 ready
+gRPC transport、可控 Watch 替身模拟 generation 失效与 Created 前响应，
+保持共享 client 不关闭。修复前两个子用例均失败：新代已打开但旧代上下文
+未取消（`/tmp/kubebrain-watch-generation-before.log`，会话 `80112` exit 1）。
+修复给每代独立上下文，在重连等待前及所有终止出口取消；不改变逻辑 Watch
+授权 marker、resume revision、Created 门禁或 100ms 重连间隔。测试同时
+检查 Created 后续传 43、未 Created 仍续传 42，新代不会被旧代取消，且
+调用方结束时新代也取消。
+
+最终重复 20 次通过（4.166s，`/tmp/kubebrain-watch-generation-after.log`）；
+整个 etcdproxy 包 race 通过（会话 `95019` exit 0，3.222s，日志
+`/tmp/kubebrain-watch-generation-package-race.log`），包 vet 和 diff 检查通过。
+这是已复现的上下文生命周期缺口，不是实际集群泄漏规模测量；Watch 替身
+也不能替代真实 leader 切换验收。尚无证据证明它导致此前稳定窗口的时延。
+源码尚未提交／部署，仍需源码 CI、镜像审计和原门限集群验收。
+入口侧 `TestClientCertificateIdentitySurvivesFollowerProxy` 与
+`TestClientWatchAfterCloseIsBoundedAndCanceled` 也通过（会话 `78180` exit 0，
+0.074s，`/tmp/kubebrain-watch-generation-ingress.log`），不是完整入口包测试。
+
+## 2026-09-15 后续本地排查：Put→Watch 软件路径基准
+
+新增 `BenchmarkClientPutWatchDelivery`，使用真实服务端拦截器、官方 clientv3、
+单节点 memkv，分别走 bufconn 和 TCP 回环；验证逐次写入 revision、值、
+PrevKV，不跳过协议断言。记录 Put 返回前与返回后到 Watch 取出两个区间，
+没有性能通过阈值，也不修改生产配置。共享测试服务器辅助函数改为接收
+`testing.TB`，让测试与基准复用同一套资源关闭逻辑。
+
+复现：`go test ./pkg/server/etcd -run '^$' -bench '^BenchmarkClientPutWatchDelivery$' -benchtime=1000x -count=3`。
+三轮每轮 1000 次的返回后 Watch 等待：bufconn 20.049–24.321 微秒，
+TCP 回环 24.260–27.612 微秒。日志 `/tmp/kubebrain-put-watch-baseline-repeat.log`，
+命令 exit 0；etcd 包 vet 通过。该基准无 TLS、无代理、无远端 TiKV/PD、无
+100ms 操作后等待，且主机并非独占；不能直接与集群时延作受控对照，也不能
+由此判定网络根因或声称性能验收通过。它仅不支持该本地软件路径普遍自带
+数十毫秒等待。对应 race 校验通过（1.489s）：两种连接各 10 次基准迭代，
+以及既有 `TestPutCreatesAndOverwritesKey`、
+`TestClientWatchAfterCloseIsBoundedAndCanceled`；日志
+`/tmp/kubebrain-put-watch-baseline-race.log`，会话 `60748` exit 0。
+这不是完整 etcd 包 race 结果。本轮没有再次部署集群，也没有生产性能修复。
+
+后续加入 `tcp-tls`，使用临时 ECDSA 证书、独立信任池和 IP SAN 校验，
+不跳过证书验证；仅服务端 TLS，非 mTLS，证书生成与初始 Watch 握手不计时。
+相同命令三轮各 1000 次通过（会话 `39911` exit 0，包用时 5.002s）：
+bufconn 返回后 Watch 均值 17.095–20.300 微秒，TCP 21.326–24.813 微秒，
+TCP TLS 22.157–24.571 微秒。日志 `/tmp/kubebrain-put-watch-tls-repeat.log`。
+这些是每轮均值范围，不是尾延迟；本地主机非独占，且存在并行编译任务，
+不能据此量化 TLS 开销或排除真实部署的 TLS／传输路径问题。
+本地 TLS 场景同样未复现数十毫秒等待；验收结论不变。包 vet 通过。
+针对性 race 会话 `40952` exit 0：上述两项既有测试及三种连接各 10 次
+基准通过，日志 `/tmp/kubebrain-put-watch-tls-race.log`；不是完整包 race。
+
+再加入独立 `BenchmarkClientPutWatchDeliveryAfterIdle`，复用相同服务器、
+客户端及 revision/value/PrevKV 断言，仅在每次完成后等待 100ms，匹配探针
+`main.go` 的 `time.Sleep(cfg.interval)` 位置。标准 ns/op 包含等待，自定义
+`put-ns/op` 与 `post-put-watch-ns/op` 不含等待；原无间隔基准保持不变。
+复现：`go test ./pkg/server/etcd -run '^$' -bench '^BenchmarkClientPutWatchDeliveryAfterIdle$' -benchtime=30x -count=3`。
+会话 `86829` exit 0，包用时 28.731s；日志
+`/tmp/kubebrain-put-watch-idle-repeat.log`。三轮各 30 次返回后 Watch 均值：
+bufconn 27.918–62.678 微秒、TCP 32.441–63.706 微秒、TCP TLS
+40.713–56.127 微秒；标准总耗时约 101–102ms/op（包含主动等待）。
+未复现持续的数十毫秒返回后等待，但样本小且只有均值，不代表尾延迟保证。
+此对照只补齐等待间隔，不包含真实探针的 PD/Region 检查、多个直连 Watch、
+KeepAlive、代理和远端后端；不能据此排除部署中这些因素的组合影响。
+最终针对性 race 会话 `19291` exit 0：两项既有测试及连续／间隔基准的
+三种连接各 10 次均通过，日志 `/tmp/kubebrain-put-watch-idle-race.log`。
+etcd 包 vet 与 `git diff --check` 通过。上述新增基准尚未提交或触发 CI；
+下一步需优先核对真实 follower 代理路径，避免把本地单 leader 结果外推到
+集群。当前没有生产修复，也没有新一轮集群实验。
+
+## 2026-09-15 91f367ac 实验未通过，已恢复 generation 68：配对诊断
+
+执行器报告原滚动后 900s 内未完成 6000 次，验收未通过，最终 exit 1。
+接近截止观察值为 06:59:57.616 UTC、4560/6000、SDK 错误 0，不是精确
+截止计数。以下为恢复前诊断证据；恢复后数据不用于候选验收，最终恢复
+及清理已独立核验：完整 spec、原固定镜像、默认 2PC、实际 imageID 与
+实验前一致，generation/observed 68/68、Ready/updated 3/3；夹具对象
+计数均为 0，预拉取回执 removed=true，独立资源清单确认本次对象已移除。
+两个本地辅助二进制已按哈希核对后删除，可重建。当前无活动实验；
+下方阶段性进度不替代此最终结果。剩余瓶颈及三次内部超时仍待定位。
+
+对应源码 CI、镜像审计及 727 项执行器测试通过后，已按授权启动临时
+async commit 实验，1PC 关闭、原门限不变。候选 generation 67/67，
+3/3 更新就绪；执行会话 `80672` 仍在运行，尚无最终验收或恢复结论。
+首个采样因本地日志正则拼接错误未完整通过，已剔除；修正版独立采样
+`sample.s19ZAlRC`、`sample.XlRhcPix` 均通过，四个容器的运行身份跨样本一致。
+06:46:12.717–06:49:03.883 UTC，操作数由 660 到 1500，新增 840 次，
+Put SDK 错误为 0，接收匹配 840，缺失／重复／异常时间增量均为 0。
+返回后 Watch 等待累计 28.432 秒，其中接收回调前 28.398189 秒，
+回调后到业务取出 0.033755 秒。该窗口不支持回调后的 clientv3 分发为
+主要等待来源；回调前仍包含服务端、代理、网络、gRPC 接收调度和解码，
+不能据此归因于网络。邻近服务器指标窗口 async 成功增加 1257（pod2），
+2PC／1PC 均未增加；指标抓取窗口并非逐操作对齐。证据：
+`watch-delivery-release.UtTUj7ba/paired-valid-1-2.json`。不以诊断替代验收。
+
+第三组有效采样 `sample.Z9BaiKSP` 与首组身份一致，扩展至 06:51:06.151 UTC：
+新增 1320 次操作全部匹配、Put SDK 错误为 0，回调前等待 52.479298 秒，
+回调后 0.052900 秒。邻近后端窗口 Put 计数 1291，后端累计 72.750 秒、
+Prewrite 56.369 秒，Prewrite RPC 5164 次；这些阶段并非可相加的同一计时。
+同时发现 pod2 内部 async 成功增加 2071、错误增加 3，2PC／1PC 未增加。
+保留的同一容器日志中有 3 条提交结果不确定／context deadline exceeded：
+一条调用栈来自选主锁更新，两条来自 serializable checkpoint 创建。
+因此用户 SDK 无错误不等于内部无错误；尚未独立证明这些超时与 Watch
+等待的因果关系，不调整超时或一致性保护。证据为 `paired-valid-1-3.json`、
+`checkpoint-errors.log` 与 `error-pod-before/after.json`，实验仍未结束。
+
+随后第三到第四组有效样本（06:51:06.151–06:54:09.751 UTC）中，又有
+900 次操作全部匹配，SDK 和内部 async 错误计数均未增加；async 成功
+增加 1431，2PC／1PC 未增加。回调前等待 30.319228 秒，回调后
+0.037117 秒，继续不支持回调后分发为主要瓶颈。该窗口正常不消除先前
+三次内部错误证据。配对记录 `paired-valid-3-4.json`，尚无最终验收结论。
+
+首组至第五组有效样本扩展至 06:56:14.271 UTC，操作数由 660 至 3480，
+新增 2820 次全部匹配、SDK 错误为 0；回调前累计等待 103.876447 秒，
+回调后 0.115637 秒。四个容器身份一致，pod2 内部 async 错误计数仍为 3，
+相较第四组未增长。证据 `paired-valid-1-5-client.json`，原时限仍继续执行。
+
 ## 2026-09-15 最新结果：PrevKV 压缩水位诊断实验未通过，已恢复 generation 66
 
 源码 `360e9456b155ff1a8ba04aad23d2eb2af8809379` 的 backend
@@ -44,7 +178,19 @@ clientv3 测试通过；相关 race 1.268s，新增测试重复 20 次 race 2.39
 0 分配，仅测诊断回调与取出，不代表集群延迟或高并发开销。
 完整探针包 race（`-count=1 -timeout=20m`）通过，耗时 332.445s，
 会话 `94575` exit 0，日志 `/tmp/kubebrain-watch-delivery-full-race.log`；
-四个被测源码文件哈希复核一致。新源码 CI／镜像核验及后续授权实验尚未执行；
+四个被测源码文件哈希复核一致。新源码 `91f367ac5c65` 已推送；
+backend CI `34935440711` 成功（29 个真实协议用例各普通／race 通过，
+正常和中断清理均通过），probe CI `34935419431` 成功（完整 race
+369.162s，构建契约 race 2.804s，五个新增诊断用例通过）。image CI
+`34935419402` 已成功，独立镜像审计 `18539` exit 0，固定索引
+`sha256:dca82f1b3b3f32913fd7ed1c9ac26e00ff05f2ae937449c3408063e56edebc74`。
+amd64 实际源码版本、客户端 fork 和新增探针诊断字段均通过核验；审计
+容器、复制二进制及本地辅助程序已清理。后续预检及授权实验尚未执行，
+镜像身份通过不代表集群性能或生产就绪验收通过。
+同一源码的 727 项执行器契约测试已重新运行并全部通过，分片耗时
+505.963/533.188/389.454/765.932s（普通测试），build 契约 race 2.434s；
+会话 `4315` exit 0，全部退出回执为 0，源码哈希一致。这是新的执行器
+测试证据，不是沿用旧提交结果，也不代表集群性能验收通过。
 集群仍为 generation 66 默认 2PC。交接记录：
 `/root/.local/state/kubebrain/watch-delivery-release.UtTUj7ba/STATUS.md`。
 

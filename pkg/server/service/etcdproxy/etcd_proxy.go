@@ -1388,7 +1388,11 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 			klog.InfoS("etcd proxy start watching", "leader", leader, "key", loggedProxyKey(key), "rangeEnd", loggedProxyKey(rangeEnd), "rev", watchRevision)
 			// Always request PrevKV from the leader. The outer etcd watch server
 			// still strips PrevKv when the original client did not request it.
-			inputCh := client.Watch(ctx, string(key), watchOptionsForRange(rangeEnd, watchRevision)...)
+			// The logical Watch outlives individual backend generations. Cancel
+			// each abandoned subscription even when the shared client stays open;
+			// otherwise it can keep receiving and buffering events without a reader.
+			generationCtx, cancelGeneration := context.WithCancel(ctx)
+			inputCh := client.Watch(generationCtx, string(key), watchOptionsForRange(rangeEnd, watchRevision)...)
 			generationCreated := false
 			reconnect := false
 			for !reconnect {
@@ -1398,6 +1402,7 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 					reconnect = true
 				case <-ctx.Done():
 					klog.InfoS("etcd proxy watch ctx done")
+					cancelGeneration()
 					return
 				case wresp, ok := <-inputCh:
 					if !ok {
@@ -1417,6 +1422,7 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 						case outputCh <- watchErrorResultFromResponse(wresp, err):
 						case <-ctx.Done():
 						}
+						cancelGeneration()
 						return
 					}
 					if watchResponsePrecedesGenerationCreate(generationCreated, wresp) {
@@ -1460,10 +1466,12 @@ func (e *etcdProxy) Watch(ctx context.Context, key, rangeEnd []byte, revision ui
 					select {
 					case outputCh <- watchResultFromResponse(wresp):
 					case <-ctx.Done():
+						cancelGeneration()
 						return
 					}
 				}
 			}
+			cancelGeneration()
 
 			select {
 			case <-ctx.Done():
