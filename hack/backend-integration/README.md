@@ -3,6 +3,10 @@
 本目录维护根模块的本机真实 PD/TiKV 测试入口；旧独立 SQL mock 模块已退役。
 不接入 Kubernetes，不需要 kubeconfig。
 
+当前入口共 23 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
+当前执行顺序。两个单 Region 后端响应丢失用例先于主动 Region 分裂执行；
+后续增加用例时以入口中的测试名清单及明确 PASS 回执为准，不累加历史轮次。
+
 ## 本机真实协议与 CI 门禁
 
 `backend-integration.yml` 新增独立 `real-protocol` 门禁：在可信 self-hosted
@@ -54,7 +58,7 @@ Commit 不进入前台主提交观测；默认 2PC 例保留原服务端主提�
 持久见证不确定结果解析或多 Region 部分送达恢复。
 
 新增 `TestRealTiKVAsyncExperimentBackendResponseLoss` 把相同丢响应机制接入
-真实后端。入口目前共 22 例，此例在所有主动 Region 分裂之前运行，且断言
+真实后端。此例在所有主动 Region 分裂之前运行，且断言
 丢失的成功 Prewrite 包含整笔事务的 mutation 数。仅目标事务开启 async；
 调用方收到不确定结果并取消后，后台持久见证必须解析为 committed=1、
 absent=0，发布同修订号 101 的双键 CREATE 事件，读回两键一致；下一次写入
