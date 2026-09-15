@@ -1874,6 +1874,15 @@ func TestRolloutAvailabilityRunnerRejectsHTTPReadinessMigrationWhenAlreadyConfig
 }
 
 func TestRolloutAvailabilityRunnerTemporaryOnePCRestoresSpec(t *testing.T) {
+	testTemporaryProtocolRestoresSpec(t, "ENABLE_TEMPORARY_1PC_EXPERIMENT", "--experimental-tikv-enable-1pc=true")
+}
+
+func TestRolloutAvailabilityRunnerTemporaryAsyncRestoresSpec(t *testing.T) {
+	testTemporaryProtocolRestoresSpec(t, "ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT", "--experimental-tikv-enable-async-commit=true")
+}
+
+func testTemporaryProtocolRestoresSpec(t *testing.T, experiment, flag string) {
+	t.Helper()
 	for _, tc := range []struct {
 		name        string
 		fail, drift bool
@@ -1890,7 +1899,7 @@ func TestRolloutAvailabilityRunnerTemporaryOnePCRestoresSpec(t *testing.T) {
 				fmt.Sprintf("FAKE_ROLLBACK_RUNTIME_DRIFT=%t", tc.drift), "FAKE_ROLLBACK_MARKER="+statePath+"-rollback",
 				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000", "TARGET_IMAGE="+target,
 				"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64),
-				"ENABLE_TEMPORARY_1PC_EXPERIMENT=true",
+				experiment+"=true",
 			)
 			output, err := command.CombinedOutput()
 			if tc.fail || tc.drift {
@@ -1907,14 +1916,44 @@ func TestRolloutAvailabilityRunnerTemporaryOnePCRestoresSpec(t *testing.T) {
 			log := readOptionalFile(t, logPath)
 			require.Equal(t, 2, strings.Count(log, " patch statefulset/kubebrain --type=json -p "))
 			require.Equal(t, 4, strings.Count(log, `"path":"/spec"`))
-			require.Contains(t, log, `"--experimental-tikv-enable-1pc=true"`)
+			require.Contains(t, log, `"`+flag+`"`)
 		})
 	}
 }
 
 func TestRolloutAvailabilityRunnerTemporaryOnePCRejectsUnsafeModes(t *testing.T) {
+	testTemporaryProtocolRejectsUnsafeModes(t, "ENABLE_TEMPORARY_1PC_EXPERIMENT", "ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT")
+}
+
+func TestRolloutAvailabilityRunnerTemporaryAsyncRejectsUnsafeModes(t *testing.T) {
+	testTemporaryProtocolRejectsUnsafeModes(t, "ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT", "ENABLE_TEMPORARY_1PC_EXPERIMENT")
+}
+
+func TestRolloutAvailabilityRunnerTemporaryProtocolRejectsExistingFlags(t *testing.T) {
+	for _, experiment := range []string{"ENABLE_TEMPORARY_1PC_EXPERIMENT", "ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT"} {
+		for _, flag := range []string{"--experimental-tikv-enable-1pc=false", "--experimental-tikv-enable-async-commit=true"} {
+			t.Run(experiment+"/"+flag, func(t *testing.T) {
+				fake, logPath, statePath := writeRolloutAvailabilityKubectl(t)
+				command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
+				command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+					"FAKE_SOURCE_EXPERIMENT_FLAG="+flag, "ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", experiment+"=true",
+					"TARGET_RUNTIME_DIGESTS=sha256:"+strings.Repeat("e", 64),
+					"TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("e", 64))
+				output, err := command.CombinedOutput()
+				require.Error(t, err, string(output))
+				require.Contains(t, string(output), "source without experimental commit flags")
+				log := readOptionalFile(t, logPath)
+				require.NotContains(t, log, " patch ")
+				require.NotContains(t, log, " run ")
+			})
+		}
+	}
+}
+
+func testTemporaryProtocolRejectsUnsafeModes(t *testing.T, experiment, other string) {
+	t.Helper()
 	for _, extra := range []string{
-		"ENABLE_TEMPORARY_1PC_EXPERIMENT=invalid", "TARGET_IMAGE=",
+		experiment + "=invalid", other + "=true", "TARGET_IMAGE=",
 		"OBSERVE_ONLY=true", "HARD_FAILOVER=true", "ENABLE_HTTP_READINESS_MIGRATION=true",
 		"ENABLE_GRPC_CONNECTION_AGING_MIGRATION=true",
 	} {
@@ -1922,7 +1961,7 @@ func TestRolloutAvailabilityRunnerTemporaryOnePCRejectsUnsafeModes(t *testing.T)
 			fake, logPath, _ := writeRolloutAvailabilityKubectl(t)
 			command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
 			command.Env = append(os.Environ(), "KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath,
-				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "ENABLE_TEMPORARY_1PC_EXPERIMENT=true",
+				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", experiment+"=true",
 				"TARGET_IMAGE=registry.example/kubebrain@sha256:"+strings.Repeat("e", 64), extra)
 			output, err := command.CombinedOutput()
 			require.EqualError(t, err, "exit status 2", string(output))
@@ -2685,6 +2724,12 @@ elif [[ " $* " == *" get statefulset kubebrain -o json "* ]]; then
   fi
   if [[ "${ENABLE_TEMPORARY_1PC_EXPERIMENT:-false}" == true && -e "$FAKE_KUBECTL_STATE" ]]; then
     args="$(jq -c '. + ["--experimental-tikv-enable-1pc=true"]' <<<"$args")"
+  fi
+  if [[ "${ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT:-false}" == true && -e "$FAKE_KUBECTL_STATE" ]]; then
+    args="$(jq -c '. + ["--experimental-tikv-enable-async-commit=true"]' <<<"$args")"
+  fi
+  if [[ -n "${FAKE_SOURCE_EXPERIMENT_FLAG:-}" ]]; then
+    args="$(jq -c --arg flag "$FAKE_SOURCE_EXPERIMENT_FLAG" '. + [$flag]' <<<"$args")"
   fi
   [[ "${FAKE_ROOT_POD_CONTEXT:-false}" != true ]] || pod_security_context='{"runAsNonRoot":false,"runAsUser":0,"runAsGroup":0,"fsGroup":0}'
   runtime_image=kubebrain:test

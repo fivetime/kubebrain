@@ -66,6 +66,7 @@ TARGET_RUNTIME_DIGESTS="${TARGET_RUNTIME_DIGESTS:-}"
 ENABLE_GRPC_CONNECTION_AGING_MIGRATION="${ENABLE_GRPC_CONNECTION_AGING_MIGRATION:-false}"
 ENABLE_HTTP_READINESS_MIGRATION="${ENABLE_HTTP_READINESS_MIGRATION:-false}"
 ENABLE_TEMPORARY_1PC_EXPERIMENT="${ENABLE_TEMPORARY_1PC_EXPERIMENT:-false}"
+ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT="${ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT:-false}"
 PROBE_IMAGE="${PROBE_IMAGE:-}"
 PROBE_CLIENT_TLS_SECRET="${PROBE_CLIENT_TLS_SECRET:-}"
 PROBE_INFO_CA_CONFIGMAP="${PROBE_INFO_CA_CONFIGMAP:-}"
@@ -105,8 +106,20 @@ if [[ "$ENABLE_TEMPORARY_1PC_EXPERIMENT" != true && "$ENABLE_TEMPORARY_1PC_EXPER
   echo "ENABLE_TEMPORARY_1PC_EXPERIMENT must be true or false" >&2
   exit 2
 fi
-if [[ "$ENABLE_TEMPORARY_1PC_EXPERIMENT" == true && ( -z "$TARGET_IMAGE" || "$OBSERVE_ONLY" == true || "$HARD_FAILOVER" == true || "$ENABLE_HTTP_READINESS_MIGRATION" == true || "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ) ]]; then
-  echo "temporary 1PC experiment requires TARGET_IMAGE and excludes other experiment/migration modes" >&2
+if [[ "$ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT" != true && "$ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT" != false ]]; then
+  echo "ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT must be true or false" >&2
+  exit 2
+fi
+if [[ "$ENABLE_TEMPORARY_1PC_EXPERIMENT" == true && "$ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT" == true ]]; then
+  echo "temporary 1PC and async commit experiments are mutually exclusive" >&2
+  exit 2
+fi
+temporary_protocol_experiment=false
+if [[ "$ENABLE_TEMPORARY_1PC_EXPERIMENT" == true || "$ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT" == true ]]; then
+  temporary_protocol_experiment=true
+fi
+if [[ "$temporary_protocol_experiment" == true && ( -z "$TARGET_IMAGE" || "$OBSERVE_ONLY" == true || "$HARD_FAILOVER" == true || "$ENABLE_HTTP_READINESS_MIGRATION" == true || "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ) ]]; then
+  echo "temporary commit protocol experiment requires TARGET_IMAGE and excludes other experiment/migration modes" >&2
   exit 2
 fi
 if [[ "$ALLOW_MUTATING_KUBEBRAIN_ROLLOUT" != true ]]; then
@@ -481,10 +494,11 @@ initial_spec="$(jq -cS '.spec' "$statefulset_json")" || exit 1
 candidate_spec="$initial_spec"
 restart_patch=""
 full_spec_migration=false
-if [[ "$ENABLE_TEMPORARY_1PC_EXPERIMENT" == true ]]; then
+if [[ "$temporary_protocol_experiment" == true ]]; then
   jq -e --argjson index "$kubebrain_container_index" '
-    all(.spec.template.spec.containers[$index].args[]?; startswith("--experimental-tikv-enable-1pc")|not)
-  ' "$statefulset_json" >/dev/null || { echo 'temporary 1PC experiment requires a source without the experimental flag' >&2; exit 1; }
+    all(.spec.template.spec.containers[$index].args[]?;
+      (startswith("--experimental-tikv-enable-1pc") or startswith("--experimental-tikv-enable-async-commit"))|not)
+  ' "$statefulset_json" >/dev/null || { echo 'temporary protocol experiment requires a source without experimental commit flags' >&2; exit 1; }
   full_spec_migration=true
 fi
 if [[ "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true || "$ENABLE_HTTP_READINESS_MIGRATION" == true ]]; then
@@ -495,11 +509,15 @@ if [[ -n "$TARGET_IMAGE" ]]; then
     --argjson migrate_aging "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" \
     --argjson migrate_readiness "$ENABLE_HTTP_READINESS_MIGRATION" \
     --argjson temporary_onepc "$ENABLE_TEMPORARY_1PC_EXPERIMENT" \
+    --argjson temporary_async "$ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT" \
     --arg max_age "$grpc_max_connection_age_arg" --arg max_age_grace "$grpc_max_connection_age_grace_arg" '
     .spec |
     .template.spec.containers[$index].image = $image |
     if $temporary_onepc then
       .template.spec.containers[$index].args += ["--experimental-tikv-enable-1pc=true"]
+    else . end |
+    if $temporary_async then
+      .template.spec.containers[$index].args += ["--experimental-tikv-enable-async-commit=true"]
     else . end |
     if $migrate_aging then
       .template.spec.containers[$index].args = ([.template.spec.containers[$index].args[] |
@@ -1059,7 +1077,7 @@ delete_probe_pod() {
 cleanup() {
   local rollback_failed=false
   stop_rollout_observer
-  if [[ "$candidate_rollout_started" == true && ( "$candidate_rollout_succeeded" != true || "$ENABLE_TEMPORARY_1PC_EXPERIMENT" == true ) ]]; then
+  if [[ "$candidate_rollout_started" == true && ( "$candidate_rollout_succeeded" != true || "$temporary_protocol_experiment" == true ) ]]; then
     if [[ "$candidate_rollout_succeeded" == true ]]; then
       echo "temporary experiment completed; restoring original image ${image}" >&2
     else
