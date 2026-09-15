@@ -1661,11 +1661,11 @@ func (s testPeerService) Snapshot(ctx context.Context, req *etcdserverpb.Snapsho
 	return nil, nil
 }
 
-func newTestRPCServer(t *testing.T) (*RPCServer, func()) {
+func newTestRPCServer(t testing.TB) (*RPCServer, func()) {
 	return newTestRPCServerWithCompatibility(t, true)
 }
 
-func newTestRPCServerWithCompatibility(t *testing.T, enableEtcdCompatibility bool) (*RPCServer, func()) {
+func newTestRPCServerWithCompatibility(t testing.TB, enableEtcdCompatibility bool) (*RPCServer, func()) {
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)
 	kv := memkv.NewKvStorage()
