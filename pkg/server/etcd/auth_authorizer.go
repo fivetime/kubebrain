@@ -110,17 +110,45 @@ func (s *RPCServer) authCallerFromCachedContext(ctx context.Context) (*authCalle
 	}, nil, true
 }
 
-// validateEtcdApplyAuthInfo mirrors EtcdServer.processInternalRaftRequestOnce's
+// prepareEtcdApplyAuthInfo mirrors EtcdServer.processInternalRaftRequestOnce's
 // AuthInfoFromCtx step. Missing credentials are represented by a nil AuthInfo
 // upstream and reach the apply-time authorization wrapper; malformed or invalid
 // credentials fail before an InternalRaftRequest is proposed and are not apply
 // observations.
-func (s *RPCServer) validateEtcdApplyAuthInfo(ctx context.Context) error {
-	_, err := s.authCallerFromContext(ctx)
+func (s *RPCServer) prepareEtcdApplyAuthInfo(ctx context.Context) (*authCaller, error) {
+	caller, err := s.authCallerFromContext(ctx)
 	if errors.Is(err, rpctypes.ErrUserEmpty) {
-		return nil
+		return nil, nil
 	}
+	return caller, err
+}
+
+// Auth management handlers retain their separate apply authorization path.
+func (s *RPCServer) validateEtcdApplyAuthInfo(ctx context.Context) error {
+	_, err := s.prepareEtcdApplyAuthInfo(ctx)
 	return err
+}
+
+// authCallerForEtcdApply retains the identity/revision captured before apply,
+// just as etcd carries AuthInfo in its raft request header. Permissions must
+// still come from the current auth store: re-authenticating here would silently
+// upgrade a simple token to a newer revision and admit a stale request.
+func (s *RPCServer) authCallerForEtcdApply(ctx context.Context, admitted *authCaller) (*authCaller, error) {
+	if admitted == nil {
+		// No authenticated identity was captured. Preserve the fresh check for
+		// auth being enabled since admission, including missing credentials.
+		return s.authCallerFromContext(ctx)
+	}
+	snapshot, err := s.tokens.snapshots.current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !snapshot.Config.Enabled {
+		return nil, nil
+	}
+	caller := *admitted
+	caller.snapshot = snapshot
+	return &caller, nil
 }
 
 func authCredentialFromContext(ctx context.Context) (string, bool) {

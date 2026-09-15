@@ -774,6 +774,17 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   RPC 测试在鉴权后、提交前确定性撤权；真实 TiKV BatchWrite 合约验证 guard 冲突时
   sibling 写不落盘。测试键已按运行和子测试隔离，避免持久 TiKV 上残留数据造成
   “缺失键 CAS”假通过或假失败。
+- **Auth A23 补充：保留首次认证版本（2026-09-15）**：对照本地 etcd
+  `server/etcdserver/v3_server.go` 的 `processInternalRaftRequestOnce`、
+  `server/etcdserver/apply/auth.go` 与 `server/auth/store.go:isOpPermitted`，
+  上游将首次 AuthInfo 的身份／版本带入 apply，再按当前权限检查。
+  KubeBrain 原 Put/DeleteRange/写 Txn 丢弃首次身份并重复认证，simple token
+  会采用更新后的版本。确定性测试在首次版本读取后推进持久鉴权版本，三个
+  入口均复现应返回 `ErrAuthOldRevision` 却成功的问题。现保留首次身份／版本，
+  执行阶段刷新权限快照；提交时原子 guard、租约锁内检查和缺失身份时的重新
+  鉴权保留。只读 Txn、管理 API 的原路径不变。测试锁定拒绝后值和用户 revision
+  不变；完整服务普通回归、定向鉴权 race 和 vet 已通过。CI 增加 Auth/JWT
+  race 覆盖，真实集群及新版本 CI 结果须另行取得；不据此宣称吞吐改善。
 - **Auth A24 客户端证书 CN 身份（2026-07-16）**：对齐 etcd
   `AuthInfoFromTLS`：仅在 client endpoint 启用 `--client-cert-auth` 且 TLS verified
   chain 存在时，把叶证书 CommonName 作为用户名；显式 token 优先，无效 token 不得

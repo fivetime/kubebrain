@@ -110,6 +110,7 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	require.Contains(t, commands, "go vet ./pkg/server/etcd\n")
 	require.Contains(t, commands, "go test -count=1 -timeout=10m -v ./pkg/server/etcd\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=8m -v ./pkg/server/etcd -run '(Watch|Prev[Kk][Vv]|PrevHint|RevKeyCache|CachePromotion|MetadataSingleflight)'\n")
+	require.Contains(t, commands, "go test -race -count=1 -timeout=8m -v ./pkg/server/etcd -run '(Auth|JWT|PutPathsRejectGuardChangedAtCommit)'\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=20m -v ./hack/production/cmd/rollout-availability-probe\n")
 	require.NotContains(t, commands, "|| true")
 	require.NotContains(t, commands, "kubectl")

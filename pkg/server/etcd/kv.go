@@ -1132,6 +1132,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 		}
 	}
 	var epoch uint64
+	var admittedCaller *authCaller
 	if !readOnly {
 		_, leadingFresh := s.peers.EpochAndLeadingFresh()
 		if !leadingFresh {
@@ -1158,12 +1159,14 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 			return nil, waitErr
 		}
 		epoch = readyEpoch
-		if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
+		var authErr error
+		admittedCaller, authErr = s.prepareEtcdApplyAuthInfo(ctx)
+		if authErr != nil {
 			return nil, authErr
 		}
 		defer beginEtcdApply(s.metricCli, "Txn", &retErr)()
 	}
-	caller, authErr := s.authCallerFromContext(ctx)
+	caller, authErr := s.authCallerForEtcdApply(ctx, admittedCaller)
 	if authErr != nil {
 		return nil, authErr
 	}
@@ -1946,11 +1949,12 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		return nil, waitErr
 	}
 	epoch := readyEpoch
-	if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
+	admittedCaller, authErr := s.prepareEtcdApplyAuthInfo(ctx)
+	if authErr != nil {
 		return nil, authErr
 	}
 	defer beginEtcdApply(s.metricCli, "Put", &retErr)()
-	caller, authErr := s.authCallerFromContext(ctx)
+	caller, authErr := s.authCallerForEtcdApply(ctx, admittedCaller)
 	if authErr != nil {
 		return nil, authErr
 	}
@@ -2074,11 +2078,12 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 		return nil, waitErr
 	}
 	epoch := readyEpoch
-	if authErr := s.validateEtcdApplyAuthInfo(ctx); authErr != nil {
+	admittedCaller, authErr := s.prepareEtcdApplyAuthInfo(ctx)
+	if authErr != nil {
 		return nil, authErr
 	}
 	defer beginEtcdApply(s.metricCli, "DeleteRange", &retErr)()
-	caller, authErr := s.authCallerFromContext(ctx)
+	caller, authErr := s.authCallerForEtcdApply(ctx, admittedCaller)
 	if authErr != nil {
 		return nil, authErr
 	}
