@@ -53,6 +53,15 @@ Commit 不进入前台主提交观测；默认 2PC 例保留原服务端主提�
 空前缀断言不变。该场景验证存储适配器与 SDK 读取恢复，不等于完整后端的
 持久见证不确定结果解析或多 Region 部分送达恢复。
 
+新增 `TestRealTiKVAsyncExperimentBackendResponseLoss` 把相同丢响应机制接入
+真实后端。入口目前共 22 例，此例在所有主动 Region 分裂之前运行，且断言
+丢失的成功 Prewrite 包含整笔事务的 mutation 数。仅目标事务开启 async；
+调用方收到不确定结果并取消后，后台持久见证必须解析为 committed=1、
+absent=0，发布同修订号 101 的双键 CREATE 事件，读回两键一致；下一次写入
+必须得到 102 和对应 PUT 事件，不能先重复发布已解析事务。初始化／下一次
+写入／清理仍是 2PC。该例复用原不确定结果夹具，不安装完整领导权防护，
+不替代完整防护下的跨 Region 部分送达、进程重启或多副本恢复实验。
+
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键
 Commit 和后台 ResolveLock。读取仍返回已提交值，且观察到主键状态查询。

@@ -228,7 +228,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 			t.Skip("explicit async experiment consent required")
 		}
 		scenario = strings.TrimPrefix(scenario, "async-")
-		require.Contains(t, []string{"fenced", "fenced-election-fence", "fenced-restoration-fence-shard"}, scenario)
+		require.Contains(t, []string{"committed", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard"}, scenario)
 	}
 	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "compare-conflict", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
 	fenced := scenario == "fenced" || strings.HasPrefix(scenario, "fenced-")
@@ -249,7 +249,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	expected, err := validateProtocolSmokeScope(os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID"), prefix, os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE"))
 	require.NoError(t, err)
 	mode := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_MODE")
-	if scenario == "concurrent" || scenario == "compare-conflict" || fenced {
+	if scenario == "concurrent" || scenario == "compare-conflict" || fenced || asyncExperiment {
 		require.Equal(t, "2pc", mode)
 	} else if scenario != "latency" {
 		require.Equal(t, "1pc", mode)
@@ -340,6 +340,27 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		backendKV = conflict
 	}
 	var asyncWrites []*protocolAsyncCommitHold
+	var asyncLoss *protocolAsyncResponseLoss
+	var asyncMutationCount func() int
+	if asyncExperiment && scenario == "committed" {
+		wrapped := &fenceChangeAfterPrefetch{KvStorage: kv}
+		wrapped.beforeAtomic = func(callCtx context.Context, atomic storage.AtomicBatch) {
+			if callCtx.Value(protocolCommitMarker{}) != true {
+				return
+			}
+			txn := atomic.(atomicBatch).txn
+			if asyncLoss != nil {
+				require.Equal(t, asyncLoss.startTS, txn.StartTS())
+				return
+			}
+			txn.SetEnable1PC(false)
+			txn.SetEnableAsyncCommit(true)
+			asyncMutationCount = txn.Len
+			asyncLoss = &protocolAsyncResponseLoss{Client: client.GetTiKVClient(), startTS: txn.StartTS(), cancel: cancelCommit}
+			client.SetTiKVClient(asyncLoss)
+		}
+		backendKV = wrapped
+	}
 	if asyncExperiment && scenario == "fenced" {
 		wrapped := &fenceChangeAfterPrefetch{KvStorage: kv}
 		wrapped.beforeAtomic = func(callCtx context.Context, atomic storage.AtomicBatch) {
@@ -456,6 +477,13 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		}
 	}
 	require.EqualValues(t, 101, revision)
+	if asyncExperiment {
+		require.NotNil(t, asyncLoss)
+		require.EqualValues(t, 1, asyncLoss.drops.Load())
+		require.EqualValues(t, asyncMutationCount(), asyncLoss.mutations.Load(), "lost successful Prewrite must contain the complete backend transaction")
+		verifyAsyncBackendResolution(t, ctx, b, m, watch, left, right)
+		return
+	}
 	stats := loss.snapshot()
 	if splitting {
 		splitStats := splitClient.snapshot()

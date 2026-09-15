@@ -145,7 +145,8 @@ verify_case_result() {
   fi
   printf 'LOCAL_PROTOCOL_CASE_PASSED test=%s\n' "$name"
 }
-for test_name in TestRealTiKVProtocolSmoke TestRealTiKVOnePCResponseLoss \
+# Run the single-Region response-loss fixture before any intentional splits.
+for test_name in TestRealTiKVAsyncExperimentBackendResponseLoss TestRealTiKVProtocolSmoke TestRealTiKVOnePCResponseLoss \
   TestRealTiKVOnePCCancelAfterResponseLoss TestRealTiKVBackendResolvesCancelledOnePC \
   TestRealTiKVBackendResolvesUndeliveredOnePC TestRealTiKVBackendRetriesCommittedOnePC \
   TestRealTiKVBackendRetriesUndeliveredOnePC TestRealTiKVBackendRegionSplitFallback \
@@ -158,6 +159,7 @@ for test_name in TestRealTiKVProtocolSmoke TestRealTiKVOnePCResponseLoss \
   nonce="$(openssl rand -hex 16)"
   protocol_mode=1pc
   async_experiment=0
+  if [[ "$test_name" == TestRealTiKVAsyncExperimentBackendResponseLoss ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup || "$test_name" == TestRealTiKVAsyncExperimentLeadershipConflict || "$test_name" == TestRealTiKVAsyncExperimentRestorationConflict || "$test_name" == TestRealTiKVAsyncExperimentBackendPublication ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVTxnCompareCommitConflict ]]; then protocol_mode=2pc; fi
   if [[ "$test_name" == TestRealTiKVReadBypassesPendingSecondaryCleanup || "$test_name" == TestRealTiKVBackendProtocolLatency || "$test_name" == TestRealTiKVBackendConcurrentWrites || "$test_name" == TestRealTiKVBackendProductionFences || "$test_name" == TestRealTiKVPrefetchedLeadershipConflict || "$test_name" == TestRealTiKVPrefetchedRestorationConflict ]]; then protocol_mode=2pc; fi

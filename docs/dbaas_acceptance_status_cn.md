@@ -128,6 +128,25 @@ race 7.738／2.501 秒通过，vet 通过。该结果只覆盖同 Region 的存�
 响应丢失与 SDK 读取恢复，不替代后端持久见证解析、多 Region 部分送达、
 进程重启或多副本持久性验证。
 
+后端异步不确定结果解析扩展：新增
+`TestRealTiKVAsyncExperimentBackendResponseLoss`，复用真实后端不确定结果
+夹具，在主动 Region 分裂前运行，并断言被丢失的成功 Prewrite 包含整笔
+事务的 mutation 数。调用方返回不确定且取消后，持久见证解析指标为
+committed=1／absent=0；修订号 101 的两个 CREATE 事件和两键读回一致，
+下一写入及 PUT 事件为 102，未提前重放已解析事务。普通／race 各 22 项
+通过，新例 3.34／5.71 秒；证据分别为
+`/tmp/kubebrain-real-protocol.Jrmc3XZ8ew/`、
+`/tmp/kubebrain-real-protocol.eq5eQY9fA8/`，退出 0、`cleanup_failed=0`，
+独立资源清单为空，编译测试文件不存在。存储／build 全量 race
+7.611／2.495 秒通过，vet 通过。此例未安装完整领导权防护，不证明完整防护
+下的跨 Region 部分送达、进程重启或多副本持久性。
+
+远端 `f3563f7d` 后端 CI `34913452180` 已通过：日志核对普通／race 各
+21 项、两轮清理均成功，PD／TiKV 两阶段启动中断均退出 143 并确认资源
+不存在。日志保存在 `/tmp/kubebrain-f3563f7d-backend-ci.Asc9Ih.log`。它包含
+异步成功及防护冲突实验，不包含随后本机新增的两层响应丢失验证。该次镜像
+和探针 CI 仍需各自核验，不把单条后端 CI 当作整个发布或生产验收通过。
+
 网络复查（2026-09-15）：直接 SSH 到 `k8s3-worker1/2/3`（10.32.32.70–72），
 三个节点均可解析 ghcr.io，HTTPS registry 返回预期的未认证 401，公开镜像
 token 接口返回 200；未复现历史 IPv6 DNS 超时。本次仅复查连通性，没有

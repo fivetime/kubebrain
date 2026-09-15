@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/stretchr/testify/require"
@@ -147,6 +149,45 @@ func TestRealTiKVAsyncExperimentLeadershipConflict(t *testing.T) {
 
 func TestRealTiKVAsyncExperimentBackendPublication(t *testing.T) {
 	testRealTiKVBackendScenario(t, "async-fenced")
+}
+
+func TestRealTiKVAsyncExperimentBackendResponseLoss(t *testing.T) {
+	testRealTiKVBackendScenario(t, "async-committed")
+}
+
+func verifyAsyncBackendResolution(t *testing.T, ctx context.Context, b backend.Backend, metrics *protocolResolutionMetrics, watch <-chan []*proto.Event, left, right []byte) {
+	t.Helper()
+	require.Eventually(t, func() bool { return metrics.committed.Load() == 1 && b.GetCurrentRevision() == 101 }, 10*time.Second, 10*time.Millisecond)
+	require.Zero(t, metrics.absent.Load())
+	events := protocolNextMutation(t, ctx, watch)
+	require.Len(t, events, 2)
+	seen := make(map[string]string)
+	for _, event := range events {
+		require.Equal(t, proto.Event_CREATE, event.Type)
+		require.EqualValues(t, 101, event.Revision)
+		require.EqualValues(t, 101, event.Kv.Revision)
+		seen[string(event.Kv.Key)] = string(backend.StripInlineValue(event.Kv.Value))
+	}
+	require.Equal(t, map[string]string{string(left): "left-value", string(right): "right-value"}, seen)
+	for key, value := range seen {
+		got, err := b.Get(ctx, &proto.GetRequest{Key: []byte(key)})
+		require.NoError(t, err)
+		require.NotNil(t, got.Kv)
+		require.EqualValues(t, 101, got.Kv.Revision)
+		require.Equal(t, value, string(backend.StripInlineValue(got.Kv.Value)))
+	}
+	_, revision, err := b.TxnApply(ctx, []backend.TxnWriteOp{{Key: left, Value: []byte("next")}}, nil)
+	require.NoError(t, err)
+	require.EqualValues(t, 102, revision)
+	next := protocolNextMutation(t, ctx, watch)
+	require.Len(t, next, 1, "resolved transaction must not be published twice")
+	require.Equal(t, proto.Event_PUT, next[0].Type)
+	require.EqualValues(t, 102, next[0].Revision)
+	require.Equal(t, left, next[0].Kv.Key)
+	require.Equal(t, []byte("next"), backend.StripInlineValue(next[0].Kv.Value))
+	require.EqualValues(t, 1, metrics.committed.Load())
+	require.Zero(t, metrics.absent.Load())
+	t.Log("PROTOCOL_ASYNC_BACKEND_RESOLVED_OK committed=1 absent=0 revision=101 next=102 watch_events=2")
 }
 
 func TestRealTiKVAsyncExperimentRestorationConflict(t *testing.T) {
