@@ -66,7 +66,9 @@ absent=0，发布同修订号 101 的双键 CREATE 事件，读回两键一致�
 成功后才丢弃尚未送达的 primary Prewrite，并取消调用者。必须观察到实际
 secondary 接受、primary 阻断、目标事务零 Commit RPC；调用者收到不确定
 结果后，新的上下文读取两键仍为旧值，不能发布半笔事务。注入器只匹配
-目标 startTS，等待 secondary 有 10 秒上限，不伪造服务端成功响应。它验证
+目标 startTS 且请求明确启用 async commit；普通 2PC 回退透传，不能消耗故障。
+单测还确认 Region/key/transport 错误和非正 MinCommitTS 不释放 secondary
+屏障。等待 secondary 有 10 秒上限，不伪造服务端成功响应。它验证
 存储层两 Region 的受控失败，不等于完整后端防护、重启或 Raft 故障验收。
 
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：

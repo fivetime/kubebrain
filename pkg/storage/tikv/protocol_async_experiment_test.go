@@ -15,6 +15,7 @@ import (
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/storage"
+	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/stretchr/testify/require"
 	tikvconfig "github.com/tikv/client-go/v2/config"
@@ -62,7 +63,7 @@ func (c *protocolAsyncPartialLoss) SendRequest(ctx context.Context, addr string,
 	if req.Type == tikvrpc.CmdCommit && req.Commit().StartVersion == c.startTS {
 		c.commits.Add(1)
 	}
-	marked := req.Type == tikvrpc.CmdPrewrite && req.Prewrite().StartVersion == c.startTS
+	marked := req.Type == tikvrpc.CmdPrewrite && req.Prewrite().StartVersion == c.startTS && req.Prewrite().UseAsyncCommit
 	if !marked {
 		return c.Client.SendRequest(ctx, addr, req, timeout)
 	}
@@ -92,6 +93,63 @@ func (c *protocolAsyncPartialLoss) SendRequest(ctx context.Context, addr string,
 		}
 	}
 	return response, err
+}
+
+func TestProtocolAsyncPartialLossScope(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	accepted := &tikvrpc.Response{Resp: &kvrpcpb.PrewriteResponse{MinCommitTs: 20}}
+	stub := &protocolResponseStub{response: accepted}
+	loss := &protocolAsyncPartialLoss{Client: stub, startTS: 10, cancel: cancel, secondaryReady: make(chan struct{})}
+	prewrite := func(start uint64, async, primary bool) *tikvrpc.Request {
+		key := []byte("s")
+		if primary {
+			key = []byte("p")
+		}
+		return tikvrpc.NewRequest(tikvrpc.CmdPrewrite, &kvrpcpb.PrewriteRequest{
+			StartVersion: start, UseAsyncCommit: async, PrimaryLock: []byte("p"), Mutations: []*kvrpcpb.Mutation{{Key: key}},
+		})
+	}
+	for _, req := range []*tikvrpc.Request{prewrite(11, true, false), prewrite(10, false, false)} {
+		got, err := loss.SendRequest(ctx, "unused", req, time.Second)
+		require.NoError(t, err)
+		require.Same(t, accepted, got)
+		require.Zero(t, loss.secondaryAccepted.Load())
+	}
+	for _, response := range []*tikvrpc.Response{
+		nil,
+		{Resp: &kvrpcpb.PrewriteResponse{}},
+		{Resp: &kvrpcpb.PrewriteResponse{MinCommitTs: 20, RegionError: &errorpb.Error{Message: "route changed"}}},
+		{Resp: &kvrpcpb.PrewriteResponse{MinCommitTs: 20, Errors: []*kvrpcpb.KeyError{{Abort: "conflict"}}}},
+	} {
+		stub.response = response
+		got, err := loss.SendRequest(ctx, "unused", prewrite(10, true, false), time.Second)
+		require.NoError(t, err)
+		require.Equal(t, response, got)
+		require.Zero(t, loss.secondaryAccepted.Load())
+	}
+	stub.response = accepted
+	stub.err = errors.New("original transport failure")
+	_, err := loss.SendRequest(ctx, "unused", prewrite(10, true, false), time.Second)
+	require.ErrorIs(t, err, stub.err)
+	require.Zero(t, loss.secondaryAccepted.Load())
+	stub.err = nil
+	_, err = loss.SendRequest(ctx, "unused", prewrite(10, true, false), time.Second)
+	require.NoError(t, err)
+	require.EqualValues(t, 1, loss.secondaryAccepted.Load())
+	require.NoError(t, ctx.Err())
+	// Even after the barrier opens, ordinary 2PC must not consume an async fault.
+	got, err := loss.SendRequest(ctx, "unused", prewrite(10, false, true), time.Second)
+	require.NoError(t, err)
+	require.Same(t, accepted, got)
+	require.NoError(t, ctx.Err())
+	calls := stub.calls
+	got, err = loss.SendRequest(ctx, "unused", prewrite(10, true, true), time.Second)
+	require.Nil(t, got)
+	require.ErrorContains(t, err, "before delivery")
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+	require.Equal(t, calls, stub.calls, "blocked primary must not reach transport")
+	require.EqualValues(t, 1, loss.primaryBlocked.Load())
 }
 
 func (c *protocolAsyncResponseLoss) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {

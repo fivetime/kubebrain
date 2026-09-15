@@ -164,6 +164,17 @@ committed=1／absent=0；修订号 101 的两个 CREATE 事件和两键读回一
 7.681／2.507 秒通过，vet 通过。该受控两 Region 失败不证明完整后端防护、
 进程重启、多副本 Raft 恢复或生产性能通过。
 
+部分送达注入器作用范围加固：新增单测先复现旧注入器会在 secondary 屏障
+已打开后错误阻断同 startTS 的普通 2PC primary 请求，再将匹配条件收紧为
+明确 `UseAsyncCommit=true`。修正后的专项 race 连续 20 次通过（1.222 秒），
+同时验证其他事务、普通 2PC、Region/key/transport 错误及无有效 MinCommitTS
+响应不会错误释放屏障。产品代码未改动。普通／race 各 22 项重新通过，
+扩展例分别 12.36／12.05 秒；证据分别为
+`/tmp/kubebrain-real-protocol.P4sIrybBrO/`、
+`/tmp/kubebrain-real-protocol.wY5H2bRn3n/`。两轮退出 0、`cleanup_failed=0`，
+独立资源清单为空且编译测试文件不存在。存储／build 全量 race
+9.003／2.503 秒通过，vet 通过；没有将单测或夹具加固记作产品性能改善。
+
 网络复查（2026-09-15）：直接 SSH 到 `k8s3-worker1/2/3`（10.32.32.70–72），
 三个节点均可解析 ghcr.io，HTTPS registry 返回预期的未认证 401，公开镜像
 token 接口返回 200；未复现历史 IPv6 DNS 超时。本次仅复查连通性，没有
