@@ -38,6 +38,24 @@ type protocolAsyncCommitHold struct {
 	asyncRegions                                                 map[uint64]struct{}
 }
 
+type protocolProcessAsyncRPC struct {
+	clienttikv.Client
+	successes, unmarkedAsync atomic.Int32
+}
+
+func (c *protocolProcessAsyncRPC) SendRequest(ctx context.Context, addr string, req *tikvrpc.Request, timeout time.Duration) (*tikvrpc.Response, error) {
+	response, err := c.Client.SendRequest(ctx, addr, req, timeout)
+	if req.Type == tikvrpc.CmdPrewrite && err == nil && response != nil {
+		if r, ok := response.Resp.(*kvrpcpb.PrewriteResponse); ok && r != nil && r.RegionError == nil && len(r.Errors) == 0 {
+			c.successes.Add(1)
+			if req.Prewrite().UseAsyncCommit && r.MinCommitTs > req.Prewrite().StartVersion && ctx.Value(protocolLatencyMarker{}) != true {
+				c.unmarkedAsync.Add(1)
+			}
+		}
+	}
+	return response, err
+}
+
 // Lose a real successful async Prewrite response for one exact transaction.
 // Cancellation prevents a subsequent retry from confirming it to the caller.
 type protocolAsyncResponseLoss struct {
@@ -273,6 +291,10 @@ func TestRealTiKVAsyncExperimentBackendResponseLoss(t *testing.T) {
 
 func TestRealTiKVAsyncExperimentGuardedResponseLoss(t *testing.T) {
 	testRealTiKVBackendScenario(t, "async-guarded-committed")
+}
+
+func TestRealTiKVAsyncExperimentProcessDefaults(t *testing.T) {
+	testRealTiKVBackendScenario(t, "async-process-fenced")
 }
 
 func verifyAsyncBackendResolution(t *testing.T, ctx context.Context, b backend.Backend, metrics *protocolResolutionMetrics, watch <-chan []*proto.Event, left, right []byte) {

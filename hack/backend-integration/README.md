@@ -3,7 +3,7 @@
 本目录维护根模块的本机真实 PD/TiKV 测试入口；旧独立 SQL mock 模块已退役。
 不接入 Kubernetes，不需要 kubeconfig。
 
-当前入口共 23 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
+当前入口共 24 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
 当前执行顺序。两个单 Region 后端响应丢失用例先于主动 Region 分裂执行；
 后续增加用例时以入口中的测试名清单及明确 PASS 回执为准，不累加历史轮次。
 
@@ -87,12 +87,23 @@ secondary 接受、primary 阻断、目标事务零 Commit RPC；调用者收到
 另一类 Prewrite 接受数必须为零；两种方向都要求零 Commit RPC 和两键旧值。
 
 `TestRealTiKVAsyncExperimentGuardedResponseLoss` 将已提交但丢响应的场景
-扩展到完整领导权／恢复防护。入口共 23 例，此例同样在主动分裂前运行，
+扩展到完整领导权／恢复防护。此例同样在主动分裂前运行，
 使用 640-key 清理预算。安装两族 token 并携带领导权 epoch，实际 RPC 要求
 成对预取、零防护单键 Get，以及两族 guard mutation；被丢弃的成功 Prewrite
 必须包含整笔事务。复用见证解析、双键 Watch／读回、下一修订号和防重复
 发布检查。仍只在用户目标事务开启 async，初始化／清理保持 2PC；没有
 注入并发领导权切换、跨 Region 部分送达、进程崩溃或多副本故障。
+
+`TestRealTiKVAsyncExperimentProcessDefaults` 是进程级 SDK 默认模式实验，
+在创建任何客户端前开启 async、关闭 1PC，直到所有后台和清理结束后才
+恢复配置。它是上述“初始化／清理 2PC”约定的显式例外，仍需额外 async
+实验许可，作用域验证沿用 `MODE=2pc`。不调用事务级协议 setter，三笔用户
+事务必须真实接受 async，并核对内部事务及 owner claim 的 async 成功响应。
+完整防护初始化、三次连续写后读、持久见证扫描和 640-key 清理都在该默认
+模式下执行；超出 SDK async 限制的事务仍可正常回退 2PC，不能声称每笔事务
+都使用 async。清理前后实际 Prewrite 成功数必须增加。该实验直接设置 SDK
+默认值，配合选项层开关映射单测，不等于启动生产二进制的完整端到端验收，
+也不覆盖该模式下所有后台、备份／恢复或故障路径。
 
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键

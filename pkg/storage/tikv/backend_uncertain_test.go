@@ -222,6 +222,10 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
+	processAsync := scenario == "async-process-fenced"
+	if processAsync {
+		scenario = "async-fenced"
+	}
 	guardedAsync := scenario == "async-guarded-committed"
 	if guardedAsync {
 		scenario = "async-committed"
@@ -271,7 +275,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	ctrl := gomock.NewController(t) // Finish only after backend workers stop.
 	t.Cleanup(tikvconfig.UpdateGlobal(func(cfg *tikvconfig.Config) {
 		cfg.Enable1PC = mode == "1pc"
-		cfg.EnableAsyncCommit = false
+		cfg.EnableAsyncCommit = processAsync
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -285,6 +289,15 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cleanupKV.Close()) })
 	require.Equal(t, expected, cleanupKV.(storage.ClusterIdentifier).ClusterID())
+	var processRPC, cleanupRPC *protocolProcessAsyncRPC
+	if processAsync {
+		processClient := kv.(*store).getClient()
+		processRPC = &protocolProcessAsyncRPC{Client: processClient.GetTiKVClient()}
+		processClient.SetTiKVClient(processRPC)
+		cleanupClient := cleanupKV.(*store).getClient()
+		cleanupRPC = &protocolProcessAsyncRPC{Client: cleanupClient.GetTiKVClient()}
+		cleanupClient.SetTiKVClient(cleanupRPC)
+	}
 	keys, err := protocolBackendKeysWithFences(ctx, cleanupKV, prefix, fenced)
 	require.NoError(t, err)
 	require.Empty(t, keys, "both fixture ranges must be empty before claiming")
@@ -301,7 +314,16 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		}
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 30*time.Second)
 		defer stop()
+		var cleanupBefore int32
+		if processAsync {
+			require.True(t, tikvconfig.GetGlobalConfig().EnableAsyncCommit)
+			cleanupBefore = cleanupRPC.successes.Load()
+		}
 		require.NoError(t, cleanupProtocolBackendWithFences(cleanupCtx, cleanupKV, prefix, owner, fenced))
+		if processAsync {
+			require.Greater(t, cleanupRPC.successes.Load(), cleanupBefore, "cleanup must really prewrite under the process default")
+			t.Log("PROTOCOL_PROCESS_ASYNC_CLEANUP_OK default_preserved=true")
+		}
 		t.Logf("PROTOCOL_BACKEND_CLEANUP_OK prefix=%s keyspace=%s", prefix, ks.Name())
 	})
 	t.Logf("PROTOCOL_BACKEND_STARTED cluster=%d prefix=%s keyspace=%s owner_sha256=%x", expected, prefix, ks.Name(), sha256.Sum256(owner))
@@ -382,10 +404,12 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 					return
 				}
 			}
-			txn.SetEnable1PC(false)
-			txn.SetEnableAsyncCommit(true)
 			tracked := &protocolAsyncCommitHold{Client: client.GetTiKVClient(), startTS: txn.StartTS(),
 				held: make(chan struct{}), release: make(chan struct{}), asyncRegions: make(map[uint64]struct{})}
+			if !processAsync {
+				txn.SetEnable1PC(false)
+				txn.SetEnableAsyncCommit(true)
+			}
 			close(tracked.release) // observe real replies; do not delay backend commits
 			client.SetTiKVClient(tracked)
 			asyncWrites = append(asyncWrites, tracked)
@@ -444,6 +468,11 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 				require.Equal(t, tracked.prewrites.Load(), tracked.asyncResponses.Load()+tracked.regionErrors.Load(), "no silent fallback or unaccounted Prewrite reply")
 			}
 			t.Log("PROTOCOL_ASYNC_BACKEND_PUBLICATION_OK transactions=3 actual_async_accepted=true witness_validation=true")
+			if processAsync {
+				require.Positive(t, processRPC.unmarkedAsync.Load(), "internal transactions must really use async")
+				require.Positive(t, cleanupRPC.unmarkedAsync.Load(), "ownership claim must really use async")
+				t.Log("PROTOCOL_PROCESS_ASYNC_OK per_transaction_override=false internal_async_accepted=true")
+			}
 		}
 		return
 	}

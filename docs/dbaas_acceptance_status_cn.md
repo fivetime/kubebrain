@@ -8,8 +8,8 @@
 新增本地启动实验开关 `--experimental-tikv-enable-async-commit`，默认关闭，
 与实验 1PC 互斥。配置冲突必须在创建客户端前拒绝，不能改变既有 SDK 全局
 状态。开关仅启动时应用，影响进程全部新事务；关闭后需重启恢复默认 2PC。
-已有事务级真实实验并不覆盖这个全进程默认模式，后续仍需验证内部事务、
-完整防护与恢复路径。选项层／build 全量 race 1.221／2.477 秒通过；本轮
+事务级真实实验并不覆盖这个全进程默认模式；补充 SDK 默认模式实验见下文，
+仍需验证生产二进制启动、其他内部事务及故障恢复路径。选项层／build 全量 race 1.221／2.477 秒通过；本轮
 没有启用远端开关、修改部署或放宽生产准入条件。
 
 批次 Prewrite RPC 观测候选（后续远端验收未通过）：在同步批次 Commit 返回前
@@ -206,6 +206,28 @@ Prewrite mutation。仅目标事务使用 async，丢失的成功 Prewrite 必�
 `/tmp/kubebrain-real-protocol.HXXUONTV4T/`，退出 0、`cleanup_failed=0`。
 普通／race 两轮均独立确认容器／网络为空、编译测试文件不存在；两种
 见证解析与完整防护明确日志已核对，不沿用未收紧 RPC 断言的初轮结果。
+
+进程级 SDK 默认模式扩展：新增 `TestRealTiKVAsyncExperimentProcessDefaults`，
+客户端构造前开启 async、关闭 1PC，直到后台关闭和清理完成后才恢复配置。
+不使用事务级 setter；三次用户写入、内部事务和 owner claim 的真实 async
+成功响应分别被核验，完整防护初始化、写后读、持久见证扫描及 640-key
+清理均完成。清理时默认值仍启用，实际 Prewrite 成功计数增加；SDK 可以因
+事务规模回退 2PC，不要求所有内部事务强制 async。最初夹具变量放置错误
+导致编译失败，未创建服务端容器；修正后普通／race 各 24 项通过，新例
+0.28／0.48 秒，证据分别为 `/tmp/kubebrain-real-protocol.xcRUXTLzUF/`、
+`/tmp/kubebrain-real-protocol.lxrRQiV6DK/`。两轮退出 0、`cleanup_failed=0`，
+独立容器／网络清单为空，测试二进制不存在。存储／选项／build 全量 race
+7.873／1.243／2.551 秒通过，vet 通过。此例直接设置 SDK 默认值，不等同
+实际命令行启动的端到端验收，也不覆盖全部后台、备份恢复和故障路径。
+
+`f3563f7d` 镜像 CI `34913452184` 最终成功，耗时 46m50s；amd64／arm64
+运行时源码身份均核对为该提交，Verify published test image 和 Promote
+verified image to dbaas 均成功。发布索引为
+`sha256:c7866bb2579dd6d2b951523f7c908bda0eb2b489b10208e0499597929c1479ed`，
+日志保存在 `/tmp/kubebrain-f3563f7d-image-ci.2kqGnk.log`。至此该旧提交的
+后端、探针、镜像三条 CI 均成功；不包含其后本机新增的响应丢失、部分送达、
+完整防护、启动开关及进程默认模式扩展，不作为这些新修改的远端通过证据。
+本轮没有部署该镜像或启用测试集群 async commit。
 
 网络复查（2026-09-15）：直接 SSH 到 `k8s3-worker1/2/3`（10.32.32.70–72），
 三个节点均可解析 ghcr.io，HTTPS registry 返回预期的未认证 401，公开镜像
