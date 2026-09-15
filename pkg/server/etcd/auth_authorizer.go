@@ -117,6 +117,16 @@ func (s *RPCServer) authCallerFromCachedContext(ctx context.Context) (*authCalle
 // observations.
 func (s *RPCServer) prepareEtcdApplyAuthInfo(ctx context.Context) (*authCaller, error) {
 	caller, err := s.authCallerFromContext(ctx)
+	if err == nil && caller == nil && s.clientCertAuth {
+		// EtcdServer.AuthInfoFromCtx falls back to TLS even when the token
+		// provider returned no identity because auth was disabled. Preserve
+		// that certificate identity/revision if auth is enabled before apply.
+		var snapshot *authSnapshot
+		snapshot, err = s.tokens.snapshots.current(ctx)
+		if err == nil {
+			caller, err = s.authCallerFromTLS(ctx, snapshot)
+		}
+	}
 	if errors.Is(err, rpctypes.ErrUserEmpty) {
 		return nil, nil
 	}
@@ -134,17 +144,18 @@ func (s *RPCServer) validateEtcdApplyAuthInfo(ctx context.Context) error {
 // still come from the current auth store: re-authenticating here would silently
 // upgrade a simple token to a newer revision and admit a stale request.
 func (s *RPCServer) authCallerForEtcdApply(ctx context.Context, admitted *authCaller) (*authCaller, error) {
-	if admitted == nil {
-		// No authenticated identity was captured. Preserve the fresh check for
-		// auth being enabled since admission, including missing credentials.
-		return s.authCallerFromContext(ctx)
-	}
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if !snapshot.Config.Enabled {
 		return nil, nil
+	}
+	if admitted == nil {
+		// A nil AuthInfo becomes an empty raft request identity upstream.
+		// Do not parse credentials that were ignored while auth was disabled:
+		// current enabled-state authorization must report ErrUserEmpty.
+		return &authCaller{snapshot: snapshot}, nil
 	}
 	caller := *admitted
 	caller.snapshot = snapshot

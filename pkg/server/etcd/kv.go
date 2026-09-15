@@ -1166,7 +1166,13 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 		}
 		defer beginEtcdApply(s.metricCli, "Txn", &retErr)()
 	}
-	caller, authErr := s.authCallerForEtcdApply(ctx, admittedCaller)
+	var caller *authCaller
+	var authErr error
+	if readOnly {
+		caller, authErr = s.authCallerFromContext(ctx)
+	} else {
+		caller, authErr = s.authCallerForEtcdApply(ctx, admittedCaller)
+	}
 	if authErr != nil {
 		return nil, authErr
 	}

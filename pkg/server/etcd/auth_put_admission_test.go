@@ -40,57 +40,76 @@ func (s *authConfigAfterReadShim) InternalGet(ctx context.Context, key []byte) (
 // Apply checks that version against the current auth store, rather than
 // authenticating again and silently adopting a newer version.
 func TestKVWritePreservesInitialAuthRevisionAtApply(t *testing.T) {
-	for _, op := range []string{"put", "delete", "txn"} {
-		t.Run(op, func(t *testing.T) {
-			server, closeFn := newTestRPCServer(t)
-			defer closeFn()
-			ctx := setupAuthKVUser(t, server)
-			key := []byte("/allowed/auth-revision-at-apply")
-			_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("original")})
-			require.NoError(t, err)
-			original := server.backend
-			before, err := original.Get(context.Background(), &etcdserverpb.RangeRequest{Key: key})
-			require.NoError(t, err)
-			snapshot, err := server.tokens.snapshots.current(ctx)
-			require.NoError(t, err)
-			// A warm simple-token authentication reads config before verify,
-			// during verify, and when assigning AuthInfo.Revision.
-			shim := &authConfigAfterReadShim{BackendShim: original, afterReadAt: 3}
-			shim.afterRead = func() {
-				config := snapshot.Config
-				config.Revision++
-				require.NoError(t, original.InternalPut(context.Background(), authConfigKey, encodeAuthConfig(config)))
+	for _, identity := range []string{"simple-token", "client-certificate", "forwarded-certificate"} {
+		t.Run(identity, func(t *testing.T) {
+			for _, op := range []string{"put", "delete", "txn"} {
+				t.Run(op, func(t *testing.T) {
+					server, closeFn := newTestRPCServer(t)
+					defer closeFn()
+					ctx := setupAuthKVUser(t, server)
+					admissionReads := int32(3)
+					if identity != "simple-token" {
+						server.SetClientCertAuth(true)
+						admissionReads = 1
+						ctx = verifiedTLSContext(context.Background(), "alice")
+						if identity == "forwarded-certificate" {
+							ctx = context.WithValue(verifiedTLSContext(context.Background(), "peer-member"), peerRequestContextKey{}, true)
+							ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(forwardedClientCertificateUsernameMetadataKey, "alice"))
+						}
+					}
+					key := []byte("/allowed/auth-revision-at-apply")
+					_, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("original")})
+					require.NoError(t, err)
+					original := server.backend
+					before, err := original.Get(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+					require.NoError(t, err)
+					snapshot, err := server.tokens.snapshots.current(ctx)
+					require.NoError(t, err)
+					// A warm simple-token authentication reads config before verify,
+					// during verify, and when assigning AuthInfo.Revision.
+					// Certificate identities capture their revision in one config read.
+					shim := &authConfigAfterReadShim{BackendShim: original, afterReadAt: admissionReads}
+					shim.afterRead = func() {
+						config := snapshot.Config
+						config.Revision++
+						require.NoError(t, original.InternalPut(context.Background(), authConfigKey, encodeAuthConfig(config)))
+					}
+					server.tokens.snapshots.repo.backend = shim
+					switch op {
+					case "put":
+						_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("replacement")})
+					case "delete":
+						_, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
+					case "txn":
+						_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("replacement")}}}}})
+					}
+					require.True(t, shim.fired.Load())
+					require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+					after, err := original.Get(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+					require.NoError(t, err)
+					require.Equal(t, before, after, "stale auth must not change the value or user revision")
+				})
 			}
-			server.tokens.snapshots.repo.backend = shim
-			switch op {
-			case "put":
-				_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("replacement")})
-			case "delete":
-				_, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
-			case "txn":
-				_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("replacement")}}}}})
-			}
-			require.True(t, shim.fired.Load())
-			require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
-			after, err := original.Get(context.Background(), &etcdserverpb.RangeRequest{Key: key})
-			require.NoError(t, err)
-			require.Equal(t, before, after, "stale auth must not change the value or user revision")
 		})
 	}
 }
 
 func TestPutRechecksAuthEnabledAfterInitialAuthInfoRead(t *testing.T) {
 	for _, test := range []struct {
-		name string
-		ctx  context.Context
-		want error
+		name           string
+		ctx            context.Context
+		want           error
+		clientCert     bool
+		admissionReads int32
 	}{
-		{"missing credentials", context.Background(), rpctypes.ErrUserEmpty},
-		{"empty token", metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, "")), rpctypes.ErrInvalidAuthToken},
+		{"missing credentials", context.Background(), rpctypes.ErrUserEmpty, false, 1},
+		{"empty token ignored before auth enable", metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, "")), rpctypes.ErrUserEmpty, false, 1},
+		{"certificate captured before auth enable", verifiedTLSContext(context.Background(), "root"), rpctypes.ErrAuthOldRevision, true, 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
 			defer closeFn()
+			server.SetClientCertAuth(test.clientCert)
 			ctx := context.Background()
 			require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
 			require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
@@ -98,7 +117,7 @@ func TestPutRechecksAuthEnabledAfterInitialAuthInfoRead(t *testing.T) {
 			require.NoError(t, err)
 			require.False(t, snapshot.Config.Enabled)
 			original := server.backend
-			shim := &authConfigAfterReadShim{BackendShim: original}
+			shim := &authConfigAfterReadShim{BackendShim: original, afterReadAt: test.admissionReads}
 			shim.afterRead = func() {
 				config := snapshot.Config
 				config.Enabled = true

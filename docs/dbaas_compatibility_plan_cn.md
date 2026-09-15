@@ -781,8 +781,12 @@ P0 完成标准：官方 client/v3 的核心 KV/Watch/Lease/Txn 行为矩阵无�
   KubeBrain 原 Put/DeleteRange/写 Txn 丢弃首次身份并重复认证，simple token
   会采用更新后的版本。确定性测试在首次版本读取后推进持久鉴权版本，三个
   入口均复现应返回 `ErrAuthOldRevision` 却成功的问题。现保留首次身份／版本，
-  执行阶段刷新权限快照；提交时原子 guard、租约锁内检查和缺失身份时的重新
-  鉴权保留。只读 Txn、管理 API 的原路径不变。测试锁定拒绝后值和用户 revision
+  执行阶段刷新权限快照；提交时原子 guard 和租约锁内检查保留。后续源码
+  对照补正空身份分支：最初鉴权关闭时忽略的 token 不应在 apply 再次解析，
+  启用后空身份应得到 `ErrUserEmpty`；若启用了客户端证书认证，仍须像
+  `EtcdServer.AuthInfoFromCtx` 一样在 token 未提供身份时提取 TLS 身份。
+  测试覆盖 simple token、直接／受信 peer 转发证书的三个写入口，以及鉴权
+  开关切换；只读 Txn 保持原认证路径。测试锁定拒绝后值和用户 revision
   不变；完整服务普通回归、定向鉴权 race 和 vet 已通过。CI 增加 Auth/JWT
   race 覆盖，真实集群及新版本 CI 结果须另行取得；不据此宣称吞吐改善。
 - **Auth A24 客户端证书 CN 身份（2026-07-16）**：对齐 etcd
