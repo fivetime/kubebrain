@@ -23,6 +23,7 @@ var ErrInternalWriteGuardConflict = errors.New("internal write guard changed")
 type internalWriteGuard struct {
 	key      []byte
 	expected []byte
+	absent   bool
 }
 
 type internalWriteGuardContextKey struct{}
@@ -35,14 +36,38 @@ func WithInternalWriteGuard(ctx context.Context, key, expected []byte) context.C
 	})
 }
 
+// WithAbsentInternalWriteGuard requires key to remain absent through the user
+// write's atomic commit, without materializing a synthetic metadata value.
+func WithAbsentInternalWriteGuard(ctx context.Context, key []byte) context.Context {
+	return context.WithValue(ctx, internalWriteGuardContextKey{}, internalWriteGuard{
+		key: append([]byte(nil), key...), absent: true,
+	})
+}
+
 func (b *backend) commitUserBatch(ctx context.Context, batch storage.BatchWrite) error {
 	guard, guarded := ctx.Value(internalWriteGuardContextKey{}).(internalWriteGuard)
 	var encodedGuard []byte
 	if guarded {
 		encodedGuard = b.ks.EncodeInternalKey(guard.key)
-		// A no-op CAS adds the internal key to the same transaction's conflict
-		// set without changing its value.
-		batch.CAS(encodedGuard, guard.expected, guard.expected, 0)
+		if guard.absent {
+			batch.Atomic(func(ctx context.Context, txn storage.AtomicBatch) error {
+				_, err := txn.Get(ctx, encodedGuard)
+				if errors.Is(err, storage.ErrKeyNotFound) {
+					// A read alone is not an optimistic TiKV conflict fence. A
+					// delete mutation preserves absence and conflicts with a
+					// concurrent creator of the metadata key.
+					return txn.Del(encodedGuard)
+				}
+				if err != nil {
+					return err
+				}
+				return ErrInternalWriteGuardConflict
+			})
+		} else {
+			// A no-op CAS adds the internal key to the same transaction's conflict
+			// set without changing its value.
+			batch.CAS(encodedGuard, guard.expected, guard.expected, 0)
+		}
 	}
 	err := batch.Commit(ctx)
 	if !guarded || err == nil {
@@ -57,7 +82,11 @@ func (b *backend) commitUserBatch(ctx context.Context, batch storage.BatchWrite)
 	// authorization decision is stale whenever its durable guard changed.
 	if errors.Is(err, storage.ErrCASFailed) || errors.Is(err, ErrLeadershipFenced) || errors.Is(err, ErrRestorationFenced) {
 		current, getErr := b.kv.Get(ctx, encodedGuard)
-		if errors.Is(getErr, storage.ErrKeyNotFound) || (getErr == nil && !bytes.Equal(current, guard.expected)) {
+		changed := guard.absent && getErr == nil
+		if !guard.absent {
+			changed = errors.Is(getErr, storage.ErrKeyNotFound) || (getErr == nil && !bytes.Equal(current, guard.expected))
+		}
+		if changed {
 			return ErrInternalWriteGuardConflict
 		}
 	}

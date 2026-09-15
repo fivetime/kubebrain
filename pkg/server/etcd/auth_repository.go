@@ -119,6 +119,7 @@ func authRecordKey(prefix []byte, name string) []byte {
 
 type authSnapshot struct {
 	Config           authConfig
+	ConfigExists     bool
 	Users            map[string]*authpb.User
 	Roles            map[string]*authpb.Role
 	TokenGenerations map[string]*authpb.User
@@ -134,20 +135,28 @@ func newAuthRepository(backend BackendShim) *authRepository {
 }
 
 func (r *authRepository) loadConfig(ctx context.Context) (authConfig, error) {
+	config, _, err := r.loadConfigState(ctx)
+	return config, err
+}
+
+func (r *authRepository) loadConfigState(ctx context.Context) (authConfig, bool, error) {
 	config := authConfig{Revision: initialAuthRevision}
 	configValue, err := r.backend.InternalGet(ctx, authConfigKey)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		return config, false, nil
+	}
 	if err == nil {
 		config, err = decodeAuthConfig(configValue)
 	}
-	if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
-		return authConfig{}, err
+	if err != nil {
+		return authConfig{}, false, err
 	}
-	return config, nil
+	return config, true, nil
 }
 
 func (r *authRepository) load(ctx context.Context) (*authSnapshot, error) {
 	for attempt := 0; ; attempt++ {
-		config, err := r.loadConfig(ctx)
+		config, exists, err := r.loadConfigState(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -155,11 +164,12 @@ func (r *authRepository) load(ctx context.Context) (*authSnapshot, error) {
 		if err != nil {
 			return nil, err
 		}
-		current, err := r.loadConfig(ctx)
+		current, currentExists, err := r.loadConfigState(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if current == config {
+		if current == config && currentExists == exists {
+			snapshot.ConfigExists = exists
 			return snapshot, nil
 		}
 		if err = waitAuthRetry(ctx, attempt); err != nil {

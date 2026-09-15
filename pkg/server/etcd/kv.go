@@ -1171,7 +1171,7 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 	if readOnly {
 		caller, authErr = s.authCallerFromContext(ctx)
 	} else {
-		caller, authErr = s.authCallerForEtcdApply(ctx, admittedCaller)
+		ctx, caller, authErr = s.authCallerForEtcdApply(ctx, admittedCaller)
 	}
 	if authErr != nil {
 		return nil, authErr
@@ -1960,7 +1960,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		return nil, authErr
 	}
 	defer beginEtcdApply(s.metricCli, "Put", &retErr)()
-	caller, authErr := s.authCallerForEtcdApply(ctx, admittedCaller)
+	ctx, caller, authErr := s.authCallerForEtcdApply(ctx, admittedCaller)
 	if authErr != nil {
 		return nil, authErr
 	}
@@ -2089,7 +2089,7 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 		return nil, authErr
 	}
 	defer beginEtcdApply(s.metricCli, "DeleteRange", &retErr)()
-	caller, authErr := s.authCallerForEtcdApply(ctx, admittedCaller)
+	ctx, caller, authErr := s.authCallerForEtcdApply(ctx, admittedCaller)
 	if authErr != nil {
 		return nil, authErr
 	}

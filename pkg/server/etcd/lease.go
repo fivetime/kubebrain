@@ -483,7 +483,10 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 	if err != nil {
 		return nil, err
 	}
-	ctx = withAuthWriteGuard(ctx, caller)
+	ctx, caller, err = m.srv.authCallerForEtcdApply(ctx, caller)
+	if err != nil {
+		return nil, err
+	}
 	if !leadingFresh {
 		return nil, m.leaseLeaderUnavailable("lease revoke")
 	}

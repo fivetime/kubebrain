@@ -48,6 +48,22 @@ func TestAuthSnapshotCacheInvalidatesOnPersistedRevision(t *testing.T) {
 	require.Same(t, updated, reused)
 }
 
+func TestAuthSnapshotCacheInvalidatesOnConfigCreation(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	ctx := context.Background()
+	cache := newAuthSnapshotCache(server.backend)
+	initial, err := cache.current(ctx)
+	require.NoError(t, err)
+	require.False(t, initial.ConfigExists)
+	require.NoError(t, server.backend.InternalPut(ctx, authConfigKey, encodeAuthConfig(initial.Config)))
+	created, err := cache.current(ctx)
+	require.NoError(t, err)
+	require.Equal(t, initial.Config, created.Config)
+	require.True(t, created.ConfigExists)
+	require.NotSame(t, initial, created, "presence is part of the atomic guard even when values match")
+}
+
 func TestAuthComponentsReloadRevisionAndPermissionsFromDurableBackend(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()

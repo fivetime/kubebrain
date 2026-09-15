@@ -42,6 +42,19 @@ func TestLocalProtocolSetsContainerFileDescriptorLimit(t *testing.T) {
 	require.NotContains(t, string(source[start:end]), "--privileged")
 }
 
+func TestLocalProtocolIncludesAbsentAuthCommitConflict(t *testing.T) {
+	source, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
+	require.NoError(t, err)
+	text := string(source)
+	start := strings.Index(text, "\nfor test_name in")
+	end := strings.Index(text[start:], "; do\n")
+	require.Greater(t, start, 0)
+	require.Greater(t, end, 0)
+	name := "TestRealTiKVAbsentAuthGuardConflictsAfterStaging"
+	require.Contains(t, text[start:start+end], name)
+	require.Contains(t, text, `"$test_name" == `+name+` ]]; then protocol_mode=2pc; fi`)
+}
+
 func TestLocalProtocolExplicitSubnetReservation(t *testing.T) {
 	source, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
 	require.NoError(t, err)

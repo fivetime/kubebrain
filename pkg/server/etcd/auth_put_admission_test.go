@@ -3,9 +3,11 @@ package etcd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
@@ -24,7 +26,7 @@ type authConfigAfterReadShim struct {
 
 func (s *authConfigAfterReadShim) InternalGet(ctx context.Context, key []byte) ([]byte, error) {
 	value, err := s.BackendShim.InternalGet(ctx, key)
-	if err == nil && bytes.Equal(key, authConfigKey) {
+	if (err == nil || errors.Is(err, storage.ErrKeyNotFound)) && bytes.Equal(key, authConfigKey) {
 		at := s.afterReadAt
 		if at == 0 {
 			at = 1
@@ -34,6 +36,74 @@ func (s *authConfigAfterReadShim) InternalGet(ctx context.Context, key []byte) (
 		}
 	}
 	return value, err
+}
+
+func TestAuthDisabledWriteCommitFence(t *testing.T) {
+	for _, state := range []string{"absent", "persisted"} {
+		for _, transition := range []string{"stable", "enable"} {
+			for _, op := range []string{"put", "delete", "txn", "lease-revoke"} {
+				t.Run(state+"/"+transition+"/"+op, func(t *testing.T) {
+					server, closeFn := newTestRPCServer(t)
+					defer closeFn()
+					ctx := context.Background()
+					if state == "persisted" {
+						require.NoError(t, server.auth.userAdd(ctx, &etcdserverpb.AuthUserAddRequest{Name: "root", Password: "secret"}))
+						require.NoError(t, server.auth.userGrantRole(ctx, "root", "root"))
+					}
+					lease, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{TTL: 60})
+					require.NoError(t, err)
+					key := []byte("/disabled-auth-commit-fence")
+					_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("original"), Lease: lease.ID})
+					require.NoError(t, err)
+					original := server.backend
+					before, err := original.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
+					require.NoError(t, err)
+					snapshot, err := server.tokens.snapshots.current(ctx)
+					require.NoError(t, err)
+					require.Equal(t, state == "persisted", snapshot.ConfigExists)
+					shim := &authConfigAfterReadShim{BackendShim: original, afterReadAt: 2}
+					shim.afterRead = func() {
+						if transition == "enable" {
+							config := snapshot.Config
+							config.Enabled = true
+							config.Revision++
+							// Model an external member's committed config change after
+							// the local apply read, without invalidating its cache.
+							// The absent case exercises the first metadata creation.
+							require.NoError(t, original.InternalPut(ctx, authConfigKey, encodeAuthConfig(config)))
+						}
+					}
+					server.tokens.snapshots.repo.backend = shim
+					switch op {
+					case "put":
+						_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("replacement")})
+					case "delete":
+						_, err = server.DeleteRange(ctx, &etcdserverpb.DeleteRangeRequest{Key: key})
+					case "txn":
+						_, err = server.Txn(ctx, &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{Key: key, Value: []byte("replacement")}}}}})
+					case "lease-revoke":
+						_, err = server.LeaseRevoke(ctx, &etcdserverpb.LeaseRevokeRequest{ID: lease.ID})
+					}
+					require.True(t, shim.fired.Load())
+					if transition == "enable" {
+						require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+						after, getErr := original.Get(ctx, &etcdserverpb.RangeRequest{Key: key})
+						require.NoError(t, getErr)
+						require.Equal(t, before, after, "rejected writes must preserve user data and revision")
+					} else {
+						require.NoError(t, err)
+						value, getErr := original.InternalGet(ctx, authConfigKey)
+						if state == "absent" {
+							require.ErrorIs(t, getErr, storage.ErrKeyNotFound)
+						} else {
+							require.NoError(t, getErr)
+							require.Equal(t, encodeAuthConfig(snapshot.Config), value)
+						}
+					}
+				})
+			}
+		}
+	}
 }
 
 // Upstream stamps the first AuthInfo.Revision into the raft request header.

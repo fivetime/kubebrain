@@ -31,14 +31,14 @@ func (c *authSnapshotCache) cachedSnapshot() (*authSnapshot, bool) {
 }
 
 func (c *authSnapshotCache) current(ctx context.Context) (*authSnapshot, error) {
-	config, err := c.repo.loadConfig(ctx)
+	config, exists, err := c.repo.loadConfigState(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.snapshot != nil && c.snapshot.Config == config {
+	if c.snapshot != nil && c.snapshot.Config == config && c.snapshot.ConfigExists == exists {
 		return c.snapshot, nil
 	}
 	snapshot, err := c.repo.load(ctx)

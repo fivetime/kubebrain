@@ -12,10 +12,37 @@ import (
 	"context"
 	"testing"
 
+	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/stretchr/testify/require"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
 )
+
+func TestAbsentInternalWriteGuardPreservesAbsenceAndRejectsCreation(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	guardKey := []byte("auth/config")
+	guarded := WithAbsentInternalWriteGuard(ctx, guardKey)
+	key := []byte(prefix + "/auth-guard/absent")
+	response, err := b.Create(guarded, &proto.CreateRequest{Key: key, Value: []byte("allowed")})
+	require.NoError(t, err)
+	require.True(t, response.Succeeded)
+	_, err = b.InternalGet(ctx, guardKey)
+	require.ErrorIs(t, err, storage.ErrKeyNotFound, "guard must not create synthetic auth metadata")
+
+	require.NoError(t, b.InternalPut(ctx, guardKey, []byte("enabled")))
+	baseline := b.GetCurrentRevision()
+	_, err = b.Update(guarded, &proto.UpdateRequest{Kv: &proto.KeyValue{
+		Key: key, Value: []byte("denied"), Revision: response.Header.Revision,
+	}})
+	require.ErrorIs(t, err, ErrInternalWriteGuardConflict)
+	value, revision := liveValue(t, b, ctx, key)
+	require.Equal(t, "allowed", value)
+	require.Equal(t, response.Header.Revision, revision)
+	require.Equal(t, baseline, b.GetCurrentRevision())
+	actual, err := b.InternalGet(ctx, guardKey)
+	require.NoError(t, err)
+	require.Equal(t, []byte("enabled"), actual, "stale guard must not delete a newly created config")
+}
 
 func TestInternalWriteGuardRejectsStaleAuthorizedWrite(t *testing.T) {
 	b, ctx := newTxnApplyBackend(t)

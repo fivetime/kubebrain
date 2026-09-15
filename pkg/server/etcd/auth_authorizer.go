@@ -143,23 +143,26 @@ func (s *RPCServer) validateEtcdApplyAuthInfo(ctx context.Context) error {
 // just as etcd carries AuthInfo in its raft request header. Permissions must
 // still come from the current auth store: re-authenticating here would silently
 // upgrade a simple token to a newer revision and admit a stale request.
-func (s *RPCServer) authCallerForEtcdApply(ctx context.Context, admitted *authCaller) (*authCaller, error) {
+func (s *RPCServer) authCallerForEtcdApply(ctx context.Context, admitted *authCaller) (context.Context, *authCaller, error) {
 	snapshot, err := s.tokens.snapshots.current(ctx)
 	if err != nil {
-		return nil, err
+		return ctx, nil, err
 	}
+	// Preserve the observed disabled state too: nil caller means no permission
+	// checks, not permission to cross a concurrent auth enable at commit.
+	ctx = withAuthSnapshotWriteGuard(ctx, snapshot)
 	if !snapshot.Config.Enabled {
-		return nil, nil
+		return ctx, nil, nil
 	}
 	if admitted == nil {
 		// A nil AuthInfo becomes an empty raft request identity upstream.
 		// Do not parse credentials that were ignored while auth was disabled:
 		// current enabled-state authorization must report ErrUserEmpty.
-		return &authCaller{snapshot: snapshot}, nil
+		return ctx, &authCaller{snapshot: snapshot}, nil
 	}
 	caller := *admitted
 	caller.snapshot = snapshot
-	return &caller, nil
+	return ctx, &caller, nil
 }
 
 func authCredentialFromContext(ctx context.Context) (string, bool) {
@@ -347,6 +350,13 @@ func withAuthWriteGuard(ctx context.Context, caller *authCaller) context.Context
 		return ctx
 	}
 	return backend.WithInternalWriteGuard(ctx, authConfigKey, encodeAuthConfig(caller.snapshot.Config))
+}
+
+func withAuthSnapshotWriteGuard(ctx context.Context, snapshot *authSnapshot) context.Context {
+	if !snapshot.ConfigExists {
+		return backend.WithAbsentInternalWriteGuard(ctx, authConfigKey)
+	}
+	return backend.WithInternalWriteGuard(ctx, authConfigKey, encodeAuthConfig(snapshot.Config))
 }
 
 func withCanonicalForwardedAuthIdentity(ctx context.Context, token, certificateUsername string) context.Context {

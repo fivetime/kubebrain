@@ -153,7 +153,7 @@ for test_name in TestRealTiKVAsyncProcessGuardedResponseLoss TestRealTiKVAsyncEx
   TestRealTiKVBackendNoRPCRetryCommittedOnePC TestRealTiKVBackendNoRPCRetryUndeliveredOnePC \
   TestRealTiKVReadBypassesPendingSecondaryCleanup TestRealTiKVBackendProtocolLatency TestRealTiKVBackendConcurrentWrites \
   TestRealTiKVBackendProductionFences TestRealTiKVPrefetchedLeadershipConflict TestRealTiKVPrefetchedRestorationConflict \
-  TestRealTiKVTxnCompareCommitConflict TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup \
+  TestRealTiKVTxnCompareCommitConflict TestRealTiKVAbsentAuthGuardConflictsAfterStaging TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup \
   TestRealTiKVAsyncExperimentLeadershipConflict TestRealTiKVAsyncExperimentRestorationConflict \
   TestRealTiKVAsyncExperimentBackendPublication TestRealTiKVAsyncExperimentProcessDefaults \
   TestRealTiKVAsyncProcessLeadershipConflict TestRealTiKVAsyncProcessRestorationConflict \
@@ -165,7 +165,7 @@ for test_name in TestRealTiKVAsyncProcessGuardedResponseLoss TestRealTiKVAsyncEx
   if [[ "$test_name" == TestRealTiKVAsyncExperimentProcessDefaults || "$test_name" == TestRealTiKVAsyncProcessLeadershipConflict || "$test_name" == TestRealTiKVAsyncProcessRestorationConflict ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVAsyncExperimentBackendResponseLoss || "$test_name" == TestRealTiKVAsyncExperimentGuardedResponseLoss || "$test_name" == TestRealTiKVAsyncProcessGuardedResponseLoss ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup || "$test_name" == TestRealTiKVAsyncExperimentLeadershipConflict || "$test_name" == TestRealTiKVAsyncExperimentRestorationConflict || "$test_name" == TestRealTiKVAsyncExperimentBackendPublication ]]; then protocol_mode=2pc; async_experiment=1; fi
-  if [[ "$test_name" == TestRealTiKVTxnCompareCommitConflict ]]; then protocol_mode=2pc; fi
+  if [[ "$test_name" == TestRealTiKVTxnCompareCommitConflict || "$test_name" == TestRealTiKVAbsentAuthGuardConflictsAfterStaging ]]; then protocol_mode=2pc; fi
   if [[ "$test_name" == TestRealTiKVReadBypassesPendingSecondaryCleanup || "$test_name" == TestRealTiKVBackendProtocolLatency || "$test_name" == TestRealTiKVBackendConcurrentWrites || "$test_name" == TestRealTiKVBackendProductionFences || "$test_name" == TestRealTiKVPrefetchedLeadershipConflict || "$test_name" == TestRealTiKVPrefetchedRestorationConflict ]]; then protocol_mode=2pc; fi
   case_result=0
   KUBEBRAIN_TIKV_PROTOCOL_PD="$pd_endpoint" KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID="$cluster_id" \
