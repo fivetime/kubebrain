@@ -7,6 +7,14 @@
 当前执行顺序。两个单 Region 后端响应丢失用例先于主动 Region 分裂执行；
 后续增加用例时以入口中的测试名清单及明确 PASS 回执为准，不累加历史轮次。
 
+启动实验入口：命令行新增 `--experimental-tikv-enable-async-commit`，默认
+`false`，与 `--experimental-tikv-enable-1pc` 互斥。冲突配置在创建客户端前
+拒绝，且不修改 SDK 全局配置。它仅在进程启动时设置 SDK 默认值，影响该
+进程的所有新事务（包括内部事务），不是热切换；恢复默认需要移除开关并
+重启。下述事务级 opt-in 回归不能代替全进程模式验证或生产准入，不要在
+业务集群开启。当前专用集群也未启用该开关；远端对照实验需另行确认范围
+和恢复方案，不能仅因编译／单测通过而部署启用。
+
 ## 本机真实协议与 CI 门禁
 
 `backend-integration.yml` 新增独立 `real-protocol` 门禁：在可信 self-hosted

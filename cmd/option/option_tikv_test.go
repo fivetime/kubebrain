@@ -18,6 +18,7 @@
 package option
 
 import (
+	"context"
 	"testing"
 
 	"github.com/spf13/pflag"
@@ -36,15 +37,47 @@ func TestTiKVExperimentalOnePCStartupPolicy(t *testing.T) {
 	s.addFlag(fs)
 	require.False(t, s.experimental1PC)
 	require.Equal(t, "false", fs.Lookup("experimental-tikv-enable-1pc").DefValue)
-	s.configureCommitProtocol()
+	require.NoError(t, s.configureCommitProtocol())
 	require.False(t, tikvcfg.GetGlobalConfig().Enable1PC)
 	require.False(t, tikvcfg.GetGlobalConfig().EnableAsyncCommit)
 	require.NoError(t, fs.Parse([]string{"--experimental-tikv-enable-1pc=true"}))
-	s.configureCommitProtocol()
+	require.NoError(t, s.configureCommitProtocol())
 	require.True(t, tikvcfg.GetGlobalConfig().Enable1PC)
 	require.False(t, tikvcfg.GetGlobalConfig().EnableAsyncCommit)
 	require.NoError(t, fs.Set("experimental-tikv-enable-1pc", "false"))
-	s.configureCommitProtocol()
+	require.NoError(t, s.configureCommitProtocol())
+	require.False(t, tikvcfg.GetGlobalConfig().Enable1PC)
+	require.False(t, tikvcfg.GetGlobalConfig().EnableAsyncCommit)
+}
+
+func TestTiKVExperimentalAsyncStartupPolicy(t *testing.T) {
+	t.Cleanup(tikvcfg.UpdateGlobal(func(c *tikvcfg.Config) {
+		c.Enable1PC = false
+		c.EnableAsyncCommit = false
+	}))
+	s := newStorageConfig()
+	s.pdAddrs = []string{"127.0.0.1:2379"}
+	fs := pflag.NewFlagSet("protocol", pflag.ContinueOnError)
+	s.addFlag(fs)
+	require.False(t, s.experimentalAsyncCommit)
+	require.Equal(t, "false", fs.Lookup("experimental-tikv-enable-async-commit").DefValue)
+	require.NoError(t, fs.Parse([]string{"--experimental-tikv-enable-async-commit=true"}))
+	require.NoError(t, s.validate())
+	require.NoError(t, s.configureCommitProtocol())
+	require.False(t, tikvcfg.GetGlobalConfig().Enable1PC)
+	require.True(t, tikvcfg.GetGlobalConfig().EnableAsyncCommit)
+	require.NoError(t, fs.Set("experimental-tikv-enable-1pc", "true"))
+	require.ErrorContains(t, s.validate(), "mutually exclusive")
+	require.ErrorContains(t, s.configureCommitProtocol(), "mutually exclusive")
+	kv, err := s.buildStorage(context.Background())
+	require.ErrorContains(t, err, "mutually exclusive")
+	require.Nil(t, kv, "conflicting protocols must fail before creating clients")
+	// Rejection must not mutate existing SDK process settings.
+	require.False(t, tikvcfg.GetGlobalConfig().Enable1PC)
+	require.True(t, tikvcfg.GetGlobalConfig().EnableAsyncCommit)
+	require.NoError(t, fs.Set("experimental-tikv-enable-1pc", "false"))
+	require.NoError(t, fs.Set("experimental-tikv-enable-async-commit", "false"))
+	require.NoError(t, s.configureCommitProtocol())
 	require.False(t, tikvcfg.GetGlobalConfig().Enable1PC)
 	require.False(t, tikvcfg.GetGlobalConfig().EnableAsyncCommit)
 }

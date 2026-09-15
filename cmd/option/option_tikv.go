@@ -36,9 +36,10 @@ import (
 const defaultTiKVClientNum = 16
 
 type storageConfig struct {
-	pdAddrs         []string
-	clientNum       int
-	experimental1PC bool
+	pdAddrs                 []string
+	clientNum               int
+	experimental1PC         bool
+	experimentalAsyncCommit bool
 
 	// mTLS for the KubeBrain->TiKV/PD data plane (#33). Empty = plaintext.
 	caFile   string
@@ -88,6 +89,7 @@ func newStorageConfig() *storageConfig {
 
 func (s *storageConfig) addFlag(fs *pflag.FlagSet) {
 	fs.BoolVar(&s.experimental1PC, "experimental-tikv-enable-1pc", false, "Try TiKV 1PC with SDK 2PC fallback; dedicated test clusters only, disabled by default. Async commit remains disabled.")
+	fs.BoolVar(&s.experimentalAsyncCommit, "experimental-tikv-enable-async-commit", false, "Try TiKV async commit with SDK 2PC fallback; dedicated test clusters only, disabled by default. Cannot be combined with experimental 1PC; restart required.")
 	fs.StringSliceVar(&s.pdAddrs, "pd-addrs", s.pdAddrs, "addresses of TiKV PD servers")
 	fs.IntVar(&s.clientNum, "tikv-client-num", s.clientNum, "number of round-robined TiKV txn clients; each has its own PD connections, region cache and TSO stream, so keep it modest")
 	fs.StringVar(&s.caFile, "tikv-ca-file", s.caFile, "Path to the CA cert for TLS to TiKV/PD (empty = plaintext data plane).")
@@ -97,6 +99,9 @@ func (s *storageConfig) addFlag(fs *pflag.FlagSet) {
 }
 
 func (s *storageConfig) validate() error {
+	if err := s.validateCommitProtocol(); err != nil {
+		return err
+	}
 	if len(s.pdAddrs) == 0 {
 		return fmt.Errorf("invalid param --pd-addrs")
 	}
@@ -127,7 +132,9 @@ func (s *storageConfig) buildStorage(ctx context.Context) (storage.KvStorage, er
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	s.configureCommitProtocol()
+	if err := s.configureCommitProtocol(); err != nil {
+		return nil, err
+	}
 	return storagetikv.NewKvStorageWithContext(ctx, s.pdAddrs, s.clientNum, storagetikv.Security{
 		CAPath:   s.caFile,
 		CertPath: s.certFile,
@@ -139,9 +146,20 @@ func (s *storageConfig) buildStorage(ctx context.Context) (storage.KvStorage, er
 // The SDK snapshots these process-wide settings when it creates a transaction.
 // Apply once at process startup, before constructing any storage clients. This
 // is not a runtime toggle; restoring the default requires restarting the process.
-func (s *storageConfig) configureCommitProtocol() {
+func (s *storageConfig) validateCommitProtocol() error {
+	if s.experimental1PC && s.experimentalAsyncCommit {
+		return fmt.Errorf("--experimental-tikv-enable-1pc and --experimental-tikv-enable-async-commit are mutually exclusive")
+	}
+	return nil
+}
+
+func (s *storageConfig) configureCommitProtocol() error {
+	if err := s.validateCommitProtocol(); err != nil {
+		return err
+	}
 	tikvcfg.UpdateGlobal(func(c *tikvcfg.Config) {
 		c.Enable1PC = s.experimental1PC
-		c.EnableAsyncCommit = false
+		c.EnableAsyncCommit = s.experimentalAsyncCommit
 	})
+	return nil
 }

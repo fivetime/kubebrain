@@ -24,7 +24,7 @@ import (
 )
 
 // This test-only transport holds every Commit for one transaction, including
-// its primary. The production command still disables async commit. This
+// its primary. The production command disables async commit by default. This
 // disposable single-store fixture is not a Raft failure or performance proof.
 type protocolAsyncCommitHold struct {
 	clienttikv.Client
@@ -349,8 +349,8 @@ func TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup(t *testing.T) {
 	require.NoError(t, err)
 	txn, err := client.BeginWithContext(ctx)
 	require.NoError(t, err)
-	// Only explicit experiment transactions opt in. Do not change global defaults or expose a
-	// product flag based on this experiment.
+	// Only explicit experiment transactions opt in here. These checks do not
+	// establish whole-process protocol coverage or production readiness.
 	txn.SetEnable1PC(false)
 	txn.SetEnableAsyncCommit(true)
 	hold := &protocolAsyncCommitHold{Client: client.GetTiKVClient(), startTS: txn.StartTS(), held: make(chan struct{}), release: make(chan struct{}), asyncRegions: make(map[uint64]struct{})}
