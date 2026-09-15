@@ -2,6 +2,82 @@
 
 最后文档更新：2026-09-15。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
+本地候选修复：`cachedPreviousEtcdKv` 的 hint 命中现在填充同一有界
+`prevCache`（包含 `kvBytes` 记账），使首个流调用 `noteEvent` 推进提示后，
+其他流仍能复用同一修订的前驱。旧实现的新增测试会话 `38695` exit 1，
+明确失败于“a proven hint must survive publication of the current event”。
+修复后缓存／取消／PrevKV／水位及领导权相关定向测试 `96525` exit 0
+（0.609s）；新增真实内联值转换与 32 并发读复用测试 `3594` exit 0
+（0.059s）。扩大 Watch／PrevKV race 回归 `22779` exit 0（26.976s），
+覆盖 Watch、PrevKV、提示／修订缓存、缓存晋升及元数据单飞取消相关测试；
+前后候选源码哈希一致。尚未提交、CI 或部署；旧镜像不能代表此修复。
+整个 `pkg/server/etcd` 包普通回归：`go test ./pkg/server/etcd -count=1 -timeout=10m`，
+会话 `31573` exit 0（136.914s），候选源码哈希保持一致。
+现有 self-hosted `probe-regression.yml` 补入服务包 vet、完整普通回归和
+上述 Watch／PrevKV race 回归，并由构建契约测试锁定执行命令；避免只用
+后端与探针的绿灯代表本次服务代码已获 CI 验证。
+新增 CI 契约的 `go test -race -count=1 ./build` 会话 `90782` exit 0
+（2.527s）；服务包 `go vet` 会话 `85409` exit 0，差异空白检查通过。
+本轮不修改集群或放宽原验收门限，也未证明该重复读取是全部延迟根因。
+
+最新终态：`62b7479a` 实验 `27155` 已 exit 1，未在滚动后 900 秒内完成
+6000 次。原完整 spec、固定镜像与实际 imageID 已核验恢复，generation
+74/74、Ready/updated 3/3、默认 2PC。新鲜资源清单按名称／UID／owner
+核查临时资源均已清理，预拉取回执全部 removed=true。两个已校验哈希的
+临时工具已删除（约 52 MiB，可重建），证据保留。当前无活动实验或回滚。
+本轮留下八份有效稳定候选样本；首尾运行身份一致，配对结果保存为发布
+目录 `paired-first-eighth.log`。最后稳定样本为 4260/6000，恢复日志为
+4800/6000，二者均不能当作精确截止计数。下方“活动实验”为历史记录。
+
+源码定位补充（不是性能修复或验收通过）：`watch.go` 中
+`validateForwardedWatchCompactionWatermark` 仅对 canonical compacted 错误
+执行有界的新鲜水位读取；普通事件、创建通知和进度通知不会在此读存储。
+`watch_prev_kv` 的另一条新鲜读取路径仍须单独区分，不能一概排除。
+现有 Watch send-loop 计时从调用 SendWatch 前开始，未覆盖 shim 的
+PrevKV 预取、事件转换、输出通道等待，以及发送前的过滤和 PrevKV 校验。
+`queueDurableRevision` 只更新原子目标并发送非阻塞通知，持久化由独立协程完成；
+这不排除共享存储竞争。现有低入队／广播／发送调用耗时不足以确定根因。
+后续应先分辨转换、通道等待和传输阶段，不删除正确性校验或放宽验收门限。
+新增本地回归 `TestForwardedWatchCompactionWatermarkReadBoundary`，覆盖
+普通事件／创建／进度／非压缩错误不读取，以及三种 canonical／包装错误的
+有界读取、拒绝超前水位和读取失败。连同 PrevKV 读指标、代理超前水位拒绝、
+PrevKV 组装后领导权重检共四项测试，普通一轮通过（0.169s），race 三轮
+通过（1.775s）。这是本地定向回归，尚未提交或由 CI 验证，不是性能改善证据。
+
+历史活动记录（实验已结束并恢复）：`62b7479a` 三项 CI 全部成功，镜像审计
+`image-audit.VbR03LNv` 与只读预检 `verify.XH40hFmZ` 通过。
+已唯一启动执行器 `27155`，日志位于
+`/root/.local/state/kubebrain/automatic-sampler-release.HpUegvuz/experiment.log`。
+临时 async commit／1PC 关闭，原门限不变；已启用自动采样。
+镜像索引 `sha256:e3978d1dc6493abf8f1dd8297e926ccf22778edb314fd1e29403758fd4cb8c39`。
+必须跟踪同一执行器至终态，核验原固定镜像、完整 spec／imageID、默认
+2PC 恢复与临时资源清理。当前没有本轮验收或恢复结论。下方等待 CI 为历史。
+稳定窗口已开始，自动采样首份 `diagnostic-sample.uDjazHHs` 成功，位于
+`/tmp/tmp.Ut9mzSlvUK`；阶段、探针和三个 Pod 采集前后身份一致，实际
+TLS 指标中已有新增 Watch 入队时延。需后续同运行实例配对增量再作归因，
+不能把单份采样成功当作集群验收通过。
+首对样本 `uDjazHHs` → `CFZQ4yrQ` 已核验阶段及全部运行身份一致：pod2
+async commit 成功增量 895，错误／2PC／1PC 增量为零；557 次入队累计
+1.313927ms，同步广播 557 次累计 4.830662ms。此指标不覆盖异步 catch-up、
+队列驻留或传输 flush，且采集时刻与最近进度日志时刻不同，不可作逐请求
+归因。结果保存在发布目录 `paired-first-second.log`；实验仍在运行。
+
+历史发布进展（后续三项均成功）：自动采样修复已提交并推送 `62b7479a9b38182173107a83a8585b8bbeb364b6`。
+镜像 CI `34994382878` 已运行，后端 `34994419498` 与探针 `34994422694`
+已显式触发并排队，三者源码一致。跟踪会话分别 `53042`／`90731`／`51601`，
+证据 `/root/.local/state/kubebrain/automatic-sampler-release.HpUegvuz`。
+尚无本版本 CI 成功、独立镜像审计或集群实验结果；下方“未发布”为历史。
+更新：后端 CI `34994419498` 已成功并核验日志：backend race 76.226s，
+29 项真实协议用例各普通／race 两轮通过，正常及中断清理均成功。
+镜像和探针尚在运行，无新版本集群验收结论。
+后续更新：探针 CI `34994422694` 也已成功，完整探针 race 357.707s、
+代理 race 3.267s、构建契约 race 2.313s，日志已下载核验。当前仅镜像
+CI `34994382878` 尚在运行，审计会话 `3937` 继续等待。
+后续会话 `3937` 已启动：等待三项 CI 全部成功后下载日志、独立审计镜像、
+执行只读预检；不执行部署。准备脚本及两个临时工具已有哈希清单，结束
+后清理工具。新一次性执行器绑定 baseline generation 72 和自动 TLS 采样，
+尚未调用 execute，不得复用旧版本已消耗的执行器。
+
 最新本地终态：自动采样修复后的完整回归 `33610` 已 exit 0；734 项
 普通测试四分片全部通过，构建契约 race 2.466s，前后源码哈希及当前
 文件一致。证据 `automatic-sampler-recheck.5drmoddk`，不再轮询该会话。

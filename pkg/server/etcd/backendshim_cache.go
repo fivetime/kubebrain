@@ -437,6 +437,12 @@ func (r *prevKvResolver) cachedPreviousEtcdKv(ctx context.Context, key []byte, r
 		return nil
 	}
 	if kv, ok := r.hintedPreviousEtcdKv(key, revision, version, createRev); ok {
+		// Conversion publishes the current event into prevHints immediately
+		// after this returns. Preserve its proven predecessor by exact revision
+		// first, or every later stream converting the same event misses the now
+		// advanced hint and unnecessarily reads storage. Public PrevKV visibility
+		// still goes through the fresh compaction check before sending.
+		r.prevCache.put(revCacheKey(key, revision), kv, kvBytes(kv))
 		r.shim.metricCli.EmitCounter("watch.prev_kv.hint_hit", 1)
 		return kv
 	}
