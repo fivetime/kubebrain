@@ -7,6 +7,14 @@
 
 ## 2026-09-15 follower Watch 排查：废弃订阅上下文回收
 
+发布准备：本地基准已提交 `4b2a0c59`，订阅回收修复和证据已提交
+`4b9fc869`。核对发现 dbaas 自动探针工作流此前不执行代理包测试，现新增
+整个 etcdproxy 包的非缓存 race 和 vet 门禁，仍使用 self-hosted Runner；
+工作流契约测试同步要求这两个命令，`go test -race -count=1 ./build` 通过
+（2.486s，`/tmp/kubebrain-watch-generation-ci-contract.log`）。本轮随后推送
+并获取精确源码 CI 回执；尚不代表远端 CI 或镜像审计通过，也未授权跳过
+原集群验收条件。以下提交前措辞为历史记录。
+
 最新补充 `TestWatchAbandonedGenerationSendsWireCancel`：不替换 clientv3
 Watcher，以真实 TCP/gRPC 和可控 Watch 服务端验证旧 ID 的 CancelRequest、
 新代从 revision 43 续传并收到 PUT，以及共享连接上另一条 Watch 仍能收到
