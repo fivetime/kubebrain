@@ -278,6 +278,10 @@ func (w *WatcherHub) Stream(ctx context.Context, input chan []*proto.Event) {
 // the logical Watch from its first unsent revision, and asks the client to
 // re-list only if that exact revision was compacted.
 func (w *WatcherHub) broadcast(item []*proto.Event) {
+	started := time.Now()
+	defer func() {
+		emitWatchDispatchDuration(w.metricCli, "watcher_hub.broadcast_duration_seconds", time.Since(started), "complete")
+	}()
 	var slow []chan []*proto.Event
 	skipped := 0
 	w.RLock()

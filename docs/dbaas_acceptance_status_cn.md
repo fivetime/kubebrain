@@ -5,7 +5,146 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+## 2026-09-15 后端 Watch 分发分段指标（本地，未部署）
+
+补充两项按批次计数的直方图，Prometheus 导出名称为：
+
+- `watch_collector_enqueue_duration_seconds{outcome="enqueued|canceled"}`：
+  收集完一个非空批次后，进入发送／取消 select 至其返回的耗时。
+  包括队列满时的生产者等待，不包括提交、事件收集或入队后停留时间。
+- `watcher_hub_broadcast_duration_seconds{outcome="complete"}`：
+  WatchHub 分发调用入口至返回，包括锁等待、前缀路由及同步慢消费者
+  分离；不包括异步追赶、订阅者消费、gRPC 发送和 transport flush。
+  `complete` 仅指调用结束，不表示每个订阅者已经收到事件。
+
+每个名称只使用上述固定 outcome，不以 key、revision、租户或连接 ID
+作为标签。序列在首次观察后创建；没有序列不能解释为耗时为零。
+不应把两个批次级均值与客户端逐操作均值相加作为端到端分解。
+发送／取消仍保留原 select；提交可见性及有序发布屏障没有调整。
+新增回归覆盖秒单位、nil metrics、入队成功、满队列取消不覆盖原事件、
+分发内容和 published revision，以及指标返回错误不影响事件交付。
+这只是补充下一轮取证能力，尚无该版本 CI、镜像或集群验收结果。
+
+本地验证：新增定向测试通过（0.045s），包含广播／revision／通知相关
+回归的定向 race 通过（5.095s），完整 `go test -race ./pkg/backend
+-count=1 -timeout=5m` 通过（76.596s），`go vet ./pkg/backend` 及
+`git diff --check` 通过。完整包测试日志：
+`/tmp/kubebrain-watch-dispatch-backend-race.log`。这里没有启动真实 TiKV
+协议环境，不能用该包测试通过替代真实后端 CI 或原集群验收。
+
+## 2026-09-15 恢复后只读取证：Put 路径与传输模式
+
+本次只分析 `watch-generation-release.KuBUxmIi` 已保存的稳定样本与
+`7a01e977` 源码，没有部署、重新运行已结束执行器或改变事务开关。
+`sample.7qgdUT8Z` 至 `sample.GkUg6Y1i` 的
+`grpc_server_started_total`（仅 `etcdserverpb.KV/Put` 与
+`etcdserverpb.Watch/Watch`）如下；各 Pod 的采集时间不同，不能将请求数
+差值等同于探针精确窗口的操作数。
+
+| 副本 | Put 开始计数（首→末） | Watch 流开始计数（首→末） |
+| --- | --- | --- |
+| kubebrain-0 | 0→0 | 1→1 |
+| kubebrain-1 | 0→0 | 1→1 |
+| kubebrain-2 | 204→3369 | 4→4 |
+
+采集脚本按已验证 Pod IP 访问各自的 TLS `/metrics`，不是经 Service 随机
+选择副本。`prometheusWrapper.GetHttpHandlers` 直接使用 `promhttp.Handler()`；
+客户端及 peer gRPC server 都装有 Prometheus 拦截器。这里不是
+`EmitMetrics` 的 20 秒转发快照。结合已核验的样本运行身份，计数支持
+该窗口 Put 进入 pod2、未进入 pod0/1 的判断，因此不应继续把 follower
+Put 转发作为这轮持续延迟的必要解释。计数没有连接或探针标签，不能据此
+单独确定公共 Watch 的连接归属，也不能声称已证明延迟根因。
+
+`execute.r6wFREpJ/source.json` 保存的参数包含
+`--grpc-max-connection-age=1h` 和 `--grpc-max-connection-age-grace=5m`。
+`Endpoint.runClientServer/runPeerServer` 在前者大于零时选用原生 gRPC
+HTTP/2，而不是 `grpc.Server.ServeHTTP` 复用路径。因此不应通过改变
+HTTP 复用路径来声称修复此样本；已有原生 TCP/TLS 本地基准仍缺少
+跨节点 TiKV、完整 endpoint 包装及多 Watch 流等实际部署条件。
+
+下一步优先补齐 leader 的有序事件收集、发布到 WatchHub、流消费至发送
+之间的分段证据，并区分公共流与直连流。不得移除 durable revision／
+提交可见性屏障换取速度。现有 Send 计时不包括后续传输 flush，
+客户端 pre-InPayload 也不是纯网络耗时。原 6000/900s 验收失败结论不变。
+
 ## 2026-09-15 follower Watch 排查：废弃订阅上下文回收
+
+**最终结果：本轮未通过原 6000 次／滚动后 900 秒门限，已完成恢复。**
+执行器 `74870` 最终 exit 1；接近截止观察为 08:21:56.522、4080/6000，
+不是精确截止计数。完整 spec、原固定镜像及实际 imageID 已独立核对恢复，
+generation/observed 70/70、Ready/updated 3/3，默认 2PC，临时开关移除。
+按名称、UID 和 ownerReferences 的独立资源清单确认探针、夹具及预拉取
+对象均已清理；夹具 keys/users/roles/leases 为 0，预拉取回执全为 removed。
+两个本地辅助二进制在校验哈希后删除，可重建，证据保留。当前无活动实验。
+以下运行中措辞为历史阶段，恢复期数据不纳入验收。六个稳定样本证明
+订阅回收修复未消除 pre-InPayload 时延，不能声称性能问题已解决。
+
+第六个样本 `sample.GkUg6Y1i`（`37567` exit 0）累计 3540/6000；与首个
+样本运行身份一致，新增 3120 次且 SDK／Watch 匹配异常增量为 0，但 pod2
+内部 async 错误增加 1。对应同容器日志 08:18:21.782 报
+`Async commit/1PC result undetermined`／context deadline，栈为选主锁
+`resourceLock.Update`，随后有选主锁读取超时。证据 `internal-error.log` 与
+身份前后回执已保存，不能把用户侧错误为 0 写成内部无错误，也不能因此
+断言选主已经失败或确定 Watch 延迟根因。`paired-1-6.json` 记录该窗口
+返回后等待 146492ms，其中回调前 146363603us、回调后 129285us。
+执行器仍在运行，尚无原门限验收或恢复完成结论。
+
+第五个稳定样本 `sample.ro6ceGDi` 已完成（`84538` exit 0）。第四至第五
+运行身份一致，新增 660 次，SDK／Watch 匹配异常及内部 async 错误增量为 0，
+返回后等待 30041ms，回调前 30012059us、回调后 29055us，仍约 45.5ms/次；
+async 成功增量 1152，仅 pod2，所有 pod 的 2PC／1PC 增量为 0。
+证据 `paired-4-5.json`。累计 3000/6000，尚未完成原门限验收或恢复。
+
+第三个稳定样本 `sample.t8GabLH3`（`56630` exit 0）与第二个样本运行身份
+一致；新增 660 次操作，SDK 错误与 Watch 匹配异常增量仍为 0。返回后
+Watch 等待 27825ms，其中回调前 27798027us、回调后 27411us，仍约
+42ms/次。内部 async 成功增量 1064，仅 pod2；所有 pod 的 async 错误、
+2PC、1PC 增量均为 0。证据 `paired-2-3.json`；探针累计 1800/6000，
+原门限实验尚未结束，不据此声明性能问题已解决。
+
+当前实验已滚动至 generation 69/69、3/3 Ready。稳定采样
+`sample.7qgdUT8Z` 与 `sample.hQelglUW` 的四个容器运行身份一致；
+08:07:54.511–08:10:25.281，完成数 420→1140，新增 720 次，SDK 错误与
+Watch 缺失／重复／异常计数增量均为 0。返回后 Watch 等待累计 26660ms，
+其中 InPayload 回调前 26633092us、回调后 27181us，仍约 37ms/次等待。
+此修复尚未消除该时延；回调前包含服务端／代理／传输／接收解码，不能
+归因为纯网络。相邻指标窗口 pod2 async 成功增量 1156，其余 pod 为 0，
+所有 pod 的 async 错误、2PC 和 1PC 增量为 0；内部事务数不等于用户 Put 数。
+原始证据及配对文件保存在本轮目录的 `paired-1-2-client.json` 和
+`paired-1-2-protocol.json`。执行器 `74870` 仍在运行，未得出验收结论。
+
+独立镜像审计已完成（`6408` exit 0）：索引摘要
+`sha256:330a323f984d3f0e06cebac29cb409882b4add151887221ae495d78bfcc438ae`，
+实际 amd64 二进制版本／源码／fork 依赖通过，审计容器及临时复制二进制
+已清理。只读预检 `64446` exit 0，`verify.sZ3jnivr` 确认基线 68/68、
+3/3 Ready、消费者 rook-ceph 存储，PD/TiKV 各 3、连续三次异常 Region 为 0。
+已按授权启动唯一执行会话 `74870`：临时 async commit、关闭 1PC，原
+6000 次／100ms／公共 5s／直连 30s／滚动后 900s 不变；结束后须恢复
+原固定镜像、完整 spec、默认 2PC 和实际运行身份。实验仍在运行，尚无
+验收或恢复完成结论；此结果不等于生产就绪。
+
+镜像 CI `34941796751` 随后 completed/success，精确源码仍为 `7a01e977`，
+三项 CI 均成功；完整 `image-ci.json/log` 已保存。已启动独立镜像审计
+会话 `6408`，证据目录 `image-audit.FotAkEdH`，目前仍在运行，不把 CI
+绿色状态替代独立审计。未部署测试集群；下方“CI 仍在运行”为此前记录。
+
+部署脚本检查随后完成：本地会话 `37438` exit 0，`executor-checks/` 中
+总结果、build-race、inventory 及四组 production 的退出码均为 0。
+727 项按 176/200/184/167 分组，包用时分别为
+498.593/529.777/386.088/762.984s；这是普通分片测试，不是全量 race。
+工作流契约 race 为 2.670s。七个准备文件的哈希重新核验通过。
+镜像 CI 已推进至发布镜像校验，尚无任务最终成功／独立审计结论。
+
+最新远端结果：源码 `7a01e9775380e7b4197c8eed55fba0f14c124c9f` 已推送。
+探针 CI `34941796683` completed/success，下载完整日志确认新增 wire cancel
+和上下文取消两个测试及子用例实际 PASS，代理全包 race 3.274s、完整探针
+race 372.978s、工作流契约 race 2.569s。后端 CI `34941810491` 同源码
+completed/success，29 个真实协议用例各完成普通和 race 两轮，共 58 条
+PASS；两轮清理 result=0/cleanup_failed=0，PD/TiKV 启动中断检查均
+exit=143/resources_absent=true。镜像 CI `34941796751` 仍在构建推送，
+尚无镜像发布成功或独立审计结论，未部署新候选。回执与完整日志目录：
+`/root/.local/state/kubebrain/watch-generation-release.KuBUxmIi`，其中
+`probe-ci.json/log`、`backend-ci.json/log` 已核对；以下为此前阶段记录。
 
 发布准备：本地基准已提交 `4b2a0c59`，订阅回收修复和证据已提交
 `4b9fc869`。核对发现 dbaas 自动探针工作流此前不执行代理包测试，现新增

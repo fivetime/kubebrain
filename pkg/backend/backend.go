@@ -1022,10 +1022,8 @@ func (b *backend) collectStorageWriteEvents(ctx context.Context) {
 		}
 
 		if len(events) > 0 {
-			select {
-			case <-ctx.Done():
+			if !b.enqueueWatchBatch(ctx, events) {
 				return
-			case b.watchChan <- events:
 			}
 		}
 	}
