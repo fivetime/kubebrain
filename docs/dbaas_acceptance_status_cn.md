@@ -5,7 +5,45 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
-## 2026-09-15 最新结果：async commit 生效，但原完成门限失败
+## 2026-09-15 最新结果：响应头诊断实验失败，已恢复 generation 64
+
+源码 `3779c99180ffb7aa0e9db41236da94ee73b77ff4` 经三项 CI 和独立镜像
+核验后，在专用集群临时启用 async commit、关闭 1PC，沿用 6000 次、
+操作后 100ms、公共 5s／直连流 30s、滚动完成后 900s 原门限。
+执行器会话 `68567` 最终 exit 1：原 900 秒内未完成。接近截止点的日志
+为 04:36:31.996 UTC、4440/6000、Put SDK errors=0；这不是精确的
+截止瞬间计数。恢复期间的后续进度不纳入候选验收。
+
+六组采样均成功，首组与其余各组的探针及三个服务容器身份一致。
+首组 `sample.WQvB8l92` 至第五组 `sample.5G7xK8gl`：65581 次
+响应头缓存查询累计 0.075393276 秒，不支持缓存查询为主要累计瓶颈；
+没有观察到 read 路径序列，不能单凭序列缺失证明该路径耗时为零。
+同窗 2654 个成功 Put 阶段观测，后端累计 120.521 秒、前置阶段
+32.546 秒、提交 96.408 秒、Prewrite 94.204 秒；阶段相互包含，不能相加。
+实际 async 成功计数增加 4224，2PC／1PC 未增加；内部事务不等同于用户 Put。
+这些诊断结果尚未定位剩余 Watch 等待，也未解决整体完成时限问题。
+
+恢复已独立核实：完整 spec 与实验前相同，原固定镜像和默认 2PC，
+generation/observed 64/64、Ready/updated 3/3，各 Pod 实际 imageID
+与实验前一致。夹具 keys/users/roles/leases 均为 0，预拉取回执全部
+removed=true；资源名称、UID 和 ownerReferences 清单确认本次对象已清理。
+本次两个本地辅助二进制已删除，保留哈希、脚本和证据；禁止重跑已消费的执行器。
+证据根目录 `/root/.local/state/kubebrain/header-term-release.7Td7Kq5O/`，
+执行目录 `execute.HtFWTlXh`，运行时目录 `/tmp/tmp.aujwpC4TMG/`。
+下一步定位提交后事件发布、转换及接收各段等待，保持持久性和一致性保护。
+
+后续诊断改动（尚未部署）：代理 `watchOptionsForRange` 固定请求
+PrevKV，领导节点 `watchGeneration` 在现有发送计时之前调用
+`GetCompactRevisionFresh` 组装 PrevKV 可见性，该读取绕过 TTL 缓存。
+因此新增 `watch_prev_kv_compact_revision_duration_seconds{outcome}`，仅记录
+该次读取耗时，保留原返回值、错误、取消上下文和一致性检查，不改变协议。
+此为待测假设，并非已证实的 40ms 等待来源；没有新版本集群样本。
+Prometheus 包 race 已通过（1.074 秒），读取语义与领导权检查 race
+通过（1.736 秒），相关 Watch／PrevKV／压缩 race 通过（4.528 秒），
+etcd 和 Prometheus 包 vet 通过；完整 etcd 包 race 通过（323.294 秒）。
+这些本地测试不代表新提交的 CI 或集群性能验收通过。
+
+## 2026-09-15 前次结果：async commit 生效，但原完成门限失败
 
 候选源码 `b5f4e212987fa7fdd89d3e8a92a13d7d4c43ac09` 已通过 backend CI
 `34920467365`（29 项真实协议普通及 race，共 58 个明确 PASS）、probe CI
@@ -65,7 +103,7 @@ catch_up/recovered/dropped/interrupted 的十二条计数均无增量。发送�
 通过（1.175 秒，`/tmp/kubebrain-watch-header-cache-race.log`），验证缓存优先
 及首次读取失败分类契约；它不证明真实试验中缓存未命中次数或该阶段耗时。
 
-后续本地诊断改动（尚未部署）：新增
+后续本地诊断改动（以下为开发及发布阶段历史记录）：新增
 `kubebrain_header_term_duration_seconds`，固定 `path=cache/read` 和
 `outcome=success/error` 标签，统计响应头任期查询次数及秒数。范围包含 unary
 与 stream 查询，同一响应可能多次查询，不是请求次数或 Watch 端到端时延。
@@ -83,7 +121,17 @@ catch_up/recovered/dropped/interrupted 的十二条计数均无增量。发送�
 服务包 race 复验通过（314.753 秒，
 `/tmp/kubebrain-header-term-full-race-recheck.log`）；原失败日志
 `/tmp/kubebrain-header-term-full-race.log` 保留。
-尚无本次改动的 CI 或部署证据。
+后续发布核验：源码 `3779c99180ffb7aa0e9db41236da94ee73b77ff4` 的
+backend CI `34925796573`、probe CI `34925796558`、image CI `34925796577`
+均已成功。backend 有 29 项普通及 29 项 race 协议 PASS，probe 完整 race
+381.947 秒；不表示整个项目完整 race 或生产验收通过。
+独立镜像审计核对双架构索引、发布标签、实际 amd64 版本、fork 模块及
+新增 header term 指标字符串，固定索引为
+`sha256:3bdbf0fdd2b065c219139715d07ee9defad76e967a6baf05133dcc5e76c58604`。
+证据位于 `/root/.local/state/kubebrain/header-term-release.7Td7Kq5O/`；
+审计 exit 0、临时容器和复制出的二进制已清理。字符串存在仅证明发布物
+包含指标名称，不能代替实际指标采样。该版本随后已完成专用集群实验，
+实际样本、失败结果和恢复后的 generation 64 状态见本文最新结果。
 
 ## 以下为协议与发布演进的历史证据
 

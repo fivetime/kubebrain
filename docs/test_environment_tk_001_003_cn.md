@@ -2,7 +2,27 @@
 
 最后文档更新：2026-09-15。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
-## 2026-09-15：临时 async commit 实验失败，已恢复 generation 62
+## 2026-09-15 最新状态：诊断实验失败，已恢复 generation 64
+
+候选源码 `3779c99180ff` 的执行会话 `68567` 已结束 exit 1，未在滚动后
+原 900 秒内完成 6000 次操作。完整 spec 和实际镜像身份已恢复至实验前，
+原固定镜像、默认 2PC，generation/observed 64/64、Ready/updated 3/3。
+探针 `kb-async-3779c991-7td7kq5o` 及夹具、三台 worker 预拉取对象均已清理；
+当前没有活动实验。证据在 `header-term-release.7Td7Kq5O/execute.HtFWTlXh`
+及 `/tmp/tmp.aujwpC4TMG/`，指标及局限见[验收状态](dbaas_acceptance_status_cn.md)。
+该尝试执行权已消费；后续不得沿用 generation 62/63 或重跑其 execute。
+本次本地预拉取及 UID 删除辅助程序已移除，保留证据文件。
+
+## 2026-09-15 历史记录：临时 async commit 实验失败，恢复 generation 62
+
+后续诊断版本 `3779c99180ff` 的三项 CI 及独立镜像身份审计已通过，
+固定候选索引为 `sha256:3bdbf0fdd2b065c219139715d07ee9defad76e967a6baf05133dcc5e76c58604`。
+证据目录 `/root/.local/state/kubebrain/header-term-release.7Td7Kq5O/`。
+以下为执行前记录，候选现已完成实验并恢复，结果以上方 generation 64 为准。
+新尝试的只读预检 `verify.6A5mueAj` 已通过，集群修改数为 0：
+generation/observed 62/62、Ready 3，六个卷均验证消费者 rook-ceph 身份；
+PD 3／TiKV 3，连续三次采样异常 Region 为 0。恢复运行身份保护的
+9 个离线用例通过。预检不是执行回执，实际实验前仍须重新验证当前状态。
 
 源码 `b5f4e212987fa7fdd89d3e8a92a13d7d4c43ac09` 的 backend
 `34920467365`、probe `34920467451`、image `34920467390` 三项 CI 成功，

@@ -465,6 +465,8 @@ func metricHelp(name string) string {
 		return "The total duration in seconds of running through the send loop watch stream response all events."
 	case "kubebrain_header_term_duration_seconds":
 		return "Response header term lookup duration in seconds by cache/read path and success/error outcome. Includes unary and stream lookups, not logical requests or end-to-end Watch delivery."
+	case "watch_prev_kv_compact_revision_duration_seconds":
+		return "Fresh compaction watermark lookup duration in seconds during Watch PrevKV assembly, including proxy continuations. Excludes event conversion and transport sends; not end-to-end Watch latency."
 	case "etcd_debugging_server_watch_send_loop_watch_stream_duration_per_event_seconds":
 		return "The average duration in seconds of running through the send loop watch stream response, per event."
 	case "etcd_debugging_server_watch_send_loop_control_stream_duration_seconds":

@@ -1932,7 +1932,7 @@ watchLoop:
 			if !r.PrevKv {
 				events = withoutWatchPrevKvs(events)
 			} else if watchEventsNeedPrevKVs(events) {
-				compactRevision, compactErr := w.backend.GetCompactRevisionFresh(ctx)
+				compactRevision, compactErr := w.watchPrevKVCompactRevision(ctx)
 				if compactErr != nil {
 					w.metricCli.EmitCounter("watch.prev_kv.compact_revision.err", 1)
 					klog.ErrorS(compactErr, "failed to resolve compact revision for watch PrevKV; omitting previous values", "watcher", w.id, "watch", id)
@@ -2237,6 +2237,23 @@ func (w *watcher) nextWatchRevisionCompacted(ctx context.Context, id int64) bool
 
 func (s *RPCServer) watchFragmentBytes() int {
 	return int(s.maxRequestBytes + grpcOverheadBytes)
+}
+
+// watchPrevKVCompactRevision measures only the fresh watermark lookup used to
+// assemble PrevKV responses. It excludes event conversion and transport sends;
+// proxy continuations request PrevKV even when their public client does not.
+// Keep the authoritative read and its result unchanged, including on errors.
+func (w *watcher) watchPrevKVCompactRevision(ctx context.Context) (uint64, error) {
+	started := time.Now()
+	revision, err := w.backend.GetCompactRevisionFresh(ctx)
+	if w.metricCli != nil {
+		outcome := "success"
+		if err != nil {
+			outcome = "error"
+		}
+		_ = w.metricCli.EmitHistogram("watch.prev_kv.compact_revision.duration.seconds", time.Since(started).Seconds(), metrics.Tag("outcome", outcome))
+	}
+	return revision, err
 }
 
 func (s *RPCServer) stampWatchResponseHeader(ctx context.Context, response *etcdserverpb.WatchResponse) error {
