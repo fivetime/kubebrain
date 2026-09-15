@@ -5,6 +5,91 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+## 2026-09-15 最新结果：async commit 生效，但原完成门限失败
+
+候选源码 `b5f4e212987fa7fdd89d3e8a92a13d7d4c43ac09` 已通过 backend CI
+`34920467365`（29 项真实协议普通及 race，共 58 个明确 PASS）、probe CI
+`34920467451`（完整 race 385.293 秒）及镜像 CI `34920467390`。
+本地 727 项生产执行器顶层测试分四组全部通过，不能表述为整个项目完整 race。
+发布镜像独立核验确认源码、实际二进制版本、fork 客户端依赖及实验开关，
+固定索引摘要 `sha256:3762e740eed60091da18c6f01aa030565d610f6f42d57f961b696cfdb7e7e0e4`。
+
+专用集群三台 worker 预拉取成功，generation 61 的三个候选副本就绪。
+按用户授权临时 async commit、1PC 关闭，保持 6000 次、操作后 100ms、
+公共 5s／直连流 30s、滚动后 900s 原门限。本次未在完成窗口内结束，
+执行器 exit 1；超时后首次观察为 4440/6000、Put SDK errors=0。
+没有完整成功结果，不能因此宣称全部延迟、流一致性或生产验收通过。
+
+五组稳定候选指标保存在 `async-release.qNn8fV7p/sample.*`。第一组
+`sample.TRQ8w0gV` 与第五组 `sample.fCWC8OiH` 的探针和三个服务 Pod
+UID、容器 ID、imageID、启动时间及重启次数均一致；九条协议计数均不倒退。
+实际 async commit 成功计数增加 5319，1PC 和 2PC 成功计数未增加。
+SDK 计数包含内部事务，不是逐 Put 归因，也不是默认启用 async 的生产批准。
+
+同一窗口 3289 个成功 Put 指标观测：后端累计 182.918 秒，其中事务提交
+146.787 秒、Prewrite 144.231 秒、最大 Prewrite RPC 累计 143.584 秒；
+9867 个 Prewrite RPC（每次 3 个），传输错误 0。CommitTS 和主键 Commit
+前台计时均为 0，符合 async 路径，但耗时问题未解决。上述阶段重叠，不能
+相加；不同历史试验不是受控性能对照，不能据此认定磁盘、网络或某个配置为根因。
+
+恢复检查完成：原完整 spec、原固定镜像及默认 2PC，generation/observed
+62/62、Ready/updated 3/3，实际 Pod imageID 与实验前一致。夹具四类资源
+计数为 0；预拉取回执与独立资源清单证明本次资源已清理。实验及采样会话均
+终止，禁止重跑已消费的执行器。证据根目录
+`/root/.local/state/kubebrain/async-release.qNn8fV7p/`，运行时证据
+`/tmp/tmp.7MlqSLckVy/`；详细环境见[测试交接记录](test_environment_tk_001_003_cn.md)。
+
+下一步先依据保存的前台与 Watch 时序、TiKV 原始阶段计时验证可证伪的耗时
+假设，再选择代码修改和回归；不盲目重跑、不放宽原门限、不改变存储持久性。
+兼容性矩阵中的其他生产验收缺口仍需逐项验证，不因本次 CI 成功而关闭。
+
+恢复后源码排查排除了“每次正常事件都固定等候轮询周期”的直接解释：
+`collectStorageWriteEvents` 由 `writeSignal` 唤醒，10ms 是空槽安全等待上限；
+`WatcherHub.Stream` 直接接收事件，progress ticker 不控制事件广播。
+follower 的 `etcdProxy.Watch` 转发 leader 的流响应；100ms 等待位于未就绪／
+重连路径，不在正常响应转发路径。探针成功 Put 后直接等待 Watch，50ms
+睡眠仅位于未决写重试路径，另外保留原操作后 100ms pacing。
+这些代码事实不排除调度、背压或瞬时重连；目前缺少同一事件在 collector、
+leader Send、follower 转发及客户端接收之间的分段时序证据，不能用累计
+`watch_after_put_ms` 单独决定减少哪个等待或修改正确性屏障。
+
+进一步复用第一／第五组身份一致的指标：三个副本事件发送阶段累计增量分别
+为 0.305515s/3288 次、0.937721s/13153 次、0.532365s/6576 次；慢消费者
+catch_up/recovered/dropped/interrupted 的十二条计数均无增量。发送计时
+覆盖 `SendWatch` 的发送互斥锁与底层 Send 调用，但不覆盖之前的响应头填充、
+事件处理或网络上真正到达客户端的时间，因此不支持把发送锁作为主要累计
+等待来源，也不能排除发送返回后的传输等待。响应头任期读取优先使用已缓存
+任期，只有缓存为零才调用协调读取；下一步诊断应区分该缓存未命中路径与
+事件处理／传输路径，不能直接移除任期或领导权校验。
+恢复后定向 race `TestResponseRaftTermUsesCacheAndClassifiesInitialReadFailure`
+通过（1.175 秒，`/tmp/kubebrain-watch-header-cache-race.log`），验证缓存优先
+及首次读取失败分类契约；它不证明真实试验中缓存未命中次数或该阶段耗时。
+
+后续本地诊断改动（尚未部署）：新增
+`kubebrain_header_term_duration_seconds`，固定 `path=cache/read` 和
+`outcome=success/error` 标签，统计响应头任期查询次数及秒数。范围包含 unary
+与 stream 查询，同一响应可能多次查询，不是请求次数或 Watch 端到端时延。
+未发生的标签组合可能不存在，不能把缺失 series 当作采集成功且计数为零。
+缓存读取、协调读取和原错误分类不变，指标上报错误不参与请求结果。
+新增缓存命中、读取成功／失败、零任期、nil 指标与上报失败的定向 race
+回归通过（1.265 秒）；Prometheus 全包 race 通过（1.092 秒），实际导出测试
+核对指标名、标签、样本数、秒单位及 HELP 范围说明。相关 vet 与差异检查
+通过。首轮完整 etcd 服务包 race 失败（319.557 秒），唯一失败的顶层用例为
+`TestUnaryRequestDurationCoversUpstreamRequestTypesAndFailures`：原测试假设
+所有成功调用只产生一个直方图样本，新增任期样本后变为两个。已改为显式
+验证新增 cache/success 样本，再保留请求耗时样本数量、类型和成功标签的
+原断言；失败 handler 仍只允许原有一个样本。修正后的定向 race 回归通过
+（1.242 秒，`/tmp/kubebrain-header-term-compat-race.log`），随后完整 etcd
+服务包 race 复验通过（314.753 秒，
+`/tmp/kubebrain-header-term-full-race-recheck.log`）；原失败日志
+`/tmp/kubebrain-header-term-full-race.log` 保留。
+尚无本次改动的 CI 或部署证据。
+
+## 以下为协议与发布演进的历史证据
+
+以下各段的“当前／最新／尚在本地”均指记录当时；当前发布、集群和实验状态
+以上方最新结果为准，旧失败及旧覆盖边界保留以供追溯。
+
 29 项协议用例进一步加强部分送达的持久状态断言：在两个方向分别比较
 `revision/committed`、`quota/usage` 的值和缺失状态，直接核对底层
 revision-index／object／event 键均不存在，不能仅凭用户 Get 为空判断原子性。

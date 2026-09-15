@@ -463,6 +463,8 @@ func metricHelp(name string) string {
 		return "Which version is running. 1 for 'server_version' label with current version."
 	case "etcd_debugging_server_watch_send_loop_watch_stream_duration_seconds":
 		return "The total duration in seconds of running through the send loop watch stream response all events."
+	case "kubebrain_header_term_duration_seconds":
+		return "Response header term lookup duration in seconds by cache/read path and success/error outcome. Includes unary and stream lookups, not logical requests or end-to-end Watch delivery."
 	case "etcd_debugging_server_watch_send_loop_watch_stream_duration_per_event_seconds":
 		return "The average duration in seconds of running through the send loop watch stream response, per event."
 	case "etcd_debugging_server_watch_send_loop_control_stream_duration_seconds":

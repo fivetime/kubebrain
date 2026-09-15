@@ -2,7 +2,30 @@
 
 最后文档更新：2026-09-15。本文件记录用户明确授权的测试环境，供长会话恢复时重新核验；不以历史状态代替实时检查。
 
-## 2026-09-15：临时 async commit 实验授权（尚未部署）
+## 2026-09-15：临时 async commit 实验失败，已恢复 generation 62
+
+源码 `b5f4e212987fa7fdd89d3e8a92a13d7d4c43ac09` 的 backend
+`34920467365`、probe `34920467451`、image `34920467390` 三项 CI 成功，
+独立镜像核验通过后，执行了下述授权实验。候选固定镜像摘要为
+`sha256:3762e740eed60091da18c6f01aa030565d610f6f42d57f961b696cfdb7e7e0e4`。
+三台 worker 预拉取成功，generation 61 临时启用 async commit、保持 1PC 关闭。
+原滚动后 900 秒内未完成 6000 次操作，执行会话 `65714` 已终止 exit 1；
+超时后首次观察的探针日志为 4440/6000、Put SDK errors=0。恢复期间探针仍有
+进度，不能把其后操作纳入候选稳定窗口或改判本次成功。
+
+自动恢复及独立检查通过：原完整 spec、原固定镜像、默认 2PC，
+generation/observed `62/62`、Ready/updated `3/3`，逐 Pod 实际 imageID
+与实验前一致。夹具 keys/users/roles/leases 均为 0；预拉取三个回执均
+removed=true，独立 Pod/ReplicaSet/ConfigMap 清单确认本次资源及子资源不存在。
+当前没有活动实验会话。详细指标与局限见[验收状态](dbaas_acceptance_status_cn.md)。
+
+证据目录 `/root/.local/state/kubebrain/async-release.qNn8fV7p/`，执行证据
+`execute.OKrUIa4A/`，运行时证据 `/tmp/tmp.7MlqSLckVy/`，预拉取回执
+`/root/.local/state/kubebrain/tk-001-003/prepull.TdQaFqCh2C6l/attempt`。
+本次一次性执行权已消费，禁止重跑其 execute；后续须依据实时 generation 62
+及实际身份准备新尝试，不能使用下方历史 generation 60 作为当前基线。
+
+### 原授权与执行前准备（历史记录）
 
 用户明确同意仅在专用测试集群临时启用 async commit、关闭 1PC，保持原
 6000 次、操作后 100ms、公共 5s／直连流 30s、滚动后 900s 门限；必须先取得
@@ -25,7 +48,7 @@ generation/observed `60/60`，Ready/updated `3/3`，原镜像为
 用时 73.360 秒，日志 `/tmp/kubebrain-temporary-protocol-regression.log`；
 脚本语法、相关 vet 和 diff 检查通过。新增拒绝用例首轮缺少目标运行摘要，
 被更早的准入校验挡住，补齐模拟输入后才验证到源实验参数拒绝路径。
-当前仅记录模拟恢复证据，真实执行及独立恢复核验仍待 CI／镜像准入后完成。
+以上为执行前模拟证据；真实实验及独立恢复结果以上方最新记录为准。
 
 ## 2026-09-14：SDK 诊断候选验收超时，已恢复 generation 54
 

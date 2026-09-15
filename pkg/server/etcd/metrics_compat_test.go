@@ -3538,10 +3538,18 @@ func TestUnaryRequestDurationCoversUpstreamRequestTypesAndFailures(t *testing.T)
 			} else {
 				require.Error(t, err)
 			}
-			require.Len(t, rec.histograms, 1)
-			require.Equal(t, "etcd.server.request.duration.seconds", rec.histograms[0].name)
-			require.Equal(t, test.wantType, rec.histograms[0].tags[0].Value)
-			require.Equal(t, strconv.FormatBool(test.handlerErr == nil), rec.histograms[0].tags[1].Value)
+			histograms := rec.histograms
+			if test.handlerErr == nil {
+				require.Len(t, histograms, 2)
+				require.Equal(t, "kubebrain.header.term.duration.seconds", histograms[0].name)
+				require.Equal(t, []metrics.T{metrics.Tag("path", "cache"), metrics.Tag("outcome", "success")}, histograms[0].tags)
+				require.GreaterOrEqual(t, histograms[0].value.(float64), float64(0))
+				histograms = histograms[1:]
+			}
+			require.Len(t, histograms, 1)
+			require.Equal(t, "etcd.server.request.duration.seconds", histograms[0].name)
+			require.Equal(t, test.wantType, histograms[0].tags[0].Value)
+			require.Equal(t, strconv.FormatBool(test.handlerErr == nil), histograms[0].tags[1].Value)
 		})
 	}
 }

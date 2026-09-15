@@ -535,13 +535,23 @@ func stampHeader(reply any, clusterID, memberID, raftTerm uint64) {
 }
 
 func (s *RPCServer) responseRaftTerm(ctx context.Context) (uint64, error) {
+	started := time.Now()
+	observe := func(path, outcome string) {
+		if s.metricCli != nil {
+			_ = s.metricCli.EmitHistogram("kubebrain.header.term.duration.seconds", time.Since(started).Seconds(),
+				metrics.Tag("path", path), metrics.Tag("outcome", outcome))
+		}
+	}
 	if term := s.peers.CurrentLeadershipTerm(); term != 0 {
+		observe("cache", "success")
 		return term, nil
 	}
 	term, err := s.peers.LeadershipTerm(ctx)
 	if err != nil {
+		observe("read", "error")
 		return 0, retryableCoordinationStatusErr(err)
 	}
+	observe("read", "success")
 	return term, nil
 }
 
