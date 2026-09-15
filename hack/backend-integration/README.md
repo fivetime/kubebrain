@@ -3,8 +3,8 @@
 本目录维护根模块的本机真实 PD/TiKV 测试入口；旧独立 SQL mock 模块已退役。
 不接入 Kubernetes，不需要 kubeconfig。
 
-当前入口共 26 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
-当前执行顺序。两个单 Region 后端响应丢失用例先于主动 Region 分裂执行；
+当前入口共 27 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
+当前执行顺序。三个单 Region 后端响应丢失用例先于主动 Region 分裂执行；
 后续增加用例时以入口中的测试名清单及明确 PASS 回执为准，不累加历史轮次。
 
 启动实验入口：命令行新增 `--experimental-tikv-enable-async-commit`，默认
@@ -112,6 +112,15 @@ secondary 接受、primary 阻断、目标事务零 Commit RPC；调用者收到
 错误且没有 Commit RPC；用户数据、事件、修订号和配额沿用原未发布断言。
 内部事务／owner claim 的 async 响应和清理 Prewrite 也要核对。它们仍是
 受控 token 竞争，不代表生产二进制的领导权交接、网络分区或多副本恢复。
+
+`TestRealTiKVAsyncProcessGuardedResponseLoss` 在进程默认模式保留两类防护，
+对目标事务真实成功的 async Prewrite 回复实施一次丢失并取消调用者；
+必须确认丢失回复覆盖完整事务，返回不确定结果后解析为已提交，两个 CREATE
+事件与读回修订号为 101，随后写入与单个 PUT 事件为 102。目标事务不调用
+协议 setter，初始化、后续写入和清理都保留进程默认值。内部与 owner claim
+的实际 async 回复也检查，但不声称每个内部事务都已逐一证明没有 SDK 回退。
+此用例只覆盖单 Region 完整送达后的响应丢失，不覆盖部分送达、进程重启或
+多副本故障恢复，也不等于生产二进制启动验证。
 
 新增 `TestRealTiKVReadBypassesPendingSecondaryCleanup` 单独使用 `2pc` 模式：
 在隔离集群分裂两个键的 Region，真实提交主键，客户端仅暂停该事务的次要键

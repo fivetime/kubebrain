@@ -5,6 +5,23 @@
 
 总体状态：**尚未通过生产就绪验收**。已完成迭代编号、提交数和单元测试数量都不是整体完成百分比。
 
+最新扩展为 27 项本地真实协议测试（普通／race 全通过）：新增进程默认 async
+下带领导权／恢复防护的完整事务 Prewrite 响应丢失。调用者收到不确定结果，
+后台解析为已提交，两个 CREATE／读回为修订 101，后续写入和单个 PUT 为 102。
+目标事务无协议 setter；初始化、后续写入、清理均保留进程默认模式。
+证据 `/tmp/kubebrain-real-protocol.3FSq1MvNpT`（普通）与
+`/tmp/kubebrain-real-protocol.qzVXMZchEI`（race）均 `result=0 cleanup_failed=0`，
+独立 owner 容器／网络为空、测试二进制已删除。storage／build race
+7.956／2.526 秒通过，vet 通过。此结果不覆盖部分送达、重启或多副本恢复。
+
+`d16dffda` 的 probe CI `34916835354` 失败于
+`TestSnapshotAuthFixtureInstallCleanupAndCollisionOwnership`：夹具安装超出
+20 秒总上下文（用例 21.18 秒），全套运行 397.494 秒。原样本地单次 race
+通过但耗时 14.733 秒，不能据此抹除 CI 失败。正在验证仅对该临时 embedded
+etcd 使用 bcrypt 最低合法成本；真实哈希、认证、所有权和清理断言及 20 秒
+门限不变，生产密码策略不变。调整后定向 race 连续 10 轮共 11.910 秒通过，
+相关 vet 通过；完整 probe 回归尚在进行，不能记作通过。
+
 最新本地协议覆盖扩展到 26 项：增加进程 SDK async 默认模式下预取后领导权、
 恢复 token 竞争，目标事务不单独设置协议，要求实际 async Prewrite、零 Commit，
 用户数据／事件／修订号／配额不变；初始化、竞争和清理仍沿用进程默认模式。

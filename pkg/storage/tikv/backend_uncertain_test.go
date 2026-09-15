@@ -225,7 +225,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	processAsync := strings.HasPrefix(scenario, "async-process-")
 	if processAsync {
 		scenario = "async-" + strings.TrimPrefix(scenario, "async-process-")
-		require.Contains(t, []string{"async-fenced", "async-fenced-election-fence", "async-fenced-restoration-fence-shard"}, scenario)
+		require.Contains(t, []string{"async-fenced", "async-fenced-election-fence", "async-fenced-restoration-fence-shard", "async-guarded-committed"}, scenario)
 	}
 	guardedAsync := scenario == "async-guarded-committed"
 	if guardedAsync {
@@ -385,8 +385,10 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 				require.Equal(t, asyncLoss.startTS, txn.StartTS())
 				return
 			}
-			txn.SetEnable1PC(false)
-			txn.SetEnableAsyncCommit(true)
+			if !processAsync {
+				txn.SetEnable1PC(false)
+				txn.SetEnableAsyncCommit(true)
+			}
 			asyncMutationCount = txn.Len
 			asyncLoss = &protocolAsyncResponseLoss{Client: client.GetTiKVClient(), startTS: txn.StartTS(), cancel: cancelCommit}
 			client.SetTiKVClient(asyncLoss)
@@ -538,6 +540,11 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 			require.Positive(t, guardedRPC.leadership.Load(), "real Prewrite must include leadership guard mutation")
 			require.Positive(t, guardedRPC.restoration.Load(), "real Prewrite must include restoration guard mutation")
 			t.Log("PROTOCOL_ASYNC_GUARDED_RESOLVED_OK leadership_guard=true restoration_guard=true")
+		}
+		if processAsync {
+			require.Positive(t, processRPC.unmarkedAsync.Load(), "internal transactions must really use async")
+			require.Positive(t, cleanupRPC.unmarkedAsync.Load(), "ownership claim must really use async")
+			t.Log("PROTOCOL_PROCESS_ASYNC_RESOLVED_OK per_transaction_override=false")
 		}
 		return
 	}

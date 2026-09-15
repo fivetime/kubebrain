@@ -61,6 +61,10 @@ func TestSnapshotAuthFixtureInstallCleanupAndCollisionOwnership(t *testing.T) {
 	cfg := embed.NewConfig()
 	cfg.Name = "snapshot-auth-source"
 	cfg.Dir = t.TempDir()
+	// This fixture tests auth ownership and cleanup, not password-hardening
+	// cost. Keep real hashing/authentication without spending the shared
+	// deadline on repeated default-cost hashes under the race detector.
+	cfg.BcryptCost = uint(bcrypt.MinCost)
 	cfg.ListenClientUrls = []url.URL{clientURL}
 	cfg.AdvertiseClientUrls = []url.URL{clientURL}
 	cfg.ListenPeerUrls = []url.URL{peerURL}
