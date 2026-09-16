@@ -58,6 +58,13 @@ func (t *primaryWriteTracker) observePrewrite(response *kvrpcpb.PrewriteResponse
 		s.RegionErrors++
 	case len(response.Errors) != 0:
 		s.KeyErrors++
+	default:
+		count := s.SlowestSuccessful.SuccessfulRPCs + 1
+		if count == 1 || elapsed > s.SlowestSuccessful.RPC {
+			s.SlowestSuccessful = writeRPCSample(count, elapsed, response.ExecDetailsV2)
+		} else {
+			s.SlowestSuccessful.SuccessfulRPCs = count
+		}
 	}
 }
 
@@ -116,8 +123,12 @@ func (t *primaryWriteTracker) observe(request *kvrpcpb.CommitRequest, response *
 		t.sample.SuccessfulRPCs = count
 		return
 	}
-	sample := primaryWriteSample{SuccessfulRPCs: count, RPC: elapsed, Details: "absent"}
-	if detail := response.ExecDetailsV2; detail != nil {
+	t.sample = writeRPCSample(count, elapsed, response.ExecDetailsV2)
+}
+
+func writeRPCSample(count uint64, elapsed time.Duration, detail *kvrpcpb.ExecDetailsV2) storage.WriteRPCObservation {
+	sample := storage.WriteRPCObservation{SuccessfulRPCs: count, RPC: elapsed, Details: "absent"}
+	if detail != nil {
 		sample.Details = "exec_only"
 		if write := detail.WriteDetail; write != nil {
 			sample.Details = "write"
@@ -137,7 +148,7 @@ func (t *primaryWriteTracker) observe(request *kvrpcpb.CommitRequest, response *
 			}
 		}
 	}
-	t.sample = sample
+	return sample
 }
 
 func (t *primaryWriteTracker) finish() primaryWriteSample {

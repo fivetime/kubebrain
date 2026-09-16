@@ -244,3 +244,57 @@ func TestPrimaryWriteMetricsNoSampleAndNegativeDurations(t *testing.T) {
 	callback(storage.BatchCommitObservation{PrimaryWrite: storage.PrimaryWriteObservation{SuccessfulRPCs: 1, Details: "write"}})
 	require.Empty(t, rec.counters, "no commit attempt means no primary sample")
 }
+
+func TestPrewriteSelectedMetricsPresenceAndBatchOutcome(t *testing.T) {
+	for _, outcome := range []error{nil, errors.New("private error")} {
+		for _, details := range []string{"absent", "exec_only", "write", "invalid_write", "private provider text"} {
+			rec := &recordingMetrics{}
+			callback := storage.BatchCommitObserverFromContext(observePutBatchCommits(context.Background(), rec))
+			callback(storage.BatchCommitObservation{CommitAttempted: true, HasPrewriteRPCDetails: true, Err: outcome,
+				PrewriteRPCs: storage.PrewriteRPCObservation{SlowestSuccessful: storage.WriteRPCObservation{
+					SuccessfulRPCs: 2, Details: details, RPC: 10 * time.Millisecond, PersistLog: 3 * time.Millisecond,
+					RaftSync: time.Millisecond, CommitLog: 5 * time.Millisecond}}})
+			tags := []metrics.T{metrics.Tag("method", "put"), getSuccessMetricTagByErr(outcome)}
+			label := details
+			if details == "private provider text" {
+				label = "invalid_write"
+			}
+			require.Equal(t, []recordedCounter{{name: "write.batch.prewrite_slowest_successful_rpc.samples", value: 1,
+				tags: append(append([]metrics.T(nil), tags...), metrics.Tag("details", label))}}, rec.counters)
+			var selected []recordedHistogram
+			for _, h := range rec.histograms {
+				if strings.Contains(h.name, "prewrite_slowest_successful_rpc") {
+					selected = append(selected, h)
+				}
+			}
+			want := []recordedHistogram{{name: "write.batch.prewrite_slowest_successful_rpc.successful_requests", value: float64(2), tags: tags}}
+			if details == "write" {
+				for i, phase := range []string{"rpc", "persist_log", "raft_sync", "commit_log"} {
+					want = append(want, recordedHistogram{name: "write.batch.prewrite_slowest_successful_rpc." + phase + ".latency", value: []float64{.010, .003, .001, .005}[i], tags: tags})
+				}
+			}
+			require.Equal(t, want, selected)
+		}
+	}
+}
+
+func TestPrewriteSelectedMetricsRequireAttemptDetailsAndSample(t *testing.T) {
+	for _, missing := range []string{"attempt", "observation", "sample"} {
+		rec := &recordingMetrics{}
+		o := storage.BatchCommitObservation{CommitAttempted: true, HasPrewriteRPCDetails: true,
+			PrewriteRPCs: storage.PrewriteRPCObservation{SlowestSuccessful: storage.WriteRPCObservation{SuccessfulRPCs: 1, Details: "write"}}}
+		switch missing {
+		case "attempt":
+			o.CommitAttempted = false
+		case "observation":
+			o.HasPrewriteRPCDetails = false
+		case "sample":
+			o.PrewriteRPCs.SlowestSuccessful.SuccessfulRPCs = 0
+		}
+		storage.BatchCommitObserverFromContext(observePutBatchCommits(context.Background(), rec))(o)
+		require.Empty(t, rec.counters)
+		for _, h := range rec.histograms {
+			require.NotContains(t, h.name, "prewrite_slowest_successful_rpc")
+		}
+	}
+}

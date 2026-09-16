@@ -36,6 +36,9 @@ func TestPrewriteRPCObservationOutcomesAndClosure(t *testing.T) {
 	require.EqualValues(t, 1, want.MissingResponses)
 	require.Equal(t, 20*time.Millisecond, want.Duration)
 	require.Equal(t, 6*time.Millisecond, want.MaxDuration)
+	require.EqualValues(t, 1, want.SlowestSuccessful.SuccessfulRPCs)
+	require.Equal(t, 2*time.Millisecond, want.SlowestSuccessful.RPC, "a slower failed RPC must not replace the successful sample")
+	require.Equal(t, "absent", want.SlowestSuccessful.Details)
 	tracker.observePrewrite(nil, nil, time.Hour)
 	require.Equal(t, want, tracker.prewriteSnapshot())
 }
@@ -55,6 +58,49 @@ func TestPrewriteRPCObservationConcurrentFinish(t *testing.T) {
 	workers.Wait()
 	require.Equal(t, snapshot, tracker.prewriteSnapshot())
 	require.Equal(t, time.Duration(snapshot.Requests)*time.Millisecond, snapshot.Duration)
+	require.Equal(t, snapshot.Requests, snapshot.SlowestSuccessful.SuccessfulRPCs)
+}
+
+func TestPrewriteSlowestSuccessfulDetailsAndProtocols(t *testing.T) {
+	for _, protocol := range []string{"2pc", "async", "1pc"} {
+		for _, details := range []string{"absent", "exec_only", "write", "invalid_write"} {
+			t.Run(protocol+"/"+details, func(t *testing.T) {
+				tracker := &primaryWriteTracker{}
+				tracker.register(&kvrpcpb.PrewriteRequest{StartVersion: 123, PrimaryLock: []byte("private-key"),
+					UseAsyncCommit: protocol == "async", TryOnePc: protocol == "1pc"})
+				fast := &kvrpcpb.PrewriteResponse{ExecDetailsV2: &kvrpcpb.ExecDetailsV2{
+					WriteDetail: &kvrpcpb.WriteDetail{PersistLogNanos: 10, RaftDbSyncLogNanos: 4, CommitLogNanos: 12}}}
+				tracker.observePrewrite(fast, nil, time.Millisecond)
+				slow := &kvrpcpb.PrewriteResponse{}
+				if details != "absent" {
+					slow.ExecDetailsV2 = &kvrpcpb.ExecDetailsV2{}
+				}
+				if details == "write" || details == "invalid_write" {
+					slow.ExecDetailsV2.WriteDetail = &kvrpcpb.WriteDetail{PersistLogNanos: 30, RaftDbSyncLogNanos: 14, CommitLogNanos: 32}
+					if details == "invalid_write" {
+						slow.ExecDetailsV2.WriteDetail.ThrottleNanos = math.MaxUint64
+					}
+				}
+				tracker.observePrewrite(slow, nil, 2*time.Millisecond)
+				tracker.observePrewrite(fast, nil, time.Millisecond)
+				tracker.observePrewrite(fast, nil, 2*time.Millisecond) // ties retain the first selected response
+				tracker.finish()
+				sample := tracker.prewriteSnapshot().SlowestSuccessful
+				require.EqualValues(t, 4, sample.SuccessfulRPCs)
+				require.Equal(t, 2*time.Millisecond, sample.RPC)
+				require.Equal(t, details, sample.Details)
+				if details == "write" {
+					require.Equal(t, 30*time.Nanosecond, sample.PersistLog)
+					require.Equal(t, 14*time.Nanosecond, sample.RaftSync)
+					require.Equal(t, 32*time.Nanosecond, sample.CommitLog)
+				} else {
+					require.Zero(t, sample.PersistLog, "never substitute faster valid details")
+				}
+				tracker.observePrewrite(fast, nil, time.Hour)
+				require.Equal(t, sample, tracker.prewriteSnapshot().SlowestSuccessful)
+			})
+		}
+	}
 }
 
 func TestPrimaryWriteTrackerRejectsUnrelatedAndFailedResponses(t *testing.T) {

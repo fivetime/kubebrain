@@ -320,6 +320,9 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 }
 
 func metricHelp(name string) string {
+	if strings.HasPrefix(formatName(name), "write_batch_prewrite_slowest_successful_rpc_") {
+		return "Slowest successful Prewrite RPC selected per synchronous batch, including async/1PC attempts; late calls excluded. Successful requests count retries, samples records raw detail presence, duration histograms require valid raw WriteDetail and use seconds. Missing/invalid details never become zero durations. RPC and server stages overlap; never add them. Not a proven transaction critical path; success labels the batch outcome."
+	}
 	if strings.HasPrefix(formatName(name), "write_admission_") {
 		return "Local Put admission phase wall seconds, emitted only for calls reaching the backend. Adjacent phases partition write_pre_backend_latency; rejected admissions and follower proxy calls excluded. Success labels the backend outcome, not this phase."
 	}

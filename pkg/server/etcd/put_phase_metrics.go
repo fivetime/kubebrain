@@ -62,6 +62,7 @@ func observePutBatchCommits(ctx context.Context, metricCli metrics.Metrics) cont
 			emit("commit", o.Commit)
 			if o.HasPrewriteRPCDetails {
 				p := o.PrewriteRPCs
+				emitWriteRPCSample(metricCli, "prewrite_slowest_successful_rpc", p.SlowestSuccessful, tags)
 				for _, field := range []struct {
 					name  string
 					value float64
@@ -102,6 +103,11 @@ func emitBatchLockRPCs(metricCli metrics.Metrics, phase string, o storage.LockRP
 }
 
 func emitPrimaryWriteSample(metricCli metrics.Metrics, sample storage.PrimaryWriteObservation, tags []metrics.T) {
+	emitWriteRPCSample(metricCli, "primary_rpc", sample, tags)
+}
+
+// Prefixes are fixed by the callers; no request key/Region/store/error is a label.
+func emitWriteRPCSample(metricCli metrics.Metrics, prefix string, sample storage.WriteRPCObservation, tags []metrics.T) {
 	if sample.SuccessfulRPCs == 0 {
 		return
 	}
@@ -115,8 +121,8 @@ func emitPrimaryWriteSample(metricCli metrics.Metrics, sample storage.PrimaryWri
 		details = "invalid_write"
 	}
 	sampleTags := append(append([]metrics.T(nil), tags...), metrics.Tag("details", details))
-	_ = metricCli.EmitCounter("write.batch.primary_rpc.samples", 1, sampleTags...)
-	_ = metricCli.EmitHistogram("write.batch.primary_rpc.successful_requests", float64(sample.SuccessfulRPCs), tags...)
+	_ = metricCli.EmitCounter("write.batch."+prefix+".samples", 1, sampleTags...)
+	_ = metricCli.EmitHistogram("write.batch."+prefix+".successful_requests", float64(sample.SuccessfulRPCs), tags...)
 	if details != "write" {
 		return
 	}
@@ -126,7 +132,7 @@ func emitPrimaryWriteSample(metricCli metrics.Metrics, sample storage.PrimaryWri
 		name  string
 		value time.Duration
 	}{{"rpc", sample.RPC}, {"persist_log", sample.PersistLog}, {"raft_sync", sample.RaftSync}, {"commit_log", sample.CommitLog}} {
-		_ = metricCli.EmitHistogram("write.batch.primary_rpc."+phase.name+".latency", phase.value.Seconds(), tags...)
+		_ = metricCli.EmitHistogram("write.batch."+prefix+"."+phase.name+".latency", phase.value.Seconds(), tags...)
 	}
 }
 

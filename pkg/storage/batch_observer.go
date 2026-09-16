@@ -33,6 +33,11 @@ type BatchCommitObservation struct {
 type PrewriteRPCObservation struct {
 	Requests, TransportErrors, RegionErrors, KeyErrors, MissingResponses uint64
 	Duration, MaxDuration                                                time.Duration
+	// SlowestSuccessful selects one successful response across all Region RPCs,
+	// including async/1PC attempts. It is not necessarily the transaction's
+	// critical path (failed calls/backoff may take longer). Missing details on
+	// that response must not be replaced with a faster response's valid details.
+	SlowestSuccessful WriteRPCObservation
 }
 
 // LockRPCObservation counts transport calls carrying a batch phase context
@@ -54,7 +59,11 @@ type LockRPCSample struct {
 // Details is absent, exec_only, write, or invalid_write; only write permits
 // duration histograms. RPC and server stages overlap and must never be added.
 // SuccessfulRPCs==0 means no selected sample, not a zero-duration operation.
-type PrimaryWriteObservation struct {
+type PrimaryWriteObservation = WriteRPCObservation
+
+// WriteRPCObservation contains the selected RPC's raw, overlapping server
+// timings. The enclosing observation defines selection and closure boundaries.
+type WriteRPCObservation struct {
 	SuccessfulRPCs uint64
 	Details        string
 	RPC            time.Duration
