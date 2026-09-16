@@ -433,7 +433,30 @@ ensure_watch_running() {
 }
 
 start_watch
-sleep 3
+# The first workload mutation is also an end-to-end watch readiness barrier.
+# A fixed startup delay cannot prove that the consumer has opened its stream.
+watch_ready_deadline=$((SECONDS + WATCH_TIMEOUT_SECONDS))
+until jq -s -e --arg namespace "$ns" 'any(.[]; .type == "ADDED" and
+  .object.metadata.namespace == $namespace and .object.metadata.name == "soak-1" and
+  .object.data.version == "0")' "$WATCH_FILE" >/dev/null 2>&1; do
+  if ! kill -0 "$watch_pid" 2>/dev/null || (( SECONDS >= watch_ready_deadline )); then
+    echo "watch did not observe the initial workload state" >&2
+    exit 1
+  fi
+  sleep 1
+done
+kubectl --kubeconfig "$KUBECONFIG_FILE" -n "$ns" patch configmap soak-1 \
+  --type merge -p '{"data":{"version":"1"}}' >/dev/null
+until jq -s -e --arg namespace "$ns" 'any(.[]; .type == "MODIFIED" and
+  .object.metadata.namespace == $namespace and .object.metadata.name == "soak-1" and
+  .object.data.version == "1")' "$WATCH_FILE" >/dev/null 2>&1; do
+  if ! kill -0 "$watch_pid" 2>/dev/null || (( SECONDS >= watch_ready_deadline )); then
+    echo "watch did not acknowledge the first workload mutation" >&2
+    exit 1
+  fi
+  sleep 1
+done
+echo "APISERVER_WATCH_READY"
 if [ "$PRE_UPDATE_SLEEP_SECONDS" -gt 0 ]; then
   echo "apiserver watch soak sleeping ${PRE_UPDATE_SLEEP_SECONDS}s before updates"
   sleep "$PRE_UPDATE_SLEEP_SECONDS"
@@ -441,6 +464,9 @@ fi
 
 for update in $(seq 1 "$UPDATES"); do
   for i in $(seq 1 "$OBJECTS"); do
+    if [[ "$update" == 1 && "$i" == 1 ]]; then
+      continue # already acknowledged by the readiness barrier
+    fi
     if ! ensure_watch_running; then
       echo "watch exited before update ${update}/${UPDATES} object ${i}/${OBJECTS}" >&2
       cat "$WATCH_FILE" >&2 || true

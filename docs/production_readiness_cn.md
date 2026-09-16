@@ -4,6 +4,9 @@
 
 ## 验证边界
 
+standalone apiserver rollout 已增加[真实 Watch 修改回执前置确认](apiserver_fault_admission_cn.md)，
+替代固定等待时间。该改进尚不代表新的故障验收已完成。
+
 apiserver smoke/watch 的故障实验必须通过[逐对象/版本完整性门禁](apiserver_watch_integrity_cn.md)，
 不能只凭事件总数或重连后的 ADDED 认定 Watch 连续。
 

@@ -56,6 +56,7 @@ need() {
 need kubectl
 need docker
 need curl
+source "$ROOT_DIR/hack/dev/wait-apiserver-watch-ready.sh"
 resolved_context="$(kubectl config get-contexts "$KUBE_CONTEXT" -o name 2>/dev/null || true)"
 if [[ "$resolved_context" != "$KUBE_CONTEXT" ]]; then
   echo "KUBE_CONTEXT does not resolve exactly: $KUBE_CONTEXT" >&2
@@ -138,7 +139,7 @@ echo "Starting standalone kube-apiserver watch soak with pre-update pause"
 ) >"$log_file" 2>&1 &
 soak_pid=$!
 
-sleep 12
+wait_apiserver_watch_ready "$soak_pid" "$log_file" "$WATCH_TIMEOUT_SECONDS"
 echo "Restarting ${WORKLOAD} while apiserver watch is established"
 "${KUBECTL[@]}" -n "$NAMESPACE" rollout restart "$WORKLOAD"
 wait_ready
