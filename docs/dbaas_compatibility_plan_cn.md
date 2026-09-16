@@ -122,6 +122,26 @@ vet 通过。`d26c7b41` 的三项 CI、735 项生产门禁和独立镜像验证�
 镜像／默认 2PC，并清理测试资源。稳定窗口 4380 次操作平均 171.062ms/轮，
 无受控对照，不能归因于本次锁实现，也不证明任何具体存储根因。
 
+租约 RPC 锁准入取消补齐（2026-09-16）：`LeaseGrant` 和 `LeaseRevoke`
+仍使用不可取消的租约绑定锁等待。新增三个独立回归场景，分别持有独占锁
+阻塞 Grant、持有独占锁或共享锁阻塞 Revoke；修复前均在 100ms deadline
+到期后仍阻塞，直到测试在 1 秒时释放锁才结束（RED，3.085s）。仅将这两个
+RPC 的首次获锁改为既有 `RLockContext` / `LockContext`，取消未获锁时直接
+返回 context 错误，不建立 pending lease，也不开始 teardown；不修改后台
+到期、checkpoint 解锁／重锁、不确定提交恢复和持久化后的补偿语义。
+对标 `/root/etcd` 固定提交 `5cd9f4ee13801e18825d661e5005ae599460bc3a`
+的 `server/etcdserver/v3_server.go:processInternalRaftRequestOnce`，其等待
+通过 `cctx.Done()` 有界退出；不是承诺取消已经提交的 Raft/TiKV 写入。
+
+回归同时核对取消前后用户数据、绑定、revision、持久 lease metadata、
+内存 active/pending lease 与 teardown 计数，并执行同 ID 的后续成功
+Grant/Revoke 证明锁与预约未泄漏。新旧准入及锁测试五轮 race 通过（5.389s），
+完整服务非 race 回归通过（140.312s），Lease/Revoke/Expiry/Checkpoint/
+Attachment 扩展 race 通过（74.314s），vet 和 diff 检查通过。既有
+`probe-regression.yml` 的 Lease race 筛选覆盖新测试；当前本地测试不替代
+该修复版本的 CI、镜像身份校验和真实集群验收。此前 `0e7af672` 临时 async
+commit 的通过结果只适用于旧代码，见 [该轮验收报告](acceptance_async_0e7af672_20260916_cn.md)。
+
 持续 CI 覆盖：完整非 race 服务回归已包括新租约锁测试，但原鉴权／Watch
 race 筛选不会选择它们。现显式增加 Lease／Revoke／Expiry／Checkpoint／
 Attachment 的 uncached race 命令，保留 8 分钟测试超时、失败阻断及原有

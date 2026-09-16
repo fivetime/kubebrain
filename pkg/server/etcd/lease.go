@@ -260,7 +260,9 @@ func (m *leaseManager) LeaseGrant(ctx context.Context, req *etcdserverpb.LeaseGr
 		return nil, rpctypes.ErrGRPCNoSpace
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
-	m.leaseWriteMu.RLock()
+	if err := m.leaseWriteMu.RLockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer m.leaseWriteMu.RUnlock()
 	if req.TTL > maxLeaseTTL {
 		return nil, status.Error(codes.OutOfRange, "etcdserver: too large lease TTL")
@@ -505,7 +507,9 @@ func (m *leaseManager) LeaseRevoke(ctx context.Context, req *etcdserverpb.LeaseR
 		return nil, err
 	}
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
-	m.leaseWriteMu.Lock()
+	if err := m.leaseWriteMu.LockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer m.leaseWriteMu.Unlock()
 	m.leaseTeardowns.Add(1)
 	defer m.leaseTeardowns.Add(-1)
