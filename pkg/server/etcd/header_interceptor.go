@@ -373,6 +373,7 @@ func (s *RPCServer) allowRequestRate(method, kind string) bool {
 	s.metricCli.EmitCounter("grpc.server.rate_limit.rejected", 1,
 		metrics.Tag("method", method), metrics.Tag("kind", kind))
 	emitClientAdmissionRejection(s.metricCli, clientAdmissionGuardRate)
+	s.observeSnapshotRejection(method, snapshotRejectedRate)
 	return false
 }
 
@@ -447,6 +448,7 @@ func (s *RPCServer) admitStream(srv any, ss grpc.ServerStream, info *grpc.Stream
 		return rpctypes.ErrGRPCNoLeader
 	}
 	if !s.acquireRequest(info.FullMethod, "stream") {
+		s.observeSnapshotRejection(info.FullMethod, snapshotRejectedInflight)
 		return rpctypes.ErrGRPCRequestTooManyRequests
 	}
 	if s.maxRequestsInFlight != 0 {

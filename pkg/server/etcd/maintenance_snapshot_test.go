@@ -622,6 +622,76 @@ func TestMaintenanceSnapshotRejectsConcurrentLocalBuildBeforeSecondHistoryScan(t
 		recordedGaugeValues(rec, snapshotActiveMetric))
 }
 
+func TestMaintenanceSnapshotCancellationReleasesLocalAdmission(t *testing.T) {
+	testSnapshotInterruptedAdmission(t, false)
+}
+
+func TestMaintenanceSnapshotLeadershipLossReleasesLocalAdmission(t *testing.T) {
+	testSnapshotInterruptedAdmission(t, true)
+}
+
+func testSnapshotInterruptedAdmission(t *testing.T, loseLeadership bool) {
+	t.Helper()
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	_, err := server.Put(context.Background(), &etcdserverpb.PutRequest{
+		Key: []byte("snapshot-cancel-seed"), Value: []byte("value"),
+	})
+	require.NoError(t, err)
+	wrapped := &concurrentSnapshotAdmissionBackend{
+		BackendShim: server.backend, started: make(chan struct{}, 2), release: make(chan struct{}),
+	}
+	server.backend = wrapped
+	var leading atomic.Bool
+	leading.Store(true)
+	if loseLeadership {
+		server.peers = testPeerService{isLeader: true, epochFn: func() (uint64, bool) {
+			return 7, leading.Load()
+		}}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: ctx})
+	}()
+	select {
+	case <-wrapped.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("snapshot did not reach the blocked history scan")
+	}
+	require.True(t, server.snapshotActive.Load())
+	if loseLeadership {
+		leading.Store(false)
+	} else {
+		cancel()
+	}
+	select {
+	case err = <-done:
+		require.Error(t, err)
+		if loseLeadership {
+			require.Equal(t, codes.Unavailable, status.Code(err))
+			require.EqualError(t, err, rpctypes.ErrGRPCLeaderChanged.Error())
+			require.NoError(t, ctx.Err(), "leadership polling must work without caller cancellation")
+		} else {
+			require.True(t, errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled, "%v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("interrupted snapshot retained its admission while the scan was blocked")
+	}
+	require.False(t, server.snapshotActive.Load())
+	// Interruption, not releasing the blocked producer, must free the slot.
+	close(wrapped.release)
+	leading.Store(true)
+	nextCtx, cancelNext := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelNext()
+	next := &maintenanceSnapshotServer{ctx: nextCtx}
+	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, next))
+	require.Equal(t, int64(2), wrapped.calls.Load())
+	require.GreaterOrEqual(t, len(next.responses), 2)
+	require.False(t, server.snapshotActive.Load())
+}
+
 type metadataBarrierSnapshotBackend struct {
 	*pausedSnapshotBackend
 	barrierAcquired chan struct{}

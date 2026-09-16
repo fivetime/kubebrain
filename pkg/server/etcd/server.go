@@ -118,6 +118,7 @@ type RPCServer struct {
 	// sized for one such artifact, so the generic request admission limit is not
 	// a safe concurrency bound for this KubeBrain-specific reconstruction path.
 	snapshotActive     atomic.Bool
+	snapshotRejections snapshotRejectionDiagnostics
 	maxDeleteRangeKeys uint32
 	maxWatches         uint32
 	watchQuotaMu       sync.Mutex
