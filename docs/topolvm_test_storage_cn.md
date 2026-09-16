@@ -82,3 +82,17 @@ PD/TiKV 均为 v8.5.3、各三副本、每节点各一副本，保留原资源�
 启动期间 `kb-local-pd-0` 有一次退出码 1 重启，日志显示另一个成员尚未完成加入，随后恢复。不得把该次启动写成零重启；之后是否持续稳定仍需观察。部署前后旧六个 PD/TiKV Pod UID、container ID、restart count 与容器状态完全一致。
 
 证据仍在前述 owner 目录：`local-backend-dry-run.json`、`local-backend-ready.log`、`local-backend-health.log`、`local-backend-pods.json`、`old-backend-before.json`、`old-backend-after.json`。这些只证明后端供应、启动和 Region 健康，**不证明 etcd 事务兼容性、原 900 秒验收或数据迁移成功**。后续优先为新后端准备隔离的 KubeBrain 测试实例和相同负载，避免把现有实例直接指向空库；任何正式连接切换前保留明确回退路径。
+
+## 隔离 KubeBrain 实例已部署（2026-09-16 21:45 UTC）
+
+[独立前端清单](../deploy/test-cluster/kubebrain-local.json) 从当时实际 `kubebrain` 配置提取部署参数并剥离运行时元数据，另建 `kubebrain-local` StatefulSet、ServiceAccount、PDB、NetworkPolicy 和两个 Service。实例标签、成员名称、初始成员地址、服务选择器、keyspace/cluster-name 均独立；PD 地址为 `kb-local-pd.kubebrain-dbaas-test.svc:2379`。Snapshot/RangeStream 临时卷也使用 TopoLVM，未挂载旧 Ceph 卷。
+
+镜像固定为已审核 bb89c3f8 的 index digest `sha256:50b9938fe3e5ad379136957438abe3c2d4bf250dc6c5973c869e0ef1341d1537`，默认 2PC，不启用 1PC/async commit。该清单不是新产品镜像的 CI 证据。StatefulSet UID `7d760f53-5bb5-4429-a2f8-651b89665616`，generation 1、三个 Ready/current 副本，revision `kubebrain-local-695cd759c6`，三个容器 restartCount 均为 0。测试配置 race 检查及 server dry-run 通过。
+
+使用单独生成的测试 CA，以及新的 client/peer/info/probe 四个 TLS Secret；未读取或复用旧实例私钥。CA 有效期 30 天、叶证书 7 天（2026-09-16 签发，后续长时间运行必须检查到期并轮换）。证书/私钥仅在 owner 目录下的权限受限 `local-tls/` 和集群 Secret 中，不入仓库。client 叶证书包含公共服务及成员 DNS SAN，具有 serverAuth/clientAuth；peer 叶证书包含 peer 服务/成员 DNS；probe 客户端 CN 为 root。Info CA ConfigMap `kubebrain-local-info-ca` immutable，info 校验名为 `kubebrain-local-info.kubebrain-dbaas-test.svc`。初次生成的 client 证书在正式 smoke 前补全了 clientAuth 和直连 DNS SAN；更新仅作用于新实例 Secret，并已核对三个 Pod 的投影证书摘要一致。
+
+冷启动 leader 曾连续报告 durable revision watermark 尚未在安全读时间可见，约 31.72 秒后 checkpoint 阶段正常完成，未绕过 readiness 或修改后端数据。此现象是本次观察到的初始化等待，不应误写成已确认的永久死锁或已经修复的产品 bug。
+
+端到端 mTLS smoke 最终通过：公共服务 Put/Get/Delete 和三个成员直连 `etcdctl endpoint health` 均成功，测试键已删除。前两次 smoke 分别因 etcdctl 不支持 `--tls-server-name`、命令行 endpoints 与同名环境变量冲突退出，属于探针命令错误，已保留失败日志；第三次修正命令后成功，未关闭 TLS 校验。三次临时 Pod 均已删除，日志与 Pod JSON 保留在 owner 目录。该短 smoke 不替代正式 6000 次 rollout/Watch/Lease/Snapshot 验收。
+
+旧 `kubebrain` 仍为 generation 102、3/3 Ready，固定原镜像 `sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`，没有连接切换或数据迁移。下一步为新实例准备独立的验收 owner、身份与清理约束，再使用原负载和原门限运行；不得复用旧 Ceph 实验中绑定旧 UID 的单次执行脚本。临时 workspace PVC 使用 Retain，因此以后 rollout 还需跟踪旧临时卷的精确身份和回收，不得批量删除所有 Released PV。
