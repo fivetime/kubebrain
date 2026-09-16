@@ -27,7 +27,11 @@ func (b *backend) BeginRangeTxn(ctx context.Context) (context.Context, func()) {
 			cancel(err)
 			return failed, func() {}
 		}
-		b.logicalWriteMu.Lock()
+		if err := b.logicalWriteMu.LockContext(ctx); err != nil {
+			failed, cancel := context.WithCancelCause(ctx)
+			cancel(err)
+			return failed, func() {}
+		}
 		// A normal Txn may have registered an uncertain revision while this
 		// exclusive range transaction waited for its readers to drain. Recheck
 		// after acquisition; never carry the range barrier into a wait whose
