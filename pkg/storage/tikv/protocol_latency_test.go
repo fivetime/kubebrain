@@ -459,6 +459,15 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	require.Len(t, observed, samples, "one synchronous observation per measured user storage batch")
 	for i, o := range observed {
 		require.NoError(t, o.Err)
+		outside, valid := protocolLatencyOutsideBatch(time.Duration(durations[i]), o)
+		require.True(t, valid, "sample %d must contain the three disjoint batch phases", i)
+		// Outside includes backend admission/preparation and completion; it is
+		// not a measurement of just reads. SDK stages nest inside Commit and
+		// lock RPC sums may overlap, so neither is subtracted from wall time.
+		t.Logf("PROTOCOL_LATENCY_PHASE sample=%d total_ns=%d outside_batch_ns=%d begin_ns=%d prepare_ns=%d commit_ns=%d prewrite_ns=%d commit_ts_ns=%d primary_commit_ns=%d region_groups=%d lock_details=%t prepare_locks=%+v commit_locks=%+v scope=one_synchronous_batch nested_sdk_stages=true overlapping_lock_rpc_sums=true",
+			i, durations[i], outside.Nanoseconds(), o.Begin.Nanoseconds(), o.Prepare.Nanoseconds(), o.Commit.Nanoseconds(),
+			o.Prewrite.Nanoseconds(), o.CommitTS.Nanoseconds(), o.PrimaryCommit.Nanoseconds(), o.PrewriteRegionGroups,
+			o.HasLockRPCDetails, o.PrepareLocks, o.CommitLocks)
 		require.True(t, o.CommitAttempted)
 		require.True(t, o.HasWriteDetails)
 		if !fenced {
@@ -482,6 +491,47 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	t.Logf("PROTOCOL_BATCH_REGION_GROUPS samples=%d groups_per_batch=%v scope=marked_foreground_only", len(observed), prewrites)
 	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s fenced=%t warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, fenced, warmup, samples, len(value), quota, durations, stats)
 	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_context excludes=unmarked_work async_commit_cleanup_may_be_included=true", attempts)
+}
+
+// Subtract one phase at a time to reject overflow as well as invalid timings.
+// Only valid for the single synchronous batch asserted by this fixture.
+func protocolLatencyOutsideBatch(total time.Duration, o storage.BatchCommitObservation) (time.Duration, bool) {
+	if total < 0 {
+		return 0, false
+	}
+	for _, phase := range []time.Duration{o.Begin, o.Prepare, o.Commit} {
+		if phase < 0 || phase > total {
+			return 0, false
+		}
+		total -= phase
+	}
+	return total, true
+}
+
+func TestProtocolLatencyOutsideBatch(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		total       time.Duration
+		observation storage.BatchCommitObservation
+		want        time.Duration
+		valid       bool
+	}{
+		{"zero", 0, storage.BatchCommitObservation{}, 0, true},
+		{"disjoint", 20, storage.BatchCommitObservation{Begin: 2, Prepare: 3, Commit: 5}, 10, true},
+		{"nested-not-subtracted", 20, storage.BatchCommitObservation{Begin: 2, Prepare: 3, Commit: 5, Prewrite: 4, CommitTS: 1, PrimaryCommit: 2, PrepareLocks: storage.LockRPCObservation{CheckTxnStatus: storage.LockRPCSample{Duration: 30}}}, 10, true},
+		{"negative-total", -1, storage.BatchCommitObservation{}, 0, false},
+		{"negative-begin", 20, storage.BatchCommitObservation{Begin: -1}, 0, false},
+		{"negative-prepare", 20, storage.BatchCommitObservation{Prepare: -1}, 0, false},
+		{"negative-commit", 20, storage.BatchCommitObservation{Commit: -1}, 0, false},
+		{"exceeds-wall", 20, storage.BatchCommitObservation{Begin: 10, Prepare: 10, Commit: 1}, 0, false},
+		{"overflow", 1<<63 - 1, storage.BatchCommitObservation{Begin: 1<<63 - 1, Commit: 1}, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, valid := protocolLatencyOutsideBatch(tc.total, tc.observation)
+			require.Equal(t, tc.valid, valid)
+			require.Equal(t, tc.want, got)
+		})
+	}
 }
 
 // Contend on both user rows and the allocator in an independently owned fixture.

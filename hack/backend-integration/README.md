@@ -3,9 +3,16 @@
 本目录维护根模块的本机真实 PD/TiKV 测试入口；旧独立 SQL mock 模块已退役。
 不接入 Kubernetes，不需要 kubeconfig。
 
-当前入口共 29 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
+当前入口共 33 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
 当前执行顺序。三个单 Region 后端响应丢失用例先于主动 Region 分裂执行；
 后续增加用例时以入口中的测试名清单及明确 PASS 回执为准，不累加历史轮次。
+
+延迟用例逐样本输出 `PROTOCOL_LATENCY_PHASE`：总耗时、batch Begin／Prepare／
+Commit、batch 外耗时、SDK 子阶段、Region 分组和两阶段锁 RPC 计数／耗时。
+batch 外耗时包含后端准入、准备和完成处理，不能命名为纯读耗时；SDK 子阶段
+嵌套于 Commit，锁 RPC 耗时可能重叠，禁止把这些值再相加或从总耗时中扣除。
+每个样本要求只有一个同步 batch；日志不包含业务键值。该诊断不改变原验收门限，
+本机单副本结果不能替代指定集群的性能或持久性验收。
 
 启动实验入口：命令行新增 `--experimental-tikv-enable-async-commit`，默认
 `false`，与 `--experimental-tikv-enable-1pc` 互斥。冲突配置在创建客户端前
