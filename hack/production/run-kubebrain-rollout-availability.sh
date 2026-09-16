@@ -45,6 +45,12 @@ PROBE_START_TIMEOUT="${PROBE_START_TIMEOUT:-90s}"
 PROBE_COMPLETE_TIMEOUT="${PROBE_COMPLETE_TIMEOUT:-900s}"
 # Optional trusted executable; accepts output-directory and phase-receipt.
 ROLLOUT_DIAGNOSTIC_SAMPLER="${ROLLOUT_DIAGNOSTIC_SAMPLER:-}"
+ROLLOUT_BACKEND_DIAGNOSTIC_SAMPLER="${ROLLOUT_BACKEND_DIAGNOSTIC_SAMPLER:-}"
+if [[ -n "$ROLLOUT_BACKEND_DIAGNOSTIC_SAMPLER" ]] &&
+  [[ "$ROLLOUT_BACKEND_DIAGNOSTIC_SAMPLER" != /* || ! -f "$ROLLOUT_BACKEND_DIAGNOSTIC_SAMPLER" || ! -x "$ROLLOUT_BACKEND_DIAGNOSTIC_SAMPLER" ]]; then
+  echo 'ROLLOUT_BACKEND_DIAGNOSTIC_SAMPLER must be an absolute executable file' >&2
+  exit 2
+fi
 if [[ -n "$ROLLOUT_DIAGNOSTIC_SAMPLER" ]] &&
   [[ "$ROLLOUT_DIAGNOSTIC_SAMPLER" != /* || ! -f "$ROLLOUT_DIAGNOSTIC_SAMPLER" || ! -x "$ROLLOUT_DIAGNOSTIC_SAMPLER" ]]; then
   echo 'ROLLOUT_DIAGNOSTIC_SAMPLER must be an absolute executable file' >&2
@@ -787,7 +793,24 @@ fixture_cleanup_ready=false
 fixture_cleanup_verified=false
 rollout_observer_pid=""
 rollout_sampler_pid=""
+backend_observer_pid=""
+backend_observer_directory=""
 probe_failure_evidence_needed=false
+
+stop_backend_observer_after_cleanup() {
+  [[ -n "$backend_observer_pid" ]] || return 0
+  local observer_status=0
+  if ! touch "$backend_observer_directory/backend-observer-stop"; then
+    # A failed stop receipt must not leave us waiting the whole observation
+    # budget after cleanup. Terminate only the observer owned by this runner.
+    kill -TERM "$backend_observer_pid" 2>/dev/null || true
+  fi
+  wait "$backend_observer_pid" || observer_status=$?
+  backend_observer_pid=""
+  printf '%s\n' "$observer_status" > "$backend_observer_directory/observer-result"
+  printf 'BACKEND_OBSERVER_FINISHED result=%s directory=%s; diagnostic only\n' \
+    "$observer_status" "$backend_observer_directory"
+}
 
 # Diagnostic lifecycle only. Consumers must still verify actual Pod/container
 # identities around every capture; this file is not a deployment authority.
@@ -1253,11 +1276,28 @@ rollout_exit() {
     echo "CRITICAL: image-holder cleanup unconfirmed; retain receipt ${image_prepull_receipt_directory:-unavailable}" >&2
     status=1
   fi
+  # The independent backend observer must outlive restoration/fixture cleanup.
+  # Its result is diagnostic evidence, not a replacement for executor status.
+  if [[ -n "$backend_observer_pid" ]]; then
+    printf '%s\n' "$status" > "$backend_observer_directory/executor-result"
+  fi
+  stop_backend_observer_after_cleanup
   exit "$status"
 }
 trap rollout_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+if [[ -n "$ROLLOUT_BACKEND_DIAGNOSTIC_SAMPLER" ]]; then
+  # Separate owned evidence survives finish_runtime_evidence during cleanup.
+  # Never accept a caller-selected deletion target or reuse a prior observer.
+  backend_observer_directory=$(mktemp -d "${TMPDIR:-/tmp}/kubebrain-backend-observer.XXXXXXXX")
+  printf 'BACKEND_OBSERVER_DIRECTORY=%s\n' "$backend_observer_directory"
+  bash "$PRODUCTION_DIR/observe-rollout-backend.sh" "$backend_observer_directory" \
+    "$ROLLOUT_BACKEND_DIAGNOSTIC_SAMPLER" "$runtime_evidence_dir/diagnostic-phase.json" \
+    > "$backend_observer_directory/observer.log" 2>&1 &
+  backend_observer_pid=$!
+fi
 
 # Finish all cold image work before fixture cleanup or probe creation starts
 # consuming the online observation window. A failed prepare only cleans its

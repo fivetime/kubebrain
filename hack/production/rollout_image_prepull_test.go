@@ -158,18 +158,25 @@ func TestRolloutImagePrepullExitContainment(t *testing.T) {
 	require.GreaterOrEqual(t, start, 0)
 	require.Greater(t, end, start)
 	for _, tc := range []struct{ name, cleanup, prepull, original, want string }{
+		{"successful cleanup", "return 0", "return 0", "0", "0"},
 		{"explicit cleanup exit", "exit 17", "return 0", "0", "1"},
 		{"errexit in cleanup", "false; echo MUST_NOT_CONTINUE", "return 0", "0", "1"},
 		{"preserve original failure", "return 0", "return 0", "23", "23"},
 		{"holder cleanup failure", "return 0", "return 1", "0", "1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			command := exec.Command("bash", "-c", "set -euo pipefail\nrecord_rollout_diagnostic_phase() { :; }\nstop_rollout_sampler() { :; }\nstop_rollout_observer() { :; }\ncleanup() { "+tc.cleanup+"; }\n"+
+			command := exec.Command("bash", "-c", "set -euo pipefail\nbackend_observer_pid=''\nstop_backend_observer_after_cleanup() { :; }\nrecord_rollout_diagnostic_phase() { :; }\nstop_rollout_sampler() { :; }\nstop_rollout_observer() { :; }\ncleanup() { "+tc.cleanup+"; }\n"+
 				"image_prepull_cleanup() { echo HOLDER_CLEANUP_CALLED; "+tc.prepull+"; }\n"+
 				source[start:end]+"trap rollout_exit EXIT\nexit "+tc.original)
 			output, err := command.CombinedOutput()
-			require.Error(t, err)
-			require.Equal(t, "exit status "+tc.want, err.Error())
+			if tc.want == "0" {
+				require.NoError(t, err, string(output))
+			} else {
+				require.Error(t, err)
+				require.Equal(t, "exit status "+tc.want, err.Error())
+			}
+			require.NotContains(t, string(output), "unbound variable")
+			require.NotContains(t, string(output), "command not found")
 			require.Contains(t, string(output), "HOLDER_CLEANUP_CALLED")
 			require.NotContains(t, string(output), "MUST_NOT_CONTINUE")
 		})
@@ -188,7 +195,7 @@ func TestRolloutImagePrepullReapsObserverInItsParentBeforeCleanup(t *testing.T) 
 	require.Greater(t, exitEnd, exitStart)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, "bash", "-c", "set -euo pipefail\nrecord_rollout_diagnostic_phase() { :; }\nstop_rollout_sampler() { :; }\n"+source[stopStart:stopEnd]+source[exitStart:exitEnd]+`
+	command := exec.CommandContext(ctx, "bash", "-c", "set -euo pipefail\nbackend_observer_pid=''\nstop_backend_observer_after_cleanup() { :; }\nrecord_rollout_diagnostic_phase() { :; }\nstop_rollout_sampler() { :; }\n"+source[stopStart:stopEnd]+source[exitStart:exitEnd]+`
 sleep 30 &
 rollout_observer_pid=$!
 observed_pid=$!

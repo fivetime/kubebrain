@@ -8,8 +8,13 @@ for required in KUBECONFIG KUBECTL_CONTEXT KUBEBRAIN_NAMESPACE DIAGNOSTIC_NAMESP
   [[ -n "${!required:-}" ]] || exit 2
 done
 [[ "$KUBECONFIG" == /* && -f "$KUBECONFIG" ]] || exit 2
+# Explicit diagnostic-only mode permits a running, identity-pinned backend
+# that is not Ready. It never relaxes runtime identity or marks it healthy.
+allow_unready=${DIAGNOSTIC_TIKV_ALLOW_UNREADY:-false}
+[[ "$allow_unready" == true || "$allow_unready" == false ]] || exit 2
 directory="$1/tikv"
 mkdir "$directory" # Never overwrite a prior capture.
+printf '%s\n' "$allow_unready" > "$directory/allow-unready"
 capture() {
   local destination=$1 size
   shift
@@ -36,20 +41,21 @@ kctl() { timeout --foreground --kill-after=1s 20s "${DIAGNOSTIC_KUBECTL_BIN:-kub
 scope() {
   kctl get namespace "$KUBEBRAIN_NAMESPACE" -o json | jq -ce --arg uid "$DIAGNOSTIC_NAMESPACE_UID" '
     select(.metadata.uid==$uid and .metadata.deletionTimestamp==null)|{uid:.metadata.uid}' || return 1
-  kctl get statefulset "$sts" -o json | jq -ce --slurpfile r "$receipt" '
+  kctl get statefulset "$sts" -o json | jq -ce --argjson allow_unready "$allow_unready" --slurpfile r "$receipt" '
     select(.metadata.uid==$r[0].statefulset.uid and .metadata.deletionTimestamp==null and
-      .spec.replicas==($r[0].pods|length) and .status.readyReplicas==.spec.replicas and
+      .spec.replicas==($r[0].pods|length) and ($allow_unready or .status.readyReplicas==.spec.replicas) and
       .status.observedGeneration==.metadata.generation)|
-    {uid:.metadata.uid,generation:.metadata.generation,replicas:.spec.replicas}' || return 1
+    {uid:.metadata.uid,generation:.metadata.generation,replicas:.spec.replicas,
+     readyReplicas:.status.readyReplicas}' || return 1
 }
 identity() {
   local pod=$1 expected=$2
-  kctl get pod "$pod" -o json | jq -ce --argjson e "$expected" --slurpfile r "$receipt" '
+  kctl get pod "$pod" -o json | jq -ce --argjson allow_unready "$allow_unready" --argjson e "$expected" --slurpfile r "$receipt" '
     select(.metadata.uid==$e.uid and .metadata.deletionTimestamp==null and .status.phase=="Running" and
       ([.metadata.ownerReferences[]?|select(.controller==true)]|length)==1 and
       any(.metadata.ownerReferences[]?;.controller==true and .uid==$r[0].statefulset.uid) and
       ([.spec.containers[]|select(.name==$e.container and .image==$e.image)]|length)==1 and
-      ([.status.containerStatuses[]|select(.name==$e.container and .ready==true and
+      ([.status.containerStatuses[]|select(.name==$e.container and ($allow_unready or .ready==true) and
         .containerID==$e.containerID and .imageID==$e.imageID and .restartCount==$e.restartCount and
         .state.running.startedAt==$e.startedAt)]|length)==1)|
     {uid:.metadata.uid,owners:.metadata.ownerReferences,
