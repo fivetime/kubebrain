@@ -117,6 +117,7 @@ type RPCServer struct {
 	// bbolt until its final checksum frame is sent. The production workspace is
 	// sized for one such artifact, so the generic request admission limit is not
 	// a safe concurrency bound for this KubeBrain-specific reconstruction path.
+	snapshotAdmission  snapshotAdmission
 	snapshotActive     atomic.Bool
 	snapshotRejections snapshotRejectionDiagnostics
 	maxDeleteRangeKeys uint32

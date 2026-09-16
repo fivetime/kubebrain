@@ -312,9 +312,11 @@ func TestMaintenanceSnapshotHoldsAdmissionUntilFinalStreamFrameReturns(t *testin
 		t.Fatal("first snapshot did not reach its stream send")
 	}
 
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	err = server.Snapshot(&etcdserverpb.SnapshotRequest{},
-		&maintenanceSnapshotServer{ctx: context.Background()})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCRequestTooManyRequests)
+		&maintenanceSnapshotServer{ctx: waitCtx})
+	cancelWait()
+	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
 	close(first.release)
 	require.NoError(t, <-firstDone)
 	require.GreaterOrEqual(t, len(first.responses), 2)
@@ -567,7 +569,7 @@ func TestMaintenanceSnapshotFirstHistoryChunkDoesNotBlockWrites(t *testing.T) {
 	}))
 }
 
-func TestMaintenanceSnapshotRejectsConcurrentLocalBuildBeforeSecondHistoryScan(t *testing.T) {
+func TestMaintenanceSnapshotWaitsForConcurrentLocalBuildWithoutSecondHistoryScan(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	rec := &recordingMetrics{}
@@ -612,11 +614,10 @@ func TestMaintenanceSnapshotRejectsConcurrentLocalBuildBeforeSecondHistoryScan(t
 	close(wrapped.release)
 	require.NoError(t, <-firstDone)
 
-	require.ErrorIs(t, secondErr, rpctypes.ErrGRPCRequestTooManyRequests)
-	require.Equal(t, codes.ResourceExhausted, status.Code(secondErr))
+	require.Equal(t, codes.DeadlineExceeded, status.Code(secondErr))
 	require.Equal(t, int64(1), wrapped.calls.Load(),
 		"a rejected snapshot must not start another TiKV history scan")
-	require.Equal(t, []interface{}{int64(0), 1},
+	require.Equal(t, []interface{}{int64(0)},
 		recordedCounterValues(rec, snapshotAdmissionRejectedMetric))
 	require.Equal(t, []interface{}{int64(0), int64(1), int64(0)},
 		recordedGaugeValues(rec, snapshotActiveMetric))
@@ -860,7 +861,8 @@ func TestMaintenanceSnapshotFollowerForwardsCompleteStreamToLeader(t *testing.T)
 			return results, nil
 		},
 	}
-	server.snapshotActive.Store(true)
+	require.NoError(t, server.snapshotAdmission.semaphore().Acquire(context.Background(), 1))
+	defer server.snapshotAdmission.release()
 	stream := &maintenanceSnapshotServer{ctx: context.Background()}
 	require.NoError(t, server.Snapshot(&etcdserverpb.SnapshotRequest{}, stream))
 	require.Equal(t, int64(1), shim.probeCalls.Load(),

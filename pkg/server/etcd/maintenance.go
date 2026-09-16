@@ -955,17 +955,44 @@ func (s *RPCServer) Snapshot(request *etcdserverpb.SnapshotRequest, stream etcds
 		}
 		return s.forwardSnapshot(proxyCtx, request, stream)
 	}
-	if !s.snapshotActive.CompareAndSwap(false, true) {
-		s.observeSnapshotRejection(etcdserverpb.Maintenance_Snapshot_FullMethodName, snapshotRejectedCapture)
-		emitSnapshotAdmissionRejected(s.metricCli)
-		emitClientAdmissionRejection(s.metricCli, clientAdmissionGuardConcurrency)
-		return rpctypes.ErrGRPCRequestTooManyRequests
+	waited, err := s.snapshotAdmission.acquire(ctx)
+	if err != nil {
+		return status.FromContextError(err).Err()
 	}
+	s.snapshotActive.Store(true)
 	emitSnapshotActive(s.metricCli, true)
 	defer func() {
 		s.snapshotActive.Store(false)
 		emitSnapshotActive(s.metricCli, false)
+		s.snapshotAdmission.release()
 	}()
+	if waited {
+		if protected {
+			// No history iterator or per-capture protection exists while queued.
+			// Re-select the member's current protected checkpoint instead of
+			// starting a new capture from an expired/rotated admission checkpoint.
+			checkpoint, err = s.backend.GetSerializableCheckpoint()
+			if err != nil {
+				return status.Error(codes.Unavailable, err.Error())
+			}
+			ctx = backend.WithSerializableCheckpoint(ctx, checkpoint)
+			stream = &contextMaintenanceSnapshotServer{Maintenance_SnapshotServer: stream, ctx: ctx}
+		}
+		// A queued call must not export the entire keyspace using permissions
+		// checked before a potentially long wait (including an AuthEnable).
+		caller, err = s.authCallerFromContext(ctx)
+		if err != nil {
+			if errors.Is(err, errInvalidAuthMetadata) {
+				return status.Error(codes.FailedPrecondition, fmt.Sprintf("%s: %v", etcdsnapshot.ErrInvalidSnapshotMetadata, err))
+			}
+			return err
+		}
+		if caller != nil {
+			if err = caller.adminError(); err != nil {
+				return err
+			}
+		}
+	}
 	err = s.sendSnapshot(stream)
 	if errors.Is(err, errSnapshotHistoryStreamProtocol) {
 		emitSnapshotFailure(s.metricCli, snapshotFailureProtocol)

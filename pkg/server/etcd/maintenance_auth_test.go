@@ -3,6 +3,7 @@ package etcd
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -121,14 +122,16 @@ func TestMaintenanceAuthorizationMatchesEtcd(t *testing.T) {
 	_, err = server.Defragment(rootCtx, &etcdserverpb.DefragmentRequest{})
 	require.NoError(t, err)
 
-	server.snapshotActive.Store(true)
+	require.NoError(t, server.snapshotAdmission.semaphore().Acquire(context.Background(), 1))
 	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: plain})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrUserEmpty, codes.Unknown, "etcdserver: user name is empty")
 	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: aliceCtx})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")
-	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: rootCtx})
-	require.ErrorIs(t, err, rpctypes.ErrGRPCRequestTooManyRequests)
-	server.snapshotActive.Store(false)
+	waitCtx, cancelWait := context.WithTimeout(rootCtx, 50*time.Millisecond)
+	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: waitCtx})
+	cancelWait()
+	require.Equal(t, codes.DeadlineExceeded, status.Code(err))
+	server.snapshotAdmission.release()
 
 	err = server.Snapshot(&etcdserverpb.SnapshotRequest{}, &maintenanceSnapshotServer{ctx: aliceCtx})
 	requireMaintenanceAuthError(t, err, rpctypes.ErrPermissionDenied, codes.Unknown, "etcdserver: permission denied")

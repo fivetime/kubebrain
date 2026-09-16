@@ -39,6 +39,66 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/etcdsnapshot"
 )
 
+func TestClientSnapshotQueuedDeadlineAndRecovery(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	wrapped := &concurrentSnapshotAdmissionBackend{
+		BackendShim: server.backend, started: make(chan struct{}, 2), release: make(chan struct{}),
+	}
+	server.backend = wrapped
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterMaintenanceServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(grpcServer.Stop)
+	client, err := clientv3.New(clientv3.Config{
+		Endpoints: []string{"bufnet"}, DialTimeout: time.Second,
+		DialOptions: []grpc.DialOption{
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) { return listener.Dial() }),
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, client.Close()) })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	read := func(ctx context.Context) ([]byte, error) {
+		reader, err := client.Snapshot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+		return io.ReadAll(reader)
+	}
+	firstDone := make(chan error, 1)
+	var first []byte
+	go func() {
+		var err error
+		first, err = read(ctx)
+		firstDone <- err
+	}()
+	select {
+	case <-wrapped.started:
+	case <-ctx.Done():
+		t.Fatal("first client Snapshot did not start capture")
+	}
+	waitCtx, cancelWait := context.WithTimeout(ctx, 100*time.Millisecond)
+	_, secondErr := read(waitCtx)
+	cancelWait()
+	close(wrapped.release)
+	require.NoError(t, <-firstDone)
+	require.True(t, errors.Is(secondErr, context.DeadlineExceeded) || status.Code(secondErr) == codes.DeadlineExceeded, "%v", secondErr)
+	require.Equal(t, int64(1), wrapped.calls.Load())
+	next, err := read(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), wrapped.calls.Load())
+	for _, artifact := range [][]byte{first, next} {
+		require.Greater(t, len(artifact), sha256.Size)
+		digest := sha256.Sum256(artifact[:len(artifact)-sha256.Size])
+		require.Equal(t, digest[:], artifact[len(artifact)-sha256.Size:])
+	}
+}
+
 func TestClientSnapshotAPIsReturnHashProtectedEtcdBackend(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
