@@ -174,7 +174,7 @@ func TestPutRechecksAuthEnabledAfterInitialAuthInfoRead(t *testing.T) {
 	}{
 		{"missing credentials", context.Background(), rpctypes.ErrUserEmpty, false, 1},
 		{"empty token ignored before auth enable", metadata.NewIncomingContext(context.Background(), metadata.Pairs(rpctypes.TokenFieldNameGRPC, "")), rpctypes.ErrUserEmpty, false, 1},
-		{"certificate captured before auth enable", verifiedTLSContext(context.Background(), "root"), rpctypes.ErrAuthOldRevision, true, 2},
+		{"certificate captured before auth enable", verifiedTLSContext(context.Background(), "root"), rpctypes.ErrAuthOldRevision, true, 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, closeFn := newTestRPCServer(t)
@@ -205,4 +205,67 @@ func TestPutRechecksAuthEnabledAfterInitialAuthInfoRead(t *testing.T) {
 			require.Empty(t, stored.Kvs, "a cached disabled-auth result must not admit this write")
 		})
 	}
+}
+
+func TestDisabledAuthCertificateAdmissionUsesOneSnapshot(t *testing.T) {
+	for _, forwarded := range []bool{false, true} {
+		t.Run(map[bool]string{false: "direct", true: "forwarded"}[forwarded], func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			server.SetClientCertAuth(true)
+			ctx := verifiedTLSContext(context.Background(), "root")
+			if forwarded {
+				ctx = context.WithValue(verifiedTLSContext(context.Background(), "peer-member"), peerRequestContextKey{}, true)
+				ctx = metadata.NewIncomingContext(ctx, metadata.Pairs(forwardedClientCertificateUsernameMetadataKey, "root"))
+			}
+			// Disabled auth still ignores invalid tokens, but apply admission must
+			// retain the verified certificate identity for a later enable.
+			md, _ := metadata.FromIncomingContext(ctx)
+			md = md.Copy()
+			md.Set(rpctypes.TokenFieldNameGRPC, "invalid-ignored-token")
+			ctx = metadata.NewIncomingContext(ctx, md)
+			snapshot, err := server.tokens.snapshots.current(ctx)
+			require.NoError(t, err)
+			require.False(t, snapshot.Config.Enabled)
+			shim := &authConfigAfterReadShim{BackendShim: server.backend, afterRead: func() {}}
+			server.tokens.snapshots.repo.backend = shim
+			caller, err := server.prepareEtcdApplyAuthInfo(ctx)
+			require.NoError(t, err)
+			require.NotNil(t, caller)
+			require.Equal(t, "root", caller.username)
+			require.True(t, caller.certificate)
+			require.Equal(t, snapshot.Config.Revision, caller.revision)
+			require.EqualValues(t, 1, shim.reads.Load(), "one fresh admission read, not a TLS fallback reread")
+			_, applied, err := server.authCallerForEtcdApply(ctx, caller)
+			require.NoError(t, err)
+			require.Nil(t, applied)
+			require.EqualValues(t, 2, shim.reads.Load(), "apply must still fetch fresh state")
+		})
+	}
+}
+
+func TestDisabledAuthCertificatePutRetainsCommitFence(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	server.SetClientCertAuth(true)
+	ctx := verifiedTLSContext(context.Background(), "root")
+	snapshot, err := server.tokens.snapshots.current(ctx)
+	require.NoError(t, err)
+	original := server.backend
+	shim := &authConfigAfterReadShim{BackendShim: original, afterReadAt: 2}
+	shim.afterRead = func() {
+		config := snapshot.Config
+		config.Enabled = true
+		config.Revision++
+		require.NoError(t, original.InternalPut(context.Background(), authConfigKey, encodeAuthConfig(config)))
+	}
+	server.tokens.snapshots.repo.backend = shim
+	key := []byte("/certificate-disabled-auth-commit-fence")
+	response, err := server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("must-not-commit")})
+	require.True(t, shim.fired.Load())
+	require.ErrorIs(t, err, rpctypes.ErrAuthOldRevision)
+	require.Nil(t, response)
+	stored, err := original.Get(context.Background(), &etcdserverpb.RangeRequest{Key: key})
+	require.NoError(t, err)
+	require.Empty(t, stored.Kvs)
 }

@@ -39,6 +39,10 @@ func (s *RPCServer) authCallerFromContext(ctx context.Context) (*authCaller, err
 	if err != nil {
 		return nil, err
 	}
+	return s.authCallerFromSnapshot(ctx, snapshot)
+}
+
+func (s *RPCServer) authCallerFromSnapshot(ctx context.Context, snapshot *authSnapshot) (*authCaller, error) {
 	if !snapshot.Config.Enabled {
 		return nil, nil
 	}
@@ -116,16 +120,19 @@ func (s *RPCServer) authCallerFromCachedContext(ctx context.Context) (*authCalle
 // credentials fail before an InternalRaftRequest is proposed and are not apply
 // observations.
 func (s *RPCServer) prepareEtcdApplyAuthInfo(ctx context.Context) (*authCaller, error) {
-	caller, err := s.authCallerFromContext(ctx)
+	snapshot, err := s.tokens.snapshots.current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	caller, err := s.authCallerFromSnapshot(ctx, snapshot)
 	if err == nil && caller == nil && s.clientCertAuth {
 		// EtcdServer.AuthInfoFromCtx falls back to TLS even when the token
 		// provider returned no identity because auth was disabled. Preserve
 		// that certificate identity/revision if auth is enabled before apply.
-		var snapshot *authSnapshot
-		snapshot, err = s.tokens.snapshots.current(ctx)
-		if err == nil {
-			caller, err = s.authCallerFromTLS(ctx, snapshot)
-		}
+		// Use this admission's observed revision, not another storage read.
+		// authCallerForEtcdApply still refreshes the auth state independently,
+		// and its write guard fences concurrent enable/revision changes at commit.
+		caller, err = s.authCallerFromTLS(ctx, snapshot)
 	}
 	if errors.Is(err, rpctypes.ErrUserEmpty) {
 		return nil, nil
