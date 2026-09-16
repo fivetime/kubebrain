@@ -39,6 +39,24 @@
 
 SDK Put 调用 6000 次、最终返回错误 0；滚动期间存在 SDK 内部 `Unavailable` 重试，不能声称没有网络或连接重试。
 
+## 稳定阶段耗时基线
+
+对已归档的 8 组完整 stable 样本复核：采集退出码均为 0，阶段前后相同，三个成员的 Pod/容器身份在每次采集前后及整个选定窗口内保持一致。以最早与最晚样本中同一指标的累计 sum/count 差分计算均值，计数未回退。处理 Put 的 `kubebrain-1` 窗口为 20:26:54.118–20:41:32.681 UTC，共 5247 个服务端 Put 观测。
+
+| 指标 | 观测数 | 窗口均值 |
+| --- | --- | --- |
+| 服务端 Put handling | 5247 | 57.777ms |
+| 认证准入 | 5247 | 2.312ms |
+| batch commit | 5247 | 37.379ms |
+| prewrite | 5247 | 22.539ms |
+| primary commit | 5247 | 13.825ms |
+| 最慢成功 prewrite RPC 的 commit-log / persist-log / raft-sync | 4525 | 19.393 / 12.307 / 11.263ms |
+| 带明细 primary RPC 的 commit-log / persist-log / raft-sync | 3750 | 10.711 / 9.027 / 6.376ms |
+
+这些是不同统计群体的窗口均值，不是 p99、最大值或同一请求的完整关键路径；存在嵌套/重叠，不能相加。RPC 明细数量少于 Put 数量，不能将其外推为每个请求都经历相同磁盘等待。该基线可用于后续本地盘测试的同口径记录，但不是受控存储对照，不能证明 Ceph 根因或预测 TopoLVM 性能。
+
+只读分析脚本和输出位于本轮证据目录的 `analyze-stable.sh`、`stable-latency.txt`、`stable-latency.exit`（退出 0）。此前 async 实验的时间窗口、样本数及运行源码不同，不可将两个均值直接解释成协议切换的因果收益。
+
 ## 恢复与清理
 
 原镜像恢复为 `ghcr.io/fivetime/kubebrain@sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`，完整 spec 与实验前相同。独立检查确认 generation/observedGeneration 均为 102、Ready/updated 均为 3、revision 为 `kubebrain-855b5bfb88`，三个实际运行 imageID 与原成员一致。
