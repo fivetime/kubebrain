@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +46,79 @@ import (
 type rangeReceiveStep struct {
 	response *etcdserverpb.RangeStreamResponse
 	err      error
+}
+
+func newTestRestoredSnapshotConfig(t *testing.T, root string, count int, tls restoredSnapshotTLSConfig, auth *restoredSnapshotAuthExpectation) (restoredSnapshotConfig, error) {
+	t.Helper()
+	cfg, err := newRestoredSnapshotConfig(root, count, tls, auth)
+	t.Cleanup(func() { require.NoError(t, cfg.closeReservations()) })
+	return cfg, err
+}
+
+// These URLs are used only by response-validation tests, never to start etcd.
+func allocateRestoredSnapshotURLs(tls bool) (url.URL, url.URL, error) {
+	client, peer, reservation, err := reserveRestoredSnapshotURLs(tls)
+	return client, peer, errors.Join(err, reservation.close())
+}
+
+func TestRestoredSnapshotPortsRemainReservedUntilMemberStarts(t *testing.T) {
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	require.NoError(t, err)
+	for _, member := range cfg.members {
+		for _, endpoint := range []url.URL{member.clientURL, member.peerURL} {
+			listener, err := net.Listen("tcp4", endpoint.Host)
+			if listener != nil {
+				listener.Close()
+			}
+			require.Error(t, err, "port must remain reserved: %s", endpoint.Host)
+		}
+	}
+	require.NoError(t, cfg.closeReservations())
+	require.NoError(t, cfg.closeReservations(), "cleanup must be idempotent")
+	for _, member := range cfg.members {
+		for _, endpoint := range []url.URL{member.clientURL, member.peerURL} {
+			listener, err := net.Listen("tcp4", endpoint.Host)
+			require.NoError(t, err)
+			require.NoError(t, listener.Close())
+		}
+	}
+}
+
+func TestRestoredSnapshotFailedStartPreservesOtherMemberReservations(t *testing.T) {
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	require.NoError(t, err)
+	member := cfg.members[0]
+	// A regular file cannot serve as the member data directory.
+	require.NoError(t, os.WriteFile(member.dataDir, []byte("invalid directory"), 0o600))
+	server, err := startRestoredSnapshotMember(cfg, member)
+	if server != nil {
+		server.Close()
+	}
+	require.Error(t, err)
+	require.Empty(t, member.reservation.listeners)
+	for _, other := range cfg.members[1:] {
+		for _, endpoint := range []url.URL{other.clientURL, other.peerURL} {
+			listener, err := net.Listen("tcp4", endpoint.Host)
+			if listener != nil {
+				listener.Close()
+			}
+			require.Error(t, err, "starting one member must not release others")
+		}
+	}
+	require.NoError(t, cfg.closeReservations())
+	for _, member := range cfg.members {
+		assertRestoredPortAvailable(t, member.clientURL.String())
+		assertRestoredPortAvailable(t, member.peerURL.String())
+	}
+}
+
+func assertRestoredPortAvailable(t *testing.T, endpoint string) {
+	t.Helper()
+	u, err := url.Parse(endpoint)
+	require.NoError(t, err)
+	listener, err := net.Listen("tcp4", u.Host)
+	require.NoError(t, err, "reservation must be released: %s", endpoint)
+	require.NoError(t, listener.Close())
 }
 
 type fakeRangeReceiver struct {
@@ -709,6 +784,9 @@ func TestValidateSnapshotArtifactRejectsRestoreFailureAndRemovesPartialOutput(t 
 
 	err := validateSnapshotArtifactWithVerifier(t.Context(), manager, artifactPath, etcdsnapshot.StorageVersion, dir, nil, restoredSnapshotTLSConfig{}, verifyRestoredSnapshot)
 	require.ErrorContains(t, err, "official etcdutl failed to restore Snapshot artifact")
+	for _, peer := range manager.restoreConfig.PeerURLs {
+		assertRestoredPortAvailable(t, peer)
+	}
 	require.Equal(t, artifactPath, manager.restoreConfig.SnapshotPath)
 	require.False(t, manager.restoreConfig.SkipHashCheck)
 	require.NotEmpty(t, manager.restoreConfig.OutputDataDir)
@@ -735,6 +813,9 @@ func TestValidateSnapshotArtifactRejectsRestoredServerFailureAndRemovesOutput(t 
 		})
 	require.ErrorContains(t, err, "official restored etcd validation failed")
 	require.True(t, verified)
+	for _, peer := range manager.restoreConfig.PeerURLs {
+		assertRestoredPortAvailable(t, peer)
+	}
 	require.NoDirExists(t, filepath.Dir(manager.restoreConfig.OutputDataDir), "failed server validation output must always be removed")
 	require.FileExists(t, artifactPath, "the caller owns the source artifact lifecycle")
 }
@@ -753,11 +834,22 @@ func TestValidateSnapshotArtifactRestoresThreeMemberClusterContract(t *testing.T
 			require.Equal(t, int64(7), revision)
 			for _, member := range cfg.members {
 				require.FileExists(t, filepath.Join(member.dataDir, "member", "snap", "db"))
+				for _, endpoint := range []url.URL{member.clientURL, member.peerURL} {
+					listener, err := net.Listen("tcp4", endpoint.Host)
+					if listener != nil {
+						listener.Close()
+					}
+					require.Error(t, err, "ports must remain reserved through restore")
+				}
 			}
 			return nil
 		})
 	require.NoError(t, err)
 	require.Len(t, restoredCfg.members, 3)
+	for _, member := range restoredCfg.members {
+		assertRestoredPortAvailable(t, member.clientURL.String())
+		assertRestoredPortAvailable(t, member.peerURL.String())
+	}
 	require.Len(t, manager.restoreConfigs, 3)
 	names := make(map[string]struct{}, 3)
 	dataDirs := make(map[string]struct{}, 3)
@@ -795,6 +887,12 @@ func TestValidateSnapshotArtifactRemovesAllMembersAfterLaterRestoreFailure(t *te
 			return nil
 		})
 	require.ErrorContains(t, err, "injected member restore failure")
+	// InitialCluster includes even the third member, whose restore never began.
+	for _, entry := range strings.Split(manager.restoreConfigs[0].InitialCluster, ",") {
+		_, peer, ok := strings.Cut(entry, "=")
+		require.True(t, ok)
+		assertRestoredPortAvailable(t, peer)
+	}
 	require.Len(t, manager.restoreConfigs, 2)
 	require.False(t, verified)
 	require.NoDirExists(t, filepath.Dir(manager.restoreConfigs[0].OutputDataDir), "partial multi-member restore must be removed")
@@ -860,7 +958,7 @@ func TestRestoredSnapshotQuotaBytes(t *testing.T) {
 		})
 	}
 
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 1, restoredSnapshotTLSConfig{}, nil)
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 1, restoredSnapshotTLSConfig{}, nil)
 	require.NoError(t, err)
 	cfg.quotaBackendBytes = 3 * 1024 * 1024 * 1024
 	embedCfg := newRestoredSnapshotEmbedConfig(cfg, cfg.members[0], cfg.initialCluster)
@@ -868,7 +966,7 @@ func TestRestoredSnapshotQuotaBytes(t *testing.T) {
 }
 
 func TestRestoredSnapshotAuthUsesJWTProvider(t *testing.T) {
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, &restoredSnapshotAuthExpectation{})
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, restoredSnapshotTLSConfig{}, &restoredSnapshotAuthExpectation{})
 	require.NoError(t, err)
 	require.Contains(t, cfg.authToken, "jwt,")
 	require.Contains(t, cfg.authToken, "sign-method=HS256")
@@ -904,7 +1002,7 @@ func TestRestoredStatusRevisionRequirement(t *testing.T) {
 }
 
 func TestValidateRestoredMemberAddResponseRejectsIdentityDrift(t *testing.T) {
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
 	require.NoError(t, err)
 	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
 	require.NoError(t, err)
@@ -969,7 +1067,7 @@ func TestValidateRestoredMemberAddResponseRejectsIdentityDrift(t *testing.T) {
 }
 
 func TestValidateRestoredMemberUpdateResponseRejectsIdentityDrift(t *testing.T) {
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
 	require.NoError(t, err)
 	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33}}
 	makeResponse := func() *clientv3.MemberUpdateResponse {
@@ -1015,7 +1113,7 @@ func TestValidateRestoredMemberUpdateResponseRejectsIdentityDrift(t *testing.T) 
 }
 
 func TestValidateRestoredMemberAddLearnerResponseRejectsIdentityDrift(t *testing.T) {
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
 	require.NoError(t, err)
 	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
 	require.NoError(t, err)
@@ -1087,7 +1185,7 @@ func TestValidateRestoredMemberAddLearnerResponseRejectsIdentityDrift(t *testing
 }
 
 func TestValidateRestoredLearnerStartedMembershipRejectsIdentityDrift(t *testing.T) {
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
 	require.NoError(t, err)
 	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
 	require.NoError(t, err)
@@ -1139,7 +1237,7 @@ func TestValidateRestoredLearnerStartedMembershipRejectsIdentityDrift(t *testing
 }
 
 func TestValidateRestoredMemberPromoteResponseRejectsIdentityDrift(t *testing.T) {
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
 	require.NoError(t, err)
 	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
 	require.NoError(t, err)
@@ -1200,7 +1298,7 @@ func TestValidateRestoredMemberPromoteResponseRejectsIdentityDrift(t *testing.T)
 }
 
 func TestValidateRestoredMemberRemoveResponseRejectsIdentityDrift(t *testing.T) {
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
 	require.NoError(t, err)
 	topology := restoredClusterTopology{clusterID: 7, leaderID: 11, memberIDs: []uint64{11, 22, 33}}
 	const removedMemberID = uint64(44)
@@ -1344,9 +1442,9 @@ func TestRestoredMemberLeaderIndexRejectsIdentityDriftAndLag(t *testing.T) {
 }
 
 func TestRestoredSnapshotConfigRejectsInvalidClusterIdentity(t *testing.T) {
-	_, err := newRestoredSnapshotConfig(t.TempDir(), 2, restoredSnapshotTLSConfig{}, nil)
+	_, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 2, restoredSnapshotTLSConfig{}, nil)
 	require.ErrorContains(t, err, "one or at least three")
-	base, err := newRestoredSnapshotConfig(t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
+	base, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, restoredSnapshotTLSConfig{}, nil)
 	require.NoError(t, err)
 	for name, mutate := range map[string]func(*restoredSnapshotConfig){
 		"missing members": func(cfg *restoredSnapshotConfig) { cfg.members = nil },

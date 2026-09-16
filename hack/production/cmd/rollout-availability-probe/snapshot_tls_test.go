@@ -116,7 +116,7 @@ func TestRestoredSnapshotClientOnlyTLSWithDefaultPasswordCost(t *testing.T) {
 
 func TestRestoredSnapshotDoesNotUseSourceClientAsServer(t *testing.T) {
 	source := newClientOnlySnapshotTLSFixture(t)
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 3, source, nil)
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 3, source, nil)
 	require.NoError(t, err)
 	server := newRestoredSnapshotEmbedConfig(cfg, cfg.members[0], cfg.initialCluster)
 	require.NotEqual(t, source.certFile, server.ClientTLSInfo.CertFile,
@@ -190,7 +190,7 @@ func TestConsumeAndValidateSnapshotWithClientOnlyTLS(t *testing.T) {
 
 func TestRestoredSnapshotTLSRejectsMissingLocalIdentityAndInvalidSourceCA(t *testing.T) {
 	source := newClientOnlySnapshotTLSFixture(t)
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 1, source, nil)
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 1, source, nil)
 	require.NoError(t, err)
 	for name, mutate := range map[string]func(*restoredSnapshotConfig){
 		"missing identity":               func(c *restoredSnapshotConfig) { c.localTLS = nil },
@@ -215,7 +215,7 @@ func TestRestoredSnapshotTLSRejectsMissingLocalIdentityAndInvalidSourceCA(t *tes
 		if !missing {
 			require.NoError(t, os.WriteFile(source.caFile, []byte("not a certificate"), 0600))
 		}
-		_, err := newRestoredSnapshotConfig(dir, 1, source, nil)
+		_, err := newTestRestoredSnapshotConfig(t, dir, 1, source, nil)
 		require.Error(t, err)
 		entries, err := os.ReadDir(dir)
 		require.NoError(t, err)
@@ -225,7 +225,7 @@ func TestRestoredSnapshotTLSRejectsMissingLocalIdentityAndInvalidSourceCA(t *tes
 
 func TestRestoredSnapshotTLSRejectsInvalidPeers(t *testing.T) {
 	source := newClientOnlySnapshotTLSFixture(t)
-	cfg, err := newRestoredSnapshotConfig(t.TempDir(), 1, source, nil)
+	cfg, err := newTestRestoredSnapshotConfig(t, t.TempDir(), 1, source, nil)
 	require.NoError(t, err)
 	serverTLS, err := newRestoredSnapshotEmbedConfig(cfg, cfg.members[0], cfg.initialCluster).ClientTLSInfo.ServerConfig()
 	require.NoError(t, err)

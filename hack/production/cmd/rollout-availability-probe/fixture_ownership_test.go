@@ -34,8 +34,9 @@ func startFixtureOwnershipEtcd(t *testing.T) (*clientv3.Client, context.Context)
 	started := time.Now()
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
-	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
+	clientURL, peerURL, reservation, err := reserveRestoredSnapshotURLs(false)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, reservation.close()) })
 	cfg := embed.NewConfig()
 	// This fixture tests ownership recovery and bounded cleanup, not password
 	// hashing cost. Keep real UserAdd/auth state without making its setup depend
@@ -50,6 +51,7 @@ func startFixtureOwnershipEtcd(t *testing.T) (*clientv3.Client, context.Context)
 	cfg.AdvertisePeerUrls = []url.URL{peerURL}
 	cfg.InitialCluster = cfg.Name + "=" + peerURL.String()
 	cfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
+	require.NoError(t, reservation.close())
 	server, err := embed.StartEtcd(cfg)
 	require.NoError(t, err)
 	t.Cleanup(server.Close)

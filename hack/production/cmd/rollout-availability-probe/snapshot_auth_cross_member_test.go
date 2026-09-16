@@ -97,6 +97,7 @@ func testRestoredAuthMemberClients(t *testing.T, officialRefresh, delayedApply b
 				indexes[index] = &restoredAuthRaftIndexCore{}
 				embedConfig.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.New(indexes[index]))
 			}
+			require.NoError(t, member.reservation.close())
 			servers[index], err = embed.StartEtcd(embedConfig)
 			require.NoError(t, err)
 		}

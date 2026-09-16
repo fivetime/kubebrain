@@ -56,8 +56,9 @@ func TestRestoredAuthWatchEvidence(t *testing.T) {
 func TestSnapshotAuthFixtureInstallCleanupAndCollisionOwnership(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
-	clientURL, peerURL, err := allocateRestoredSnapshotURLs(false)
+	clientURL, peerURL, reservation, err := reserveRestoredSnapshotURLs(false)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, reservation.close()) })
 	cfg := embed.NewConfig()
 	cfg.Name = "snapshot-auth-source"
 	cfg.Dir = t.TempDir()
@@ -71,6 +72,7 @@ func TestSnapshotAuthFixtureInstallCleanupAndCollisionOwnership(t *testing.T) {
 	cfg.AdvertisePeerUrls = []url.URL{peerURL}
 	cfg.InitialCluster = cfg.Name + "=" + peerURL.String()
 	cfg.ZapLoggerBuilder = embed.NewZapLoggerBuilder(zap.NewNop())
+	require.NoError(t, reservation.close())
 	server, err := embed.StartEtcd(cfg)
 	require.NoError(t, err)
 	t.Cleanup(server.Close)

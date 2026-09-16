@@ -312,10 +312,45 @@ type restoredSnapshotConfig struct {
 }
 
 type restoredSnapshotMemberConfig struct {
-	name      string
-	dataDir   string
-	clientURL url.URL
-	peerURL   url.URL
+	name        string
+	dataDir     string
+	clientURL   url.URL
+	peerURL     url.URL
+	reservation *restoredSnapshotReservation
+}
+
+// Keep both ports bound through restore and member registration. Releasing
+// them at allocation time allows later allocations or outbound connections
+// from an earlier member to consume a not-yet-started member's port.
+type restoredSnapshotReservation struct {
+	listeners []net.Listener
+}
+
+func (r *restoredSnapshotReservation) close() (err error) {
+	if r == nil {
+		return nil
+	}
+	for _, listener := range r.listeners {
+		err = errors.Join(err, listener.Close())
+	}
+	r.listeners = nil
+	return err
+}
+
+func (cfg restoredSnapshotConfig) closeReservations() (err error) {
+	for _, member := range cfg.members {
+		err = errors.Join(err, member.reservation.close())
+	}
+	return err
+}
+
+func startRestoredSnapshotMember(cfg restoredSnapshotConfig, member restoredSnapshotMemberConfig) (*embed.Etcd, error) {
+	// embed accepts URLs, not existing listeners. Keep the unavoidable bind
+	// handoff immediately adjacent to StartEtcd; never retry past a bind error.
+	if err := member.reservation.close(); err != nil {
+		return nil, fmt.Errorf("release restored Snapshot ports: %w", err)
+	}
+	return embed.StartEtcd(newRestoredSnapshotEmbedConfig(cfg, member, cfg.initialCluster))
 }
 
 func (cfg restoredSnapshotConfig) validate() error {
@@ -523,34 +558,32 @@ func consumeSnapshotTo(stream snapshotReceiver, artifact io.Writer) (bool, strin
 	}
 }
 
-func allocateRestoredSnapshotURLs(clientTLS bool) (clientURL, peerURL url.URL, retErr error) {
-	listeners := make([]net.Listener, 0, 2)
+func reserveRestoredSnapshotURLs(clientTLS bool) (clientURL, peerURL url.URL, reservation *restoredSnapshotReservation, retErr error) {
+	reservation = &restoredSnapshotReservation{}
 	defer func() {
-		for _, listener := range listeners {
-			if closeErr := listener.Close(); closeErr != nil {
-				retErr = errors.Join(retErr, fmt.Errorf("release restored Snapshot listener reservation: %w", closeErr))
-			}
+		if retErr != nil {
+			retErr = errors.Join(retErr, reservation.close())
 		}
 	}()
 	for range 2 {
 		listener, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
-			return url.URL{}, url.URL{}, fmt.Errorf("reserve restored Snapshot listener: %w", err)
+			return url.URL{}, url.URL{}, reservation, fmt.Errorf("reserve restored Snapshot listener: %w", err)
 		}
-		listeners = append(listeners, listener)
+		reservation.listeners = append(reservation.listeners, listener)
 	}
 	clientScheme := "http"
 	if clientTLS {
 		clientScheme = "https"
 	}
-	clientURL = url.URL{Scheme: clientScheme, Host: listeners[0].Addr().String()}
-	peerURL = url.URL{Scheme: "http", Host: listeners[1].Addr().String()}
-	return clientURL, peerURL, nil
+	clientURL = url.URL{Scheme: clientScheme, Host: reservation.listeners[0].Addr().String()}
+	peerURL = url.URL{Scheme: "http", Host: reservation.listeners[1].Addr().String()}
+	return clientURL, peerURL, reservation, nil
 }
 
 func newRestoredSnapshotConfig(restoreRoot string, memberCount int, tlsCfg restoredSnapshotTLSConfig,
 	auth *restoredSnapshotAuthExpectation,
-) (restoredSnapshotConfig, error) {
+) (_ restoredSnapshotConfig, retErr error) {
 	if memberCount != 1 && memberCount < 3 {
 		return restoredSnapshotConfig{}, fmt.Errorf("restored Snapshot member count must be one or at least three: %d", memberCount)
 	}
@@ -559,9 +592,14 @@ func newRestoredSnapshotConfig(restoreRoot string, memberCount int, tlsCfg resto
 	}
 	const restoreName = "kubebrain-rollout-restore"
 	members := make([]restoredSnapshotMemberConfig, memberCount)
+	defer func() {
+		if retErr != nil {
+			retErr = errors.Join(retErr, (restoredSnapshotConfig{members: members}).closeReservations())
+		}
+	}()
 	initialCluster := make([]string, memberCount)
 	for index := range members {
-		clientURL, peerURL, err := allocateRestoredSnapshotURLs(tlsCfg.enabled())
+		clientURL, peerURL, reservation, err := reserveRestoredSnapshotURLs(tlsCfg.enabled())
 		if err != nil {
 			return restoredSnapshotConfig{}, err
 		}
@@ -571,7 +609,7 @@ func newRestoredSnapshotConfig(restoreRoot string, memberCount int, tlsCfg resto
 		}
 		members[index] = restoredSnapshotMemberConfig{
 			name: name, dataDir: filepath.Join(restoreRoot, fmt.Sprintf("member-%d", index)),
-			clientURL: clientURL, peerURL: peerURL,
+			clientURL: clientURL, peerURL: peerURL, reservation: reservation,
 		}
 		initialCluster[index] = name + "=" + peerURL.String()
 	}
@@ -1507,13 +1545,14 @@ func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *cli
 			len(cfg.members), len(topology.memberIDs), len(directClients))
 	}
 
-	clientURL, peerURL, err := allocateRestoredSnapshotURLs(cfg.tls.enabled())
+	clientURL, peerURL, reservation, err := reserveRestoredSnapshotURLs(cfg.tls.enabled())
 	if err != nil {
 		return nil, 0, err
 	}
+	defer func() { retErr = errors.Join(retErr, reservation.close()) }()
 	learner := restoredSnapshotMemberConfig{
 		name: "kubebrain-rollout-restore-learner", dataDir: filepath.Join(filepath.Dir(cfg.members[0].dataDir), "member-learner"),
-		clientURL: clientURL, peerURL: peerURL,
+		clientURL: clientURL, peerURL: peerURL, reservation: reservation,
 	}
 	addResponse, err := addRestoredSnapshotLearner(ctx, adminClient, learner.peerURL.String())
 	if err != nil {
@@ -1548,7 +1587,7 @@ func verifyRestoredClusterLearnerLifecycle(ctx context.Context, adminClient *cli
 	if err := expandedCfg.validate(); err != nil {
 		return nil, 0, fmt.Errorf("validate learner-expanded restored Snapshot cluster: %w", err)
 	}
-	learnerServer, err := embed.StartEtcd(newRestoredSnapshotEmbedConfig(expandedCfg, learner, expandedCfg.initialCluster))
+	learnerServer, err := startRestoredSnapshotMember(expandedCfg, learner)
 	if err != nil {
 		return nil, 0, fmt.Errorf("start officially restored etcd learner %q: %w", learner.name, err)
 	}
@@ -1764,13 +1803,14 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 	if err := verifyRestoredMemberPromoteRejections(ctx, directClients[leaderIndex], topology); err != nil {
 		return err
 	}
-	clientURL, peerURL, err := allocateRestoredSnapshotURLs(cfg.tls.enabled())
+	clientURL, peerURL, reservation, err := reserveRestoredSnapshotURLs(cfg.tls.enabled())
 	if err != nil {
 		return err
 	}
+	defer func() { retErr = errors.Join(retErr, reservation.close()) }()
 	added := restoredSnapshotMemberConfig{
 		name: "kubebrain-rollout-restore-added", dataDir: filepath.Join(filepath.Dir(cfg.members[0].dataDir), "member-added"),
-		clientURL: clientURL, peerURL: peerURL,
+		clientURL: clientURL, peerURL: peerURL, reservation: reservation,
 	}
 	memberAddResponse, err := addRestoredSnapshotMember(ctx, adminClient, added.peerURL.String())
 	if err != nil {
@@ -1790,7 +1830,7 @@ func verifyRestoredClusterMemberReconfiguration(ctx context.Context, adminClient
 	if err := expandedCfg.validate(); err != nil {
 		return fmt.Errorf("validate expanded restored Snapshot cluster: %w", err)
 	}
-	addedServer, err := embed.StartEtcd(newRestoredSnapshotEmbedConfig(expandedCfg, added, expandedCfg.initialCluster))
+	addedServer, err := startRestoredSnapshotMember(expandedCfg, added)
 	if err != nil {
 		return fmt.Errorf("start added officially restored etcd member %q: %w", added.name, err)
 	}
@@ -2127,7 +2167,7 @@ func verifyRestoredSnapshot(ctx context.Context, cfg restoredSnapshotConfig, exp
 		}
 	}()
 	for index, member := range cfg.members {
-		restored[index], err = embed.StartEtcd(newRestoredSnapshotEmbedConfig(cfg, member, cfg.initialCluster))
+		restored[index], err = startRestoredSnapshotMember(cfg, member)
 		if err != nil {
 			return fmt.Errorf("start officially restored etcd member %q: %w", member.name, err)
 		}
@@ -2551,6 +2591,7 @@ func validateSnapshotArtifactWithClusterAuthVerifier(ctx context.Context, manage
 	if err != nil {
 		return err
 	}
+	defer func() { retErr = errors.Join(retErr, restoredCfg.closeReservations()) }()
 	for _, member := range restoredCfg.members {
 		if err := manager.Restore(etcdutlsnapshot.RestoreConfig{
 			SnapshotPath: path, Name: member.name, OutputDataDir: member.dataDir, PeerURLs: []string{member.peerURL.String()},
