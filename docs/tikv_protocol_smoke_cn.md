@@ -193,6 +193,24 @@ storage/tikv 全包 race 7.865 秒、build race 2.499 秒、vet 通过；新增�
 测试证明 31 次带保护写入仍在既有清理预算内。独立检查此次临时容器、网络和
 测试二进制均已清理；日志保存于 `/root/.local/state/kubebrain/fenced-latency-protocol.OgrdZHF5jF`。
 
+后续 CI `35090094536` 在普通执行的 async 单键用例失败：固定 40 次 BatchGet
+断言实际得到 45 次。失败夹具与容器清理成功，不能沿用本地 race 通过将此版放行。
+保留原断言并增加读取响应观测后，本地再次失败，44 次 BatchGet 对应 4 个锁响应、
+4 次事务状态查询、零读取错误；与客户端 `batchGetSingleRegion` 在解析锁后重新读取
+的路径一致。async 提交返回时后台锁清理可能尚未结束，固定传输读取次数的假设不成立。
+测量现显式记录 Get／BatchGet 的锁响应数（多个锁同属一个响应只计一次）；单 Region
+额外读取必须与锁响应数精确对应，Region／非锁错误不作为合法重读解释。
+带保护的多分组读取继续保留分组下界并计入有证据的重读，不能把下界当成精确次数证明。
+写入重试／协议回退检查不变，原始尝试数和锁解析耗时仍保留，未从延迟中扣除。
+该修正属于测量夹具，未修改客户端或产品提交逻辑；专用集群实验继续暂停。
+
+修正后的本地完整普通／race runner 均退出 0、`cleanup_failed=0`，各次临时容器、
+网络和编译测试文件独立检查无残留。普通执行的 async 单键用例实际为 43 次 BatchGet
+和 3 个锁响应；race 执行该用例为 40 次和 0 个锁响应，两者均通过精确计数核验。
+普通／race 原始证据分别在 `/root/.local/state/kubebrain/read-retry-green.uLsp5Oz6s2`
+和 `/root/.local/state/kubebrain/read-retry-race.HLgHzhabc7`。另行通过存储包全量 race
+8.523 秒、构建契约 race 2.477 秒及 vet；仍需修正提交对应的远端 CI，不豁免旧失败。
+
 `TestRealTiKVBackendProtocolLatency` 复用相同显式 PD/集群 ID/全新前缀/模式要求及
 两范围所有权清理。精确选择用例，`-count=1 -timeout=120s`，每组独立进程运行。
 固定条件为 2 GiB 配额、单键 256 字节值、一次创建、10 次预热、20 次测量更新；

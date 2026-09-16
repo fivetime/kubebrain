@@ -40,6 +40,35 @@ type protocolLatencyClient struct {
 	mu       sync.Mutex
 	stats    protocolLatencyStats
 	attempts map[string]int
+	reads    protocolLatencyReadStats
+}
+
+type protocolLatencyReadStats struct {
+	GetLocked, BatchGetLocked, Errors int
+}
+
+func (c *protocolLatencyClient) readSnapshot() protocolLatencyReadStats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reads
+}
+
+// Count responses, not locked keys: one BatchGet reply may contain many locks,
+// but causes only one next read attempt in the SDK's single-Region loop.
+func protocolReadReply(regionError bool, keyErrors ...*kvrpcpb.KeyError) (locked, failed bool) {
+	if regionError {
+		return false, true
+	}
+	for _, err := range keyErrors {
+		if err == nil {
+			continue
+		}
+		if err.Locked == nil {
+			return false, true
+		}
+		locked = true
+	}
+	return locked, false
 }
 
 func (c *protocolLatencyClient) requestSnapshot() map[string]int {
@@ -98,6 +127,28 @@ func (c *protocolLatencyClient) SendRequest(ctx context.Context, addr string, re
 		return response, err
 	}
 	switch r := response.Resp.(type) {
+	case *kvrpcpb.GetResponse:
+		locked, failed := protocolReadReply(r.RegionError != nil, r.Error)
+		if locked {
+			c.reads.GetLocked++
+		}
+		if failed {
+			c.reads.Errors++
+		}
+	case *kvrpcpb.BatchGetResponse:
+		keyErrors := []*kvrpcpb.KeyError{r.Error}
+		if r.Error == nil {
+			for _, pair := range r.Pairs {
+				keyErrors = append(keyErrors, pair.Error)
+			}
+		}
+		locked, failed := protocolReadReply(r.RegionError != nil, keyErrors...)
+		if locked {
+			c.reads.BatchGetLocked++
+		}
+		if failed {
+			c.reads.Errors++
+		}
 	case *kvrpcpb.PrewriteResponse:
 		if r.RegionError != nil || len(r.Errors) != 0 {
 			c.stats.Errors++
@@ -379,17 +430,28 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 		// its count nor its absence proves foreground commit latency.
 		checked.Commit = 0
 	}
-	require.Equal(t, want, checked, "every measured transaction must use the requested single-Region protocol without retries")
+	require.Equal(t, want, checked, "every measured batch must use the requested protocol without write retries")
 	attempts := client.requestSnapshot()
+	reads := client.readSnapshot()
+	t.Logf("PROTOCOL_LATENCY_READ_REPLIES attempts=%v locked_replies=%+v", attempts, reads)
+	require.Zero(t, reads.Errors, "read errors must not be mistaken for lock-resolution retries")
 	require.Equal(t, want.Prewrite, attempts["prewrite"], "include unsuccessful RPC attempts, not only successful responses")
 	if mode != "async" && !fenced {
 		require.Equal(t, want.Commit, attempts["commit"])
 	}
-	require.Equal(t, samples, attempts["get"], "only the previous object needs a point read; revision index shares the alarm batch")
+	getAttempts, batchAttempts := samples, 2*samples
+	if mode == "async" || fenced {
+		// Async success can precede lock cleanup; the next snapshot legitimately
+		// resolves a lock and re-reads. Require evidence for every extra attempt,
+		// not an arbitrary >= bound. Its latency remains inside TxnApply.
+		getAttempts += reads.GetLocked
+		batchAttempts += reads.BatchGetLocked
+	}
+	require.Equal(t, getAttempts, attempts["get"], "only previous-object reads plus observed lock-resolution retries")
 	if fenced {
-		require.GreaterOrEqual(t, attempts["batch_get"], 3*samples, "include the production fence snapshot reads")
+		require.GreaterOrEqual(t, attempts["batch_get"], batchAttempts+samples, "include production fence groups and observed lock-resolution retries")
 	} else {
-		require.Equal(t, 2*samples, attempts["batch_get"], "quota admission must share the commit snapshot prefetch")
+		require.Equal(t, batchAttempts, attempts["batch_get"], "quota admission must share prefetch; extra attempts require actual lock replies")
 	}
 	observationMu.Lock()
 	observed := append([]storage.BatchCommitObservation(nil), observations...)
