@@ -159,6 +159,23 @@ go test ./pkg/storage/tikv -run '^TestRealTiKVBackendResolvesCancelledOnePC$' -c
 
 ## 固定后端更新的协议延迟测量
 
+新增 `TestRealTiKVBackendAsyncProtocolLatency` 与下述用例使用同样的数据与计时边界。
+必须显式设置 `KUBEBRAIN_TIKV_PROTOCOL_ASYNC_EXPERIMENT=1`，模式仍设为 `2pc`：
+进程默认、所有权声明及清理保持 2PC，仅预热和测量的用户更新逐事务启用 async、关闭 1PC。
+每笔测量必须恰有一次 async 请求和有效接受响应，且没有 1PC 成功或 async 回退；
+该断言只适用于无重试的单 Region fixture，不可外推为多 Region 事务协议判定。
+后台 commit 可能继承计数标记，因此不固定其次数，也不把其耗时当成前台提交耗时。
+对照顺序为独立进程的 2PC → async → async → 2PC，每组使用新前缀。
+本地 Docker runner 纳入此用例用于真实协议验证；其单副本 tmpfs 耗时不是测试集群性能证据，
+更不能替代 6000 次操作 / 900 秒的滚动验收。本段描述测试方法，不声明性能改进已获验证。
+
+2026-09-16 本地隔离 runner 的完整 race 执行退出 0，`cleanup_failed=0`；
+新增用例的 20 次 prewrite 全部接受 async，1PC/回退/错误均为 0，Watch、最终读取及配额检查通过。
+独立检查确认此次所有权标签对应的容器、网络和编译测试文件均已清理。
+原始日志持久保存在 `/root/.local/state/kubebrain/async-latency-protocol.QKiWqZPzaw`。
+另行通过 storage/tikv 全包 race（8.029 秒）、build race（2.529 秒）及 `go vet ./pkg/storage/tikv`。
+这证明新增测量夹具可执行，不证明专用集群 ABBA 对照或滚动验收已经完成。
+
 `TestRealTiKVBackendProtocolLatency` 复用相同显式 PD/集群 ID/全新前缀/模式要求及
 两范围所有权清理。精确选择用例，`-count=1 -timeout=120s`，每组独立进程运行。
 固定条件为 2 GiB 配额、单键 256 字节值、一次创建、10 次预热、20 次测量更新；

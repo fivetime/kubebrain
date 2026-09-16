@@ -242,7 +242,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 			t.Skip("explicit async experiment consent required")
 		}
 		scenario = strings.TrimPrefix(scenario, "async-")
-		require.Contains(t, []string{"committed", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard"}, scenario)
+		require.Contains(t, []string{"committed", "latency", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard"}, scenario)
 	}
 	require.Contains(t, []string{"committed", "undelivered", "latency", "concurrent", "compare-conflict", "absent-auth-guard", "fenced", "fenced-election-fence", "fenced-restoration-fence-shard", "retry-committed", "retry-undelivered", "no-retry-committed", "no-retry-undelivered", "split"}, scenario)
 	fenced := guardedAsync || scenario == "fenced" || strings.HasPrefix(scenario, "fenced-")
@@ -385,6 +385,18 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	var asyncLoss *protocolAsyncResponseLoss
 	var asyncPartial *protocolAsyncPartialLoss
 	var asyncMutationCount func() int
+	if asyncExperiment && scenario == "latency" {
+		wrapped := &fenceChangeAfterPrefetch{KvStorage: kv}
+		wrapped.beforeAtomic = func(callCtx context.Context, atomic storage.AtomicBatch) {
+			if callCtx.Value(protocolAsyncLatencyMarker{}) != true {
+				return
+			}
+			txn := atomic.(atomicBatch).txn
+			txn.SetEnable1PC(false)
+			txn.SetEnableAsyncCommit(true)
+		}
+		backendKV = wrapped
+	}
 	if asyncExperiment && scenario == "committed" {
 		wrapped := &fenceChangeAfterPrefetch{KvStorage: kv}
 		wrapped.beforeAtomic = func(callCtx context.Context, atomic storage.AtomicBatch) {
@@ -519,6 +531,9 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		return
 	}
 	if scenario == "latency" {
+		if asyncExperiment {
+			mode = "async"
+		}
 		measureProtocolBackendLatency(t, ctx, b, latencyClient, mode)
 		return
 	}

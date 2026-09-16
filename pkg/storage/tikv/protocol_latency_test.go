@@ -3,6 +3,7 @@ package tikv
 import (
 	"bytes"
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
+	"github.com/pingcap/kvproto/pkg/errorpb"
 	"github.com/pingcap/kvproto/pkg/kvrpcpb"
 	"github.com/stretchr/testify/require"
 	clienttikv "github.com/tikv/client-go/v2/tikv"
@@ -21,9 +23,14 @@ import (
 )
 
 type protocolLatencyMarker struct{}
+type protocolAsyncLatencyMarker struct{}
 
 type protocolLatencyStats struct {
 	Prewrite, OnePC, Commit, Errors int
+	// RPC-level evidence, NOT a transaction-wide protocol verdict. Retries and
+	// different Regions can produce both accepted and fallback replies. Requested
+	// includes failed attempts; 1PC successes are never counted as async acceptance.
+	AsyncRequested, AsyncAccepted, AsyncFallback int
 }
 
 // Count only measured user RPCs, not seed/warmup, checkpoint or cleanup work.
@@ -75,6 +82,9 @@ func (c *protocolLatencyClient) SendRequest(ctx context.Context, addr string, re
 			c.attempts = make(map[string]int)
 		}
 		c.attempts[method]++
+		if req.Type == tikvrpc.CmdPrewrite && req.Prewrite().UseAsyncCommit {
+			c.stats.AsyncRequested++
+		}
 		c.mu.Unlock()
 	}
 	response, err := c.Client.SendRequest(ctx, addr, req, timeout)
@@ -95,6 +105,12 @@ func (c *protocolLatencyClient) SendRequest(ctx context.Context, addr string, re
 			c.stats.Prewrite++
 			if r.OnePcCommitTs != 0 {
 				c.stats.OnePC++
+			} else if req.Type == tikvrpc.CmdPrewrite && req.Prewrite().UseAsyncCommit {
+				if r.MinCommitTs > req.Prewrite().StartVersion {
+					c.stats.AsyncAccepted++
+				} else if r.MinCommitTs == 0 {
+					c.stats.AsyncFallback++
+				}
 			}
 		}
 	case *kvrpcpb.CommitResponse:
@@ -134,6 +150,46 @@ func TestProtocolLatencyClientScope(t *testing.T) {
 
 func TestRealTiKVBackendProtocolLatency(t *testing.T) {
 	testRealTiKVBackendScenario(t, "latency")
+}
+
+func TestRealTiKVBackendAsyncProtocolLatency(t *testing.T) {
+	testRealTiKVBackendScenario(t, "async-latency")
+}
+
+func TestProtocolLatencyAsyncEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name            string
+		unmarked, plain bool
+		response        *kvrpcpb.PrewriteResponse
+		err             error
+		want            protocolLatencyStats
+	}{
+		{name: "accepted", response: &kvrpcpb.PrewriteResponse{MinCommitTs: 11}, want: protocolLatencyStats{Prewrite: 1, AsyncRequested: 1, AsyncAccepted: 1}},
+		{name: "fallback", response: &kvrpcpb.PrewriteResponse{}, want: protocolLatencyStats{Prewrite: 1, AsyncRequested: 1, AsyncFallback: 1}},
+		{name: "one-pc-wins", response: &kvrpcpb.PrewriteResponse{OnePcCommitTs: 12, MinCommitTs: 11}, want: protocolLatencyStats{Prewrite: 1, OnePC: 1, AsyncRequested: 1}},
+		{name: "invalid-timestamp", response: &kvrpcpb.PrewriteResponse{MinCommitTs: 10}, want: protocolLatencyStats{Prewrite: 1, AsyncRequested: 1}},
+		{name: "not-requested", plain: true, response: &kvrpcpb.PrewriteResponse{MinCommitTs: 11}, want: protocolLatencyStats{Prewrite: 1}},
+		{name: "unmarked", unmarked: true, response: &kvrpcpb.PrewriteResponse{MinCommitTs: 11}},
+		{name: "region-error", response: &kvrpcpb.PrewriteResponse{MinCommitTs: 11, RegionError: &errorpb.Error{}}, want: protocolLatencyStats{Errors: 1, AsyncRequested: 1}},
+		{name: "key-error", response: &kvrpcpb.PrewriteResponse{MinCommitTs: 11, Errors: []*kvrpcpb.KeyError{{}}}, want: protocolLatencyStats{Errors: 1, AsyncRequested: 1}},
+		{name: "transport-error", err: errors.New("test transport failure"), want: protocolLatencyStats{Errors: 1, AsyncRequested: 1}},
+		{name: "nil-response", want: protocolLatencyStats{Errors: 1, AsyncRequested: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := &protocolResponseStub{err: tc.err}
+			if tc.response != nil {
+				stub.response = &tikvrpc.Response{Resp: tc.response}
+			}
+			client := &protocolLatencyClient{Client: stub}
+			ctx := context.Background()
+			if !tc.unmarked {
+				ctx = context.WithValue(ctx, protocolLatencyMarker{}, true)
+			}
+			req := tikvrpc.NewRequest(tikvrpc.CmdPrewrite, &kvrpcpb.PrewriteRequest{StartVersion: 10, UseAsyncCommit: !tc.plain})
+			_, _ = client.SendRequest(ctx, "unused", req, time.Second)
+			require.Equal(t, tc.want, client.snapshot())
+		})
+	}
 }
 
 func TestRealTiKVBackendConcurrentWrites(t *testing.T) {
@@ -234,16 +290,20 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	const warmup, samples = 10, 20
 	require.NoError(t, b.EnsureQuotaInitialized(ctx))
 	key, value := []byte("/integration/latency/key"), bytes.Repeat([]byte("v"), 256)
+	writeCtx := ctx
+	if mode == "async" {
+		writeCtx = context.WithValue(ctx, protocolAsyncLatencyMarker{}, true)
+	}
 	last := uint64(100)
 	for i := 0; i <= warmup; i++ {
-		_, revision, err := b.TxnApply(ctx, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
+		_, revision, err := b.TxnApply(writeCtx, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, last+1, revision)
 		last = revision
 	}
 	watch, err := b.Watch(ctx, string(key), last+1)
 	require.NoError(t, err)
-	measured := context.WithValue(ctx, protocolLatencyMarker{}, true)
+	measured := context.WithValue(writeCtx, protocolLatencyMarker{}, true)
 	var observationMu sync.Mutex
 	var observations []storage.BatchCommitObservation
 	measured = storage.WithBatchCommitObserver(measured, func(o storage.BatchCommitObservation) {
@@ -253,10 +313,21 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	})
 	durations := make([]int64, 0, samples)
 	for i := 0; i < samples; i++ {
+		before := client.snapshot()
 		started := time.Now()
 		_, revision, err := b.TxnApply(measured, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
 		durations = append(durations, time.Since(started).Nanoseconds())
 		require.NoError(t, err)
+		if mode == "async" {
+			after := client.snapshot()
+			// Sequential, single-Region fixture: each acknowledged batch must
+			// have exactly one accepted prewrite, not just an aggregate total.
+			require.Equal(t, 1, after.AsyncRequested-before.AsyncRequested)
+			require.Equal(t, 1, after.AsyncAccepted-before.AsyncAccepted)
+			require.Equal(t, 1, after.Prewrite-before.Prewrite)
+			require.Equal(t, before.AsyncFallback, after.AsyncFallback)
+			require.Equal(t, before.OnePC, after.OnePC)
+		}
 		require.Equal(t, last+1, revision)
 		last = revision
 		events := protocolNextMutation(t, ctx, watch)
@@ -281,10 +352,19 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	if mode == "1pc" {
 		want = protocolLatencyStats{Prewrite: samples, OnePC: samples}
 	}
-	require.Equal(t, want, stats, "every measured transaction must use the requested single-Region protocol without retries")
+	checked := stats
+	if mode == "async" {
+		want = protocolLatencyStats{Prewrite: samples, AsyncRequested: samples, AsyncAccepted: samples}
+		// Async cleanup may inherit the marker and race this snapshot. Neither
+		// its count nor its absence proves foreground commit latency.
+		checked.Commit = 0
+	}
+	require.Equal(t, want, checked, "every measured transaction must use the requested single-Region protocol without retries")
 	attempts := client.requestSnapshot()
 	require.Equal(t, samples, attempts["prewrite"], "include unsuccessful RPC attempts, not only successful responses")
-	require.Equal(t, want.Commit, attempts["commit"])
+	if mode != "async" {
+		require.Equal(t, want.Commit, attempts["commit"])
+	}
 	require.Equal(t, samples, attempts["get"], "only the previous object needs a point read; revision index shares the alarm batch")
 	require.Equal(t, 2*samples, attempts["batch_get"], "quota admission must share the commit snapshot prefetch")
 	observationMu.Lock()
@@ -305,7 +385,7 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	t.Logf("PROTOCOL_PREWRITE_RPC_SCOPE samples=%d each=1 sum_equals_max=true errors=0 scope=marked_foreground_only", len(observed))
 	t.Logf("PROTOCOL_BATCH_REGION_GROUPS samples=%d each=1 scope=marked_foreground_only", len(observed))
 	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, warmup, samples, len(value), quota, durations, stats)
-	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_foreground_only excludes=background_and_unmarked_work", attempts)
+	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_context excludes=unmarked_work async_commit_cleanup_may_be_included=true", attempts)
 }
 
 // Contend on both user rows and the allocator in an independently owned fixture.
