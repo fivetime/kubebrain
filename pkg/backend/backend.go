@@ -508,7 +508,10 @@ type backend struct {
 	hashKVCompleted hashKVCompletedResult
 	// revisionWriteMu serializes transaction planning, atomic revision allocation,
 	// and ordered event publication without changing the broader predicate lock.
-	revisionWriteMu sync.Mutex
+	// Use only the exclusive side of the context-aware barrier: a canceled
+	// queued writer must not retain its shared logical lock until another
+	// transaction finishes. No helper goroutine acquires the lock after return.
+	revisionWriteMu logicalWriteMutex
 	// revisionPending is non-nil while an uncertain transaction owns the next
 	// candidate revision. Later writers wait for its durable outcome: committed
 	// candidates are published, definitely uncommitted candidates are reused.

@@ -160,7 +160,9 @@ func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGu
 	// section; mark ownership so InternalCAS does not recursively RLock behind a
 	// waiting exclusive range transaction.
 	ctx = b.withLogicalWriteOwnership(ctx)
-	b.revisionWriteMu.Lock()
+	if err := b.revisionWriteMu.LockContext(ctx); err != nil {
+		return nil, 0, err
+	}
 	defer b.revisionWriteMu.Unlock()
 	// Another writer may have installed an uncertain revision after the first
 	// check while we waited for either lock. Recheck while serialized. Keeping
