@@ -828,7 +828,7 @@ record_rollout_diagnostic_phase() {
   local phase="$1" temporary="$runtime_evidence_dir/diagnostic-phase.next"
   case "$phase" in stable|cleanup) ;; *) return 2 ;; esac
   if ! jq -n --arg phase "$phase" --arg probe_uid "$probe_pod_uid" \
-    --arg statefulset_uid "$statefulset_uid" --arg image "$TARGET_IMAGE" \
+    --arg statefulset_uid "$statefulset_uid" --arg image "${TARGET_IMAGE:-$image}" \
     '{format:"kubebrain.rollout-diagnostic-phase.v1",phase:$phase,probe_uid:$probe_uid,
       statefulset_uid:$statefulset_uid,image:$image}' > "$temporary" ||
     ! mv -- "$temporary" "$runtime_evidence_dir/diagnostic-phase.json"; then

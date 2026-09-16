@@ -63,6 +63,27 @@ func TestRolloutDiagnosticPhaseDoesNotExtendDeadline(t *testing.T) {
 	require.Less(t, strings.Index(cleanup, "stop_rollout_sampler"), strings.Index(cleanup, "(set -e; cleanup)"))
 }
 
+func TestRolloutDiagnosticPhaseRecordsSourceImageWithoutCandidate(t *testing.T) {
+	data, err := os.ReadFile("run-kubebrain-rollout-availability.sh")
+	require.NoError(t, err)
+	script := string(data)
+	start := strings.Index(script, "record_rollout_diagnostic_phase() {")
+	require.Positive(t, start)
+	end := strings.Index(script[start:], "\nstop_rollout_sampler()")
+	require.Positive(t, end)
+	for _, phase := range []string{"stable", "cleanup"} {
+		t.Run(phase, func(t *testing.T) {
+			cmd := exec.Command("bash", "-c", "set -euo pipefail\n"+script[start:start+end]+`
+record_rollout_diagnostic_phase "$TEST_PHASE"
+jq -e --arg phase "$TEST_PHASE" '.phase==$phase and .image=="source-image" and .probe_uid=="probe-uid" and .statefulset_uid=="sts-uid"' "$runtime_evidence_dir/diagnostic-phase.json"
+`)
+			cmd.Env = append(os.Environ(), "runtime_evidence_dir="+t.TempDir(), "probe_pod_uid=probe-uid", "statefulset_uid=sts-uid", "TARGET_IMAGE=", "image=source-image", "TEST_PHASE="+phase)
+			out, err := cmd.CombinedOutput()
+			require.NoError(t, err, string(out))
+		})
+	}
+}
+
 func TestRolloutDiagnosticSamplerStopReapsChild(t *testing.T) {
 	data, err := os.ReadFile("run-kubebrain-rollout-availability.sh")
 	require.NoError(t, err)
