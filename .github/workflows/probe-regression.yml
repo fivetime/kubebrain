@@ -52,6 +52,7 @@ jobs:
           go vet ./pkg/server/etcd
           go test -count=1 -timeout=10m -v ./pkg/server/etcd
           go test -race -count=1 -timeout=8m -v ./pkg/server/etcd -run '(Auth|JWT|PutPathsRejectGuardChangedAtCommit)'
+          go test -race -count=1 -timeout=8m -v ./pkg/server/etcd -run '(Lease|Revoke|Expiry|Checkpoint|Attachment)'
           go test -race -count=1 -timeout=8m -v ./pkg/server/etcd -run '(Watch|Prev[Kk][Vv]|PrevHint|RevKeyCache|CachePromotion|MetadataSingleflight)'
       - name: Verify follower proxy regressions
         run: |
