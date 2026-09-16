@@ -12,6 +12,8 @@ verify_apiserver_lease_cleanup() {
       echo "failed to list leases during read-only apiserver cleanup" >&2
       return 1
     fi
+    # The sourcing runner captures this baseline before claiming its prefix.
+    # shellcheck disable=SC2154
     if [[ "$final_lease_ids" == "$baseline_lease_ids" ]]; then
       return 0
     fi
