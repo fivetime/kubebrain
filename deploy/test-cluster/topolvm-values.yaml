@@ -1,0 +1,79 @@
+# Dedicated test cluster only. Chart 17.2.0 / TopoLVM 0.41.1.
+# Render/review first; see docs/topolvm_test_storage_cn.md.
+# Does not initialize disks, create a VG, label nodes, or migrate existing PVCs.
+useLegacy: false
+image:
+  reference: 0.41.1@sha256:70548dbe0c6addcccf79a557f29e95db2e6dc2cba2102988c91f30086004d0fc
+scheduler:
+  enabled: false
+webhook:
+  certManager: false
+  podMutatingWebhook:
+    enabled: false
+cert-manager:
+  enabled: false
+# This initial test setup uses ordinary thick LVs, not snapshot-capable thin pools.
+# CSI snapshot support is not asserted by this configuration.
+snapshot:
+  enabled: false
+lvmd:
+  managed: true
+  nodeSelector:
+    kubebrain.io/topolvm: enabled
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [k8s3-worker1, k8s3-worker2, k8s3-worker3]
+  deviceClasses:
+    - name: local-test
+      volume-group: kubebrain-local
+      default: true
+      spare-gb: 20
+node:
+  lvmdEmbedded: false
+  nodeSelector:
+    kubebrain.io/topolvm: enabled
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [k8s3-worker1, k8s3-worker2, k8s3-worker3]
+controller:
+  replicaCount: 2
+  storageCapacityTracking:
+    enabled: true
+  nodeSelector:
+    kubebrain.io/topolvm: enabled
+  affinity: |
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values: [k8s3-worker1, k8s3-worker2, k8s3-worker3]
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: '{{ include "topolvm.name" . }}'
+              app.kubernetes.io/instance: '{{ .Release.Name }}'
+              app.kubernetes.io/component: controller
+          topologyKey: kubernetes.io/hostname
+storageClasses:
+  - name: kubebrain-local-lvm
+    storageClass:
+      fsType: ext4
+      reclaimPolicy: Retain
+      isDefaultClass: false
+      volumeBindingMode: WaitForFirstConsumer
+      allowVolumeExpansion: true
+      additionalParameters:
+        topolvm.io/device-class: local-test
