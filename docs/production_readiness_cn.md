@@ -4,6 +4,9 @@
 
 ## 验证边界
 
+standalone apiserver Watch runner 已加入[原生证据归档和分阶段终态](apiserver_watch_evidence_cn.md)，
+后续以原始流、result.json 和后端清理核对共同判断成功，不只读取 completed 日志。
+
 2026-09-16 apiserver 跨 leader Pod 删除的 Watch 内容检查通过，但长 TTL lease
 尚未收敛且原始流归档失败，整轮**未完整通过**；见[故障实验记录](acceptance_apiserver_leader_failure_20260916_cn.md)。
 

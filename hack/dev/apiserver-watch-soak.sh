@@ -4,6 +4,7 @@ umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 source "$ROOT_DIR/hack/dev/apiserver-lease-cleanup.sh"
+source "$ROOT_DIR/hack/dev/apiserver-watch-evidence.sh"
 CLUSTER_NAME="${CLUSTER_NAME:-kubebrain-dev}"
 NODE_NAME="${NODE_NAME:-${CLUSTER_NAME}-control-plane}"
 ENDPOINT="${ENDPOINT:-http://127.0.0.1:3379}"
@@ -20,6 +21,8 @@ ALLOW_MUTATING_APISERVER_WATCH_SOAK="${ALLOW_MUTATING_APISERVER_WATCH_SOAK:-fals
 RUN_ID="${RUN_ID:-apiserver-watch-soak-$(date +%s%N)}"
 WORK_ROOT="${WORK_ROOT:-${ROOT_DIR}/.dev}"
 WORK_DIR="${WORK_DIR:-${WORK_ROOT}/apiserver-watch-soak-runs/${RUN_ID}}"
+EVIDENCE_DIR="${EVIDENCE_DIR:-${WORK_DIR}.evidence}"
+evidence_dir_created=false
 BIN_DIR="${BIN_DIR:-${ROOT_DIR}/.dev/apiserver-smoke/bin}"
 PKI_DIR="${WORK_DIR}/pki"
 LOG_FILE="${WORK_DIR}/kube-apiserver.log"
@@ -91,7 +94,9 @@ validate_zero_one_flag ALLOW_WATCH_RESTARTS
 
 cleanup() {
   local status=$?
+  local operation_status=$status
   local cleanup_failed=0
+  local archive_failed=0
   trap - EXIT
   if [ -n "${watch_pid:-}" ] && kill -0 "$watch_pid" >/dev/null 2>&1; then
     kill "$watch_pid" >/dev/null 2>&1 || true
@@ -125,7 +130,14 @@ cleanup() {
       cleanup_failed=1
     fi
   fi
-  if [[ "$work_dir_created" == true ]]; then
+  if [[ "${evidence_dir_created:-false}" == true ]]; then
+    if ! archive_apiserver_watch_evidence "$EVIDENCE_DIR" "$WORK_DIR"; then
+      echo "evidence archival failed; retaining private WORK_DIR: $WORK_DIR" >&2
+      archive_failed=1
+      cleanup_failed=1
+    fi
+  fi
+  if [[ "$work_dir_created" == true && "$archive_failed" == 0 ]]; then
     if ! rm -rf -- "$WORK_DIR"; then
       echo "failed to delete owned apiserver watch-soak WORK_DIR: $WORK_DIR" >&2
       cleanup_failed=1
@@ -141,6 +153,13 @@ cleanup() {
   fi
   if [[ "$cleanup_failed" -ne 0 ]]; then
     status=70
+  fi
+  if [[ "${evidence_dir_created:-false}" == true ]]; then
+    if ! printf '{"operation_exit":%s,"cleanup_failed":%s,"archive_failed":%s,"runner_exit":%s}\n' \
+      "$operation_status" "$cleanup_failed" "$archive_failed" "$status" > "$EVIDENCE_DIR/result.json"; then
+      echo "failed to persist runner result" >&2
+      status=70
+    fi
   fi
   exit "$status"
 }
@@ -187,6 +206,16 @@ if [[ -e "$canonical_work_dir" ]]; then
   echo "refusing to reuse existing apiserver watch-soak WORK_DIR: $canonical_work_dir" >&2
   exit 1
 fi
+canonical_evidence_dir="$(realpath -m "$EVIDENCE_DIR")"
+if [[ "$canonical_evidence_dir" != "$canonical_work_root"/* ||
+      "$canonical_evidence_dir" == "$canonical_work_dir" ||
+      "$canonical_evidence_dir" == "$canonical_work_dir"/* ||
+      "$canonical_work_dir" == "$canonical_evidence_dir"/* ||
+      -e "$canonical_evidence_dir" || -L "$EVIDENCE_DIR" ]]; then
+  echo "EVIDENCE_DIR must be a new child of WORK_ROOT, disjoint from WORK_DIR" >&2
+  exit 2
+fi
+EVIDENCE_DIR="$canonical_evidence_dir"
 
 trap cleanup EXIT
 
@@ -226,6 +255,9 @@ if [[ -n "$ETCD_CERTFILE" ]]; then ETCDCTL+=(--cert="$ETCD_CERTFILE"); fi
 if [[ -n "$ETCD_KEYFILE" ]]; then ETCDCTL+=(--key="$ETCD_KEYFILE"); fi
 
 mkdir -p "$BIN_DIR"
+mkdir -p "$(dirname "$EVIDENCE_DIR")"
+mkdir -m 0700 "$EVIDENCE_DIR"
+evidence_dir_created=true
 if [[ -f "$PID_FILE" ]]; then
   existing_pid="$(cat "$PID_FILE")"
   if [[ "$existing_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$existing_pid" >/dev/null 2>&1; then
