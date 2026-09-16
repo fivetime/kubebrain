@@ -73,9 +73,21 @@ for ((ordinal=0; ordinal<count; ordinal++)); do
   date -u '+%Y-%m-%dT%H:%M:%S.%NZ' > "$directory/$pod-ended-at"
   capture "$directory/$pod-after.json" identity "$pod" "$expected"
   cmp "$directory/$pod-before.json" "$directory/$pod-after.json"
-  for family in raft_engine_sync_log_duration_seconds tikv_grpc_msg_duration_seconds tikv_scheduler_command_duration_seconds; do
+  for family in raft_engine_sync_log_duration_seconds tikv_grpc_msg_duration_seconds; do
     rg -q "^# TYPE $family histogram$" "$directory/$pod-metrics.txt"
   done
+  # The scheduler histogram is lazily registered: a fresh follower can expose
+  # Raft/gRPC metrics without having served a scheduler command. Preserve that
+  # missing evidence explicitly; never synthesize a zero counter or latency.
+  scheduler_histogram=absent
+  if rg -q '^# TYPE tikv_scheduler_command_duration_seconds histogram$' "$directory/$pod-metrics.txt"; then
+    scheduler_histogram=present
+  elif rg -q '^# TYPE tikv_scheduler_command_duration_seconds |^tikv_scheduler_command_duration_seconds(_|\{| )' "$directory/$pod-metrics.txt"; then
+    echo "invalid scheduler histogram exposition: $pod" >&2
+    exit 1
+  fi
+  jq -cn --arg scheduler "$scheduler_histogram" \
+    '{tikv_scheduler_command_duration_seconds:$scheduler}' > "$directory/$pod-metric-availability.json"
 done
 capture "$directory/scope-after.json" scope
 cmp "$directory/scope-before.json" "$directory/scope-after.json"

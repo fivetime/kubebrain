@@ -20,7 +20,7 @@ func TestCaptureRolloutBackendMetricsPinnedIdentity(t *testing.T) {
 
 func testCaptureRolloutTiKVMetricsPinnedIdentity(t *testing.T, independent bool) {
 	for _, allowUnready := range []string{"", "false", "true", "invalid"} {
-		for _, mode := range []string{"stable", "wrong-namespace", "wrong-owner", "wrong-pod", "not-running", "wrong-start", "restart", "wrong-image", "wrong-container", "wrong-count", "unready", "sts-unready", "readiness-change", "scope-change", "empty", "oversized", "missing-family", "curl-error"} {
+		for _, mode := range []string{"stable", "missing-scheduler", "wrong-scheduler-type", "scheduler-without-type", "wrong-namespace", "wrong-owner", "wrong-pod", "not-running", "wrong-start", "restart", "wrong-image", "wrong-container", "wrong-count", "unready", "sts-unready", "readiness-change", "scope-change", "empty", "oversized", "missing-family", "curl-error"} {
 			t.Run(allowUnready+"/"+mode, func(t *testing.T) {
 				dir := t.TempDir()
 				write := func(name, contents string) string {
@@ -66,6 +66,13 @@ case "$1/$2" in
       missing-family) printf '# TYPE raft_engine_sync_log_duration_seconds histogram\n'; exit 0 ;;
     esac
     for family in raft_engine_sync_log_duration_seconds tikv_grpc_msg_duration_seconds tikv_scheduler_command_duration_seconds; do
+      if [[ "$family" == tikv_scheduler_command_duration_seconds ]]; then
+        case "$MODE" in
+          missing-scheduler) continue ;;
+          wrong-scheduler-type) printf '# TYPE %s gauge\n%s 1\n' "$family" "$family"; continue ;;
+          scheduler-without-type) printf '%s_count 1\n' "$family"; continue ;;
+        esac
+      fi
       printf '# TYPE %s histogram\n%s_count 1\n' "$family" "$family"
     done ;;
   *) exit 90 ;;
@@ -84,7 +91,7 @@ esac
 					"DIAGNOSTIC_NAMESPACE_UID=ns-uid", "DIAGNOSTIC_KUBECTL_BIN="+mock,
 					"DIAGNOSTIC_TIKV_ALLOW_UNREADY="+allowUnready, "DIAGNOSTIC_TIKV_RECEIPT="+receipt)
 				out, err := cmd.CombinedOutput()
-				if allowUnready != "invalid" && (mode == "stable" || allowUnready == "true" && (mode == "unready" || mode == "sts-unready")) {
+				if allowUnready != "invalid" && (mode == "stable" || mode == "missing-scheduler" || allowUnready == "true" && (mode == "unready" || mode == "sts-unready")) {
 					require.NoError(t, err, string(out))
 					setting, err := os.ReadFile(filepath.Join(dir, "tikv", "allow-unready"))
 					require.NoError(t, err)
@@ -94,6 +101,13 @@ esac
 					}
 					require.Equal(t, expectedSetting+"\n", string(setting))
 					require.FileExists(t, filepath.Join(dir, "tikv", "ended-at"))
+					availability, err := os.ReadFile(filepath.Join(dir, "tikv", "kb-tikv-0-metric-availability.json"))
+					require.NoError(t, err)
+					expectedAvailability := "present"
+					if mode == "missing-scheduler" {
+						expectedAvailability = "absent"
+					}
+					require.JSONEq(t, `{"tikv_scheduler_command_duration_seconds":"`+expectedAvailability+`"}`, string(availability))
 					retry := exec.Command("bash", script, dir, input)
 					retry.Env = cmd.Env
 					out, err = retry.CombinedOutput()

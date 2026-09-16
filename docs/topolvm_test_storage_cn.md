@@ -96,3 +96,9 @@ PD/TiKV 均为 v8.5.3、各三副本、每节点各一副本，保留原资源�
 端到端 mTLS smoke 最终通过：公共服务 Put/Get/Delete 和三个成员直连 `etcdctl endpoint health` 均成功，测试键已删除。前两次 smoke 分别因 etcdctl 不支持 `--tls-server-name`、命令行 endpoints 与同名环境变量冲突退出，属于探针命令错误，已保留失败日志；第三次修正命令后成功，未关闭 TLS 校验。三次临时 Pod 均已删除，日志与 Pod JSON 保留在 owner 目录。该短 smoke 不替代正式 6000 次 rollout/Watch/Lease/Snapshot 验收。
 
 旧 `kubebrain` 仍为 generation 102、3/3 Ready，固定原镜像 `sha256:0ce85e66320b27bf4cdb8f11981a76cba58926fa0e835fc47dc663f709b588ce`，没有连接切换或数据迁移。下一步为新实例准备独立的验收 owner、身份与清理约束，再使用原负载和原门限运行；不得复用旧 Ceph 实验中绑定旧 UID 的单次执行脚本。临时 workspace PVC 使用 Retain，因此以后 rollout 还需跟踪旧临时卷的精确身份和回收，不得批量删除所有 Released PV。
+
+### 首次验收预检发现的指标采集问题
+
+2026-09-16 21:54 UTC，新 owner `/root/.local/state/kubebrain/local-2pc.wcwe26Jr/` 的首次驱动在 TiKV 指标预检退出（终态 1），未创建正式探针、未领取执行 claim、未滚动重启。`kb-local-tikv-1` 有 Raft/gRPC 指标，但未暴露 `tikv_scheduler_command_duration_seconds`。不能仅因新实例缺少这项按需出现的指标就丢弃其余诊断证据，也不能将缺失解释为零延迟或证明零请求。
+
+采集器增加逐 Pod 的 `*-metric-availability.json`：该直方图写为 present/absent，仍要求 Raft/gRPC 类型正确、身份前后不变、响应非空且大小受限；错误类型及缺少类型声明的 scheduler 样本仍拒绝。后续计算 scheduler 延迟必须要求两个端点均存在有效指标和相同运行时身份，不能用 absent 补零。168 个身份/就绪/缺失/错误类型等子用例通过（两个采集入口，四种就绪设置，21 种模式，67.140s）。此修改只影响诊断证据采集，不改变产品镜像、协议或任何验收延迟门限。
