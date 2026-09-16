@@ -1274,7 +1274,9 @@ func (s *RPCServer) txnOnce(ctx context.Context, txn *etcdserverpb.TxnRequest) (
 	// the backend re-checks it just before commit so a leadership change mid-write
 	// fences the commit instead of losing it silently (FINDING #39).
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
-	s.leaseWriteMu.RLock()
+	if err := s.leaseWriteMu.RLockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer s.leaseWriteMu.RUnlock()
 	// A privileged writer may attach a protected key to a referenced lease
 	// between the admission check above and this lock. Re-check against the
@@ -1979,7 +1981,9 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	}
 	admission.corruptChecked = time.Now()
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
-	s.leaseWriteMu.RLock()
+	if err := s.leaseWriteMu.RLockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer s.leaseWriteMu.RUnlock()
 	// Keep the lease key snapshot used by RBAC stable through the durable write.
 	// The admission check remains above for follower/error-order compatibility;
@@ -2124,7 +2128,9 @@ func (s *RPCServer) DeleteRange(ctx context.Context, r *etcdserverpb.DeleteRange
 	if isEmptyNonFromKeyRange(r.Key, r.RangeEnd) {
 		return s.emptyDeleteRangeResponse(), nil
 	}
-	s.leaseWriteMu.Lock()
+	if err := s.leaseWriteMu.LockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer s.leaseWriteMu.Unlock()
 	deletedKeys, keyErr := s.keysInDeleteRange(ctx, r)
 	if keyErr != nil {

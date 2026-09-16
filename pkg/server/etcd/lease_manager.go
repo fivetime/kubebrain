@@ -53,7 +53,7 @@ type leaseManager struct {
 	// removal. It is separate from leaseMu so backend I/O never blocks lease-state
 	// readers while still preventing a key from committing behind a completed
 	// revoke.
-	leaseWriteMu sync.RWMutex
+	leaseWriteMu leaseWriteMutex
 	// leaseTeardowns is non-zero only while the exclusive leaseWriteMu owner is
 	// deleting one lease. It lets an unrelated, checkpoint-free keepalive renew
 	// its in-memory deadline without waiting for slow TiKV I/O, while preserving
