@@ -222,6 +222,10 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
+	fencedLatency := scenario == "fenced-latency" || scenario == "async-fenced-latency"
+	if fencedLatency {
+		scenario = strings.TrimSuffix(scenario, "-latency")
+	}
 	missingPrimary := scenario == "async-process-guarded-missing-primary"
 	partialAsync := missingPrimary || scenario == "async-process-guarded-partial"
 	if partialAsync {
@@ -385,7 +389,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	var asyncLoss *protocolAsyncResponseLoss
 	var asyncPartial *protocolAsyncPartialLoss
 	var asyncMutationCount func() int
-	if asyncExperiment && scenario == "latency" {
+	if asyncExperiment && (scenario == "latency" || fencedLatency) {
 		wrapped := &fenceChangeAfterPrefetch{KvStorage: kv}
 		wrapped.beforeAtomic = func(callCtx context.Context, atomic storage.AtomicBatch) {
 			if callCtx.Value(protocolAsyncLatencyMarker{}) != true {
@@ -428,7 +432,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		}
 		backendKV = wrapped
 	}
-	if asyncExperiment && scenario == "fenced" {
+	if asyncExperiment && scenario == "fenced" && !fencedLatency {
 		wrapped := &fenceChangeAfterPrefetch{KvStorage: kv}
 		wrapped.beforeAtomic = func(callCtx context.Context, atomic storage.AtomicBatch) {
 			if callCtx.Value(protocolLatencyMarker{}) != true {
@@ -508,6 +512,17 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	if fenced && !guardedAsync {
 		rpc := &fencedShapeClient{protocolLatencyClient: latencyClient, coordinationPrefix: prefix + "backend"}
 		client.SetTiKVClient(rpc)
+		if fencedLatency {
+			ctx = installRealProtocolFences(t, ctx, b)
+			if asyncExperiment {
+				mode = "async"
+			}
+			measureProtocolBackendLatency(t, ctx, b, latencyClient, mode, true)
+			require.GreaterOrEqual(t, rpc.leadership.Load(), int32(20))
+			require.GreaterOrEqual(t, rpc.restoration.Load(), int32(20))
+			t.Logf("PROTOCOL_LATENCY_FENCES_OK leadership_mutations=%d restoration_mutations=%d", rpc.leadership.Load(), rpc.restoration.Load())
+			return
+		}
 		verifyRealProtocolProductionFences(t, ctx, b, rpc, asyncExperiment)
 		if asyncExperiment {
 			require.Len(t, asyncWrites, 3)
@@ -534,7 +549,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		if asyncExperiment {
 			mode = "async"
 		}
-		measureProtocolBackendLatency(t, ctx, b, latencyClient, mode)
+		measureProtocolBackendLatency(t, ctx, b, latencyClient, mode, false)
 		return
 	}
 	if guardedAsync {

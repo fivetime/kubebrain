@@ -156,6 +156,14 @@ func TestRealTiKVBackendAsyncProtocolLatency(t *testing.T) {
 	testRealTiKVBackendScenario(t, "async-latency")
 }
 
+func TestRealTiKVBackendFencedProtocolLatency(t *testing.T) {
+	testRealTiKVBackendScenario(t, "fenced-latency")
+}
+
+func TestRealTiKVBackendAsyncFencedProtocolLatency(t *testing.T) {
+	testRealTiKVBackendScenario(t, "async-fenced-latency")
+}
+
 func TestProtocolLatencyAsyncEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -285,7 +293,7 @@ func TestProtocolLatencyFixtureBound(t *testing.T) {
 
 // Fixed small blocks fit the existing 128-key ownership-fenced cleanup bound.
 // Repeat separate processes in ABBA order; never compare one cold transaction.
-func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.Backend, client *protocolLatencyClient, mode string) {
+func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.Backend, client *protocolLatencyClient, mode string, fenced bool) {
 	t.Helper()
 	const warmup, samples = 10, 20
 	require.NoError(t, b.EnsureQuotaInitialized(ctx))
@@ -312,19 +320,22 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 		observationMu.Unlock()
 	})
 	durations := make([]int64, 0, samples)
+	prewrites := make([]int, 0, samples)
 	for i := 0; i < samples; i++ {
 		before := client.snapshot()
 		started := time.Now()
 		_, revision, err := b.TxnApply(measured, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
 		durations = append(durations, time.Since(started).Nanoseconds())
 		require.NoError(t, err)
+		after := client.snapshot()
+		writes := after.Prewrite - before.Prewrite
+		require.Positive(t, writes)
+		prewrites = append(prewrites, writes)
 		if mode == "async" {
-			after := client.snapshot()
-			// Sequential, single-Region fixture: each acknowledged batch must
-			// have exactly one accepted prewrite, not just an aggregate total.
-			require.Equal(t, 1, after.AsyncRequested-before.AsyncRequested)
-			require.Equal(t, 1, after.AsyncAccepted-before.AsyncAccepted)
-			require.Equal(t, 1, after.Prewrite-before.Prewrite)
+			// Every reply in this sequential batch must accept async; one
+			// accepted Region is insufficient to classify the whole batch.
+			require.Equal(t, writes, after.AsyncRequested-before.AsyncRequested)
+			require.Equal(t, writes, after.AsyncAccepted-before.AsyncAccepted)
 			require.Equal(t, before.AsyncFallback, after.AsyncFallback)
 			require.Equal(t, before.OnePC, after.OnePC)
 		}
@@ -353,38 +364,61 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 		want = protocolLatencyStats{Prewrite: samples, OnePC: samples}
 	}
 	checked := stats
+	if fenced {
+		want.Prewrite = 0
+		for _, count := range prewrites {
+			want.Prewrite += count
+		}
+		// Secondary commit cleanup is not necessarily synchronous in 2PC
+		// either. The per-batch observer verifies the foreground primary.
+		want.Commit, checked.Commit = 0, 0
+	}
 	if mode == "async" {
-		want = protocolLatencyStats{Prewrite: samples, AsyncRequested: samples, AsyncAccepted: samples}
+		want = protocolLatencyStats{Prewrite: want.Prewrite, AsyncRequested: want.Prewrite, AsyncAccepted: want.Prewrite}
 		// Async cleanup may inherit the marker and race this snapshot. Neither
 		// its count nor its absence proves foreground commit latency.
 		checked.Commit = 0
 	}
 	require.Equal(t, want, checked, "every measured transaction must use the requested single-Region protocol without retries")
 	attempts := client.requestSnapshot()
-	require.Equal(t, samples, attempts["prewrite"], "include unsuccessful RPC attempts, not only successful responses")
-	if mode != "async" {
+	require.Equal(t, want.Prewrite, attempts["prewrite"], "include unsuccessful RPC attempts, not only successful responses")
+	if mode != "async" && !fenced {
 		require.Equal(t, want.Commit, attempts["commit"])
 	}
 	require.Equal(t, samples, attempts["get"], "only the previous object needs a point read; revision index shares the alarm batch")
-	require.Equal(t, 2*samples, attempts["batch_get"], "quota admission must share the commit snapshot prefetch")
+	if fenced {
+		require.GreaterOrEqual(t, attempts["batch_get"], 3*samples, "include the production fence snapshot reads")
+	} else {
+		require.Equal(t, 2*samples, attempts["batch_get"], "quota admission must share the commit snapshot prefetch")
+	}
 	observationMu.Lock()
 	observed := append([]storage.BatchCommitObservation(nil), observations...)
 	observationMu.Unlock()
 	require.Len(t, observed, samples, "one synchronous observation per measured user storage batch")
-	for _, o := range observed {
+	for i, o := range observed {
 		require.NoError(t, o.Err)
 		require.True(t, o.CommitAttempted)
 		require.True(t, o.HasWriteDetails)
-		require.EqualValues(t, 1, o.PrewriteRegionGroups, "single-Region fixture without retries")
+		if !fenced {
+			require.Equal(t, 1, prewrites[i], "single-Region fixture without retries")
+		}
+		require.EqualValues(t, prewrites[i], o.PrewriteRegionGroups, "one successful RPC per group, without retries")
 		require.True(t, o.HasPrewriteRPCDetails)
-		require.EqualValues(t, 1, o.PrewriteRPCs.Requests)
+		require.EqualValues(t, prewrites[i], o.PrewriteRPCs.Requests)
 		require.Positive(t, o.PrewriteRPCs.MaxDuration)
-		require.Equal(t, o.PrewriteRPCs.Duration, o.PrewriteRPCs.MaxDuration, "one actual Prewrite RPC, so sum equals maximum")
+		if prewrites[i] == 1 {
+			require.Equal(t, o.PrewriteRPCs.Duration, o.PrewriteRPCs.MaxDuration)
+		}
+		if mode == "async" {
+			require.Zero(t, o.PrimaryWrite.SuccessfulRPCs)
+		} else if fenced {
+			require.Positive(t, o.PrimaryWrite.SuccessfulRPCs)
+		}
 		require.Zero(t, o.PrewriteRPCs.TransportErrors+o.PrewriteRPCs.RegionErrors+o.PrewriteRPCs.KeyErrors+o.PrewriteRPCs.MissingResponses)
 	}
-	t.Logf("PROTOCOL_PREWRITE_RPC_SCOPE samples=%d each=1 sum_equals_max=true errors=0 scope=marked_foreground_only", len(observed))
-	t.Logf("PROTOCOL_BATCH_REGION_GROUPS samples=%d each=1 scope=marked_foreground_only", len(observed))
-	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, warmup, samples, len(value), quota, durations, stats)
+	t.Logf("PROTOCOL_PREWRITE_RPC_SCOPE samples=%d requests_per_batch=%v errors=0 scope=marked_foreground_only", len(observed), prewrites)
+	t.Logf("PROTOCOL_BATCH_REGION_GROUPS samples=%d groups_per_batch=%v scope=marked_foreground_only", len(observed), prewrites)
+	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s fenced=%t warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, fenced, warmup, samples, len(value), quota, durations, stats)
 	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_context excludes=unmarked_work async_commit_cleanup_may_be_included=true", attempts)
 }
 

@@ -176,6 +176,23 @@ go test ./pkg/storage/tikv -run '^TestRealTiKVBackendResolvesCancelledOnePC$' -c
 另行通过 storage/tikv 全包 race（8.029 秒）、build race（2.529 秒）及 `go vet ./pkg/storage/tikv`。
 这证明新增测量夹具可执行，不证明专用集群 ABBA 对照或滚动验收已经完成。
 
+带保护的对照入口为 `TestRealTiKVBackendFencedProtocolLatency` 和
+`TestRealTiKVBackendAsyncFencedProtocolLatency`。二者先建立真实领导权／恢复
+存储 fence，再执行相同的创建、10 次预热与 20 次更新；仅后者需要 async opt-in。
+每组仍使用独立所有权和有界清理，额外允许的键仅为原有 512 个明确命名的保护分片。
+每笔记录实际 prewrite 分组／RPC 数，而不把生产形态强行认作单 Region；async
+要求该笔全部 prewrite 响应接受，且零错误／零回退。2PC 的后台 secondary commit
+计数不固定，前台 primary 成功由逐批 observer 核验。用例不主动切分共享集群 Region。
+同样按独立进程 ABBA 比较；这仍是后端测量，未包含公共 gRPC、鉴权、选主滚动及
+客户端 pacing，不能替代完整的 900 秒验收。不得混合有保护与无保护的样本作协议归因。
+
+2026-09-16 带保护版本的本地完整真实 TiKV race runner 退出 0，清理错误为 0。
+两个新增用例各 20 笔更新均观测到两类保护写入；本轮各笔为 2 个 prewrite 分组，
+async 共 40 个请求／接受响应、无回退／错误。这里不是三副本存储或正式 ABBA 数据。
+storage/tikv 全包 race 7.865 秒、build race 2.499 秒、vet 通过；新增内存夹具上界
+测试证明 31 次带保护写入仍在既有清理预算内。独立检查此次临时容器、网络和
+测试二进制均已清理；日志保存于 `/root/.local/state/kubebrain/fenced-latency-protocol.OgrdZHF5jF`。
+
 `TestRealTiKVBackendProtocolLatency` 复用相同显式 PD/集群 ID/全新前缀/模式要求及
 两范围所有权清理。精确选择用例，`-count=1 -timeout=120s`，每组独立进程运行。
 固定条件为 2 GiB 配额、单键 256 字节值、一次创建、10 次预热、20 次测量更新；
