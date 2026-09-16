@@ -4,6 +4,9 @@
 
 ## 验证边界
 
+2026-09-16 apiserver 跨 leader Pod 删除的 Watch 内容检查通过，但长 TTL lease
+尚未收敛且原始流归档失败，整轮**未完整通过**；见[故障实验记录](acceptance_apiserver_leader_failure_20260916_cn.md)。
+
 standalone apiserver rollout 已增加[真实 Watch 修改回执前置确认](apiserver_fault_admission_cn.md)，
 替代固定等待时间。该改进尚不代表新的故障验收已完成。
 
