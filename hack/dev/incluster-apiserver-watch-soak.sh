@@ -93,7 +93,7 @@ fi
 
 need realpath
 need kubectl
-need python3
+need jq
 
 canonical_state_root="$(realpath -m "$state_root")"
 canonical_work_dir="$(realpath -m "$work_dir")"
@@ -262,41 +262,9 @@ done
 
 expected_modified=$((OBJECTS * UPDATES))
 count_observed_updates() {
-  python3 - "$watch_file" "$OBJECTS" "$UPDATES" <<'PY'
-import json
-import sys
-
-watch_file = sys.argv[1]
-objects = int(sys.argv[2])
-updates = int(sys.argv[3])
-expected_names = {f"soak-{i}" for i in range(1, objects + 1)}
-expected_versions = {str(i) for i in range(1, updates + 1)}
-observed = set()
-
-try:
-    lines = open(watch_file)
-except FileNotFoundError:
-    print(0)
-    raise SystemExit
-
-with lines:
-    for line in lines:
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if event.get("type") not in {"ADDED", "MODIFIED"}:
-            continue
-        obj = event.get("object") or {}
-        metadata = obj.get("metadata") or {}
-        data = obj.get("data") or {}
-        name = metadata.get("name")
-        version = data.get("version")
-        if name in expected_names and version in expected_versions:
-            observed.add((name, version))
-
-print(len(observed))
-PY
+  # kubectl -o json emits multiline JSON, not one event per line. This is
+  # only a progress hint; verify the complete stream after stopping its writer.
+  grep -Ec '"type"[[:space:]]*:[[:space:]]*"MODIFIED"' "$watch_file" || true
 }
 
 deadline=$((SECONDS + WATCH_TIMEOUT_SECONDS))
@@ -338,6 +306,8 @@ fi
 kill "$watch_pid" >/dev/null 2>&1 || true
 wait "$watch_pid" 2>/dev/null || true
 watch_pid=""
+jq -s -e --arg namespace "$ns" --argjson objects "$OBJECTS" --argjson updates "$UPDATES" \
+  -f "$ROOT_DIR/hack/dev/verify-apiserver-watch.jq" "$watch_file"
 kubectl --kubeconfig "$kubeconfig_file" delete namespace "$ns" --wait=false >/dev/null
 namespace_created=false
 

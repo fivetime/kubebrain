@@ -502,6 +502,9 @@ kill "$watch_pid" >/dev/null 2>&1 || true
 wait "$watch_pid" 2>/dev/null || true
 watch_pid=""
 
+jq -s -e --arg namespace "$ns" --argjson objects "$OBJECTS" --argjson updates "$UPDATES" \
+  -f "$ROOT_DIR/hack/dev/verify-apiserver-watch.jq" "$WATCH_FILE"
+
 kubectl --kubeconfig "$KUBECONFIG_FILE" delete namespace "$ns" --wait=false >/dev/null
 namespace_created=false
 

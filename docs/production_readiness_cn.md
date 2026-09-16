@@ -4,6 +4,9 @@
 
 ## 验证边界
 
+apiserver smoke/watch 的故障实验必须通过[逐对象/版本完整性门禁](apiserver_watch_integrity_cn.md)，
+不能只凭事件总数或重连后的 ADDED 认定 Watch 连续。
+
 2026-09-16：官方 v1.36.1 独立 apiserver 经 mTLS 接入本地盘 bb89c3f8 实例，
 对象 smoke 和 20 对象 × 10 更新 Watch 测试通过，原始流逐对象/版本核验完整。
 见[真实接入报告及边界](acceptance_local_apiserver_v1361_20260916_cn.md)；
