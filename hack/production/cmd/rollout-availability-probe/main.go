@@ -1563,35 +1563,10 @@ func run(ctx context.Context, cfg config) (retErr error) {
 		}
 		value := strconv.Itoa(i)
 		deadline := started.Add(cfg.commandTimeout)
-		var putRevision int64
-		for {
-			opCtx, cancel = context.WithDeadline(ctx, deadline)
-			putCallStarted := time.Now()
-			putResponse, putErr := client.Put(opCtx, watchKey, value)
-			progress.recordPutCall(time.Since(putCallStarted), putErr)
-			cancel()
-			if putErr == nil {
-				putRevision, putErr = validatePutResponse(putResponse, clusterID, lastRevision)
-				if putErr == nil {
-					break
-				}
-			}
-			opCtx, cancel = context.WithDeadline(ctx, deadline)
-			confirmCallStarted := time.Now()
-			observed, getErr := client.Get(opCtx, watchKey)
-			progress.recordConfirmCall(time.Since(confirmCallStarted), getErr)
-			cancel()
-			if getErr == nil {
-				putRevision, getErr = validateObservedPut(observed, clusterID, lastRevision, watchKey, value)
-				if getErr == nil {
-					break
-				}
-			}
-			if time.Now().After(deadline) {
-				ended := time.Now()
-				return fmt.Errorf("iteration=%d put unresolved before deadline: put=%v get=%v grpc_state=%s successful_tcp_dials=%d public_rpc_attempts=%s", i, putErr, getErr, client.ActiveConnection().GetState(), publicDialCount.count.Load(), publicAttemptEvidence(ended))
-			}
-			time.Sleep(50 * time.Millisecond)
+		putRevision, putErr := resolveProbePut(ctx, client, deadline, watchKey, value, clusterID, lastRevision, progress)
+		if putErr != nil {
+			ended := time.Now()
+			return fmt.Errorf("iteration=%d %w grpc_state=%s successful_tcp_dials=%d public_rpc_attempts=%s", i, putErr, client.ActiveConnection().GetState(), publicDialCount.count.Load(), publicAttemptEvidence(ended))
 		}
 		putResolved := time.Now()
 		putLatency := putResolved.Sub(started)
