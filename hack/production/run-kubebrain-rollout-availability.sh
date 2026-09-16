@@ -80,6 +80,7 @@ ENABLE_GRPC_CONNECTION_AGING_MIGRATION="${ENABLE_GRPC_CONNECTION_AGING_MIGRATION
 ENABLE_HTTP_READINESS_MIGRATION="${ENABLE_HTTP_READINESS_MIGRATION:-false}"
 ENABLE_TEMPORARY_1PC_EXPERIMENT="${ENABLE_TEMPORARY_1PC_EXPERIMENT:-false}"
 ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT="${ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT:-false}"
+RESTORE_ORIGINAL_AFTER_SUCCESS="${RESTORE_ORIGINAL_AFTER_SUCCESS:-false}"
 PROBE_IMAGE="${PROBE_IMAGE:-}"
 PROBE_CLIENT_TLS_SECRET="${PROBE_CLIENT_TLS_SECRET:-}"
 PROBE_INFO_CA_CONFIGMAP="${PROBE_INFO_CA_CONFIGMAP:-}"
@@ -121,6 +122,14 @@ if [[ "$ENABLE_TEMPORARY_1PC_EXPERIMENT" != true && "$ENABLE_TEMPORARY_1PC_EXPER
 fi
 if [[ "$ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT" != true && "$ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT" != false ]]; then
   echo "ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT must be true or false" >&2
+  exit 2
+fi
+if [[ "$RESTORE_ORIGINAL_AFTER_SUCCESS" != true && "$RESTORE_ORIGINAL_AFTER_SUCCESS" != false ]]; then
+  echo "RESTORE_ORIGINAL_AFTER_SUCCESS must be true or false" >&2
+  exit 2
+fi
+if [[ "$RESTORE_ORIGINAL_AFTER_SUCCESS" == true && ( -z "$TARGET_IMAGE" || "$OBSERVE_ONLY" == true || "$HARD_FAILOVER" == true || "$ENABLE_HTTP_READINESS_MIGRATION" == true || "$ENABLE_GRPC_CONNECTION_AGING_MIGRATION" == true ) ]]; then
+  echo "restore-after-success requires TARGET_IMAGE and excludes other experiment/migration modes" >&2
   exit 2
 fi
 if [[ "$ENABLE_TEMPORARY_1PC_EXPERIMENT" == true && "$ENABLE_TEMPORARY_ASYNC_COMMIT_EXPERIMENT" == true ]]; then
@@ -1134,9 +1143,13 @@ delete_probe_pod() {
 cleanup() {
   local rollback_failed=false
   stop_rollout_observer
-  if [[ "$candidate_rollout_started" == true && ( "$candidate_rollout_succeeded" != true || "$temporary_protocol_experiment" == true ) ]]; then
+  if [[ "$candidate_rollout_started" == true && ( "$candidate_rollout_succeeded" != true || "$temporary_protocol_experiment" == true || "${RESTORE_ORIGINAL_AFTER_SUCCESS:-false}" == true ) ]]; then
     if [[ "$candidate_rollout_succeeded" == true ]]; then
-      echo "temporary experiment completed; restoring original image ${image}" >&2
+      if [[ "$temporary_protocol_experiment" == true ]]; then
+        echo "temporary experiment completed; restoring original image ${image}" >&2
+      else
+        echo "temporary candidate rollout completed; restoring original image ${image}" >&2
+      fi
     else
       echo "candidate rollout failed; restoring original image ${image}" >&2
     fi

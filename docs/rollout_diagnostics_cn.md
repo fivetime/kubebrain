@@ -7,6 +7,22 @@
 现有 `capture-rollout-tls-metrics.sh` 采集 KubeBrain 指标、探针进度和运行身份。
 若不设置 `DIAGNOSTIC_TIKV_RECEIPT`，行为不变。
 
+## 临时候选验收后的恢复
+
+普通 `TARGET_IMAGE` 升级默认在失败时恢复原配置，成功时保留候选版本。
+专用测试集群需要成功后也恢复时，可显式设置
+`RESTORE_ORIGINAL_AFTER_SUCCESS=true`。该选项不启用 1PC 或 async commit，
+不改变源提交协议、请求次数、完成窗口或延迟门限，因此可用于默认 2PC 的
+临时候选验收。仍需正常的变更授权、不可变目标镜像和运行时摘要。
+
+此选项默认 false，只接受 true/false；启用时必须有 `TARGET_IMAGE`，并拒绝
+OBSERVE_ONLY、HARD_FAILOVER、HTTP readiness 或连接老化迁移的组合。
+既有临时 1PC/async commit 模式仍自行保证成功后恢复，不依赖此选项。
+恢复复用原 UID/resourceVersion/spec 围栏、收敛期限及逐 Pod 运行身份核验；
+漂移、恢复失败或清理失败仍使执行器失败，不因探针先前成功而放行。
+独立后端观察器仍在恢复与清理完成后停止。执行前后应另行核对完整 spec、
+实际运行镜像和本轮资源清理回执；此开关不替代真实恢复证据。
+
 ## 可选 TiKV 指标
 
 将 `DIAGNOSTIC_TIKV_RECEIPT` 设置为仓库外、已核验身份记录的绝对路径。

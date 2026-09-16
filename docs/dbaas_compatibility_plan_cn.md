@@ -142,6 +142,49 @@ Attachment 扩展 race 通过（74.314s），vet 和 diff 检查通过。既有
 该修复版本的 CI、镜像身份校验和真实集群验收。此前 `0e7af672` 临时 async
 commit 的通过结果只适用于旧代码，见 [该轮验收报告](acceptance_async_0e7af672_20260916_cn.md)。
 
+上述租约 RPC 修复已提交并推送为 `42903fed1c1d8972e421f5a70bb3d38ddf859be3`。
+同源码回归 CI `35137630493` 全部成功：完整服务 131.315s、鉴权 race
+82.801s、租约 race 70.502s、Watch race 23.571s、代理 race 3.238s、完整
+探针 race 350.307s；新增三个准入场景在普通和 race 两条路径均通过。
+镜像 CI `35137630436` 随后成功。独立校验确认索引
+`sha256:4c9533a22ef194ac96d6648b7b12ef57f651567065e6787f1a36f11a0060f626`，
+amd64 `sha256:559330dc929189b78c66d7c30b431cd7b0746b4c5ba03504548ed52c7fc5c93f`，
+arm64 `sha256:bf2a0958e29bd4e1fdc587f4ed48a9ed81cd6bd1cfa27bc959cc9314055917e4`。
+实际 amd64 二进制版本/源码、Go 1.26.8、平台选择、发布标签和客户端依赖
+均已核验；独立校验退出 0、cleanup_failed=0，并另行确认临时容器及提取
+二进制不存在，辅助程序经摘要验证后删除。本地证据位于
+`/root/.local/state/kubebrain/lease-rpc-admission-ci.ycDAWZM5/`。
+本次未触发新的后端 CI；742 项部署工具测试沿用经冻结源码摘要复核的既有
+分片记录，不冒充新的全量运行。该镜像尚未部署，真实集群验收仍未证明。
+
+等待发布期间的独立检查：仓库外 Go overlay 在未修改上述产品源码的前提下，
+复现了 KeepAlive 内部 worker 等待 binding lock、checkpoint barrier、
+checkpoint stripe 三种情况下，100ms context 到期后仍阻塞，直到测试
+于 1 秒释放锁后发生迟到续租（3.084s，exit 1）。外层 RPC 的取消 select
+可以先返回，不能据此证明内部协程已经退出。固定上游 etcd 的 lessor.Renew
+没有 context 参数，checkpoint 回调还使用 context.Background，因此这不是
+已证明的 wire 协议不兼容；应作为资源回收和未开始变更的取消行为风险继续
+检查。当前只覆盖未启用鉴权的内部 worker，不覆盖 scoped caller、网络或
+已提交/不确定 checkpoint 的恢复；不允许直接替换持久化后的重新获锁逻辑。
+
+默认协议临时候选验收的恢复选项（2026-09-16）：新增
+`RESTORE_ORIGINAL_AFTER_SUCCESS=true`，让不改变提交协议的候选升级在成功后
+也复用原 UID/resourceVersion/spec/运行镜像围栏恢复基线；默认 false，正常
+发布成功仍保留候选版本。非法布尔值、无目标镜像及观察/硬故障/其他迁移组合
+在访问 Kubernetes 前拒绝。未降低 6000 次、100ms、滚动后 900s 或公开
+5s/直连 30s 门限。行为与边界见 [滚动诊断文档](rollout_diagnostics_cn.md)。
+
+新增成功恢复场景先在旧实现中失败（7.375s，候选状态仍存在），随后新模式
+与既有临时 1PC/async commit 的定向 race 回归通过（69.766s）。完整部署工具
+744 项顶层测试按四组各 186 项执行，全部通过（742.302s/478.418s/581.112s/
+533.926s）；执行前后及最终源码摘要一致，测试清单与仓库自带 SHA-256 分片
+入口的清单完全相同，但分组编号不与该入口的分组编号混用。覆盖正常发布默认
+保留候选、成功后恢复、失败回滚、恢复后镜像漂移拒绝及参数准入；vet、语法
+和 diff 检查通过。证据在
+`/root/.local/state/kubebrain/default-2pc-restore-regression.3DFbRjIB/`。
+仅修改部署脚本/测试/文档，服务与探针 Go 运行代码不变；本地通过不替代后续
+对应发布验证或默认 2PC 的真实集群验收，本阶段没有切换集群镜像。
+
 持续 CI 覆盖：完整非 race 服务回归已包括新租约锁测试，但原鉴权／Watch
 race 筛选不会选择它们。现显式增加 Lease／Revoke／Expiry／Checkpoint／
 Attachment 的 uncached race 命令，保留 8 分钟测试超时、失败阻断及原有
