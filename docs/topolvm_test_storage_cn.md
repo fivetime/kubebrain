@@ -66,3 +66,19 @@ worker1 的其他数据盘存在 `ceph_bluestore`、`crypto_LUKS` 签名；worke
 清理前逐卷核对已保存 PV/PVC UID、claimRef、StorageClass 和 CSI driver，仅将此次三个临时 PV 的回收策略改成 Delete（带 UID/原策略 JSON Patch 前置检查），随后删除对应 PVC，并等待 PV 删除，最后删除临时命名空间。清理脚本终态为 0；测试随机数据已删除、不可恢复。**StorageClass 的 Retain 策略和所有旧 Ceph 卷未更改。**日志为 `smoke.log`、`cleanup-smoke.log`，各次 Pod/PV JSON 和读写日志保存在同一证据目录。
 
 安装及 smoke 后，现有 PD、TiKV、KubeBrain StatefulSet 均为 3/3 Ready；KubeBrain generation/observedGeneration 仍为 102，仍使用恢复后的原固定镜像。下一阶段需为本地盘 PD/TiKV 后端制定保留旧后端的部署/切换/回退方案，再按原门限测试；当前不宣称整体任务或性能验收完成。
+
+## 独立本地盘后端已部署（2026-09-16 21:39 UTC）
+
+[独立后端清单](../deploy/test-cluster/tidb-cluster-local.yaml) 在同一专用测试命名空间创建 `kb-local`，而不是修改原 `kb` 的 PVC。新的 TidbCluster UID 为 `512e36f6-306d-407d-ad79-aab446ad34e2`、PD cluster ID 为 `7686251028133611667`，与旧后端独立。**这是空白新后端，不是已完成的数据迁移；KubeBrain 的 PD 地址尚未切换。**
+
+PD/TiKV 均为 v8.5.3、各三副本、每节点各一副本，保留原资源配置：PD 每副本 requests 1 CPU/2 GiB、limits 2 CPU/4 GiB、20 GiB 卷；TiKV requests 4 CPU/8 GiB、limits 8 CPU/16 GiB、100 GiB 卷。仅使用 `kubebrain-local-lvm`，六卷均 Retain；硬节点亲和性同时限制三个 hostname 和 TopoLVM 标签，硬 Pod 反亲和性按新实例区分。
+
+部署前各节点已请求 CPU 约 5.7–5.9/15 核、内存约 11.2–11.5/27.8 GiB，可容纳新增 requests。Metrics API 不可用，因此使用 kubelet stats/summary 核对，内存 available 约 23.6–24.6 GiB、memory PSI avg10/60/300 均为零。并行保留旧后端会造成 limits 超配和资源竞争，**不可在两套后端同时施压后宣称存储介质的严格因果比较**；正式测试前须重新检查资源压力和背景负载。
+
+仓库配置测试 `go test -race -count=1 ./deploy/test-cluster` 通过（1.045s），server dry-run 通过，随后使用 create 新建资源。`wait-tidbcluster-ready.sh` 终态 0：两个 StatefulSet 全部 Ready/current，三台 TiKV Debug gRPC 均响应。`validate-tikv-region-health.sh` 终态 0：三 PD 成员、三 Up stores、连续三次 abnormal regions=0，PV/PVC 和文件系统容量检查通过。PD 只读 API 经固定 Pod UID 的 exec/curl 通道访问，不扩大 NetworkPolicy。
+
+新六个实际容器镜像摘要与旧后端一致：PD `sha256:b32c69d8b9cc08cead83649d54c58942c441492b459c4cf190cd8c4747bf85f3`，TiKV `sha256:00502c3c74915577ff3a669a223a3740c3f1f7e151de745620a95a5f1450a909`。清单沿用原 v8.5.3 标签，因此未来重建仍必须核对实际摘要，不能把标签相同当作二进制相同。
+
+启动期间 `kb-local-pd-0` 有一次退出码 1 重启，日志显示另一个成员尚未完成加入，随后恢复。不得把该次启动写成零重启；之后是否持续稳定仍需观察。部署前后旧六个 PD/TiKV Pod UID、container ID、restart count 与容器状态完全一致。
+
+证据仍在前述 owner 目录：`local-backend-dry-run.json`、`local-backend-ready.log`、`local-backend-health.log`、`local-backend-pods.json`、`old-backend-before.json`、`old-backend-after.json`。这些只证明后端供应、启动和 Region 健康，**不证明 etcd 事务兼容性、原 900 秒验收或数据迁移成功**。后续优先为新后端准备隔离的 KubeBrain 测试实例和相同负载，避免把现有实例直接指向空库；任何正式连接切换前保留明确回退路径。

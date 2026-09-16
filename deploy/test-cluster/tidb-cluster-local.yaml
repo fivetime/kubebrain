@@ -1,0 +1,88 @@
+# Dedicated test cluster only. Creates an EMPTY independent backend.
+# Does not migrate data or switch KubeBrain. Preserve the existing kb cluster.
+# Match the Ceph baseline resource/config shape; verify runtime image digests
+# against that baseline before accepting any comparative measurement.
+apiVersion: pingcap.com/v1alpha1
+kind: TidbCluster
+metadata:
+  name: kb-local
+  namespace: kubebrain-dbaas-test
+  labels:
+    app.kubernetes.io/instance: kb-local
+spec:
+  version: v8.5.3
+  timezone: UTC
+  imagePullPolicy: IfNotPresent
+  configUpdateStrategy: RollingUpdate
+  enableDynamicConfiguration: true
+  enablePVReclaim: false
+  pvReclaimPolicy: Retain
+  pd:
+    baseImage: pingcap/pd
+    replicas: 3
+    maxFailoverCount: 0
+    storageClassName: kubebrain-local-lvm
+    requests:
+      cpu: "1"
+      memory: 2Gi
+      storage: 20Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi
+    config: ""
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values: [k8s3-worker1, k8s3-worker2, k8s3-worker3]
+                - key: kubebrain.io/topolvm
+                  operator: In
+                  values: [enabled]
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: pd
+                app.kubernetes.io/instance: kb-local
+            topologyKey: kubernetes.io/hostname
+  tikv:
+    baseImage: pingcap/tikv
+    replicas: 3
+    maxFailoverCount: 0
+    storageClassName: kubebrain-local-lvm
+    requests:
+      cpu: "4"
+      memory: 8Gi
+      storage: 100Gi
+    limits:
+      cpu: "8"
+      memory: 16Gi
+    config: |
+      [storage]
+        max-key-size = 2621440
+    readinessProbe:
+      initialDelaySeconds: 10
+      periodSeconds: 5
+      type: tcp
+    terminationGracePeriodSeconds: 300
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: kubernetes.io/hostname
+                  operator: In
+                  values: [k8s3-worker1, k8s3-worker2, k8s3-worker3]
+                - key: kubebrain.io/topolvm
+                  operator: In
+                  values: [enabled]
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: tikv
+                app.kubernetes.io/instance: kb-local
+            topologyKey: kubernetes.io/hostname
