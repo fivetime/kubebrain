@@ -223,6 +223,14 @@ func TestRealTiKVBackendAsyncPacedFencedProtocolLatency(t *testing.T) {
 	testRealTiKVBackendScenario(t, "async-fenced-latency-paced")
 }
 
+func TestRealTiKVBackendNativePutPacedLatency(t *testing.T) {
+	testRealTiKVBackendScenario(t, "fenced-latency-paced-native")
+}
+
+func TestRealTiKVBackendAsyncNativePutPacedLatency(t *testing.T) {
+	testRealTiKVBackendScenario(t, "async-fenced-latency-paced-native")
+}
+
 func waitProtocolLatencyPacing(ctx context.Context, pause time.Duration) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -387,7 +395,7 @@ func TestProtocolLatencyFixtureBound(t *testing.T) {
 
 // Fixed small blocks fit the existing 128-key ownership-fenced cleanup bound.
 // Repeat separate processes in ABBA order; never compare one cold transaction.
-func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.Backend, client *protocolLatencyClient, mode string, fenced bool, pacing time.Duration) {
+func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.Backend, client *protocolLatencyClient, mode string, fenced bool, pacing time.Duration, nativePut bool) {
 	t.Helper()
 	const warmup, samples = 10, 20
 	require.NoError(t, b.EnsureQuotaInitialized(ctx))
@@ -396,12 +404,22 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	if mode == "async" {
 		writeCtx = context.WithValue(ctx, protocolAsyncLatencyMarker{}, true)
 	}
+	op := backend.TxnWriteOp{Key: key, Value: value}
+	if nativePut {
+		// Match the native unleased Put's backend arguments and an initially
+		// absent auth config. This still excludes RPC admission and proxy work.
+		op.PrevLeaseKnown, op.DiscardPrevValue = true, true
+		_, err := b.InternalGet(ctx, []byte("auth/config"))
+		require.ErrorIs(t, err, storage.ErrKeyNotFound)
+		writeCtx = backend.WithAbsentInternalWriteGuard(writeCtx, []byte("auth/config"))
+	}
+	t.Logf("PROTOCOL_LATENCY_SHAPE native_unleased_put=%t absent_auth_guard=%t rpc_admission=false", nativePut, nativePut)
 	last := uint64(100)
 	for i := 0; i <= warmup; i++ {
 		if i != 0 {
 			require.NoError(t, waitProtocolLatencyPacing(writeCtx, pacing))
 		}
-		_, revision, err := b.TxnApply(writeCtx, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
+		_, revision, err := b.TxnApply(writeCtx, []backend.TxnWriteOp{op}, nil)
 		require.NoError(t, err)
 		require.Equal(t, last+1, revision)
 		last = revision
@@ -433,10 +451,16 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 		outer := &lockRPCTracker{}
 		sampleCtx := context.WithValue(measured, lockRPCTrackerKey{}, outer)
 		started := time.Now()
-		_, revision, err := b.TxnApply(sampleCtx, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
+		results, revision, err := b.TxnApply(sampleCtx, []backend.TxnWriteOp{op}, nil)
 		durations = append(durations, time.Since(started).Nanoseconds())
 		outsideLocks = append(outsideLocks, outer.finish())
 		require.NoError(t, err)
+		require.Len(t, results, 1)
+		if nativePut {
+			require.Nil(t, results[0].PrevValue)
+			require.Equal(t, last, results[0].PrevRevision)
+			require.Zero(t, results[0].Meta.Lease)
+		}
 		after := client.snapshot()
 		writes := after.Prewrite - before.Prewrite
 		require.Positive(t, writes)
@@ -499,6 +523,8 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 		require.Equal(t, want.Commit, attempts["commit"])
 	}
 	getAttempts, batchAttempts := samples, 2*samples
+	// Native Put's auth guard shares the transaction prefetch. It must not
+	// reintroduce a separate point RPC, including when the auth key is absent.
 	if mode == "async" || fenced {
 		// Async success can precede lock cleanup; the next snapshot legitimately
 		// resolves a lock and re-reads. Require evidence for every extra attempt,
@@ -506,7 +532,7 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 		getAttempts += reads.GetLocked
 		batchAttempts += reads.BatchGetLocked
 	}
-	require.Equal(t, getAttempts, attempts["get"], "only previous-object reads plus observed lock-resolution retries")
+	require.Equal(t, getAttempts, attempts["get"], "only previous-object reads plus observed lock-resolution retries; auth guard must share prefetch")
 	if fenced {
 		require.GreaterOrEqual(t, attempts["batch_get"], batchAttempts+samples, "include production fence groups and observed lock-resolution retries")
 	} else {
@@ -562,6 +588,21 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s fenced=%t warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, fenced, warmup, samples, len(value), quota, durations, stats)
 	t.Logf("PROTOCOL_LATENCY_PACING requested_ns=%d pauses_ns=%v scope=between_operations excluded_from_txn_duration=true acceptance=false", pacing.Nanoseconds(), pauses)
 	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_context excludes=unmarked_work async_commit_cleanup_may_be_included=true", attempts)
+	if nativePut {
+		// Outside the measured population, prove that this exact context still
+		// rejects a changed auth configuration; a missing guard must fail the
+		// fixture rather than merely produce an optimistic latency number.
+		require.NoError(t, b.InternalPut(ctx, []byte("auth/config"), []byte("changed-by-test")))
+		_, _, err := b.TxnApply(writeCtx, []backend.TxnWriteOp{op}, nil)
+		require.ErrorIs(t, err, backend.ErrInternalWriteGuardConflict)
+		require.Equal(t, last, b.GetCurrentRevision())
+		unchanged, err := b.Get(ctx, &proto.GetRequest{Key: key})
+		require.NoError(t, err)
+		require.NotNil(t, unchanged.Kv)
+		require.Equal(t, last, unchanged.Kv.Revision)
+		require.Equal(t, value, backend.StripInlineValue(unchanged.Kv.Value))
+		t.Log("PROTOCOL_NATIVE_AUTH_GUARD_OK changed_config_rejected=true user_revision_unchanged=true outside_measurement=true")
+	}
 }
 
 // Subtract one phase at a time to reject overflow as well as invalid timings.

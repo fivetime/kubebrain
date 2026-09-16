@@ -286,7 +286,7 @@ func atomicExpect(ctx context.Context, txn storage.AtomicBatch, key, expected []
 // from a revision allocated by that transaction.
 func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, preps []txnPrep, guardPreps []txnGuardPrep, newRevision uint64, quotaUsageRaw []byte, nextQuotaUsage int64, corruptGuard corruptAlarmCommitGuard) error {
 	if prefetcher, ok := txn.(storage.AtomicBatchPrefetcher); ok {
-		if err := prefetcher.Prefetch(ctx, b.txnAtomicReadKeys(preps, guardPreps, corruptGuard)); err != nil {
+		if err := prefetcher.Prefetch(ctx, b.txnAtomicReadKeys(ctx, preps, guardPreps, corruptGuard)); err != nil {
 			return err
 		}
 	}
@@ -440,7 +440,7 @@ func (b *backend) stageTxnAtomic(ctx context.Context, txn storage.AtomicBatch, p
 // replace comparisons, add read-set conflict assumptions, or cache across
 // attempts. In particular migration objects and absent revision keys still
 // pass their original checks inside the same storage transaction.
-func (b *backend) txnAtomicReadKeys(preps []txnPrep, guards []txnGuardPrep, corruptGuard corruptAlarmCommitGuard) [][]byte {
+func (b *backend) txnAtomicReadKeys(ctx context.Context, preps []txnPrep, guards []txnGuardPrep, corruptGuard corruptAlarmCommitGuard) [][]byte {
 	keys := make([][]byte, 0, 2+len(preps)+len(guards))
 	seen := make(map[string]struct{}, cap(keys))
 	add := func(key []byte) {
@@ -450,6 +450,12 @@ func (b *backend) txnAtomicReadKeys(preps []txnPrep, guards []txnGuardPrep, corr
 		}
 	}
 	add(b.ks.EncodeInternalKey(corruptGuard.key))
+	if guard, ok := ctx.Value(internalWriteGuardContextKey{}).(internalWriteGuard); ok {
+		// commitUserBatch still checks and mutates this key in the same
+		// transaction. Prefetch only avoids a separate auth-guard point RPC;
+		// neither an earlier admission snapshot nor a cached policy is trusted.
+		add(b.ks.EncodeInternalKey(guard.key))
+	}
 	if b.config.QuotaBackendBytes > 0 {
 		add(b.ks.EncodeInternalKey(quotaUsageKey))
 	}
@@ -862,7 +868,7 @@ func (b *backend) tryTxnApply(ctx context.Context, ops []TxnWriteOp, guards []Tx
 	// one storage transaction. A definite conflict rolls back the allocation, so
 	// it creates no collector hole and must not publish an invalid event.
 	batch := b.kv.BeginBatchWrite()
-	readKeys := b.txnAtomicReadKeys(preps, guardPreps, corruptGuard)
+	readKeys := b.txnAtomicReadKeys(ctx, preps, guardPreps, corruptGuard)
 	if !pinnedQuota {
 		if hasPut {
 			readKeys = append(readKeys, b.ks.EncodeInternalKey(quotaAlarmKey))

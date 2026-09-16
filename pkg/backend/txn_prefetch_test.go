@@ -216,7 +216,24 @@ func TestTxnAtomicReadKeysIncludesMigrationAndDeduplicates(t *testing.T) {
 	key := []byte("migrating")
 	revisionKey := b.coder.EncodeRevisionKey(key)
 	guard := corruptAlarmCommitGuard{key: []byte("guard")}
-	keys := b.txnAtomicReadKeys([]txnPrep{{op: TxnWriteOp{Key: key}, effective: true, migratePrev: true, curRev: 4}},
+	keys := b.txnAtomicReadKeys(context.Background(), []txnPrep{{op: TxnWriteOp{Key: key}, effective: true, migratePrev: true, curRev: 4}},
 		[]txnGuardPrep{{key: revisionKey}, {key: revisionKey}}, guard)
 	require.ElementsMatch(t, [][]byte{b.ks.EncodeInternalKey(guard.key), revisionKey, b.coder.EncodeObjectKey(key, 4)}, keys)
+}
+
+func TestTxnAtomicReadKeysIncludesAuthGuard(t *testing.T) {
+	b, ctx := newTxnApplyBackend(t)
+	key := []byte("auth/config")
+	corrupt := corruptAlarmCommitGuard{key: []byte("corrupt-guard")}
+	for _, guarded := range []context.Context{
+		WithAbsentInternalWriteGuard(ctx, key),
+		WithInternalWriteGuard(ctx, key, []byte("expected-policy")),
+	} {
+		want := [][]byte{b.ks.EncodeInternalKey(corrupt.key), b.ks.EncodeInternalKey(key)}
+		require.ElementsMatch(t, want, b.txnAtomicReadKeys(guarded, nil, nil, corrupt))
+		// Internal operations can already read this key. Prefetch it only once.
+		require.ElementsMatch(t, want, b.txnAtomicReadKeys(guarded,
+			[]txnPrep{{op: TxnWriteOp{Internal: true, Key: key}, effective: true}}, nil, corrupt))
+	}
+	require.Equal(t, [][]byte{b.ks.EncodeInternalKey(corrupt.key)}, b.txnAtomicReadKeys(ctx, nil, nil, corrupt))
 }

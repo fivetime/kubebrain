@@ -120,6 +120,8 @@ func TestLocalProtocolPacedModes(t *testing.T) {
 		{"TestRealTiKVBackendAsyncFencedProtocolLatency", "2pc 1"},
 		{"TestRealTiKVBackendPacedFencedProtocolLatency", "2pc 0"},
 		{"TestRealTiKVBackendAsyncPacedFencedProtocolLatency", "2pc 1"},
+		{"TestRealTiKVBackendNativePutPacedLatency", "2pc 0"},
+		{"TestRealTiKVBackendAsyncNativePutPacedLatency", "2pc 1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Contains(t, string(source[:start]), tc.name+" ")

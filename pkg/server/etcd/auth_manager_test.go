@@ -323,9 +323,15 @@ func TestAuthManagerUserAddReplacesOrphanTokenGeneration(t *testing.T) {
 	})
 	require.NoError(t, err, "simulate deletion by a peer predating generation records")
 
+	// The deadline detects an impossible create-only CAS retry on the orphan,
+	// not bcrypt throughput under race instrumentation or CPU contention. Keep
+	// the production hash cost, but finish hashing before timing the mutation.
+	request := &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "new"}
+	password, err := authPassword(request, manager.bcryptCost)
+	require.NoError(t, err)
 	addCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	require.NoError(t, manager.userAdd(addCtx, &etcdserverpb.AuthUserAddRequest{Name: "alice", Password: "new"}))
+	require.NoError(t, manager.userAddWithPassword(addCtx, request, password))
 	after, err := manager.repo.load(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, after.Users["alice"])

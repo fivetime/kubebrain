@@ -223,6 +223,11 @@ func TestRealTiKVBackendNoRPCRetryUndeliveredOnePC(t *testing.T) {
 func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 	t.Helper()
 	var pacing time.Duration
+	nativePut := strings.HasSuffix(scenario, "-native")
+	if nativePut {
+		require.Contains(t, []string{"fenced-latency-paced-native", "async-fenced-latency-paced-native"}, scenario)
+		scenario = strings.TrimSuffix(scenario, "-native")
+	}
 	if strings.HasSuffix(scenario, "-paced") {
 		require.Contains(t, []string{"fenced-latency-paced", "async-fenced-latency-paced"}, scenario)
 		pacing = 100 * time.Millisecond
@@ -523,7 +528,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 			if asyncExperiment {
 				mode = "async"
 			}
-			measureProtocolBackendLatency(t, ctx, b, latencyClient, mode, true, pacing)
+			measureProtocolBackendLatency(t, ctx, b, latencyClient, mode, true, pacing, nativePut)
 			require.GreaterOrEqual(t, rpc.leadership.Load(), int32(20))
 			require.GreaterOrEqual(t, rpc.restoration.Load(), int32(20))
 			t.Logf("PROTOCOL_LATENCY_FENCES_OK leadership_mutations=%d restoration_mutations=%d", rpc.leadership.Load(), rpc.restoration.Load())
@@ -555,7 +560,7 @@ func testRealTiKVBackendScenario(t *testing.T, scenario string) {
 		if asyncExperiment {
 			mode = "async"
 		}
-		measureProtocolBackendLatency(t, ctx, b, latencyClient, mode, false, 0)
+		measureProtocolBackendLatency(t, ctx, b, latencyClient, mode, false, 0, false)
 		return
 	}
 	if guardedAsync {

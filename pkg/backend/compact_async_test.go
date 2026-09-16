@@ -377,25 +377,41 @@ func TestPhysicalCompactionPendingRetryStopsWithLeadershipContext(t *testing.T) 
 		"a retry queued by an old term must not start a follower-side scan")
 }
 
+type compactEpochChangeKey struct{}
+
+type compactEpochChangeStore struct {
+	storage.KvStorage
+	epoch    atomic.Uint64
+	captured atomic.Uint64
+}
+
+func (s *compactEpochChangeStore) Get(ctx context.Context, key []byte) ([]byte, error) {
+	if ctx.Value(compactEpochChangeKey{}) == s && string(key) == string(getCompactKey(prefix)) {
+		admitted, _ := leadershipEpochFromContext(ctx)
+		s.captured.Store(admitted)
+		s.epoch.Store(2)
+	}
+	return s.KvStorage.Get(ctx, key)
+}
+
 func TestCompactAsyncCapturesEpochForInternalCaller(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	m := mock.NewMinimalMetrics(ctrl)
-	kv := imemkv.NewKvStorage()
+	kv := &compactEpochChangeStore{KvStorage: imemkv.NewKvStorage()}
 	defer func() { require.NoError(t, kv.Close()) }()
 	b := NewBackend(kv, Config{Prefix: prefix, Identity: "auto-compact-fence", EnableEtcdCompatibility: true}, m).(*backend)
 	target := uint64(time.Now().UnixNano())
 	b.SetCurrentRevision(target)
 
-	var checks atomic.Uint64
-	b.SetLeadershipFence(func() (uint64, bool) {
-		if checks.Add(1) == 1 {
-			return 1, true
-		}
-		return 2, true
-	})
+	// Background workers also consult the fence. Switch only when this exact
+	// request has captured its epoch and reads the watermark, not on a global
+	// callback count that can be consumed by an unrelated goroutine.
+	kv.epoch.Store(1)
+	b.SetLeadershipFence(func() (uint64, bool) { return kv.epoch.Load(), true })
 
-	_, err := b.CompactAsync(context.Background(), target)
+	_, err := b.CompactAsync(context.WithValue(context.Background(), compactEpochChangeKey{}, kv), target)
+	require.EqualValues(t, 1, kv.captured.Load(), "internal caller must carry its admission epoch to storage")
 	require.ErrorIs(t, err, ErrLeadershipFenced)
 	hasMarker, markerErr := b.HasCompactRevision(context.Background())
 	require.NoError(t, markerErr)

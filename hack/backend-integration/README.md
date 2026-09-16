@@ -3,7 +3,7 @@
 本目录维护根模块的本机真实 PD/TiKV 测试入口；旧独立 SQL mock 模块已退役。
 不接入 Kubernetes，不需要 kubeconfig。
 
-当前入口共 35 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
+当前入口共 37 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
 当前执行顺序。三个单 Region 后端响应丢失用例先于主动 Region 分裂执行；
 后续增加用例时以入口中的测试名清单及明确 PASS 回执为准，不累加历史轮次。
 
@@ -23,6 +23,17 @@ batch 外耗时包含后端准入、准备和完成处理，不能命名为纯�
 `PROTOCOL_LATENCY_PACING` 单列实际等待时间，不计入 TxnApply 延迟；不报告为
 6000 次吞吐验收。两类均保留同样的真实防护、20 个样本、Watch／revision／quota
 验证和有界 ownership 清理，不要求 async 一定遇锁，也不要求有间隔一定消除锁。
+
+另有 `TestRealTiKVBackendNativePutPacedLatency` 和
+`TestRealTiKVBackendAsyncNativePutPacedLatency`，使用正式无租约 Put 的
+`PrevLeaseKnown`／`DiscardPrevValue` 参数及初始缺失 auth/config 的提交防护，
+验证不返回旧值、旧 revision 和零 lease。`PROTOCOL_LATENCY_SHAPE` 区分此路径；
+旧用例保留。它们仍不包含 RPC 的 quota／auth／corrupt admission、代理和全进程
+async 内部事务，也不强制 Region 分组数，不能当作服务级验收。
+这两例要求 auth guard 共享本事务预取，不新增独立点读；测量结束后改变配置，
+再验证原 guard 拒绝写入且用户 revision／值不变。既有
+`TestRealTiKVAbsentAuthGuardConflictsAfterStaging` 另覆盖预取及 staging 完成后
+并发创建配置的冲突，不能以快照预取替代提交冲突保护。
 
 启动实验入口：命令行新增 `--experimental-tikv-enable-async-commit`，默认
 `false`，与 `--experimental-tikv-enable-1pc` 互斥。冲突配置在创建客户端前
