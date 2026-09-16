@@ -4,6 +4,10 @@
 
 ## 验证边界
 
+真实 Kubernetes 接入前的测试清理所有权修复及剩余适配项见
+[apiserver 清理安全记录](apiserver_cleanup_ownership_cn.md)。全局 lease 集合差值
+不能作为撤销授权；本项尚不是实际 apiserver 接入验收。
+
 KeepAlive 的入口等待取消改进及其测试边界见
 [资源管理回归记录](lease_keepalive_cancellation_cn.md)。该项不代表协议兼容性、
 真实 TiKV 后端验收或整体生产就绪已经完成。

@@ -2583,8 +2583,9 @@ func TestOwnedEndpointRunnersHaveSafetyContracts(t *testing.T) {
 		require.Contains(t, calleeContent, `if [[ "$prefix_owned" == true ]]`)
 		require.Contains(t, calleeContent, `del "$ETCD_PREFIX" --prefix`)
 		require.Contains(t, calleeContent, "baseline_lease_ids=\"$(list_lease_ids)\"")
-		require.Contains(t, calleeContent, `lease revoke "$lease_id"`)
-		require.Contains(t, calleeContent, "lease set differs from preflight after cleanup")
+		require.NotContains(t, calleeContent, `lease revoke`)
+		require.Contains(t, calleeContent, `source "$ROOT_DIR/hack/dev/apiserver-lease-cleanup.sh"`)
+		require.Contains(t, calleeContent, `if ! verify_apiserver_lease_cleanup; then`)
 		if resource == "etcd-prefix-kubernetes" {
 			require.Contains(t, calleeContent, "refusing non-empty in-cluster apiserver")
 			require.Contains(t, calleeContent, "MANAGEMENT_ENDPOINT is required")

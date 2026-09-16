@@ -3,6 +3,7 @@ set -euo pipefail
 umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+source "$ROOT_DIR/hack/dev/apiserver-lease-cleanup.sh"
 CLUSTER_NAME="${CLUSTER_NAME:-}"
 NODE_NAME="${NODE_NAME:-${CLUSTER_NAME}-control-plane}"
 NAMESPACE="${NAMESPACE:-kubebrain-dev}"
@@ -166,23 +167,8 @@ cleanup() {
       echo "owned in-cluster apiserver prefix is not empty after cleanup: $ETCD_PREFIX" >&2
       cleanup_failed=1
     fi
-    if ! final_lease_ids="$(list_lease_ids)"; then
-      echo "failed to list leases after in-cluster apiserver smoke" >&2
+    if ! verify_apiserver_lease_cleanup; then
       cleanup_failed=1
-    else
-      while IFS= read -r lease_id; do
-        [[ -z "$lease_id" ]] && continue
-        if ! grep -Fxq "$lease_id" <<<"$baseline_lease_ids"; then
-          if ! "${ETCDCTL[@]}" lease revoke "$lease_id" >/dev/null; then
-            echo "failed to revoke in-cluster apiserver smoke lease: $lease_id" >&2
-            cleanup_failed=1
-          fi
-        fi
-      done <<<"$final_lease_ids"
-      if ! final_lease_ids="$(list_lease_ids)" || [[ "$final_lease_ids" != "$baseline_lease_ids" ]]; then
-        echo "in-cluster apiserver smoke lease set differs from preflight after cleanup" >&2
-        cleanup_failed=1
-      fi
     fi
   fi
   if [[ "$work_dir_created" == true ]]; then
