@@ -42,9 +42,9 @@
 本轮只读查询专用集群：`kubebrain-local`、`kb-local-pd`、`kb-local-tikv` 均为
 3/3 Ready。没有部署临时 apiserver，也没有修改该集群。
 
-现有独立进程 runner 虽支持 etcd mTLS，但仍从 kind Docker 控制面复制 apiserver
-PKI；in-cluster runner 还约束 HTTP NodePort。它们不能原样用于当前 mTLS、ClusterIP
-的独立后端。后续需适配独立 PKI/服务端身份、客户端证书、管理连接和精确资源所有权，
+独立进程 smoke/watch runner 已新增可选的[独立临时 PKI 模式](apiserver_ephemeral_pki_cn.md)，
+默认 kind 模式仍复制 kind 控制面 PKI；in-cluster runner 仍约束 HTTP NodePort。
+后续需核验目标 apiserver 二进制，并准备服务端身份、客户端证书、管理连接和精确资源所有权，
 再执行对象生命周期、分页 list/watch、lease、apiserver 重启及 KubeBrain 切换测试。
 不得用 `hack/scale-lab/setup.sh all` 覆盖现有专用测试环境，也不得将本轮脚本单测
 作为真实 Kubernetes 接入成功证据。

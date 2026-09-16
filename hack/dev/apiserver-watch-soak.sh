@@ -11,6 +11,7 @@ ETCD_CAFILE="${ETCD_CAFILE:-}"
 ETCD_CERTFILE="${ETCD_CERTFILE:-}"
 ETCD_KEYFILE="${ETCD_KEYFILE:-}"
 APISERVER_BIN="${APISERVER_BIN:-}"
+APISERVER_PKI_MODE="${APISERVER_PKI_MODE:-kind}"
 SECURE_PORT="${SECURE_PORT:-16445}"
 PORT_LOCK_ROOT="${PORT_LOCK_ROOT:-${ROOT_DIR}/.dev/apiserver-port-locks}"
 ETCD_PREFIX="${ETCD_PREFIX:-}"
@@ -199,7 +200,17 @@ if ! flock -n "$port_lock_fd"; then
 fi
 port_lock_owned=true
 
-need docker
+case "$APISERVER_PKI_MODE" in
+  kind) need docker ;;
+  ephemeral)
+    need openssl
+    if [[ -z "$APISERVER_BIN" || ! -x "$APISERVER_BIN" ]]; then
+      echo "ephemeral PKI requires an explicit executable APISERVER_BIN" >&2
+      exit 2
+    fi
+    ;;
+  *) echo "APISERVER_PKI_MODE must be kind or ephemeral" >&2; exit 2 ;;
+esac
 need kubectl
 need curl
 need jq
@@ -271,7 +282,15 @@ elif [ ! -x "$kube_apiserver_bin" ]; then
   bin_lock_owned=false
 fi
 
-docker cp "${NODE_NAME}:/etc/kubernetes/pki" "$PKI_DIR"
+apiserver_cluster_tls="insecure-skip-tls-verify: true"
+apiserver_curl_tls=(-k)
+if [[ "$APISERVER_PKI_MODE" == ephemeral ]]; then
+  bash "$ROOT_DIR/hack/dev/create-apiserver-test-pki.sh" "$PKI_DIR"
+  apiserver_cluster_tls="certificate-authority: ${PKI_DIR}/ca.crt"
+  apiserver_curl_tls=(--cacert "${PKI_DIR}/ca.crt")
+else
+  docker cp "${NODE_NAME}:/etc/kubernetes/pki" "$PKI_DIR"
+fi
 
 cat >"$KUBECONFIG_FILE" <<EOF
 apiVersion: v1
@@ -280,7 +299,7 @@ clusters:
 - name: kubebrain-apiserver-watch-soak
   cluster:
     server: https://127.0.0.1:${SECURE_PORT}
-    insecure-skip-tls-verify: true
+    ${apiserver_cluster_tls}
 users:
 - name: kubebrain-apiserver-watch-soak
   user:
@@ -339,7 +358,7 @@ process_owned=true
 
 echo "Waiting for standalone kube-apiserver on https://127.0.0.1:${SECURE_PORT}"
 deadline=$((SECONDS + WAIT_TIMEOUT_SECONDS))
-until curl -kfsS \
+until curl -fsS "${apiserver_curl_tls[@]}" \
   --cert "${PKI_DIR}/apiserver-kubelet-client.crt" \
   --key "${PKI_DIR}/apiserver-kubelet-client.key" \
   "https://127.0.0.1:${SECURE_PORT}/livez" >/dev/null 2>&1; do
