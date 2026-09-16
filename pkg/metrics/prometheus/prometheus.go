@@ -320,6 +320,9 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 }
 
 func metricHelp(name string) string {
+	if strings.HasPrefix(formatName(name), "write_admission_") {
+		return "Local Put admission phase wall seconds, emitted only for calls reaching the backend. Adjacent phases partition write_pre_backend_latency; rejected admissions and follower proxy calls excluded. Success labels the backend outcome, not this phase."
+	}
 	if strings.HasPrefix(formatName(name), "write_batch_lock_rpc_") {
 		return "Batch phase context lock RPC observations completed before phase closure; unmarked and late calls excluded. Requests and transport_errors are counts per batch; latency is summed RPC wall seconds, including overlaps, not logical lock wait. Zero samples included; success labels batch outcome, not RPC outcome."
 	}

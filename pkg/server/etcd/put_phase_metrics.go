@@ -8,6 +8,37 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/storage"
 )
 
+// These adjacent boundaries partition the existing pre-backend observation.
+// They are emitted only after a local Put reaches its backend call; rejected
+// admissions and follower proxy calls deliberately have no samples here.
+type putAdmissionTimings struct {
+	start, routed, quotaChecked, leaderReady, authAdmitted time.Time
+	authApplied, corruptChecked, leaseLocked, prepared     time.Time
+}
+
+func emitPutAdmissionPhaseDurations(metricCli metrics.Metrics, p putAdmissionTimings, err error) {
+	if metricCli == nil {
+		return
+	}
+	tags := []metrics.T{metrics.Tag("method", "put"), getSuccessMetricTagByErr(err)}
+	for _, phase := range [...]struct {
+		name       string
+		start, end time.Time
+	}{
+		{"route", p.start, p.routed},
+		{"quota", p.routed, p.quotaChecked},
+		{"leader_ready", p.quotaChecked, p.leaderReady},
+		{"auth_admission", p.leaderReady, p.authAdmitted},
+		{"auth_apply", p.authAdmitted, p.authApplied},
+		{"corrupt", p.authApplied, p.corruptChecked},
+		{"lease_guard", p.corruptChecked, p.leaseLocked},
+		{"effective_options", p.leaseLocked, p.prepared},
+	} {
+		// Names are fixed here: neither request values nor errors become labels.
+		_ = metricCli.EmitHistogram("write.admission."+phase.name+".latency", phase.end.Sub(phase.start).Seconds(), tags...)
+	}
+}
+
 // Child batch attempts may outnumber public Put calls (CAS/uncertain retries).
 // Keep their population and outcomes distinct from the parent Put histograms.
 func observePutBatchCommits(ctx context.Context, metricCli metrics.Metrics) context.Context {

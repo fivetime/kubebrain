@@ -1912,6 +1912,7 @@ func (s *RPCServer) waitCompactRevisionVisible(ctx context.Context, revision int
 func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etcdserverpb.PutResponse, retErr error) {
 	emitEtcdMVCCPutCounter(s.metricCli, 1)
 	startTime := time.Now()
+	admission := putAdmissionTimings{start: startTime}
 	validationErr := validatePutRequest(r)
 	if validationErr != nil {
 		quotaUnavailable, quotaErr := s.configuredQuotaUnavailable(ctx, quotaPutCost(r))
@@ -1939,6 +1940,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		s.observeForwardedRevision(response.GetHeader(), err)
 		return response, err
 	}
+	admission.routed = time.Now()
 	quotaUnavailable, quotaErr := s.configuredQuotaUnavailable(ctx, quotaPutCost(r))
 	if quotaErr != nil {
 		return nil, mapFenceErr(quotaErr)
@@ -1950,15 +1952,18 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		s.metricCli.EmitCounter("write.follower", 1)
 		return nil, s.notLeaderErr("put")
 	}
+	admission.quotaChecked = time.Now()
 	readyEpoch, waitErr := s.waitLeaderReadyEpoch(ctx)
 	if waitErr != nil {
 		return nil, waitErr
 	}
 	epoch := readyEpoch
+	admission.leaderReady = time.Now()
 	admittedCaller, authErr := s.prepareEtcdApplyAuthInfo(ctx)
 	if authErr != nil {
 		return nil, authErr
 	}
+	admission.authAdmitted = time.Now()
 	defer beginEtcdApply(s.metricCli, "Put", &retErr)()
 	ctx, caller, authErr := s.authCallerForEtcdApply(ctx, admittedCaller)
 	if authErr != nil {
@@ -1968,9 +1973,11 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		return nil, authErr
 	}
 	ctx = withAuthWriteGuard(ctx, caller)
+	admission.authApplied = time.Now()
 	if err := s.rejectCorrupt(ctx); err != nil {
 		return nil, err
 	}
+	admission.corruptChecked = time.Now()
 	ctx = backend.WithLeadershipEpoch(ctx, epoch)
 	s.leaseWriteMu.RLock()
 	defer s.leaseWriteMu.RUnlock()
@@ -1980,6 +1987,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	if authErr = s.authorizePut(caller, r); authErr != nil {
 		return nil, authErr
 	}
+	admission.leaseLocked = time.Now()
 	prevLease := int64(0)
 	prevLeaseKnown := false
 	plainUnleasedNativePut := !r.PrevKv && !r.IgnoreValue && !r.IgnoreLease && r.Lease == 0
@@ -2017,6 +2025,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 	var response *etcdserverpb.PutResponse
 	ctx = observePutBatchCommits(ctx, s.metricCli)
 	backendStart := time.Now()
+	admission.prepared = backendStart
 	if !prevLeaseKnown {
 		prevLease = s.leaseIDForKey(string(put.Key))
 	}
@@ -2042,6 +2051,7 @@ func (s *RPCServer) Put(ctx context.Context, r *etcdserverpb.PutRequest) (_ *etc
 		response, err = s.backend.Put(backend.WithPreviousLease(ctx, 0), put)
 	}
 	emitPutBackendPhaseDurations(s.metricCli, backendStart.Sub(startTime), time.Since(backendStart), err)
+	emitPutAdmissionPhaseDurations(s.metricCli, admission, err)
 	if err == nil {
 		s.recordEtcdMVCCPutSize(put.Key, put.Value)
 	}

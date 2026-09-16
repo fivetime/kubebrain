@@ -3,13 +3,101 @@ package etcd
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/metrics"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 )
+
+func TestPutAdmissionPhaseUnitsAndPartition(t *testing.T) {
+	start := time.Unix(100, 0)
+	p := putAdmissionTimings{start: start, routed: start.Add(time.Millisecond),
+		quotaChecked: start.Add(3 * time.Millisecond), leaderReady: start.Add(6 * time.Millisecond),
+		authAdmitted: start.Add(10 * time.Millisecond), authApplied: start.Add(15 * time.Millisecond),
+		corruptChecked: start.Add(21 * time.Millisecond), leaseLocked: start.Add(28 * time.Millisecond),
+		prepared: start.Add(36 * time.Millisecond)}
+	for _, err := range []error{nil, errors.New("private request data")} {
+		rec := &recordingMetrics{}
+		emitPutAdmissionPhaseDurations(rec, p, err)
+		phases := []string{"route", "quota", "leader_ready", "auth_admission", "auth_apply", "corrupt", "lease_guard", "effective_options"}
+		require.Len(t, rec.histograms, len(phases))
+		var total float64
+		for i, phase := range phases {
+			h := rec.histograms[i]
+			require.Equal(t, "write.admission."+phase+".latency", h.name)
+			require.Equal(t, float64(i+1)/1000, h.value)
+			require.Equal(t, []metrics.T{metrics.Tag("method", "put"), getSuccessMetricTagByErr(err)}, h.tags)
+			total += h.value.(float64)
+		}
+		require.InDelta(t, p.prepared.Sub(p.start).Seconds(), total, 1e-12)
+	}
+	require.NotPanics(t, func() { emitPutAdmissionPhaseDurations(nil, p, nil) })
+}
+
+func TestPutAdmissionPhasePopulation(t *testing.T) {
+	for _, mode := range []string{"success", "previous", "backend_failure", "validation_reject", "lease_reject", "follower_reject", "follower_proxy_error"} {
+		t.Run(mode, func(t *testing.T) {
+			s, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			rec := &recordingMetrics{}
+			s.metricCli = rec
+			request := &etcdserverpb.PutRequest{Key: []byte("/admission/private-key"), Value: []byte("private-value")}
+			proxied := false
+			switch mode {
+			case "previous":
+				request.PrevKv = true
+			case "backend_failure":
+				s.backend = &nativePutRouteRecorder{BackendShim: s.backend, txnErr: errors.New("private backend detail")}
+			case "validation_reject":
+				request.Key = nil
+			case "lease_reject":
+				request.Lease = 987654
+			case "follower_reject":
+				s.peers = testPeerService{isLeader: false}
+			case "follower_proxy_error":
+				s.peers = testPeerService{isLeader: false, proxyEnabled: true,
+					putFn: func(context.Context, *etcdserverpb.PutRequest) (*etcdserverpb.PutResponse, error) {
+						proxied = true
+						return nil, errors.New("private proxy detail")
+					}}
+			}
+			_, err := s.Put(context.Background(), request)
+			if mode == "success" || mode == "previous" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			require.Equal(t, mode == "follower_proxy_error", proxied)
+			rec.mu.Lock()
+			histograms := append([]recordedHistogram(nil), rec.histograms...)
+			rec.mu.Unlock()
+			var phases int
+			var total, parent float64
+			for _, h := range histograms {
+				if h.name == "write.pre_backend.latency" {
+					parent = h.value.(float64)
+				}
+				if strings.HasPrefix(h.name, "write.admission.") {
+					phases++
+					require.GreaterOrEqual(t, h.value.(float64), 0.0)
+					total += h.value.(float64)
+					require.Equal(t, []metrics.T{metrics.Tag("method", "put"), getSuccessMetricTagByErr(err)}, h.tags)
+				}
+			}
+			if mode == "success" || mode == "previous" || mode == "backend_failure" {
+				require.Equal(t, 8, phases)
+				require.InDelta(t, parent, total, 1e-9)
+			} else {
+				require.Zero(t, phases, "rejected requests must not enter the backend population")
+				require.Zero(t, parent)
+			}
+		})
+	}
+}
 
 func TestPutBackendPhaseMetricsPairUnitsAndOutcome(t *testing.T) {
 	for _, err := range []error{nil, errors.New("private request detail")} {
