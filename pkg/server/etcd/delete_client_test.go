@@ -474,6 +474,22 @@ func TestClientDoOpDeleteLeasedPointKeyWithPrevKVMatchesEtcd(t *testing.T) {
 	ttlAfter, err := client.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
 	require.NoError(t, err)
 	require.Empty(t, ttlAfter.Keys)
+	require.Positive(t, ttlAfter.TTL, "deleting the last key detaches it; it must not revoke the lease")
+	require.Equal(t, int64(300), ttlAfter.GrantedTTL)
+
+	// Empty leases remain usable until natural expiry or explicit revocation.
+	// In particular, a prefix-cleanup runner must not treat key deletion as
+	// proof that the backing lease is gone, or revoke unrelated empty leases.
+	_, err = client.Put(ctx, key, "reattached", clientv3.WithLease(lease.ID))
+	require.NoError(t, err)
+	ttlReattached, err := client.TimeToLive(ctx, lease.ID, clientv3.WithAttachedKeys())
+	require.NoError(t, err)
+	require.Equal(t, []string{key}, leaseClientAttachedKeys(ttlReattached.Keys))
+	_, err = client.Revoke(ctx, lease.ID)
+	require.NoError(t, err)
+	afterRevoke, err := client.Get(ctx, key)
+	require.NoError(t, err)
+	require.Empty(t, afterRevoke.Kvs)
 }
 
 func TestClientDoOpDeleteRangeWithPrevKVMatchesEtcd(t *testing.T) {

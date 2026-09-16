@@ -70,3 +70,7 @@ VolumeAttachment 后，用 JSON Patch 前置条件将这两卷改为 Delete 并�
 两份本轮 `uid-delete` 辅助二进制核验 SHA-256
 `32483d46be3b9b9a14fed06fc8957f4ac5ec6bffcaa6ad3ff0aeecbe801e2909` 后删除，可按源码重建。
 下一步需确认自然到期、修正证据保存方式，再安排具有完整归档和终态的故障验收。
+
+后续补证：[空 lease 语义对标](empty_lease_semantics_cn.md)记录了参考 etcd 的真实
+删除后复用行为，以及 23:24 UTC 剩余 TTL 降至 3049 秒的独立只读观察。
+仍未确认最终自然到期，不更改本报告的失败结论。
