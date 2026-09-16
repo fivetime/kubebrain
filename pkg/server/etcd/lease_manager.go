@@ -64,8 +64,8 @@ type leaseManager struct {
 	// read side and is serialized only with the same lease by a bounded stripe
 	// below; a slow TiKV checkpoint for one lease must not starve unrelated
 	// short-TTL keepalives.
-	leaseCheckpointMu    sync.RWMutex
-	leaseCheckpointLocks [256]sync.Mutex
+	leaseCheckpointMu    leaseWriteMutex
+	leaseCheckpointLocks [256]leaseWriteMutex
 	leaseMu              sync.Mutex
 	leaseID              int64
 	// automaticLeaseIDs uses etcd's member/time/counter layout once the static

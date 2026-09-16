@@ -4,6 +4,10 @@
 
 ## 验证边界
 
+KeepAlive 的入口等待取消改进及其测试边界见
+[资源管理回归记录](lease_keepalive_cancellation_cn.md)。该项不代表协议兼容性、
+真实 TiKV 后端验收或整体生产就绪已经完成。
+
 2026-09-09 独立 TiKV/PD 测试环境补充：`339381af` 三副本通过受控 leader Pod 删除
 门禁，900/900 操作、public watch 900、三个 direct watch 各 900；public 最大延迟
 1908ms、direct 13363ms，lease 存活，snapshot/官方 etcdutl restore 验证通过。

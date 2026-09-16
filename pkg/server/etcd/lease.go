@@ -1436,10 +1436,13 @@ func (m *leaseManager) refreshLease(ctx context.Context, id int64) (int64, error
 }
 
 func (m *leaseManager) refreshLeaseUnrestricted(ctx context.Context, id int64, epoch uint64) (int64, error) {
-	unlockCheckpoint := m.lockLeaseCheckpoint(id)
+	unlockCheckpoint, err := m.lockLeaseCheckpointContext(ctx, id)
+	if err != nil {
+		return 0, err
+	}
 	writeLocked := m.leaseWriteMu.TryRLock()
 	if !writeLocked && m.leaseTeardowns.Load() != 0 {
-		if ttl, renewed := m.refreshUncheckpointedLeaseDuringUnrelatedTeardown(id, epoch); renewed {
+		if ttl, renewed := m.refreshUncheckpointedLeaseDuringUnrelatedTeardown(ctx, id, epoch); renewed {
 			unlockCheckpoint()
 			return ttl, nil
 		}
@@ -1448,7 +1451,10 @@ func (m *leaseManager) refreshLeaseUnrestricted(ctx context.Context, id int64, e
 		// TryRLock may have failed just before a teardown owner published its
 		// marker. Waiting is the safe fallback for every non-teardown writer and
 		// for the lease currently being revoked or expired.
-		m.leaseWriteMu.RLock()
+		if err := m.leaseWriteMu.RLockContext(ctx); err != nil {
+			unlockCheckpoint()
+			return 0, err
+		}
 	}
 	// Serialize against revoke/expiry. In particular, an expiry callback that
 	// already won the exclusive lock must finish before this renewal, while a
@@ -1465,13 +1471,25 @@ func (m *leaseManager) refreshLeaseUnrestricted(ctx context.Context, id int64, e
 // The barrier's read side also prevents reload/withdrawal from replacing the
 // complete in-memory lease generation while a transition is in flight.
 func (m *leaseManager) lockLeaseCheckpoint(id int64) func() {
-	m.leaseCheckpointMu.RLock()
+	unlock, _ := m.lockLeaseCheckpointContext(context.Background(), id)
+	return unlock
+}
+
+// Only admission is cancelable. Once a checkpoint write starts, its existing
+// blocking binding-lock reacquisition must still reconcile the state transition.
+func (m *leaseManager) lockLeaseCheckpointContext(ctx context.Context, id int64) (func(), error) {
+	if err := m.leaseCheckpointMu.RLockContext(ctx); err != nil {
+		return nil, err
+	}
 	stripe := &m.leaseCheckpointLocks[uint64(id)%uint64(len(m.leaseCheckpointLocks))]
-	stripe.Lock()
+	if err := stripe.LockContext(ctx); err != nil {
+		m.leaseCheckpointMu.RUnlock()
+		return nil, err
+	}
 	return func() {
 		stripe.Unlock()
 		m.leaseCheckpointMu.RUnlock()
-	}
+	}, nil
 }
 
 // refreshUncheckpointedLeaseDuringUnrelatedTeardown is the narrow fast path
@@ -1480,12 +1498,15 @@ func (m *leaseManager) lockLeaseCheckpoint(id int64) func() {
 // teardown. A teardown of this same lease can only reach backend I/O after its
 // deadline has expired (natural expiry) or may linearize after this concurrent
 // renew (explicit revoke); teardown of another lease cannot affect this state.
-func (m *leaseManager) refreshUncheckpointedLeaseDuringUnrelatedTeardown(id int64, epoch uint64) (int64, bool) {
+func (m *leaseManager) refreshUncheckpointedLeaseDuringUnrelatedTeardown(ctx context.Context, id int64, epoch uint64) (int64, bool) {
 	if currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); !leadingFresh || currentEpoch != epoch {
 		return 0, false
 	}
 	m.leaseMu.Lock()
 	defer m.leaseMu.Unlock()
+	if ctx.Err() != nil {
+		return 0, false
+	}
 	st := m.leases[id]
 	if st == nil || st.remainingTTL != 0 || !st.deadline.After(time.Now()) {
 		return 0, false
@@ -1505,8 +1526,14 @@ func (m *leaseManager) refreshLeaseAuthorized(ctx context.Context, caller *authC
 	// binding publication. Hold the exclusive side while checking every current
 	// key and refreshing the deadline, so a protected attachment cannot commit
 	// between authorization and renewal.
-	unlockCheckpoint := m.lockLeaseCheckpoint(id)
-	m.leaseWriteMu.Lock()
+	unlockCheckpoint, err := m.lockLeaseCheckpointContext(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	if err := m.leaseWriteMu.LockContext(ctx); err != nil {
+		unlockCheckpoint()
+		return 0, err
+	}
 	if err := m.authorizeLeaseKeys(ctx, caller, m.keysForLease(id), authpb.WRITE); err != nil {
 		m.leaseWriteMu.Unlock()
 		unlockCheckpoint()
@@ -1533,6 +1560,10 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 	afterRelock func() error,
 	unlock func(),
 ) (int64, error) {
+	if err := ctx.Err(); err != nil {
+		unlock()
+		return 0, err
+	}
 	// The initial routing decision precedes the renewal locks. If leadership is
 	// lost while waiting for a slow checkpoint/revoke, the old leader must not
 	// extend only its private in-memory deadline and report a successful renew.
