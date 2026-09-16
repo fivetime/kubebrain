@@ -4,6 +4,11 @@
 
 ## 验证边界
 
+2026-09-16：官方 v1.36.1 独立 apiserver 经 mTLS 接入本地盘 bb89c3f8 实例，
+对象 smoke 和 20 对象 × 10 更新 Watch 测试通过，原始流逐对象/版本核验完整。
+见[真实接入报告及边界](acceptance_local_apiserver_v1361_20260916_cn.md)；
+未覆盖完整控制面、故障切换、升级或长期运行，仍不能据此判定生产就绪。
+
 真实 Kubernetes 接入前的测试清理所有权修复及剩余适配项见
 [apiserver 清理安全记录](apiserver_cleanup_ownership_cn.md)。全局 lease 集合差值
 不能作为撤销授权；本项尚不是实际 apiserver 接入验收。
