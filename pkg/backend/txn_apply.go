@@ -153,7 +153,10 @@ func (b *backend) TxnApply(ctx context.Context, ops []TxnWriteOp, guards []TxnGu
 	if err := b.waitPendingRevision(ctx); err != nil {
 		return nil, 0, err
 	}
-	unlock := b.lockLogicalWrite(ctx)
+	unlock, err := b.lockLogicalWrite(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
 	defer unlock()
 	// TxnApply owns the shared side of logicalWriteMu for its complete read/CAS
 	// attempt. A witnessed corrupt previous object may arm CORRUPT from this

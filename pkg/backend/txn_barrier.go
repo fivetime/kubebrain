@@ -50,10 +50,15 @@ func (b *backend) withLogicalWriteOwnership(ctx context.Context) context.Context
 	return context.WithValue(ctx, rangeTxnOwnerKey{}, b)
 }
 
-func (b *backend) lockLogicalWrite(ctx context.Context) func() {
-	if owner, _ := ctx.Value(rangeTxnOwnerKey{}).(*backend); owner == b {
-		return func() {}
+func (b *backend) lockLogicalWrite(ctx context.Context) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	b.logicalWriteMu.RLock()
-	return b.logicalWriteMu.RUnlock
+	if owner, _ := ctx.Value(rangeTxnOwnerKey{}).(*backend); owner == b {
+		return func() {}, nil
+	}
+	if err := b.logicalWriteMu.RLockContext(ctx); err != nil {
+		return nil, err
+	}
+	return b.logicalWriteMu.RUnlock, nil
 }

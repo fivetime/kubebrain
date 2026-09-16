@@ -689,7 +689,9 @@ func autoCompactTarget(currentRev, retention, compactRev uint64, leading bool) (
 // already-stored compact revision, so the caller can skip a redundant compaction
 // that would otherwise regress the watermark.
 func (b *backend) setCompactRecord(ctx context.Context, revision uint64) (advanced bool, err error) {
-	b.logicalWriteMu.Lock()
+	if err := b.logicalWriteMu.LockContext(ctx); err != nil {
+		return false, err
+	}
 	defer b.logicalWriteMu.Unlock()
 	members, corruptGenerationRaw, corruptGenerationExists, corruptGuard, err := b.readCorruptAlarmCommitState(ctx)
 	if err != nil {

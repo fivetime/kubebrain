@@ -161,7 +161,9 @@ func (b *backend) createSerializableCheckpoint(ctx context.Context) (Serializabl
 	if err != nil {
 		return SerializableCheckpoint{}, err
 	}
-	b.logicalWriteMu.Lock()
+	if err := b.logicalWriteMu.LockContext(ctx); err != nil {
+		return SerializableCheckpoint{}, err
+	}
 	defer b.logicalWriteMu.Unlock()
 	revision := b.tso.GetRevision()
 	if revision == 0 {

@@ -34,8 +34,12 @@ func (m *logicalWriteMutex) Lock() {
 
 func (m *logicalWriteMutex) Unlock() { m.semaphore().Release(math.MaxInt64) }
 
+func (m *logicalWriteMutex) RLockContext(ctx context.Context) error {
+	return m.semaphore().Acquire(ctx, 1)
+}
+
 func (m *logicalWriteMutex) RLock() {
-	_ = m.semaphore().Acquire(context.Background(), 1)
+	_ = m.RLockContext(context.Background())
 }
 
 func (m *logicalWriteMutex) RUnlock() { m.semaphore().Release(1) }

@@ -120,7 +120,10 @@ func (b *backend) encodeDeleteMutationAt(key []byte, expectedRevision, newRevisi
 // healOrphanIndex repairs a live object whose revision index is missing. It is
 // revision-neutral: no user revision or watch event is created.
 func (b *backend) healOrphanIndex(ctx context.Context, key []byte) (bool, error) {
-	unlock := b.lockLogicalWrite(ctx)
+	unlock, err := b.lockLogicalWrite(ctx)
+	if err != nil {
+		return false, err
+	}
 	defer unlock()
 	if err := b.fenceAdmit(ctx); err != nil {
 		return false, err

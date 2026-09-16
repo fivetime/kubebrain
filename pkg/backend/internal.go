@@ -73,7 +73,9 @@ func (b *backend) GetSnapshotTimestamp(ctx context.Context) (uint64, error) {
 	}
 	owner, _ := ctx.Value(rangeTxnOwnerKey{}).(*backend)
 	if owner != b {
-		b.logicalWriteMu.Lock()
+		if err := b.logicalWriteMu.LockContext(ctx); err != nil {
+			return 0, err
+		}
 		defer b.logicalWriteMu.Unlock()
 	}
 	if err := b.fenceAdmit(ctx); err != nil {
@@ -87,7 +89,10 @@ func (b *backend) GetFollowerSnapshotTimestamp(ctx context.Context) (uint64, err
 }
 
 func (b *backend) InternalPut(ctx context.Context, key, value []byte) error {
-	unlock := b.lockLogicalWrite(ctx)
+	unlock, err := b.lockLogicalWrite(ctx)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	if err := b.fenceAdmit(ctx); err != nil {
 		return err
@@ -103,14 +108,17 @@ func (b *backend) InternalPutCorruptGuarded(ctx context.Context, key, value []by
 }
 
 func (b *backend) InternalDelete(ctx context.Context, key []byte) error {
-	unlock := b.lockLogicalWrite(ctx)
+	unlock, err := b.lockLogicalWrite(ctx)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	if err := b.fenceAdmit(ctx); err != nil {
 		return err
 	}
 	batch := b.kv.BeginBatchWrite()
 	batch.Del(b.ks.EncodeInternalKey(key))
-	err := batch.Commit(ctx)
+	err = batch.Commit(ctx)
 	if errors.Is(err, storage.ErrKeyNotFound) {
 		return nil
 	}
@@ -121,7 +129,10 @@ func (b *backend) InternalCAS(ctx context.Context, ops []InternalCASOp) error {
 	if len(ops) == 0 {
 		return nil
 	}
-	unlock := b.lockLogicalWrite(ctx)
+	unlock, err := b.lockLogicalWrite(ctx)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	if err := b.fenceAdmit(ctx); err != nil {
 		return err

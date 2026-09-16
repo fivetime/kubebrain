@@ -234,7 +234,9 @@ func (b *backend) DisarmCorrupt(ctx context.Context, memberID uint64) (bool, err
 	// Drain this leader's in-flight logical writes before validating evidence.
 	// A write that already passed the server alarm gate can otherwise become
 	// uncertain and reassert the same alarm between validation and deletion.
-	b.logicalWriteMu.Lock()
+	if err := b.logicalWriteMu.LockContext(ctx); err != nil {
+		return false, err
+	}
 	defer b.logicalWriteMu.Unlock()
 	ctx = b.withLogicalWriteOwnership(ctx)
 	ctx, unlock := b.lockCorruptAlarm(ctx)

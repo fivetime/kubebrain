@@ -75,7 +75,9 @@ type BackendHashResult struct {
 func (b *backend) Hash(ctx context.Context) (result BackendHashResult, retErr error) {
 	checkpoint, pinned := SerializableCheckpointFromContext(ctx)
 	if !pinned {
-		b.logicalWriteMu.Lock()
+		if err := b.logicalWriteMu.LockContext(ctx); err != nil {
+			return BackendHashResult{}, err
+		}
 		defer b.logicalWriteMu.Unlock()
 	}
 	if err := ctx.Err(); err != nil {
@@ -150,17 +152,21 @@ func (b *backend) HashKV(ctx context.Context, revision int64) (HashKVResult, err
 
 		result, err := HashKVResult{}, errHashKVFlightAborted
 		func() {
-			if !key.snapshotPinned {
-				b.logicalWriteMu.Lock()
-			}
+			locked := false
 			defer func() {
 				// Complete before releasing the write fence. A writer/compactor that
 				// finishes after this scan therefore cannot overlap its reusable call.
 				b.hashKVFlights.complete(key, call, result, err)
-				if !key.snapshotPinned {
+				if locked {
 					b.logicalWriteMu.Unlock()
 				}
 			}()
+			if !key.snapshotPinned {
+				if err = b.logicalWriteMu.LockContext(ctx); err != nil {
+					return // complete the flight without unlocking an unacquired barrier
+				}
+				locked = true
+			}
 			result, err = b.hashKVOnce(ctx, revision, key.snapshotPinned)
 		}()
 		return result, err

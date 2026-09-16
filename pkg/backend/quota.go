@@ -269,7 +269,9 @@ func (b *backend) EnsureQuotaInitialized(ctx context.Context) error {
 	if b.config.QuotaBackendBytes <= 0 {
 		return b.InternalPut(ctx, quotaTrackingKey, quotaTrackingDirty)
 	}
-	b.logicalWriteMu.Lock()
+	if err := b.logicalWriteMu.LockContext(ctx); err != nil {
+		return err
+	}
 	defer b.logicalWriteMu.Unlock()
 	ctx = b.withLogicalWriteOwnership(ctx)
 
