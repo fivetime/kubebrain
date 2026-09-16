@@ -215,6 +215,49 @@ func TestRealTiKVBackendAsyncFencedProtocolLatency(t *testing.T) {
 	testRealTiKVBackendScenario(t, "async-fenced-latency")
 }
 
+func TestRealTiKVBackendPacedFencedProtocolLatency(t *testing.T) {
+	testRealTiKVBackendScenario(t, "fenced-latency-paced")
+}
+
+func TestRealTiKVBackendAsyncPacedFencedProtocolLatency(t *testing.T) {
+	testRealTiKVBackendScenario(t, "async-fenced-latency-paced")
+}
+
+func waitProtocolLatencyPacing(ctx context.Context, pause time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if pause == 0 {
+		return nil
+	}
+	if pause < 0 {
+		return errors.New("negative protocol pacing")
+	}
+	timer := time.NewTimer(pause)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
+	}
+}
+
+func TestProtocolLatencyPacing(t *testing.T) {
+	require.NoError(t, waitProtocolLatencyPacing(t.Context(), 0))
+	require.Error(t, waitProtocolLatencyPacing(t.Context(), -1))
+	started := time.Now()
+	require.NoError(t, waitProtocolLatencyPacing(t.Context(), time.Millisecond))
+	require.GreaterOrEqual(t, time.Since(started), time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.ErrorIs(t, waitProtocolLatencyPacing(ctx, time.Hour), context.Canceled)
+	require.ErrorIs(t, waitProtocolLatencyPacing(ctx, 0), context.Canceled)
+	ctx, cancel = context.WithTimeout(t.Context(), 5*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, waitProtocolLatencyPacing(ctx, time.Hour), context.DeadlineExceeded)
+}
+
 func TestProtocolLatencyAsyncEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
@@ -344,7 +387,7 @@ func TestProtocolLatencyFixtureBound(t *testing.T) {
 
 // Fixed small blocks fit the existing 128-key ownership-fenced cleanup bound.
 // Repeat separate processes in ABBA order; never compare one cold transaction.
-func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.Backend, client *protocolLatencyClient, mode string, fenced bool) {
+func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.Backend, client *protocolLatencyClient, mode string, fenced bool, pacing time.Duration) {
 	t.Helper()
 	const warmup, samples = 10, 20
 	require.NoError(t, b.EnsureQuotaInitialized(ctx))
@@ -355,6 +398,9 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	}
 	last := uint64(100)
 	for i := 0; i <= warmup; i++ {
+		if i != 0 {
+			require.NoError(t, waitProtocolLatencyPacing(writeCtx, pacing))
+		}
 		_, revision, err := b.TxnApply(writeCtx, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
 		require.NoError(t, err)
 		require.Equal(t, last+1, revision)
@@ -372,11 +418,24 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	})
 	durations := make([]int64, 0, samples)
 	prewrites := make([]int, 0, samples)
+	outsideLocks := make([]storage.LockRPCObservation, 0, samples)
+	pauses := make([]int64, 0, samples)
 	for i := 0; i < samples; i++ {
+		// Keep pacing separate from TxnApply timing, including the warmup to
+		// first-sample boundary. This is not a rollout throughput measurement.
+		pauseStart := time.Now()
+		require.NoError(t, waitProtocolLatencyPacing(measured, pacing))
+		pauses = append(pauses, time.Since(pauseStart).Nanoseconds())
 		before := client.snapshot()
+		// batch.Commit replaces this tracker for its Prepare/Commit phases.
+		// The parent therefore measures only calls outside those phases;
+		// closing it on return excludes late inherited background work.
+		outer := &lockRPCTracker{}
+		sampleCtx := context.WithValue(measured, lockRPCTrackerKey{}, outer)
 		started := time.Now()
-		_, revision, err := b.TxnApply(measured, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
+		_, revision, err := b.TxnApply(sampleCtx, []backend.TxnWriteOp{{Key: key, Value: value}}, nil)
 		durations = append(durations, time.Since(started).Nanoseconds())
+		outsideLocks = append(outsideLocks, outer.finish())
 		require.NoError(t, err)
 		after := client.snapshot()
 		writes := after.Prewrite - before.Prewrite
@@ -457,6 +516,7 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 	observed := append([]storage.BatchCommitObservation(nil), observations...)
 	observationMu.Unlock()
 	require.Len(t, observed, samples, "one synchronous observation per measured user storage batch")
+	var statusRequests, resolveRequests uint64
 	for i, o := range observed {
 		require.NoError(t, o.Err)
 		outside, valid := protocolLatencyOutsideBatch(time.Duration(durations[i]), o)
@@ -468,6 +528,14 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 			i, durations[i], outside.Nanoseconds(), o.Begin.Nanoseconds(), o.Prepare.Nanoseconds(), o.Commit.Nanoseconds(),
 			o.Prewrite.Nanoseconds(), o.CommitTS.Nanoseconds(), o.PrimaryCommit.Nanoseconds(), o.PrewriteRegionGroups,
 			o.HasLockRPCDetails, o.PrepareLocks, o.CommitLocks)
+		outer := outsideLocks[i]
+		t.Logf("PROTOCOL_LATENCY_OUTSIDE_LOCKS sample=%d check_txn_status_requests=%d check_txn_status_ns=%d resolve_lock_requests=%d resolve_lock_ns=%d scope=outside_batch_prepare_commit overlapping_rpc_sums=true",
+			i, outer.CheckTxnStatus.Requests, outer.CheckTxnStatus.Duration.Nanoseconds(), outer.ResolveLock.Requests, outer.ResolveLock.Duration.Nanoseconds())
+		for _, locks := range []storage.LockRPCObservation{outer, o.PrepareLocks, o.CommitLocks} {
+			statusRequests += locks.CheckTxnStatus.Requests
+			resolveRequests += locks.ResolveLock.Requests
+			require.Zero(t, locks.CheckTxnStatus.TransportErrors+locks.ResolveLock.TransportErrors)
+		}
 		require.True(t, o.CommitAttempted)
 		require.True(t, o.HasWriteDetails)
 		if !fenced {
@@ -487,9 +555,12 @@ func measureProtocolBackendLatency(t *testing.T, ctx context.Context, b backend.
 		}
 		require.Zero(t, o.PrewriteRPCs.TransportErrors+o.PrewriteRPCs.RegionErrors+o.PrewriteRPCs.KeyErrors+o.PrewriteRPCs.MissingResponses)
 	}
+	require.EqualValues(t, attempts["check_txn_status"], statusRequests, "all marked status requests belong to exactly one phase")
+	require.EqualValues(t, attempts["resolve_lock"], resolveRequests, "all marked resolve requests belong to exactly one phase")
 	t.Logf("PROTOCOL_PREWRITE_RPC_SCOPE samples=%d requests_per_batch=%v errors=0 scope=marked_foreground_only", len(observed), prewrites)
 	t.Logf("PROTOCOL_BATCH_REGION_GROUPS samples=%d groups_per_batch=%v scope=marked_foreground_only", len(observed), prewrites)
 	t.Logf("PROTOCOL_BACKEND_LATENCY mode=%s fenced=%t warmup=%d samples=%d value_bytes=%d quota=%d durations_ns=%v counts=%+v scope=backend_only", mode, fenced, warmup, samples, len(value), quota, durations, stats)
+	t.Logf("PROTOCOL_LATENCY_PACING requested_ns=%d pauses_ns=%v scope=between_operations excluded_from_txn_duration=true acceptance=false", pacing.Nanoseconds(), pauses)
 	t.Logf("PROTOCOL_BACKEND_RPC_ATTEMPTS counts=%v scope=marked_context excludes=unmarked_work async_commit_cleanup_may_be_included=true", attempts)
 }
 

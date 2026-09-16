@@ -3,7 +3,7 @@
 本目录维护根模块的本机真实 PD/TiKV 测试入口；旧独立 SQL mock 模块已退役。
 不接入 Kubernetes，不需要 kubeconfig。
 
-当前入口共 33 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
+当前入口共 35 个真实协议用例；下文的“第 N 例”是历史加入编号，不代表
 当前执行顺序。三个单 Region 后端响应丢失用例先于主动 Region 分裂执行；
 后续增加用例时以入口中的测试名清单及明确 PASS 回执为准，不累加历史轮次。
 
@@ -13,6 +13,16 @@ batch 外耗时包含后端准入、准备和完成处理，不能命名为纯�
 嵌套于 Commit，锁 RPC 耗时可能重叠，禁止把这些值再相加或从总耗时中扣除。
 每个样本要求只有一个同步 batch；日志不包含业务键值。该诊断不改变原验收门限，
 本机单副本结果不能替代指定集群的性能或持久性验收。
+
+`PROTOCOL_LATENCY_OUTSIDE_LOCKS` 另记录每个样本在 batch Prepare／Commit
+之外的 CheckTxnStatus／ResolveLock 次数和 RPC 耗时，复用带关闭边界的锁跟踪器。
+内外阶段次数之和必须与实际带标记的 RPC 次数一致；重叠 RPC 耗时不能直接从
+总耗时扣除。原连续写入用例保留；新增 `TestRealTiKVBackendPacedFencedProtocolLatency`
+及 `TestRealTiKVBackendAsyncPacedFencedProtocolLatency` 两个独立用例，在每次
+更新前（含预热到第一条测量的边界）等待 100ms，等待可被 context 取消。
+`PROTOCOL_LATENCY_PACING` 单列实际等待时间，不计入 TxnApply 延迟；不报告为
+6000 次吞吐验收。两类均保留同样的真实防护、20 个样本、Watch／revision／quota
+验证和有界 ownership 清理，不要求 async 一定遇锁，也不要求有间隔一定消除锁。
 
 启动实验入口：命令行新增 `--experimental-tikv-enable-async-commit`，默认
 `false`，与 `--experimental-tikv-enable-1pc` 互斥。冲突配置在创建客户端前

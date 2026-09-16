@@ -108,6 +108,31 @@ docker_local() {
 	}
 }
 
+func TestLocalProtocolPacedModes(t *testing.T) {
+	source, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
+	require.NoError(t, err)
+	start := strings.Index(string(source), "  protocol_mode=1pc\n")
+	end := strings.Index(string(source), "  case_result=0\n")
+	require.GreaterOrEqual(t, start, 0)
+	require.Greater(t, end, start)
+	for _, tc := range []struct{ name, want string }{
+		{"TestRealTiKVBackendFencedProtocolLatency", "2pc 0"},
+		{"TestRealTiKVBackendAsyncFencedProtocolLatency", "2pc 1"},
+		{"TestRealTiKVBackendPacedFencedProtocolLatency", "2pc 0"},
+		{"TestRealTiKVBackendAsyncPacedFencedProtocolLatency", "2pc 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Contains(t, string(source[:start]), tc.name+" ")
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			script := "test_name=$1\n" + string(source[start:end]) + "\nprintf '%s %s' \"$protocol_mode\" \"$async_experiment\"\n"
+			output, err := exec.CommandContext(ctx, "bash", "-c", script, "_", tc.name).CombinedOutput()
+			require.NoError(t, err, string(output))
+			require.Equal(t, tc.want, string(output))
+		})
+	}
+}
+
 func TestLocalProtocolRequiresActualNamedTestPass(t *testing.T) {
 	source, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
 	require.NoError(t, err)

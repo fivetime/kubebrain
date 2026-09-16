@@ -58,6 +58,9 @@ func TestBatchObserverRealClientWriteEmptyAndCallerSink(t *testing.T) {
 			var observations []storage.BatchCommitObservation
 			parent, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			outer := &lockRPCTracker{}
+			parent = context.WithValue(parent, lockRPCTrackerKey{}, outer)
+			outer.observe(tikvrpc.CmdCheckTxnStatus, 2*time.Millisecond, nil)
 			ctx := storage.WithBatchCommitObserver(parent, func(o storage.BatchCommitObservation) {
 				observations = append(observations, o)
 			})
@@ -74,6 +77,7 @@ func TestBatchObserverRealClientWriteEmptyAndCallerSink(t *testing.T) {
 			b.list = append(b.list, func(phaseCtx context.Context) error {
 				preparationTracker, _ = phaseCtx.Value(lockRPCTrackerKey{}).(*lockRPCTracker)
 				require.NotNil(t, preparationTracker)
+				require.NotSame(t, outer, preparationTracker)
 				preparationTracker.observe(tikvrpc.CmdResolveLock, time.Millisecond, nil)
 				return nil
 			})
@@ -88,6 +92,11 @@ func TestBatchObserverRealClientWriteEmptyAndCallerSink(t *testing.T) {
 				b.list = append(b.list, func(context.Context) error { cancel(); return nil })
 			}
 			err := b.Commit(ctx)
+			require.Same(t, outer, ctx.Value(lockRPCTrackerKey{}), "batch must not replace the caller's tracker")
+			outer.observe(tikvrpc.CmdCheckTxnStatus, 3*time.Millisecond, nil)
+			outerSnapshot := outer.finish()
+			require.Equal(t, storage.LockRPCObservation{CheckTxnStatus: storage.LockRPCSample{Requests: 2, Duration: 5 * time.Millisecond}}, outerSnapshot,
+				"inner phase records must not be charged to the parent")
 			require.Len(t, observations, 1)
 			require.True(t, observations[0].HasLockRPCDetails)
 			require.EqualValues(t, 1, observations[0].PrepareLocks.ResolveLock.Requests)

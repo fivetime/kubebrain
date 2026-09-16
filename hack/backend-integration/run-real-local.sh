@@ -152,7 +152,8 @@ for test_name in TestRealTiKVAsyncProcessGuardedResponseLoss TestRealTiKVAsyncEx
   TestRealTiKVBackendRetriesUndeliveredOnePC TestRealTiKVBackendRegionSplitFallback \
   TestRealTiKVBackendNoRPCRetryCommittedOnePC TestRealTiKVBackendNoRPCRetryUndeliveredOnePC \
   TestRealTiKVReadBypassesPendingSecondaryCleanup TestRealTiKVBackendProtocolLatency TestRealTiKVBackendAsyncProtocolLatency TestRealTiKVBackendConcurrentWrites \
-  TestRealTiKVBackendProductionFences TestRealTiKVBackendFencedProtocolLatency TestRealTiKVBackendAsyncFencedProtocolLatency TestRealTiKVPrefetchedLeadershipConflict TestRealTiKVPrefetchedRestorationConflict \
+  TestRealTiKVBackendProductionFences TestRealTiKVBackendFencedProtocolLatency TestRealTiKVBackendAsyncFencedProtocolLatency \
+  TestRealTiKVBackendPacedFencedProtocolLatency TestRealTiKVBackendAsyncPacedFencedProtocolLatency TestRealTiKVPrefetchedLeadershipConflict TestRealTiKVPrefetchedRestorationConflict \
   TestRealTiKVTxnCompareCommitConflict TestRealTiKVAbsentAuthGuardConflictsAfterStaging TestRealTiKVAsyncExperimentReadsBeforeCommitCleanup \
   TestRealTiKVAsyncExperimentLeadershipConflict TestRealTiKVAsyncExperimentRestorationConflict \
   TestRealTiKVAsyncExperimentBackendPublication TestRealTiKVAsyncExperimentProcessDefaults \
@@ -164,6 +165,8 @@ for test_name in TestRealTiKVAsyncProcessGuardedResponseLoss TestRealTiKVAsyncEx
   if [[ "$test_name" == TestRealTiKVBackendAsyncProtocolLatency ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVBackendFencedProtocolLatency ]]; then protocol_mode=2pc; fi
   if [[ "$test_name" == TestRealTiKVBackendAsyncFencedProtocolLatency ]]; then protocol_mode=2pc; async_experiment=1; fi
+  if [[ "$test_name" == TestRealTiKVBackendPacedFencedProtocolLatency ]]; then protocol_mode=2pc; fi
+  if [[ "$test_name" == TestRealTiKVBackendAsyncPacedFencedProtocolLatency ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVAsyncProcessGuardedPartialDelivery || "$test_name" == TestRealTiKVAsyncProcessGuardedMissingPrimary ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVAsyncExperimentProcessDefaults || "$test_name" == TestRealTiKVAsyncProcessLeadershipConflict || "$test_name" == TestRealTiKVAsyncProcessRestorationConflict ]]; then protocol_mode=2pc; async_experiment=1; fi
   if [[ "$test_name" == TestRealTiKVAsyncExperimentBackendResponseLoss || "$test_name" == TestRealTiKVAsyncExperimentGuardedResponseLoss || "$test_name" == TestRealTiKVAsyncProcessGuardedResponseLoss ]]; then protocol_mode=2pc; async_experiment=1; fi
