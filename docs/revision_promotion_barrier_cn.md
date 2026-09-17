@@ -96,3 +96,12 @@ gRPC 的 context 错误转换不在本测试范围内。
 线性化屏障：参考 etcd 的 `server/etcdserver/api/v3rpc/watch.go` 在本地 watchStream
 注册监听后生成 Created；两者内部架构不同。这里没有覆盖 gRPC 线上编码、follower
 代理转发或真实选主，产品实现及集群均未修改。
+
+## CI race 覆盖补齐
+
+检查发现原 Watch race 分组会匹配 Watch 联动测试，但不匹配 Range 联动测试；后者此前
+只由 etcd 全包普通测试覆盖。现将 `ReadBarrier` 加入既有分组，保留原 8 分钟超时，
+并更新工作流契约测试锁定命令。先仅更新契约时测试退出 1，更新工作流后 build 全包
+race 通过（2.459 秒）。完整新分组在本地通过（29.396 秒），详细日志确认 Range 和 Watch
+两个联动测试均实际执行通过。证据 `read-barrier-ci.Q4whCsQ7/local-race.log`。
+这些是本地结果，新源码的 GitHub CI 结果须另行核验，不沿用 886179af 的绿色状态。
