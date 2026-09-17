@@ -1,5 +1,16 @@
 # 控制面测试自动回归接入
 
+最终远端结果：`35206137761`，同源 `0ad6d7b65170232b9df763c49e78530b9f59f6c3`、
+attempt 1、completed/success；watch session 90526 退出 0。控制面定向 race
+10.575s，完整服务 142.246s，Auth/Lease/Watch race 分别 90.908/78.030/25.707s，
+proxy/revision/log-capture race 分别 5.334/8.453/5.794s，全探针 race 353.357s。
+本结果不覆盖之后的 Lease 状态锁修改。
+
+归档 session 57101 退出 0，私有证据
+`/root/.local/state/kubebrain/controlplane-ci-0ad6d7b6.rw2jS0Qz/`。
+run.log SHA-256：`205334faf4e387d953646fd20f7f281df737bb11986d480b09c255607f707523`。
+归档的 run.json 核验了完整源码、attempt 和成功终态，不只依赖绿色截图。
+
 2026-09-17，基于 `59f45c3c` 补齐 dbaas 自动回归覆盖。
 `probe-regression.yml` 增加 scale-lab、etcd-client-compat 和 PKI 脚本触发路径，
 在既有 self-hosted 作业中执行 ControlPlane / Ephemeral PKI 全部定向 race 测试。
