@@ -44,4 +44,17 @@ build 包全量 race 通过（2.485 秒），revision 包 vet 和 diff 空白检
 race 重复三次通过（9.744 秒）；这是上层错误映射与 Watch 的补充检查，
 不是接入真实 revision syncer 的完整角色切换端到端验收。
 私有证据：`/root/.local/state/kubebrain/revision-promotion.2d5y5x1A/`。
-新源码尚未完成 CI、镜像核验或集群复验；不覆盖此前失败记录。
+
+## 回归 CI
+
+源码 `886179af3cc203dcb1b52cb01b3b0f2b9db17c08` 的
+[回归 CI 35183014224](https://github.com/fivetime/kubebrain/actions/runs/35183014224)
+attempt 1 已成功。完整日志确认新增角色切换测试的三个子用例实际通过，
+revision 包全量 race 为 8.317 秒；etcd 非 race 全包 130.375 秒，
+Auth/Lease/Watch race 分组分别 85.898、71.434、24.619 秒，
+rollout probe 全量 race 316.736 秒，均通过。
+日志及摘要位于私有 `release-886179af.pcMGEHC3/probe-ci.log`、`probe-ci.sha256`。
+同源镜像构建与独立镜像核验随后通过；[集群复验](acceptance_apiserver_fault_886179af_20260917_cn.md)
+完成 2000 次更新、Watch 审计、清理及原镜像恢复，均退出 0。
+本轮旧查询在本机升主后明确返回 leader changed，未检出此前 revision 查询超时；
+但仍有 Range leader changed 警告，单次实验不覆盖所有切换时序，也不改写此前失败记录。

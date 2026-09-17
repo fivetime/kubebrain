@@ -59,6 +59,10 @@ ConfigMap `soak-12` 的一次 GET 为 2084 ms，后续更新继续，最终 2000
 空租约可在删除键后继续存在，见[先前参考 etcd 对照](acceptance_apiserver_fault_logs_20260917_cn.md)；
 这不改变本轮原清理门限失败的事实。后续部署须重新确认租约基线，不复用此次准入。
 
+后续只读观察确认自然过期：05:01:14 UTC，租约列表为空，该 ID 的 TTL=-1、
+granted TTL=0、关联键数 0，旧测试前缀为空。证据 `lease-observation.V5DXmiJc`，
+观察进程退出 0，未执行 KeepAlive/Revoke。自然过期不追溯改变本轮退出 70 的结论。
+
 恢复证据 `restore.SgJOltG5` 验证原完整 spec 和运行镜像，generation 10→11→12，Ready/updated=3。
 总驱动记录 operation_exit=70、restore_exit=0、holder_cleanup_exit=0。
 后置检查 `postflight.3ySkZ2aS` 验证 PD/TiKV 六个 Pod 身份及容器状态、后端 spec 和旧前端未变。

@@ -1,6 +1,8 @@
 # 专用测试集群 TopoLVM 存储准备
 
-2026-09-17 最新：[602912b7 故障验收](acceptance_apiserver_fault_602912b7_20260917_cn.md)完成 2000 次更新，但租约清理失败、整体退出 70；内部 Lease 写入仍失败，另有 Txn Range Count 不一致及内部 Watch 超时。原镜像已恢复，14 个本轮临时卷已清理，残留空租约保留自然过期。
+2026-09-17 最新：[886179af 故障验收](acceptance_apiserver_fault_886179af_20260917_cn.md)通过 2000 次更新、独立 Watch 审计、租约清理和恢复。原镜像已恢复，14 个本轮临时卷已回收；故障期间仍有 Range leader changed，不是零错误、节点断电或整体生产就绪结论。
+
+2026-09-17 历史：[602912b7 故障验收](acceptance_apiserver_fault_602912b7_20260917_cn.md)完成 2000 次更新，但租约清理失败、整体退出 70；内部 Lease 写入仍失败，另有 Txn Range Count 不一致及内部 Watch 超时。原镜像已恢复，14 个本轮临时卷已清理，残留空租约随后自然过期，不追溯改变失败结论。
 
 2026-09-17 历史：[96a00480 故障验收](acceptance_apiserver_fault_96a00480_20260917_cn.md)通过 2000 次 ConfigMap 更新、Watch、清理和恢复，14 个临时卷精确清理完成；但 apiserver 自身 Lease 更新仍有一次 leader changed，不能宣称所有 Kubernetes 写请求可用。
 
