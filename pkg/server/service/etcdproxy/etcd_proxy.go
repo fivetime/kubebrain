@@ -121,10 +121,16 @@ type etcdProxy struct {
 	attemptLeader     string
 	attemptCancel     context.CancelFunc
 
-	cancel    context.CancelFunc
-	loopDone  chan struct{}
-	closeOnce sync.Once
-	closeErr  error
+	cancel     context.CancelFunc
+	loopDone   chan struct{}
+	closeOnce  sync.Once
+	closeErrMu sync.Mutex
+	closeErr   error
+	// lock guards admission pins and bounded retired transports.
+	unaryPins            map[*clientv3.Client]int
+	retiredClients       []*retiredProxyClient
+	retiredClientTimeout time.Duration
+	retirementWorkers    sync.WaitGroup
 }
 
 func (e *etcdProxy) EtcdProxyEnabled() bool {
@@ -203,13 +209,19 @@ func (e *etcdProxy) Close() error {
 			e.closeClient(e.client)
 			e.client = nil
 		}
+		for len(e.retiredClients) > 0 {
+			e.closeRetiredClientLocked(e.retiredClients[0])
+		}
 		e.curLeader = ""
 		e.failedLeader = ""
 		e.retryAfter = time.Time{}
 		e.refreshAfter = time.Time{}
 		e.lock.Unlock()
 		e.updateMu.Unlock()
+		e.retirementWorkers.Wait()
 	})
+	e.closeErrMu.Lock()
+	defer e.closeErrMu.Unlock()
 	return e.closeErr
 }
 
@@ -295,7 +307,7 @@ func (e *etcdProxy) resetClient() (reset bool) {
 	reset = e.client != nil
 
 	if e.client != nil {
-		e.closeClient(e.client)
+		e.retireClientLocked(e.client)
 		e.client = nil
 	}
 
@@ -306,13 +318,14 @@ func (e *etcdProxy) resetClient() (reset bool) {
 	return
 }
 
-// closeClient runs only while updateMu is held, so hot-swap cleanup failures
-// can be accumulated without racing final shutdown. A replacement client may
-// still become healthy, but the leaked/failed transport remains part of this
+// closeClient serializes cleanup errors independently of connection admission.
+// A replacement client may still become healthy, but the failed transport remains part of this
 // proxy instance's lifecycle result.
 func (e *etcdProxy) closeClient(client *clientv3.Client) {
 	if err := client.Close(); err != nil {
+		e.closeErrMu.Lock()
 		e.closeErr = stderrors.Join(e.closeErr, err)
+		e.closeErrMu.Unlock()
 		klog.ErrorS(err, "failed to close etcd proxy client")
 	}
 }
@@ -711,14 +724,17 @@ func forwardUnaryWithDrainRetry[T any](
 	}()
 	for attempt := 0; attempt < 2; attempt++ {
 		readyStarted := time.Now()
-		client, leader, _, err := e.readyClient(ctx)
+		client, leader, release, err := e.readyCoreUnaryClient(ctx)
 		waitReadyDuration += time.Since(readyStarted)
 		emitUnaryForwardDuration(e.metricCli, rpc, unaryForwardStageWaitReady, readyStarted, ctx, client, err)
 		if err != nil {
 			return zero, err
 		}
 		forwardStarted := time.Now()
-		response, err := call(client, leader)
+		response, err := func() (T, error) {
+			defer release()
+			return call(client, leader)
+		}()
 		forwardDuration += time.Since(forwardStarted)
 		emitUnaryForwardDuration(e.metricCli, rpc, unaryForwardStageForward, forwardStarted, ctx, client, err)
 		e.markForwardError(ctx, client, err)
