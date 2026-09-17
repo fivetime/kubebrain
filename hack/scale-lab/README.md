@@ -84,6 +84,19 @@ get/list response bodies are audited only for the KWOK identity's Leases in
 this adds no permissions and does not record Secret/token response bodies.
 See [reference KWOK results and limitations](../../docs/acceptance_reference_kwok_20260917_cn.md).
 
+With KWOK enabled, `CONTROLPLANE_POD_REPLACEMENT=true` additionally tests one
+Pod replacement after the initial creation/availability checks. It deletes only
+one disposable fixture Pod, using both UID and resourceVersion preconditions
+and zero grace (there is no kubelet), then requires the same Deployment and
+ReplicaSet, the two original survivors, and exactly one new scheduled/Ready Pod
+within 60 seconds. Audit checks require the ReplicaSet controller to create it,
+the scheduler to bind it, and KWOK to write its simulated Ready status. In KWOK
+mode, audit bodies also cover only the test administrator's Pod deletes in
+`controlplane-smoke`, to verify those deletion preconditions. No permissions
+are added. Replacement is disabled by default and rejected without KWOK.
+This covers controller reconciliation, not real workload recovery or HA; shared
+backend admission and the existing 60-second lease cleanup gate are unchanged.
+
 Build and test locally without deployment configuration:
 
 ```bash

@@ -10,6 +10,12 @@ case "$backend" in reference|kubebrain) ;; *) echo 'unknown CONTROLPLANE_BACKEND
 binary_names=(APISERVER_BIN CONTROLLER_MANAGER_BIN SCHEDULER_BIN)
 kwok=${CONTROLPLANE_KWOK:-false}
 case "$kwok" in true|false) ;; *) echo 'invalid CONTROLPLANE_KWOK' >&2; exit 2 ;; esac
+replacement=${CONTROLPLANE_POD_REPLACEMENT:-false}
+case "$replacement" in true|false) ;; *) echo 'invalid CONTROLPLANE_POD_REPLACEMENT' >&2; exit 2 ;; esac
+if [[ $replacement == true ]]; then
+  [[ $kwok == true ]] || { echo 'Pod replacement requires KWOK' >&2; exit 2; }
+  source "$root/hack/scale-lab/controlplane-replacement.sh"
+fi
 if [[ $kwok == true ]]; then
   binary_names+=(KWOK_BIN)
   source "$root/hack/scale-lab/controlplane-kwok.sh"
@@ -40,6 +46,9 @@ done
 work=$(mktemp -d "$WORK_PARENT/controlplane-$backend.XXXXXXXX")
 echo "CONTROLPLANE_EVIDENCE=$work"
 sha256sum "${BASH_SOURCE[0]}" "$root/hack/scale-lab/verify-controlplane-audit.jq" "$root/hack/scale-lab/controlplane-audit-policy.jq" > "$work/runner.sha256"
+if [[ $replacement == true ]]; then
+  sha256sum "$root/hack/scale-lab/controlplane-replacement.sh" "$root/hack/scale-lab/verify-controlplane-replacement"*.jq >> "$work/runner.sha256"
+fi
 if [[ $kwok == true ]]; then
   sha256sum "$root/hack/scale-lab/controlplane-kwok.sh" "$root/hack/scale-lab/verify-controlplane-kwok-audit.jq" "$root/hack/scale-lab/config/controlplane-kwok-"* >> "$work/runner.sha256"
 fi
@@ -192,4 +201,5 @@ kctl -n controlplane-smoke get events -o json > "$work/events.json"
 # never token responses.
 jq -s -e --slurpfile rs "$work/replicasets.json" --slurpfile pods "$work/pods.json" \
   -f "$root/hack/scale-lab/verify-controlplane-audit.jq" "$work/audit.jsonl" > "$work/audit-check.json"
+if [[ $replacement == true ]]; then controlplane_replace_pod; fi
 echo "CONTROLPLANE_SCHEDULING_OPERATION_PASS backend=$backend kwok=$kwok: no real container/HA claim; final cleanup result still required"

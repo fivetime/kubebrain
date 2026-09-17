@@ -1,6 +1,8 @@
 # Request/response bodies are limited to disposable fixtures, never credentials.
 {apiVersion:"audit.k8s.io/v1",kind:"Policy",omitStages:["RequestReceived"],rules:
   ((if $kwok then [
+    {level:"RequestResponse",users:["kubebrain-test-admin"],verbs:["delete"],
+      namespaces:["controlplane-smoke"],resources:[{group:"",resources:["pods"]}]},
     {level:"RequestResponse",users:["kubebrain-test-kwok"],verbs:["get","list"],
       namespaces:["kube-node-lease"],resources:[{group:"coordination.k8s.io",resources:["leases"]}]},
     {level:"RequestResponse",users:["kubebrain-test-kwok"],verbs:["patch","update"],

@@ -28,7 +28,9 @@ func TestControlPlaneAuditPolicy(t *testing.T) {
 			require.Equal(t, []string{"RequestReceived"}, policy.OmitStages)
 			rules := policy.Rules
 			if enabled == "true" {
-				require.Len(t, rules, 4)
+				require.Len(t, rules, 5)
+				require.JSONEq(t, `{"level":"RequestResponse","users":["kubebrain-test-admin"],"verbs":["delete"],"namespaces":["controlplane-smoke"],"resources":[{"group":"","resources":["pods"]}]}`, string(rules[0]))
+				rules = rules[1:]
 				// Exact scope: no watch response stream, Secret, token, other user,
 				// namespace, resource, or wildcard body logging is introduced.
 				require.JSONEq(t, `{"level":"RequestResponse","users":["kubebrain-test-kwok"],"verbs":["get","list"],"namespaces":["kube-node-lease"],"resources":[{"group":"coordination.k8s.io","resources":["leases"]}]}`, string(rules[0]))

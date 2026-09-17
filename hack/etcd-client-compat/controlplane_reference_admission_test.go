@@ -12,7 +12,7 @@ import (
 )
 
 func TestControlPlaneReferenceAdmission(t *testing.T) {
-	for _, mode := range []string{"no-consent", "bad-hash", "duplicate-ports", "reserved-api-port", "invalid-kwok-mode", "missing-kwok", "bad-kwok-hash"} {
+	for _, mode := range []string{"no-consent", "bad-hash", "duplicate-ports", "reserved-api-port", "invalid-kwok-mode", "missing-kwok", "bad-kwok-hash", "invalid-replacement-mode", "replacement-without-kwok"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			binary := filepath.Join(dir, "must-not-execute")
@@ -36,6 +36,10 @@ func TestControlPlaneReferenceAdmission(t *testing.T) {
 				env = append(env, name+"="+binary, name+"_SHA256="+digest)
 			}
 			switch mode {
+			case "invalid-replacement-mode":
+				env = append(env, "CONTROLPLANE_KWOK=false", "CONTROLPLANE_POD_REPLACEMENT=typo")
+			case "replacement-without-kwok":
+				env = append(env, "CONTROLPLANE_KWOK=false", "CONTROLPLANE_POD_REPLACEMENT=true")
 			case "invalid-kwok-mode":
 				env = append(env, "CONTROLPLANE_KWOK=typo")
 			case "missing-kwok":
