@@ -33,3 +33,10 @@ revision、不发生写入以及现有 Range payload 校验；另覆盖旧 Delet
 成功参考对照 `reference.GvK5GnDX`。完整服务包非 race 测试通过（138.740 秒），
 `go vet ./pkg/server/etcd` 和 diff 空白检查通过。没有额外全包 race 通过的声明，
 发布 CI 和集群复验仍待完成，目前不宣称新镜像或集群已通过。
+
+源码 `fafbd95b651f2913ac1f6f45b933ca1cc77573f8` 的
+[回归 CI 35181131443](https://github.com/fivetime/kubebrain/actions/runs/35181131443)
+attempt 1 已成功，原始日志确认新增两个顶层测试及其子用例执行通过。
+etcd 服务包非 race 130.508 秒；Auth/Lease/Watch race 分组分别
+84.181、71.019、23.552 秒，代理 race 5.283 秒，rollout probe race 313.308 秒。
+该 CI 不包含后续本地 revision promotion 修复，也不证明集群已通过。
