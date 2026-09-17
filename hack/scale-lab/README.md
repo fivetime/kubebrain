@@ -52,6 +52,13 @@ Re-run any single phase after a reboot, e.g. `./setup.sh kubebrain`. Teardown:
 
 ## Running tests
 
+`controlplane-reference-smoke.sh` provides a separate, loopback-only reference
+etcd test of real Deployment/ReplicaSet controllers and scheduler under RBAC.
+It requires explicit opt-in, four absolute binary paths with SHA-256 pins, and a
+private `WORK_PARENT`; it never reads a cluster kubeconfig or uses shared storage.
+The fake Ready node tests scheduling, not container execution or KWOK.
+See [verified results and limitations](../../docs/acceptance_reference_controlplane_20260917_cn.md).
+
 Build and test locally without deployment configuration:
 
 ```bash

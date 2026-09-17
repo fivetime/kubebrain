@@ -1,5 +1,9 @@
 # 隔离完整控制面验收准备
 
+后续进展：[参考 etcd 控制面调度验证](acceptance_reference_controlplane_20260917_cn.md)
+已通过真实 RBAC 身份、控制器派生对象及 scheduler 绑定的核验。下文保留准备历史；
+KubeBrain 后端接入、KWOK/容器运行及完整控制面验收仍未完成。
+
 2026-09-17：现有测试证明了独立 apiserver 的部分行为，尚未证明真实 controller-manager、
 scheduler 联动及 KWOK 规模场景。不能用 apiserver-only 或直接写入派生对象替代真实控制器验收。
 
