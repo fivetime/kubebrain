@@ -254,3 +254,39 @@ vet 通过（session 2037），完整 backend 测试通过（session 42060，52.
 本地验证覆盖不同键和重复键的读取次数，以及窗口起始、边界、尾部旧对象
 缺失/元数据损坏时保留告警、修复后解除告警。真实 TiKV 的延迟改善和精确
 租约任期切换仍未验证，不能据此宣称整体生产就绪。
+
+## 2026-09-17：批量历史校验的真实 TiKV 复验通过
+
+产品提交 `df2fbd7bd087d7e8d1167cef0353f84f8c23e79a` 的镜像 CI
+`35256530134`、backend CI `35256530100`、probe CI `35256530092` 均成功。
+独立发布审计 `release-df2fbd7b.UactPyJN/audit.Buk3VCbU` 核验源码、版本、
+依赖与实际 amd64 镜像；发布 index 为
+`sha256:4b0f33251ceca499a2fb28e8eb3aaed172bbc90d11db91b4e1fc4679b2c596f2`，
+amd64 摘要为
+`sha256:0aeff678fb6e1248e220d14b3319ed3d1a5666131aae7a36b0bb872f1a20e6a3`。
+CI 覆盖双架构，本机独立运行验证只覆盖 amd64，不扩大验证结论。
+
+实际部署与恢复证据位于本机私有状态目录
+`local-disarm-df2fbd7b.gQCywg1U/deploy-execute.QJYXwKHT`。部署前检查、
+三个节点的固定摘要预拉取通过后，仅滚动替换 `kubebrain-local` 的镜像。
+使用本地 TopoLVM、独立 PD/TiKV 及原默认 2PC；未更改后端配置，未操作
+旧 Ceph 前端或 secondary 集群。
+
+10 秒租约到期后，`ttl-11.json` 同时记录 TTL=-1、GrantedTTL=10 和保留的
+附属键，证明命中真实后端的过期但尚未撤销状态。随后经成员 0 入口解除
+本轮 CORRUPT 告警，耗时 **5.224856 秒**，满足原 **10 秒**请求门限。
+没有放宽验收门限；300 秒预算仅保留给异常恢复。此单次结果证明当前
+样本通过，不是延迟分布或长期稳定性结论，也不能单独证明之前超时的全部原因。
+
+夹具 `run.exit=0`、`cleanup.exit=0`；最终读取确认告警为空，测试租约及键
+不存在。总流程 `operation_exit=0`、`restore_exit=0`、`holder_cleanup_exit=0`。
+原 bb89 固定镜像及完整 StatefulSet 配置恢复，generation 30，三个副本就绪。
+独立复查 `postflight.xSAA3Yjt` 与清理后的 `postflight.8TzuL92o` 均通过：
+后端 Pod 身份/容器状态保持不变，无残留租约、告警或本轮测试前缀。
+
+凭历史 Bound PV/PVC 身份、当前 Released 状态及替代卷绑定凭据，仅删除本轮
+滚动更新产生的 12 个临时卷（`proven-scratch.S8ZQrTb2`，数据不可恢复）；
+其他 PV 配置未变，保留 12 个 Bound 卷和 2 个历史 Released 卷。
+
+本轮未发送 KeepAlive、未注入任期退出，不证明原始单流 RPC 已在过期续租
+等待路径中跨越任期切换。该精确实验及整体生产就绪验收仍未完成。
