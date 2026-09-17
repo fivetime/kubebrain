@@ -15,6 +15,15 @@ image=$(jq -er '.image|select(test("^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$"))' 
 probe_uid=$(jq -er '.probe_uid|select(type=="string" and length>0)' "$2")
 statefulset_uid=$(jq -er '.statefulset_uid|select(type=="string" and length>0)' "$2")
 digests=$(jq -cen --arg values "$TARGET_RUNTIME_DIGESTS" '$values|split(",")|select(length>0 and all(.[];test("^sha256:[a-f0-9]{64}$")))')
+# Older receipts imply the same image for both roles. A distinct probe must
+# have its own audited runtime allowlist; never admit target digests for it.
+probe_image=$(jq -er '(if has("probe_image") then .probe_image else .image end) | select(type=="string") | select(test("^[a-zA-Z0-9./:_-]+@sha256:[a-f0-9]{64}$"))' "$2")
+probe_runtime_digests=${DIAGNOSTIC_PROBE_RUNTIME_DIGESTS:-}
+if [[ -z "$probe_runtime_digests" ]]; then
+  [[ "$probe_image" == "$image" ]] || { echo 'distinct probe image requires DIAGNOSTIC_PROBE_RUNTIME_DIGESTS' >&2; exit 2; }
+  probe_runtime_digests=$TARGET_RUNTIME_DIGESTS
+fi
+probe_digests=$(jq -cen --arg values "$probe_runtime_digests" '$values|split(",")|select(length>0 and all(.[];test("^sha256:[a-f0-9]{64}$")))')
 config=$KUBECONFIG
 context=$KUBECTL_CONTEXT
 namespace=$KUBEBRAIN_NAMESPACE
@@ -40,7 +49,9 @@ jq -e --arg uid "$DIAGNOSTIC_INFO_CA_UID" '.metadata.uid==$uid and .metadata.del
 jq -er '.data["ca.crt"]' "$directory/info-ca.json" > "$directory/info-ca.crt"
 openssl x509 -in "$directory/info-ca.crt" -noout -checkend 0 >/dev/null
 identity() {
-  kctl get pod "$1" -o json | jq -ce --arg image "$image" --argjson digests "$digests" '
+  local expected_image=$image expected_digests=$digests
+  if [[ "$1" == "$probe" ]]; then expected_image=$probe_image; expected_digests=$probe_digests; fi
+  kctl get pod "$1" -o json | jq -ce --arg image "$expected_image" --argjson digests "$expected_digests" '
     select(.metadata.deletionTimestamp==null and .status.phase=="Running" and
       (.spec.containers|length)>0 and all(.spec.containers[]; .image==$image) and
       (.status.containerStatuses|length)==(.spec.containers|length) and

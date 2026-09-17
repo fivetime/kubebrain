@@ -60,7 +60,7 @@ func TestRolloutDiagnosticSamplerRunnerLifecycle(t *testing.T) {
 			callback := filepath.Join(root, "capture")
 			require.NoError(t, os.WriteFile(callback, []byte(`#!/bin/bash
 set -eu
-jq -e '.phase=="stable"' "$2" >/dev/null
+jq -e --arg probe "$PROBE_IMAGE" '.phase=="stable" and .probe_image==$probe and .probe_image!=.image' "$2" >/dev/null
 printf '%s\n' "$2" > "$TEST_SAMPLE_STARTED"
 if [[ "$TEST_MODE" == callback-failure ]]; then exit 17; fi
 trap 'echo SAMPLER_STOP >> "$FAKE_KUBECTL_LOG"; exit 0' TERM
@@ -83,6 +83,7 @@ exec "$TEST_REAL_KUBECTL" "$@"
 				"TEST_SAMPLE_STARTED=" + filepath.Join(root, "started"), "TEST_MODE=" + mode,
 				"ROLLOUT_DIAGNOSTIC_SAMPLER=" + callback, "KEEP_RUNTIME_EVIDENCE=true",
 				"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "PROBE_ITERATIONS=6000",
+				"PROBE_IMAGE=registry.example/probe@sha256:" + strings.Repeat("b", 64),
 				"TARGET_IMAGE=registry.example/kubebrain@sha256:" + strings.Repeat("a", 64),
 				"TARGET_RUNTIME_DIGESTS=sha256:" + strings.Repeat("a", 64)}
 			if mode == "timeout" {

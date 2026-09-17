@@ -7,6 +7,28 @@
 现有 `capture-rollout-tls-metrics.sh` 采集 KubeBrain 指标、探针进度和运行身份。
 若不设置 `DIAGNOSTIC_TIKV_RECEIPT`，行为不变。
 
+### 探针与服务使用不同镜像
+
+执行器在阶段记录中分别写入服务 `image` 和实际选定的 `probe_image`。
+TLS 回调分别核对两类 Pod 的 spec 镜像及运行时摘要，不把旧服务的摘要白名单
+用于新探针。设置独立 `PROBE_IMAGE` 时，必须向回调显式导出
+`DIAGNOSTIC_PROBE_RUNTIME_DIGESTS`（逗号分隔的已审计 `sha256:` 摘要，格式同
+`TARGET_RUNTIME_DIGESTS`）；不能从采集现场自动信任未知的 imageID。
+缺少该变量时，只有探针与目标服务镜像相同才复用目标白名单；旧阶段记录缺少
+`probe_image` 时仍按同镜像处理。显式空值或非法镜像字段不自动降级。
+
+UID、Ready、运行容器、前后 containerID/restartCount/startedAt 一致性及服务
+StatefulSet owner 检查保持不变。这是采集通路修复，不改变验收门限；
+[63e0bd48 回滚实验](acceptance_local_rollback_63e0bd48_20260917_cn.md)的七次失败样本
+仍然无效，不能由后续测试追溯补齐。
+
+2026-09-17 定向验证：独立探针正常场景在修复前退出 1（0.408s）；修复后
+TLS 身份回归 13 个场景通过 race（11.702s），包括独立镜像、缺失/错误摘要、
+错误探针镜像、服务镜像漂移及显式 null 字段拒绝。执行器采样生命周期 race
+通过（34.767s），回调实际断言阶段文件保留独立探针镜像；后端观察器与 TLS
+组合 race 通过（49.023s）。shell 语法检查和 `go vet ./hack/production` 通过。
+这些是模拟 Kubernetes 的工具回归，尚未形成新的真实集群采样验收。
+
 ## 临时候选验收后的恢复
 
 普通 `TARGET_IMAGE` 升级默认在失败时恢复原配置，成功时保留候选版本。
