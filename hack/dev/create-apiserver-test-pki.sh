@@ -5,8 +5,10 @@ umask 077
 # Disposable loopback-only apiserver PKI, never copied from a real cluster.
 # The caller owns the parent directory and must remove this directory afterwards.
 pki_dir="${1:-}"
-if [[ "$#" != 1 || "$pki_dir" != /* || -e "$pki_dir" || -L "$pki_dir" ]]; then
-  echo "usage: create-apiserver-test-pki.sh /absolute/new/pki-directory" >&2
+controlplane=false
+if [[ "$#" == 2 && "$2" == --controlplane ]]; then controlplane=true; fi
+if [[ ( "$#" != 1 && "$controlplane" != true ) || "$pki_dir" != /* || -e "$pki_dir" || -L "$pki_dir" ]]; then
+  echo "usage: create-apiserver-test-pki.sh /absolute/new/pki-directory [--controlplane]" >&2
   exit 2
 fi
 command -v openssl >/dev/null
@@ -38,6 +40,16 @@ create_leaf apiserver-kubelet-client ca /CN=kubebrain-test-client \
   'extendedKeyUsage=clientAuth'
 create_leaf front-proxy-client front-proxy-ca /CN=front-proxy-client \
   'extendedKeyUsage=clientAuth'
+if [[ "$controlplane" == true ]]; then
+  # Only for this disposable CA. Components use the upstream bootstrap RBAC
+  # user identities, not the privileged test administrator's credentials.
+  create_leaf admin ca /CN=kubebrain-test-admin/O=system:masters \
+    'extendedKeyUsage=clientAuth'
+  create_leaf controller-manager ca /CN=system:kube-controller-manager \
+    'extendedKeyUsage=clientAuth'
+  create_leaf scheduler ca /CN=system:kube-scheduler \
+    'extendedKeyUsage=clientAuth'
+fi
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \
   -out "$pki_dir/sa.key" >/dev/null 2>&1
 openssl pkey -in "$pki_dir/sa.key" -pubout -out "$pki_dir/sa.pub" >/dev/null 2>&1

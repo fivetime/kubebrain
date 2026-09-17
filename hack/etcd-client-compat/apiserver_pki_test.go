@@ -2,12 +2,68 @@ package compat
 
 import (
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestEphemeralControlPlanePKI(t *testing.T) {
+	pki := filepath.Join(t.TempDir(), "pki")
+	helper := filepath.Join("..", "dev", "create-apiserver-test-pki.sh")
+	out, err := runCompatCommandContext(t, context.Background(), "bash", []string{helper, pki, "--controlplane"}, nil)
+	require.NoError(t, err, "%s", out)
+	serials := map[string]bool{}
+	keys := map[string]bool{}
+	for _, tc := range []struct {
+		name, cn string
+		groups   []string
+	}{
+		{"admin", "kubebrain-test-admin", []string{"system:masters"}},
+		{"controller-manager", "system:kube-controller-manager", nil},
+		{"scheduler", "system:kube-scheduler", nil},
+	} {
+		data, err := os.ReadFile(filepath.Join(pki, tc.name+".crt"))
+		require.NoError(t, err)
+		block, _ := pem.Decode(data)
+		require.NotNil(t, block)
+		cert, err := x509.ParseCertificate(block.Bytes)
+		require.NoError(t, err)
+		require.Equal(t, tc.cn, cert.Subject.CommonName)
+		require.Equal(t, tc.groups, cert.Subject.Organization)
+		require.False(t, cert.IsCA)
+		require.Equal(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, cert.ExtKeyUsage)
+		require.Empty(t, cert.IPAddresses)
+		require.Empty(t, cert.DNSNames)
+		require.False(t, serials[cert.SerialNumber.String()], "distinct certificate serials")
+		serials[cert.SerialNumber.String()] = true
+		publicKey := string(cert.RawSubjectPublicKeyInfo)
+		require.False(t, keys[publicKey], "components must not share a private key")
+		keys[publicKey] = true
+		keyFile := filepath.Join(pki, tc.name+".key")
+		info, err := os.Stat(keyFile)
+		require.NoError(t, err)
+		require.Zero(t, info.Mode().Perm()&0077)
+		out, err := runCompatCommandContext(t, context.Background(), "openssl", []string{"verify", "-CAfile", filepath.Join(pki, "ca.crt"), "-purpose", "sslclient", filepath.Join(pki, tc.name+".crt")}, nil)
+		require.NoError(t, err, "%s", out)
+		key, err := runCompatCommandContext(t, context.Background(), "openssl", []string{"pkey", "-in", keyFile, "-pubout", "-outform", "DER"}, nil)
+		require.NoError(t, err)
+		require.Equal(t, cert.RawSubjectPublicKeyInfo, key)
+	}
+}
+
+func TestEphemeralPKIRejectsUnknownMode(t *testing.T) {
+	for _, args := range [][]string{{"--unknown"}, {"--controlplane", "extra"}} {
+		pki := filepath.Join(t.TempDir(), "pki")
+		command := append([]string{filepath.Join("..", "dev", "create-apiserver-test-pki.sh"), pki}, args...)
+		out, err := runCompatCommandContext(t, context.Background(), "bash", command, nil)
+		require.Error(t, err, "%s", out)
+		require.NoDirExists(t, pki, "invalid invocation must not create credentials")
+	}
+}
 
 func TestEphemeralAPIServerPKI(t *testing.T) {
 	pki := filepath.Join(t.TempDir(), "pki")
@@ -19,6 +75,9 @@ func TestEphemeralAPIServerPKI(t *testing.T) {
 		return out
 	}
 	run("bash", helper, pki)
+	for _, name := range []string{"admin", "controller-manager", "scheduler"} {
+		require.NoFileExists(t, filepath.Join(pki, name+".key"), "default mode must not create extra credentials")
+	}
 	info, err := os.Stat(pki)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0700), info.Mode().Perm())
