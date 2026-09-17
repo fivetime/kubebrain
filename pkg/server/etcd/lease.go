@@ -1624,11 +1624,21 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 	// response cannot race attached keys that are still readable.
 	if !st.deadline.After(now) {
 		revoked := st.revoked
+		// Capture the lifecycle that owns this snapshot before releasing state.
+		// Its expiry worker is canceled on demotion, so revocation may never
+		// complete here. Match etcd lessor.Renew's demotec/stopC exit without
+		// closing revoked or pretending the durable lease has been deleted.
+		var termDone <-chan struct{}
+		if m.leaseTermCtx != nil {
+			termDone = m.leaseTermCtx.Done()
+		}
 		m.leaseMu.Unlock()
 		unlock()
 		select {
 		case <-revoked:
 			return 0, leaseNotFound(id)
+		case <-termDone:
+			return 0, errLeaseDemotedDuringRenew
 		case <-ctx.Done():
 			return 0, ctx.Err()
 		}
