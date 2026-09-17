@@ -1,6 +1,6 @@
 # 专用测试集群 TopoLVM 存储准备
 
-2026-09-17：后续真实 kube-apiserver 连续更新期间 leader 硬故障测试**未通过**，Txn 返回 leader changed；原固定镜像已恢复，待核实并清理本轮临时卷。见[失败记录与语义边界](acceptance_apiserver_continuous_fault_20260917_cn.md)。
+2026-09-17：后续真实 kube-apiserver 连续更新期间 leader 硬故障测试**未通过**，Txn 返回 leader changed；原固定镜像已恢复，已精确清理 12 个临时卷、另 2 个证据不足继续保留。见[失败记录与语义边界](acceptance_apiserver_continuous_fault_20260917_cn.md)。同负载的[本机参考 etcd 对照](acceptance_reference_apiserver_fault_20260917_cn.md)通过，但拓扑不同，仍需定位 KubeBrain 可用性差异。
 
 2026-09-17：隔离实例升级至 `8ac67ca3` 通过原 6000 次可用性门限，随后恢复原镜像并清理本轮临时卷；见[升级验收及范围限制](acceptance_local_upgrade_8ac67ca3_20260917_cn.md)。
 

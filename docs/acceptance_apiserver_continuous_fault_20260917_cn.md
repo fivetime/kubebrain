@@ -52,8 +52,10 @@ KubeBrain 的 `forwardUnaryWithDrainRetry` 只对明确的“peer 在接纳请�
 `server/etcdserver/read/read.go` 在 ReadIndex 等待期间遇到 leader 变化可返回
 ErrLeaderChanged；`v3_server.go` 的另一处同名错误属于 LeaseTimeToLive，不能据此声称
 参考 etcd 的写 Txn 在同一场景必然产生相同错误。
-**仍需相同真实 apiserver 负载下的参考 etcd 故障对照，以及 KubeBrain 请求阶段证据，
-才能区分额外的可用性缺口与允许出现的未决写结果。** 不通过改成无条件重试来消除差异。
+后续[参考 etcd 对照](acceptance_reference_apiserver_fault_20260917_cn.md)已完成：相同
+真实 apiserver 更新负载在本机三成员参考 etcd leader SIGKILL 后通过 2000 次完整性校验。
+两次拓扑与注入时机不同，不能视为严格性能 A/B，但不能把本次失败解释为参考必然行为。
+**仍缺 KubeBrain 请求阶段证据以定位差异根因**；不通过改成无条件重试来消除差异。
 
 ## 恢复、后检和待清理内容
 
@@ -65,9 +67,17 @@ generation 4 → 5 → 6，原完整 spec 和运行时镜像验证通过，预�
 - 本地 PD/TiKV StatefulSet UID/generation/spec 不变，六个 Pod UID/containerStatuses 不变。
 - 旧 Ceph 前端 UID/generation/spec 不变且 Ready 3/3。
 
-后检发现本地 PV 为 12 Bound、14 Released。**14 个 Released 卷尚未删除**；必须逐一
-核实历史 Bound 证据、所有权及无挂载，不能按 Released 状态批量删除。生成的辅助二进制
-也尚待精确清理。保留原始证据，不重复使用已消费的实验 claim；HOLD 已恢复。
+首次后检发现本地 PV 为 12 Bound、14 Released。随后从部署前及候选阶段两份完整快照
+确定 12 个历史 Bound scratch 卷，逐一核对 UID/full spec、Released/Retain、同名替代
+PVC 已绑定不同卷、无 VolumeAttachment，再以 UID/RV/full spec/phase 前置条件将
+这 12 个 PV 回收策略改为 Delete 并等待删除。临时数据已删除、不可恢复；清理会话
+84716 终态 0。全部非目标 PV 的 UID/spec 前后不变，未修改 StorageClass 或旧 Ceph 卷。
+
+故障重建时产生的另 2 个卷缺少历史 Bound 快照，**仍保留，不按 Released 状态批量删除**。
+最终本地 PV 为 12 Bound、2 Released，LogicalVolume 数为 14；独立后检再次通过，
+证据 `postflight.YPNNzekb/`。精确清理证据 `proven-scratch.OLqo3hsI/`，单次 claim 已消费。
+`uid-delete` 和 `tools/image-prepull` 两份生成二进制按 `helpers.sha256` 验证后删除，
+源码及证据保留、可重新编译。保留原始证据，不重复使用实验 claim；HOLD 已恢复。
 
 ## 证据
 
