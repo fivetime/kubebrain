@@ -76,4 +76,23 @@ gRPC 的 context 错误转换不在本测试范围内。
 
 证据 `range-promotion-integration.3og17xvS`，不修改产品实现、不提高原预算、
 不改集群或重跑 CI。本测试覆盖直接读屏障路径，不覆盖 follower gRPC 转发、
-真实选主实现、存储故障或 Watch 与真实同步器的联动；这些边界不能由测试名称推定通过。
+真实选主实现或存储故障；这些边界不能由测试名称推定通过。Watch 联动见下节。
+
+## Watch 创建与真实同步器联动
+
+`TestReadBarrierWatchWithRealSyncerDuringPromotion` 覆盖 follower 的创建请求已经进入
+真实 HTTP revision fetch 后发生 fresh/stale 本机升主的两种情况。
+旧流返回 Unavailable，不发送 Created、不安装远端 revision、不调用后端 Watch，
+并释放已预留的唯一 Watch 配额。客户端显式新建流后，fresh leader 可以发送 Created
+并交付随后 Put 的同 revision/value 事件；stale leader 仍拒绝创建，最终无配额泄漏。
+每个场景只请求一次旧 peer；测试不通过自动重连掩盖旧请求失败。
+
+最终源码下，恢复 `fafbd95b` revision 文件的隔离 overlay 对照两个场景均耗尽 2 秒预算，
+退出 1（4.238 秒）；当前源码 `ReadBarrier|FollowerWatch` 组合 race 重复三次通过
+（13.120 秒），etcd 包 vet 通过。测试失败收尾也显式取消并等待 Watch goroutine，
+避免断言失败后后台流越过后端清理。证据 `watch-promotion-integration.ZXTeRt6z`。
+
+该测试检验 KubeBrain 的共享后端读屏障设计，不宣称 upstream Watch 必须先执行同样的
+线性化屏障：参考 etcd 的 `server/etcdserver/api/v3rpc/watch.go` 在本地 watchStream
+注册监听后生成 Created；两者内部架构不同。这里没有覆盖 gRPC 线上编码、follower
+代理转发或真实选主，产品实现及集群均未修改。
