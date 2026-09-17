@@ -37,5 +37,8 @@ The tool never prints certificate/key contents. Its output does contain lease
 and member identifiers; retain it with the experiment evidence. No sample command
 here authorizes fault injection against an arbitrary endpoint.
 
-Local tests use bufconn and synthetic services, not real PD/TiKV or TLS. Production
-CI runs vet and race tests; the real fault experiment remains a separate gate.
+Local tests use synthetic services over bufconn and loopback TCP/mTLS. The latter
+exercise the CLI, mandatory client certificates, rejection of a wrong server
+name, and connection loss without a replacement connection. They do not use real
+PD/TiKV. Production CI runs vet and race tests; the real fault experiment remains
+a separate gate.
