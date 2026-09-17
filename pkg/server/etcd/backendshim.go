@@ -544,6 +544,7 @@ func (b *backendShim) Delete(ctx context.Context, key []byte, revision int64, in
 					ResponseRange: &etcdserverpb.RangeResponse{
 						Header: txnHeader(int64(response.Header.Revision)),
 						Kvs:    kvs,
+						Count:  int64(len(kvs)),
 					},
 				},
 			},
@@ -664,6 +665,7 @@ func (b *backendShim) Update(ctx context.Context, rev int64, r *etcdserverpb.Put
 					ResponseRange: &etcdserverpb.RangeResponse{
 						Header: txnHeader(headerRevision),
 						Kvs:    kvs,
+						Count:  int64(len(kvs)),
 					},
 				},
 			},
