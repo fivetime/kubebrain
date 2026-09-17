@@ -44,3 +44,17 @@ func TestControlPlaneReferenceAdmission(t *testing.T) {
 		})
 	}
 }
+
+func TestControlPlaneSharedBackendNeedsSeparateConsent(t *testing.T) {
+	for _, entry := range []string{"controlplane-reference-smoke.sh", "controlplane-smoke.sh"} {
+		out, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "scale-lab", entry)}, []string{
+			"ALLOW_LOCAL_CONTROLPLANE_TEST=true", "CONTROLPLANE_BACKEND=kubebrain", "ALLOW_MUTATING_CONTROLPLANE_BACKEND=false",
+		})
+		require.Error(t, err, "%s", out)
+		if entry == "controlplane-reference-smoke.sh" {
+			require.Contains(t, string(out), "reference entrypoint refuses shared backend")
+		} else {
+			require.Contains(t, string(out), "shared backend mutation not authorized")
+		}
+	}
+}

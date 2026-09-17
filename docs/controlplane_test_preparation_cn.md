@@ -58,3 +58,39 @@ scheduler 联动及 KWOK 规模场景。不能用 apiserver-only 或直接写入
 本次仅修改生成器并在临时目录验证，未为真实控制面签发持久凭据或启动服务。
 仍待实现隔离进程启动/停止、RBAC 运行核验、真实 Deployment→ReplicaSet→Pod→调度、
 证据归档及精确清理；不得用直接注入 ReplicaSet/Pod 或伪造 Running 替代控制器联动。
+
+## 共享后端驱动已准备，尚未执行 KubeBrain 接入
+
+`hack/scale-lab/controlplane-smoke.sh` 现在承载共同的 apiserver/RBAC/真实控制器/调度
+工作负载；`controlplane-reference-smoke.sh` 保留为强制 reference 的兼容入口，
+即使环境要求 kubebrain 也拒绝切换。默认仍使用独立本地参考 etcd。
+
+共享模式需同时显式设置 `ALLOW_LOCAL_CONTROLPLANE_TEST=true`、
+`CONTROLPLANE_BACKEND=kubebrain`、`ALLOW_MUTATING_CONTROLPLANE_BACKEND=true`。
+另外必须提供 `CONTROLPLANE_ENDPOINT`（单一 HTTPS 地址）、`CONTROLPLANE_CA`、
+`CONTROLPLANE_CERT`、`CONTROLPLANE_KEY`、`CONTROLPLANE_ETCDCTL` 绝对路径及
+`CONTROLPLANE_ETCDCTL_SHA256`，以及预先核验的十进制字符串
+`CONTROLPLANE_CLUSTER_ID`、`CONTROLPLANE_MEMBER_ID`。这些不能从任意首次响应
+自动接受，外层操作所有者仍须核验 Kubernetes 实例、Pod、镜像和 TLS 身份。
+组件二进制摘要、固定版本、独立 API 端口和私有工作目录要求与参考模式相同。
+
+共享后端 helper `controlplane-backend.sh` 使用完整 TLS 校验；通过已核对参考
+etcdctl 源码的 fields 输出比较 ID 字符串，避免大整数经 jq 舍入后误匹配。
+正式创建 apiserver 前，检查随机本轮 `/registry-kubebrain-controlplane-…/` 前缀
+为空且租约列表为零，保存本轮前缀收据。这个收据不是跨机器锁，仍要求专用后端
+同一时间只有一个测试所有者；不得并行运行其他租约/故障验收。
+
+退出时先停止并回收三个控制面进程，再核对同一后端身份，仅删除本轮带尾部斜杠
+的前缀并确认空。等待租约自然过期最多 60 秒，不 Revoke、不 KeepAlive；身份漂移、
+删除或租约检查失败均使清理失败，整体退出 70，`result.json` 分别记录操作与清理结果。
+短调度测试不保证所有长 TTL 租约都会及时过期，因此不能只看操作通过消息。
+
+本地共享后端十场景 race 测试通过（4.934s）：包括大于 2^53 的相邻集群 ID 拒绝、
+重复 status、非空前缀、无 header、命令失败、已有租约、清理身份漂移、删除失败和
+删除后残留。组合控制面测试通过（5.041s），独立授权拒绝另行验证；`go vet .` 通过。
+模拟 CLI 测试不证明真实 TLS 或租约过期行为。
+
+重构后参考运行 session 7005 终态 0，证据 `controlplane-reference.N0RaLL27`，
+`result.json` 的 operation/backend_cleanup/runner 均为 0，测试端口已释放。
+该次 backend_cleanup=0 表示 reference 模式无需共享后端清理，不能作为 KubeBrain
+清理验证。**目前尚未使用这个新模式对共享 KubeBrain 后端执行实际控制面负载。**
