@@ -86,7 +86,7 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	require.Contains(t, workflow.On, "push")
 	require.Contains(t, workflow.On, "workflow_dispatch")
 	require.Equal(t, []string{"dbaas"}, workflow.On["push"].Branches)
-	for _, path := range []string{"hack/production/cmd/rollout-availability-probe/**", "hack/production/internal/**", "pkg/**", "go.mod", "go.sum", "build/workflow_test.go", ".github/workflows/probe-regression.yml"} {
+	for _, path := range []string{"hack/production/cmd/rollout-availability-probe/**", "hack/production/cmd/pod-log-capture/**", "hack/production/internal/**", "pkg/**", "go.mod", "go.sum", "build/workflow_test.go", ".github/workflows/probe-regression.yml"} {
 		require.Contains(t, workflow.On["push"].Paths, path)
 	}
 	require.Equal(t, map[string]string{"contents": "read"}, workflow.Permissions)
@@ -106,6 +106,8 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	require.Contains(t, commands, "go test -race -count=1 ./build\n")
 	require.Contains(t, commands, "go vet ./hack/production/cmd/rollout-availability-probe\n")
 	require.Contains(t, commands, "go vet ./pkg/server/service/etcdproxy\n")
+	require.Contains(t, commands, "go vet ./hack/production/cmd/pod-log-capture\n")
+	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/cmd/pod-log-capture\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=5m -v ./pkg/server/service/etcdproxy\n")
 	require.Contains(t, commands, "go vet ./pkg/server/etcd\n")
 	require.Contains(t, commands, "go test -count=1 -timeout=10m -v ./pkg/server/etcd\n")

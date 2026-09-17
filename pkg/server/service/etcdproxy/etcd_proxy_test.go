@@ -682,6 +682,97 @@ func TestWaitReadyPreemptsStaleLeaderConnectionAttempt(t *testing.T) {
 		"a published successor must preempt the stale five-second peer connection attempt")
 }
 
+func TestBackgroundConnectorPreemptsStaleAttemptWithoutRequestWaiters(t *testing.T) {
+	retiringAddress, accepted := startBlackholeTCPServer(t)
+	successorAddress := startPutResultServer(t, &putResultServer{put: func() (*etcdserverpb.PutResponse, error) {
+		return &etcdserverpb.PutResponse{}, nil
+	}})
+	election := newSwitchingLeaderElection(retiringAddress)
+	proxy := NewEtcdProxy(t.Context(), election, nil, false, 0).(*etcdProxy)
+	t.Cleanup(func() { require.NoError(t, proxy.Close()) })
+	select {
+	case <-accepted:
+	case <-time.After(time.Second):
+		t.Fatal("background connector did not start the old peer attempt")
+	}
+	election.address.Store(successorAddress)
+	// Ready only reads state. In particular, do not call waitReady: already
+	// forwarded requests and local requests on a newly elected leader cannot
+	// be relied on to enter that function and cancel an obsolete health check.
+	require.Eventually(t, func() bool { return proxy.Ready() == nil }, time.Second, 10*time.Millisecond,
+		"connector must observe a successor without waiting for the five-second old peer timeout")
+}
+
+type stalledPeerHealth struct {
+	healthpb.UnimplementedHealthServer
+	blocked  atomic.Bool
+	started  chan struct{}
+	finished chan struct{}
+}
+
+func (s *stalledPeerHealth) Check(ctx context.Context, _ *healthpb.HealthCheckRequest) (*healthpb.HealthCheckResponse, error) {
+	if !s.blocked.Load() {
+		return &healthpb.HealthCheckResponse{Status: healthpb.HealthCheckResponse_SERVING}, nil
+	}
+	select {
+	case s.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	select {
+	case s.finished <- struct{}{}:
+	default:
+	}
+	return nil, ctx.Err()
+}
+
+func TestBackgroundConnectorCancelsPublishedPeerHealthAfterSuccessor(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	server := grpc.NewServer()
+	oldHealth := &stalledPeerHealth{started: make(chan struct{}, 1), finished: make(chan struct{}, 1)}
+	healthpb.RegisterHealthServer(server, oldHealth)
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() { server.Stop(); _ = listener.Close() })
+	successor := startPutResultServer(t, &putResultServer{put: func() (*etcdserverpb.PutResponse, error) {
+		return &etcdserverpb.PutResponse{}, nil
+	}})
+	election := newSwitchingLeaderElection(listener.Addr().String())
+	proxy := NewEtcdProxy(t.Context(), election, nil, false, 0).(*etcdProxy)
+	t.Cleanup(func() { require.NoError(t, proxy.Close()) })
+	require.Eventually(t, func() bool { return proxy.Ready() == nil }, time.Second, 10*time.Millisecond)
+	oldHealth.blocked.Store(true)
+	proxy.requestClientUpdate()
+	select {
+	case <-oldHealth.started:
+	case <-time.After(time.Second):
+		t.Fatal("periodic health check did not enter the old peer")
+	}
+	election.address.Store(successor)
+	// No call to waitReady or to a forwarded RPC after the election changes.
+	require.Eventually(t, func() bool { return proxy.Ready() == nil }, time.Second, 10*time.Millisecond)
+	select {
+	case <-oldHealth.finished:
+	case <-time.After(time.Second):
+		t.Fatal("obsolete health request was not canceled")
+	}
+}
+
+func TestConnectionAttemptMonitorPreservesCurrentAndUnknownLeader(t *testing.T) {
+	election := newSwitchingLeaderElection("current:3380")
+	proxy := &etcdProxy{election: election}
+	ctx, finish := proxy.trackLeaderConnectionAttempt(t.Context(), "current:3380")
+	defer finish()
+	time.Sleep(150 * time.Millisecond)
+	require.NoError(t, ctx.Err())
+	election.address.Store("")
+	time.Sleep(150 * time.Millisecond)
+	require.NoError(t, ctx.Err(), "unknown election identity must not cancel the attempt")
+	election.address.Store("successor:3380")
+	require.Eventually(t, func() bool { return ctx.Err() != nil }, time.Second, 10*time.Millisecond)
+	require.ErrorIs(t, ctx.Err(), context.Canceled)
+}
+
 func TestFailedLeaderTransportRefreshesPublishedSuccessorBeforeRetry(t *testing.T) {
 	retiringAddress := startPutResultServer(t, &putResultServer{put: func() (*etcdserverpb.PutResponse, error) {
 		return &etcdserverpb.PutResponse{}, nil

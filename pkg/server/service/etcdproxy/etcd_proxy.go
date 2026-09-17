@@ -248,11 +248,28 @@ func (e *etcdProxy) trackLeaderConnectionAttempt(parent context.Context, leaderI
 	e.attemptMu.Unlock()
 
 	// The election may have changed immediately before publication of this
-	// attempt. Reconcile once here; waitReady repeats the check while requests
-	// are parked behind the connector.
+	// attempt. Keep observing it even without request-side waitReady callers:
+	// existing forwarded RPCs and local requests on a newly elected leader do
+	// not enter that readiness loop. Otherwise a stale health check can retain
+	// the old shared connection for its entire five-second timeout.
 	e.cancelStaleLeaderConnectionAttempt()
+	monitorDone := make(chan struct{})
+	go func() {
+		defer close(monitorDone)
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-attemptCtx.Done():
+				return
+			case <-ticker.C:
+				e.cancelStaleLeaderConnectionAttempt()
+			}
+		}
+	}()
 	return attemptCtx, func() {
 		cancel()
+		<-monitorDone
 		e.attemptMu.Lock()
 		if e.attemptGeneration == generation {
 			e.attemptLeader = ""

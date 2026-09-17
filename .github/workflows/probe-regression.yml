@@ -5,6 +5,7 @@ name: Rollout probe regression
     branches: [dbaas]
     paths:
       - 'hack/production/cmd/rollout-availability-probe/**'
+      - 'hack/production/cmd/pod-log-capture/**'
       - 'hack/production/internal/**'
       - 'pkg/**'
       - 'go.mod'
@@ -59,6 +60,11 @@ jobs:
           set -euo pipefail
           go vet ./pkg/server/service/etcdproxy
           go test -race -count=1 -timeout=5m -v ./pkg/server/service/etcdproxy
+      - name: Verify read-only pod log capture
+        run: |
+          set -euo pipefail
+          go vet ./hack/production/cmd/pod-log-capture
+          go test -race -count=1 -timeout=2m -v ./hack/production/cmd/pod-log-capture
       - name: Race test all probe regressions
         run: |
           set -euo pipefail
