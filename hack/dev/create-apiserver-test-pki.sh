@@ -6,9 +6,15 @@ umask 077
 # The caller owns the parent directory and must remove this directory afterwards.
 pki_dir="${1:-}"
 controlplane=false
-if [[ "$#" == 2 && "$2" == --controlplane ]]; then controlplane=true; fi
+kwok=false
+if [[ "$#" == 2 ]]; then
+  case "$2" in
+    --controlplane) controlplane=true ;;
+    --controlplane-kwok) controlplane=true; kwok=true ;;
+  esac
+fi
 if [[ ( "$#" != 1 && "$controlplane" != true ) || "$pki_dir" != /* || -e "$pki_dir" || -L "$pki_dir" ]]; then
-  echo "usage: create-apiserver-test-pki.sh /absolute/new/pki-directory [--controlplane]" >&2
+  echo "usage: create-apiserver-test-pki.sh /absolute/new/pki-directory [--controlplane|--controlplane-kwok]" >&2
   exit 2
 fi
 command -v openssl >/dev/null
@@ -48,6 +54,12 @@ if [[ "$controlplane" == true ]]; then
   create_leaf controller-manager ca /CN=system:kube-controller-manager \
     'extendedKeyUsage=clientAuth'
   create_leaf scheduler ca /CN=system:kube-scheduler \
+    'extendedKeyUsage=clientAuth'
+fi
+if [[ "$kwok" == true ]]; then
+  # No privileged group or upstream bootstrap identity. The isolated harness
+  # must explicitly bind the fixture's limited RBAC permissions to this user.
+  create_leaf kwok ca /CN=kubebrain-test-kwok \
     'extendedKeyUsage=clientAuth'
 fi
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 \

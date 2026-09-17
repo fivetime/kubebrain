@@ -12,20 +12,34 @@ import (
 )
 
 func TestEphemeralControlPlanePKI(t *testing.T) {
+	t.Run("default", func(t *testing.T) { testControlPlanePKI(t, "--controlplane", false) })
+	t.Run("kwok", func(t *testing.T) { testControlPlanePKI(t, "--controlplane-kwok", true) })
+}
+
+func testControlPlanePKI(t *testing.T, mode string, withKWOK bool) {
+	t.Helper()
 	pki := filepath.Join(t.TempDir(), "pki")
 	helper := filepath.Join("..", "dev", "create-apiserver-test-pki.sh")
-	out, err := runCompatCommandContext(t, context.Background(), "bash", []string{helper, pki, "--controlplane"}, nil)
+	out, err := runCompatCommandContext(t, context.Background(), "bash", []string{helper, pki, mode}, nil)
 	require.NoError(t, err, "%s", out)
 	serials := map[string]bool{}
 	keys := map[string]bool{}
-	for _, tc := range []struct {
+	type identity struct {
 		name, cn string
 		groups   []string
-	}{
+	}
+	identities := []identity{
 		{"admin", "kubebrain-test-admin", []string{"system:masters"}},
 		{"controller-manager", "system:kube-controller-manager", nil},
 		{"scheduler", "system:kube-scheduler", nil},
-	} {
+	}
+	if withKWOK {
+		identities = append(identities, identity{"kwok", "kubebrain-test-kwok", nil})
+	} else {
+		require.NoFileExists(t, filepath.Join(pki, "kwok.key"))
+		require.NoFileExists(t, filepath.Join(pki, "kwok.crt"))
+	}
+	for _, tc := range identities {
 		data, err := os.ReadFile(filepath.Join(pki, tc.name+".crt"))
 		require.NoError(t, err)
 		block, _ := pem.Decode(data)
@@ -56,7 +70,7 @@ func TestEphemeralControlPlanePKI(t *testing.T) {
 }
 
 func TestEphemeralPKIRejectsUnknownMode(t *testing.T) {
-	for _, args := range [][]string{{"--unknown"}, {"--controlplane", "extra"}} {
+	for _, args := range [][]string{{"--unknown"}, {"--kwok"}, {"--controlplane", "extra"}, {"--controlplane-kwok", "extra"}} {
 		pki := filepath.Join(t.TempDir(), "pki")
 		command := append([]string{filepath.Join("..", "dev", "create-apiserver-test-pki.sh"), pki}, args...)
 		out, err := runCompatCommandContext(t, context.Background(), "bash", command, nil)
@@ -75,7 +89,7 @@ func TestEphemeralAPIServerPKI(t *testing.T) {
 		return out
 	}
 	run("bash", helper, pki)
-	for _, name := range []string{"admin", "controller-manager", "scheduler"} {
+	for _, name := range []string{"admin", "controller-manager", "scheduler", "kwok"} {
 		require.NoFileExists(t, filepath.Join(pki, name+".key"), "default mode must not create extra credentials")
 	}
 	info, err := os.Stat(pki)

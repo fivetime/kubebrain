@@ -1,5 +1,20 @@
 # 隔离完整控制面验收准备
 
+## KWOK 身份生成器（尚未接入控制器）
+
+`hack/dev/create-apiserver-test-pki.sh /absolute/new/pki --controlplane-kwok`
+显式生成控制面身份及额外 `kwok.crt/key`：CN 为 `kubebrain-test-kwok`，无
+Organization、仅 clientAuth、独立密钥/序列号，由本轮临时 CA 签发，有效期一天。
+证书本身不授予权限；后续隔离 API 必须显式绑定受限 RBAC，不能复用 admin。
+原无参数模式及 `--controlplane` 均不生成 KWOK 凭据；未知模式、多余参数仍拒绝。
+
+测试先在旧生成器上因新模式未支持而失败（session 30454，退出 1）；实现后
+`go test -race . -run '^TestEphemeral' -count=1` 在 compat 子模块通过
+（session 39349，3.398 秒），验证身份、无特权组、EKU、独立密钥、文件权限、
+CA 验证、默认模式及参数拒绝。vet、shell 语法和 diff 检查通过（session 60081）。
+仅临时测试目录中生成过证书，未签发持久集群凭据、启动 KWOK 或完成 RBAC 验收。
+本次准备提交跳过 CI，不将本地结果冒充同源 CI；完整接入需后续独立验证。
+
 ## KWOK 固定二进制与配置隔离准备（08:18 UTC）
 
 本机 `/root/kwok` 干净源码 `099ce5faf29193ac19f0d7529103327c48570f20` 已构建为
