@@ -37,7 +37,14 @@ KeepAlive worker 的 cancel/deadline 用例、root/writer 授权续租用例均�
 （session 76814，10.497s），`go vet ./pkg/server/etcd` 通过（session 49603）。
 完整服务测试通过（session 89641，144.004s）；root/state、writer/state
 分别重复十次 race 均通过（session 69251，3.815s）。
-尚未有本次代码的 CI、镜像或真实集群部署证据。未改默认 2PC、租约 TTL、
+后续精确 `66b42fcd29f3d52cee5a46c7e66dff2e61dcc13f` 的 CI `35220675194`
+attempt 1 全部成功：服务 137.699s，Auth/Lease/Watch race 分别
+86.460/76.601/26.283s，完整探针 race 303.701s。归档明确包含授权续租
+root/state、writer/state 和 teardown 状态入场新用例的 PASS。
+同次 push 自动触发镜像 CI `35220675175`，仍在执行；尚无完成的镜像审计
+或真实集群部署证据。未改默认 2PC、租约 TTL、
 原清理门限或测试集群；此前整体退出 70 的记录保持不变。
 
 私有续接记录：`/root/.local/state/kubebrain/lease-renew-state-admission.5Wn5K0SQ/STATE.md`。
+CI 完整日志：`/root/.local/state/kubebrain/lease-renew-state-epoch.u5DtiMzf/probe-35220675194.log`，
+SHA-256 `bdbf4074ffc6f68196ba3f98d2ba12e207afc435e9fb83997ecb88da04a53dd4`。

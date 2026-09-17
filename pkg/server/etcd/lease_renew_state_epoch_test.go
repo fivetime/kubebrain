@@ -119,3 +119,46 @@ func TestLeaseRenewRejectsDemotionAtStateAdmission(t *testing.T) {
 		})
 	}
 }
+
+func TestLeaseRenewRejectsDemotionBeforeDeadlinePublication(t *testing.T) {
+	s, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	const id = int64(78327)
+	_, err := s.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: id, TTL: 300})
+	require.NoError(t, err)
+	s.leaseMu.Lock()
+	before := s.leases[id].deadline
+	s.leaseMu.Unlock()
+	// Model demotion immediately after the two admission observations. The
+	// third observation must be at publication: the lease has no checkpoint,
+	// so no checkpoint-clear fence can accidentally satisfy this regression.
+	var observations atomic.Int64
+	s.peers = testPeerService{epochFn: func() (uint64, bool) {
+		return 7, observations.Add(1) <= 2
+	}}
+	unlockCheckpoint := s.lockLeaseCheckpoint(id)
+	s.leaseWriteMu.RLock()
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			s.leaseWriteMu.RUnlock()
+			unlockCheckpoint()
+		})
+	}
+	defer release()
+	ttl, err := s.refreshLeaseHoldingLocks(context.Background(), id, 7,
+		s.leaseWriteMu.RUnlock, s.leaseWriteMu.RLock, nil, release)
+	require.ErrorIs(t, err, errLeaseDemotedDuringRenew)
+	require.Zero(t, ttl)
+	require.Equal(t, int64(3), observations.Load())
+	s.leaseMu.Lock()
+	after := s.leases[id].deadline
+	s.leaseMu.Unlock()
+	require.Equal(t, before, after)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	require.NoError(t, s.leaseWriteMu.LockContext(ctx), "failed renewal must release binding lock")
+	s.leaseWriteMu.Unlock()
+	require.NoError(t, s.leaseCheckpointMu.LockContext(ctx), "failed renewal must release checkpoint locks")
+	s.leaseCheckpointMu.Unlock()
+}
