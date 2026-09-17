@@ -1,5 +1,10 @@
 # 742e 产品 / ab043 夹具：控制面 Pod 替换验收
 
+后续自然到期核验：13:06:12 UTC，`expiry-observer.qjOVU1iy/sample-115`
+中两条租约 TTL 均为 -1、无键，LeaseList 为零，原前缀 Range 含响应 header
+且无 KV/count。固定 Pod 与 cluster/member 身份检查通过，观察进程退出 0，
+18383 转发已释放。未 Revoke/KeepAlive。**不改变原 60 秒清理失败和整体退出 70。**
+
 2026-09-17：**Pod 替换操作及状态/审计校验通过；原 60 秒租约清理失败，
 整体退出 70。原镜像恢复及本轮临时卷回收完成。** 不代表生产就绪、真实
 容器运行、节点故障、规模或持续性能验收。
@@ -65,8 +70,8 @@ HOLD 已恢复，已消费的驱动不得重跑。
 
 恢复后 12:07:20 UTC，只读检查租约 `0003a0af3ddd1f02`、
 `0003a0af3ddd1f03`，剩余 TTL 均 3516 秒、无附着键。
-只读观察 `expiry-observer.qjOVU1iy` 已启动，12:12 UTC 确认进程仍存活，
-sample-9 第一条 TTL 3226、granted TTL 3660。**自然到期尚未核验。**
+历史：只读观察 `expiry-observer.qjOVU1iy` 启动后，12:12 UTC 确认进程仍存活，
+sample-9 第一条 TTL 3226、granted TTL 3660，当时自然到期尚未核验。
 观察固定入口 Pod、cluster/member 身份；不重复启动、不发送续期或主动撤销。
 恢复或领导权切换可能影响 TTL，预计时间不作为到期证明。
 

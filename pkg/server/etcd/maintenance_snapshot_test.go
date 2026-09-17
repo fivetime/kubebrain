@@ -2038,14 +2038,51 @@ func TestMaintenanceSnapshotCancellationInterruptsStalledStream(t *testing.T) {
 			}
 			server.backend = stalled
 			ctx, cancel := context.WithCancel(context.Background())
+			path := filepath.Join(t.TempDir(), "snapshot.db")
+			builderReady := make(chan struct{})
 			done := make(chan error, 1)
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(stalled.release) }) }
+			joined := false
+			defer func() {
+				cancel()
+				release()
+				if !joined {
+					<-done
+				}
+			}()
 			go func() {
-				done <- server.buildSnapshot(ctx, filepath.Join(t.TempDir(), "snapshot.db"))
+				done <- server.buildSnapshotWithBuilder(ctx, path, func(path string, state etcdsnapshot.State) (*etcdsnapshot.Builder, error) {
+					// Receiving the first chunk precedes synchronous local bbolt
+					// initialization. Keep a deliberately slow setup outside the
+					// unchanged stream-cancellation budget below.
+					if tc.afterFirst {
+						time.Sleep(300 * time.Millisecond)
+					}
+					builder, err := etcdsnapshot.NewBuilder(path, state)
+					if err == nil {
+						close(builderReady)
+					}
+					return builder, err
+				})
 			}()
 			select {
 			case <-stalled.started:
+			case err := <-done:
+				joined = true
+				t.Fatalf("snapshot exited before stream stall: %v", err)
 			case <-time.After(5 * time.Second):
 				t.Fatal("snapshot stream did not reach the injected stall")
+			}
+			if tc.afterFirst {
+				select {
+				case <-builderReady:
+				case err := <-done:
+					joined = true
+					t.Fatalf("snapshot exited before builder initialization: %v", err)
+				case <-time.After(5 * time.Second):
+					t.Fatal("snapshot builder did not initialize before stream cancellation")
+				}
 			}
 			cancel()
 			returnedOnCancel := false
@@ -2055,10 +2092,11 @@ func TestMaintenanceSnapshotCancellationInterruptsStalledStream(t *testing.T) {
 				returnedOnCancel = true
 			case <-time.After(250 * time.Millisecond):
 			}
-			close(stalled.release)
+			release()
 			if !returnedOnCancel {
 				snapshotErr = <-done
 			}
+			joined = true
 			require.True(t, returnedOnCancel, "client cancellation must interrupt a stalled snapshot stream")
 			require.ErrorIs(t, snapshotErr, context.Canceled)
 		})
