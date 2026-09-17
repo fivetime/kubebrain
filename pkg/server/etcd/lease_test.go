@@ -18,6 +18,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"sort"
@@ -576,6 +577,57 @@ func TestEmptyLeaseRevokeDeletesDurableMetadata(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(-1), ttl.TTL,
 		"an empty revoked lease must not resurrect after leader reload")
+}
+
+func TestDetachedEmptyLeaseExpiresNaturallyWithoutPublicRevision(t *testing.T) {
+	for _, prefixDelete := range []bool{false, true} {
+		t.Run(fmt.Sprintf("prefix=%t", prefixDelete), func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			const id int64 = 2051
+			key := []byte("empty-expiry/key")
+			_, err := server.LeaseGrant(ctx, &etcdserverpb.LeaseGrantRequest{ID: id, TTL: 2})
+			require.NoError(t, err)
+			_, err = server.Put(ctx, &etcdserverpb.PutRequest{Key: key, Value: []byte("value"), Lease: id})
+			require.NoError(t, err)
+			request := &etcdserverpb.DeleteRangeRequest{Key: key}
+			if prefixDelete {
+				request.Key = []byte("empty-expiry/")
+				request.RangeEnd = []byte("empty-expiry0")
+			}
+			deleted, err := server.DeleteRange(ctx, request)
+			require.NoError(t, err)
+			require.Equal(t, int64(1), deleted.Deleted)
+			ttl, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id, Keys: true})
+			require.NoError(t, err)
+			require.Positive(t, ttl.TTL, "deleting the last attachment is not lease revocation")
+			require.Equal(t, int64(2), ttl.GrantedTTL)
+			require.Empty(t, ttl.Keys)
+			_, err = server.backend.InternalGet(ctx, leaseStorageKey(id))
+			require.NoError(t, err, "detached live lease must remain durable")
+
+			// No Revoke, KeepAlive, deadline mutation, or timer injection: exercise
+			// the normal expiration path after the last key has been detached.
+			require.Eventually(t, func() bool {
+				_, err := server.backend.InternalGet(ctx, leaseStorageKey(id))
+				if !errors.Is(err, storage.ErrKeyNotFound) {
+					return false
+				}
+				leases, err := server.LeaseLeases(ctx, &etcdserverpb.LeaseLeasesRequest{})
+				return err == nil && len(leases.Leases) == 0
+			}, 5*time.Second, 20*time.Millisecond)
+			after, err := server.LeaseTimeToLive(ctx, &etcdserverpb.LeaseTimeToLiveRequest{ID: id, Keys: true})
+			require.NoError(t, err)
+			require.Equal(t, int64(-1), after.TTL)
+			require.Equal(t, uint64(deleted.Header.Revision), server.backend.GetCurrentRevision(),
+				"empty lease expiration must not create a second public deletion revision")
+			records, _, _, _, err := server.loadLeaseRecords(ctx)
+			require.NoError(t, err)
+			require.Empty(t, records, "reloading durable records must not resurrect expired empty lease")
+		})
+	}
 }
 
 func TestLeaseGrantPersistsMetadataThroughCorruptCommitGuard(t *testing.T) {

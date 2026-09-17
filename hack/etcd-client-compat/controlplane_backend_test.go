@@ -13,7 +13,7 @@ import (
 )
 
 func TestControlPlaneBackendOwnership(t *testing.T) {
-	for _, mode := range []string{"success", "adjacent-cluster-id", "duplicate-status", "nonempty", "missing-header", "failed-range", "existing-lease", "cleanup-drift", "delete-failed", "dirty-after-delete"} {
+	for _, mode := range []string{"success", "adjacent-cluster-id", "duplicate-status", "nonempty", "missing-header", "failed-range", "existing-lease", "cleanup-drift", "delete-failed", "dirty-after-delete", "lease-natural-expiry", "lease-timeout", "lease-list-failed"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			write := func(name, content string) string {
@@ -38,7 +38,11 @@ case "$1" in
     if [[ "$MODE" == failed-range ]]; then exit 9; fi ;;
   lease)
     [[ "$2" == list ]] || exit 91
-    if [[ "$MODE" == existing-lease ]]; then printf 'found 1 leases\n123\n'; else echo 'found 0 leases'; fi ;;
+    if [[ "$MODE" == lease-list-failed && -f "$AFTER" ]]; then exit 9; fi
+    if [[ "$MODE" == existing-lease || ( -f "$AFTER" && "$MODE" == lease-timeout ) ||
+          ( -f "$AFTER" && "$MODE" == lease-natural-expiry && ! -f "$AFTER.expired" ) ]]; then
+      printf 'found 1 leases\n123\n'
+    else echo 'found 0 leases'; fi ;;
   del)
     [[ "$MODE" != delete-failed ]] || exit 9
     echo '{"header":{},"deleted":5}' ;;
@@ -51,9 +55,17 @@ esac
 			wrapper := write("run", `#!/bin/bash
 set -euo pipefail
 source "$HELPER"
+# Accelerate only this test shell's clock, retaining the helper's real 60s
+# comparison. The mock lease disappears only after a poll/sleep cycle.
+sleep() {
+  [[ "$1" == 1 ]]
+  if [[ "$MODE" == lease-timeout ]]; then SECONDS=$((SECONDS+61)); fi
+  if [[ "$MODE" == lease-natural-expiry ]]; then touch "$AFTER.expired"; fi
+}
 controlplane_backend_prepare "$DIRECTORY" test-run-1234567890
 touch "$AFTER"
 controlplane_backend_cleanup
+[[ "$controlplane_backend_owned" == false ]]
 `)
 			calls := filepath.Join(dir, "calls")
 			env := []string{"HELPER=" + help, "DIRECTORY=" + dir, "AFTER=" + filepath.Join(dir, "after"), "CALLS=" + calls, "MODE=" + mode,
@@ -62,7 +74,7 @@ controlplane_backend_cleanup
 				"CONTROLPLANE_CA=" + write("ca", "fixture"), "CONTROLPLANE_CERT=" + write("cert", "fixture"), "CONTROLPLANE_KEY=" + write("key", "fixture"),
 				"CONTROLPLANE_ETCDCTL=" + binary, "CONTROLPLANE_ETCDCTL_SHA256=" + fmt.Sprintf("%x", sha256.Sum256([]byte(body)))}
 			out, err := runCompatCommandContext(t, context.Background(), "bash", []string{wrapper}, env)
-			if mode == "success" {
+			if mode == "success" || mode == "lease-natural-expiry" {
 				require.NoError(t, err, "%s", out)
 			} else {
 				require.Error(t, err, "%s", out)
@@ -73,13 +85,21 @@ controlplane_backend_cleanup
 			require.NotContains(t, log, "revoke")
 			require.NotContains(t, log, "keep-alive")
 			deletes := strings.Count(log, " del ")
-			if mode == "success" || mode == "delete-failed" || mode == "dirty-after-delete" {
+			if mode == "success" || mode == "delete-failed" || mode == "dirty-after-delete" || strings.HasPrefix(mode, "lease-") {
 				require.Equal(t, 1, deletes)
 				require.Contains(t, log, " del /registry-kubebrain-controlplane-test-run-1234567890/ --prefix")
 			} else {
 				require.Zero(t, deletes, "failed admission or identity drift must never delete")
 			}
 			require.Contains(t, log, "--insecure-transport=false --insecure-skip-tls-verify=false")
+			if mode == "lease-timeout" {
+				require.Contains(t, string(out), "leases did not naturally expire; none revoked")
+				require.Equal(t, 3, strings.Count(log, " lease list"), "baseline and two cleanup polls")
+			}
+			if mode == "lease-natural-expiry" {
+				require.FileExists(t, filepath.Join(dir, "after.expired"))
+				require.Equal(t, 3, strings.Count(log, " lease list"))
+			}
 		})
 	}
 }

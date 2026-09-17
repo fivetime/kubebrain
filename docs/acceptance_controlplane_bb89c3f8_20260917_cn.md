@@ -64,3 +64,32 @@ UID/containerStatuses、PV UID/spec/phase 前后一致。没有删除卷、改�
 后续先只读确认两条租约自然到期，保留本轮失败结论；再以已审计的新候选进行
 同负载对比，并独立处理默认长 TTL 与测试清理契约之间的差距。不要以三 Pod
 调度成功替代全部 etcd 语义或生产就绪要求。
+
+## 上游语义复核
+
+本轮使用的已验证官方 apiserver v1.36.1 二进制 `--help` 明确显示
+`--event-ttl` 默认 `1h0m0s`。本地 Kubernetes 源码
+`5b0cba2ee0da06385b12a9ae20cd0671ea3f860d` 的
+`staging/src/k8s.io/apiserver/pkg/storage/etcd3/lease_manager.go` 中，租约申请 TTL
+加上 `min(5% × TTL, 60s)` 的复用余量；对 3600s 即得到 3660s。
+该源码核对解释了观测值，但不是逐笔 Grant 请求的抓包证明，也不把本地源码
+版本自动视作已下载 v1.36.1 二进制的完整构建来源。
+
+参考 etcd `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+`server/storage/mvcc/kvstore_txn.go` 删除路径调用 `lessor.Detach`；
+`server/lease/lessor.go` 的 Detach 仅移除 key 附着索引，不删除 leaseMap 条目。
+所以“键已删除但租约仍存在”不能单独证明不兼容；提前撤销或将 DeleteRange
+改成自动撤销空租约反而会改变可重新附着的租约语义。
+
+清理器回归新增自然过期后成功、超过 60 秒后拒绝、LeaseList 失败三个分支，
+仍禁止 Revoke/KeepAlive。测试只在专用测试 shell 中推进 SECONDS，并模拟租约
+自然消失，不改变真实驱动窗口或集群 TTL。控制面组合 race 测试通过（7.947s），
+子模块 vet 通过。这些测试不证明本轮两条实际长 TTL 租约已经过期。
+
+产品侧新增 `TestDetachedEmptyLeaseExpiresNaturallyWithoutPublicRevision`，分别经
+点删除和前缀删除解绑最后一个键，确认存活租约仍有持久记录；随后不执行 Revoke、
+KeepAlive 或修改内部时间，等待真实定时器自然过期，核对 LeaseLeases 清除、
+持久元数据移除、TimeToLive=-1 和公开 revision 不额外增加。race 连跑三次通过
+（13.381s），产品包 vet 通过。首次编译因新增测试漏导入 fmt 失败，补齐后重跑；
+不是产品行为的红绿复现。测试使用内存后端和短 TTL，不代替 TiKV 后端一小时
+残留租约的真实到期验证。本轮未修改产品租约行为或集群参数。
