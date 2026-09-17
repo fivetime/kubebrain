@@ -49,3 +49,23 @@ race PASS；独立镜像审计通过。随后在独立本地盘 PD/TiKV 上完�
 本轮临时资源已清理。详见[本轮验收记录](acceptance_local_rollback_df783b7f_20260917_cn.md)。
 这取代上文当时“CI、镜像和集群验证尚未完成”的发布状态，但不等于真实集群命中
 了“已过期、撤销仍阻塞、此时任期结束”的精确竞态；该故障注入覆盖仍开放。
+
+## 官方客户端 gRPC 边界补充
+
+后续新增 `TestClientExpiredLeaseKeepAliveOnceRoutesAfterTermEnds`：官方 client/v3
+通过 gRPC Server 与 bufconn 执行 Grant、KeepAliveOnce，在确定已进入过期等待后
+取消所属任期并切换为 follower，要求一秒内取得原 ID、TTL=37 和合法响应头，
+恰好转发一次，且不把任期退出伪装为持久撤销完成。请求取消与 goroutine join
+保证失败路径也能收尾。对照仍为固定 etcd `5cd9f4ee` 的
+`server/lease/lessor.go:396`，特别是 `demotec` / `stopC` 的 ErrNotPrimary 分支。
+
+仓库内最终源码验证（证据 `expired-renew-client-final.qH03qSnJ`，session 61561）：
+仅通过私有 overlay 移除产品 termDone select 分支、保留等待观察点时，测试按预期
+在任期结束后阻塞而失败（1.056s），不是编译或准备阶段失败；产品文件未替换。
+新用例与两个已有任期/路由用例 race 重复 20 次通过（3.700s），vet 通过，
+完整服务回归 147.682s、扩展 Lease/Revoke/Expiry/Checkpoint/Attachment race
+80.676s 通过，前后源码 SHA 一致。
+
+这是实际 gRPC 编解码及服务调用，但仍使用内存存储和 peer 替身，不覆盖 TCP/TLS、
+真实 peer 转发连接或 TiKV 撤销阻塞故障。它不属于此前 df783b7f 的 CI/镜像/回滚；
+该新增测试提交的 CI 需独立跟踪，不能借此前成功结果宣称已通过。
