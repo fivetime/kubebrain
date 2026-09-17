@@ -62,3 +62,21 @@ KWOK/准入单独 race 通过（1.426 秒），vet、shell 语法和 diff 检查
 子目录 `controlplane-reference.Si29e6U2`，含 RBAC 响应、对象快照、审计、
 脚本摘要及 result.json。后续需同源 CI、新鲜共享后端准入和实际 KubeBrain
 KWOK 对照，随后才可扩展规模、更多控制器与故障场景，不能据此宣称生产就绪。
+
+后续同源回归 CI `35200243908` 已成功，源码
+`3e813b998ff78d8da6f34894512f9d9619a5271e`，attempt 1。日志确认 etcd 全包
+137.247 秒；Auth、Lease、Watch/ReadBarrier race 分组分别 85.805、76.703、
+25.366 秒；follower proxy 5.278 秒、revision barrier 8.360 秒，探针全量 race
+332.461 秒。此 CI 不运行上述本机完整控制面/KWOK 场景，二者证据不能混用。
+日志已归档至私有 `release-3e813b99.eExmyBVn/probe-ci.log`，SHA-256 为
+`da398d2995e41d3fa37b20390fb703e0e1475630699740d1283811d6ba9285d9`。
+记录时镜像 CI `35200203854` 仍在编译推送，尚无独立发布核验结论或新候选部署。
+
+09:02 UTC 后续：镜像 CI `35200203854` 亦已成功，同源独立发布核验 session
+1372 退出 0，证据 `release-3e813b99.eExmyBVn/audit.ZBtxjwnh`。发布 index 为
+`sha256:172a8b6caceac6a4094354e7589f1bcf972acc9ba3e2e3cfae3099690e62ddde`，amd64 为
+`sha256:45d8b6323f07e2046841f295d293ffd7571b83ea919fa03f514698d8cb94e6c5`，arm64 为
+`sha256:0502b76003657b9a6b8b1cafa7c2190b9e3483392720f5b385feb14791aa8931`。
+已核对清单、推广标签、实际 amd64 二进制身份/构建信息及非 root 用户，临时
+审计容器和提取二进制已清理。该回执只证明发布身份；候选仍为 HOLD，等待旧
+租约实际归零及新鲜准入，尚未执行 KubeBrain + KWOK 对照。

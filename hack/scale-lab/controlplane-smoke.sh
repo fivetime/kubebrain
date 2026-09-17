@@ -39,7 +39,7 @@ done
 [[ ${WORK_PARENT:-} == /* && -d $WORK_PARENT ]] || { echo 'WORK_PARENT must be an existing absolute private directory' >&2; exit 2; }
 work=$(mktemp -d "$WORK_PARENT/controlplane-$backend.XXXXXXXX")
 echo "CONTROLPLANE_EVIDENCE=$work"
-sha256sum "${BASH_SOURCE[0]}" "$root/hack/scale-lab/verify-controlplane-audit.jq" > "$work/runner.sha256"
+sha256sum "${BASH_SOURCE[0]}" "$root/hack/scale-lab/verify-controlplane-audit.jq" "$root/hack/scale-lab/controlplane-audit-policy.jq" > "$work/runner.sha256"
 if [[ $kwok == true ]]; then
   sha256sum "$root/hack/scale-lab/controlplane-kwok.sh" "$root/hack/scale-lab/verify-controlplane-kwok-audit.jq" "$root/hack/scale-lab/config/controlplane-kwok-"* >> "$work/runner.sha256"
 fi
@@ -114,10 +114,7 @@ else
   run_id="$(date -u +%Y%m%d%H%M%S)-$(openssl rand -hex 12)"
   controlplane_backend_prepare "$work" "$run_id"
 fi
-jq -n --argjson kwok "$kwok" '{apiVersion:"audit.k8s.io/v1",kind:"Policy",omitStages:["RequestReceived"],rules:((if $kwok then [
-  {level:"RequestResponse",users:["kubebrain-test-kwok"],verbs:["patch","update"],resources:[{group:"",resources:["nodes/status","pods/status"]},{group:"coordination.k8s.io",resources:["leases"]}]}] else [] end) + [
-  {level:"RequestResponse",verbs:["create"],namespaces:["controlplane-smoke"],resources:[{group:"apps",resources:["replicasets"]},{group:"",resources:["pods"]}]},
-  {level:"Metadata"}])}' > "$work/audit-policy.json"
+jq -n --argjson kwok "$kwok" -f "$root/hack/scale-lab/controlplane-audit-policy.jq" > "$work/audit-policy.json"
 start apiserver "$APISERVER_BIN" --bind-address=127.0.0.1 --advertise-address=127.0.0.1 \
   --secure-port="$api_port" --authorization-mode=Node,RBAC --anonymous-auth=false \
   --client-ca-file="$work/pki/ca.crt" --tls-cert-file="$work/pki/apiserver.crt" --tls-private-key-file="$work/pki/apiserver.key" \

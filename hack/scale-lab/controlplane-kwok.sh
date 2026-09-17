@@ -37,7 +37,7 @@ controlplane_kwok_start() {
     kctl get node reference-node -o json > "$work/node-ready.json" &&
     jq -e 'any(.status.conditions[]?;.type=="Ready" and .status=="True") and all(.spec.taints[]?;.effect!="NoSchedule" and .effect!="NoExecute")' "$work/node-ready.json" >/dev/null &&
     kctl -n kube-node-lease get lease reference-node -o json > "$work/node-lease-first.json" &&
-    jq -e '.spec.leaseDurationSeconds==40 and (.spec.holderIdentity|type)=="string" and (.spec.holderIdentity|length)>0 and (.spec.renewTime|type)=="string"' "$work/node-lease-first.json" >/dev/null
+    jq -e --slurpfile created "$work/node-lease-created.json" '.metadata.uid==$created[0].metadata.uid and .spec.leaseDurationSeconds==40 and (.spec.holderIdentity|type)=="string" and (.spec.holderIdentity|length)>0 and (.spec.renewTime|type)=="string"' "$work/node-lease-first.json" >/dev/null
   ); do alive; ((SECONDS < deadline)); sleep 1; done
 }
 controlplane_kwok_verify() {
@@ -52,6 +52,6 @@ controlplane_kwok_verify() {
   ); do alive; ((SECONDS < deadline)); sleep 1; done
   kctl get node reference-node -o json > "$work/kwok-node.json"
   jq -e --slurpfile created "$work/node.json" '.metadata.uid==$created[0].metadata.uid and any(.status.conditions[]?;.type=="Ready" and .status=="True")' "$work/kwok-node.json" >/dev/null
-  jq -s -e --slurpfile node "$work/kwok-node.json" --slurpfile pods "$work/kwok-pods.json" --slurpfile first "$work/node-lease-first.json" --slurpfile last "$work/node-lease-last.json" \
+  jq -s -e --slurpfile created "$work/node-lease-created.json" --slurpfile node "$work/kwok-node.json" --slurpfile pods "$work/kwok-pods.json" --slurpfile first "$work/node-lease-first.json" --slurpfile last "$work/node-lease-last.json" \
     -f "$root/hack/scale-lab/verify-controlplane-kwok-audit.jq" "$work/audit.jsonl" > "$work/kwok-audit-check.json"
 }

@@ -78,6 +78,10 @@ taints in KWOK mode. It verifies actual RBAC allow/deny responses, Deployment
 availability, three simulated Running/Ready Pods, advancing node Lease renewTime,
 and the respective controller/scheduler/KWOK audit writers. This is simulated
 status, **not real container execution**. The default remains scheduling-only.
+The Lease UID must match the precreated fixture throughout renewal. In KWOK mode,
+get/list response bodies are audited only for the KWOK identity's Leases in
+`kube-node-lease`, to distinguish API results from local informer startup races;
+this adds no permissions and does not record Secret/token response bodies.
 See [reference KWOK results and limitations](../../docs/acceptance_reference_kwok_20260917_cn.md).
 
 Build and test locally without deployment configuration:

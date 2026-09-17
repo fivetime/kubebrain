@@ -6,6 +6,7 @@ def ready: any(.status.conditions[]?; .type=="Ready" and .status=="True");
 map(select(successful)) as $events |
 ($node[0].metadata.uid|type)=="string" and ($node[0].metadata.uid|length)>0 and
 ($first[0].metadata.uid|type)=="string" and ($first[0].metadata.uid|length)>0 and
+$created[0].metadata.uid==$first[0].metadata.uid and
 ([$pods[0].items[].metadata.uid]|unique|length)==3 and
 all($pods[0].items[]; (.metadata.uid|type)=="string" and (.metadata.uid|length)>0) and
 any($events[]; .objectRef.resource=="nodes" and .objectRef.subresource=="status" and

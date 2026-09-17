@@ -11,7 +11,7 @@ import (
 )
 
 func TestControlPlaneKWOKAudit(t *testing.T) {
-	for _, mode := range []string{"valid", "missing-node", "missing-pod", "admin-writer", "wrong-uid", "failed-update", "missing-renewal", "no-renewal", "missing-node-uid"} {
+	for _, mode := range []string{"valid", "missing-node", "missing-pod", "admin-writer", "wrong-uid", "failed-update", "missing-renewal", "no-renewal", "missing-node-uid", "replaced-lease", "missing-created-lease-uid"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			write := func(name string, value any) string {
@@ -37,6 +37,13 @@ func TestControlPlaneKWOKAudit(t *testing.T) {
 				lastTime = firstTime
 			}
 			first, last := write("first.json", lease(firstTime)), write("last.json", lease(lastTime))
+			createdUID := "lease-uid"
+			if mode == "replaced-lease" {
+				createdUID = "original-lease-uid"
+			} else if mode == "missing-created-lease-uid" {
+				createdUID = ""
+			}
+			created := write("created.json", map[string]any{"metadata": map[string]string{"uid": createdUID}})
 			events := []any{}
 			appendEvent := func(resource, namespace, subresource string, response map[string]any) {
 				user, code := "kubebrain-test-kwok", 200
@@ -69,7 +76,7 @@ func TestControlPlaneKWOKAudit(t *testing.T) {
 			}
 			audit := write("audit.json", events)
 			out, err := runCompatCommandContext(t, context.Background(), "jq", []string{"-e", "--slurpfile", "node", node, "--slurpfile", "pods", pods,
-				"--slurpfile", "first", first, "--slurpfile", "last", last, "-f", filepath.Join("..", "scale-lab", "verify-controlplane-kwok-audit.jq"), audit}, nil)
+				"--slurpfile", "created", created, "--slurpfile", "first", first, "--slurpfile", "last", last, "-f", filepath.Join("..", "scale-lab", "verify-controlplane-kwok-audit.jq"), audit}, nil)
 			if mode == "valid" {
 				require.NoError(t, err, "%s", out)
 			} else {
