@@ -37,5 +37,8 @@ KubeBrain 的独立 peers/lease 锁与 epoch 模型不同，本次补充的是�
 race 通过（session 7633，3.439s）。扩展续租/KeepAlive 主从切换/授权续租
 race 重复三次通过（session 18978，6.024s；该次编译尚未加入两个新 epoch
 用例，最终四用例以上述 session 7633 为准）。vet 通过（session 23363）。
+另以 CI 相同筛选条件 `(Lease|Revoke|Expiry|Checkpoint|Attachment)` 对
+`f7b18d9b` 完整执行一次 race（8 分钟超时），通过，耗时 80.989s
+（session 38176）。该筛选匹配 346 个顶层测试，子用例不计入此数量。
 上一提交的 CI `35220675194` 仍在运行；不为本地未验证修改取消它。
 未构建或部署新镜像，原集群保持恢复后的基线，原 60 秒租约清理失败不改判。
