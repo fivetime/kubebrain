@@ -25,3 +25,18 @@ KubeBrain 原 `refreshLeaseHoldingLocks` 的过期分支仅监听 `st.revoked` �
 分支，而不是转换成 lease-not-found/TTL=0；这不替代真实多节点路由验证。
 这是内部边界验证，不是完整生产故障证明。CI、镜像和集群验证尚未完成；
 此前成功的 31c 集群验收不覆盖本修改。
+
+## 后续服务层路由覆盖
+
+新增 `TestExpiredLeaseKeepAliveRoutesAfterTermEnds`，直接调用完整
+`leaseKeepAlive` 服务工作循环，在过期分支取得所属任期 Done 通道的确定边界
+结束任期并切为 follower。禁用代理时要求 Unavailable、无响应、无转发；
+启用代理时要求恰好转发一次并返回远端 ID/TTL（37），不能误发 TTL=0。
+这是内存 peer 替身测试，不是实际网络或多节点部署。
+与任期退出用例一起 race 重复 20 次通过（session 58361，2.905s）。
+该测试补充在后续独立测试提交中记录；当前 `142d44e8` 的 CI 不包含这项后续补充。
+
+通过私有 Go overlay 保留 Done 观察点、仅移除 select 中任期退出分支，两个
+服务路由用例均在任期取消后未完成路由而失败（session 15616，2.072s）。
+更早的 overlay 同时删掉观察点，失败于等待准备阶段（session 58488），不计为
+有效行为负例。真实产品文件未替换；新增测试的 vet 通过（session 77593）。
