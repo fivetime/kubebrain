@@ -37,7 +37,18 @@ KubeBrain 的客户端回归 `TestClientDoOpDeleteLeasedPointKeyWithPrevKVMatche
 新证据单独保存，未覆盖此前观察：
 `/root/.local/state/kubebrain/lease-expiry-observation.B5Jc1T4r/`。
 
-若无续租或 leadership 恢复带来的 TTL 变化，预计约 2026-09-17 00:15 UTC 到期；
-这是估算，不是到期事实。仍须在实际到期后核验 TimeToLive/LeaseList。
+2026-09-17 00:02:20 UTC 再次只读核验：相同 lease 的 TTL 为 770 秒，granted
+TTL 仍为 3660 秒、keys=null，LeaseList 仍列出该 lease；leader term 为 6。
+测试 prefix 仍为空，endpoint health 成功，查询退出 0，18380 临时转发已退出。
+证据：`/root/.local/state/kubebrain/lease-expiry-observation.gm69LG3R/`。
+这仍是未到期状态，不是到期回收成功或泄漏的证明。
+
+随后执行有时限的只读观测：00:11:28–00:15:30 UTC，TTL 依次为
+222、192、161、131、101、71、41、11、-1，最后 LeaseList 为 `found 0 leases`。
+整个采样期间 leader 为 3358157933、term 为 6，没有因本轮观测主动切换 leader，
+也没有 KeepAlive/Revoke。最终 prefix 为空、endpoint health 成功，观测退出 0，
+18380 转发已关闭。证据：`/root/.local/state/kubebrain/lease-natural-expiry.14Hm4HUl/`。
+**此次残留空 lease 的自然到期回收已确认**；不能据此证明所有故障/续租场景。
+
 不放宽原 60 秒清理门禁、不主动撤销未证明所有权的 lease，也不把上一轮
 “内容检查通过但清理/归档失败”重新归类为完整成功。
