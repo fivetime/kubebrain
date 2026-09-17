@@ -63,6 +63,17 @@ backend mode with pinned identity, verified TLS, unique-prefix and lease cleanup
 guards. See [required admission and current gaps](../../docs/controlplane_test_preparation_cn.md).
 The reference entrypoint always refuses shared-backend mode.
 
+`config/controlplane-kwok-rbac.json` is a **prepared isolated-API fixture**, not
+an installation manifest for the management cluster. It binds only the disposable
+`kubebrain-test-kwok` certificate user. It permits cluster-wide Node/Pod reads,
+status updates on `reference-node`, Pod status/events in `controlplane-smoke`,
+and access to the named `reference-node` Lease in `kube-node-lease`. It grants no
+Pod creation/binding, Secret access, RBAC administration, or Lease creation.
+The future harness must precreate that Lease and use `--manage-single-node` so
+Lease list/watch requests include the required name field selector. Static tests
+pin the exact grants; actual API authorization and KWOK operation are not yet
+verified. No current smoke entrypoint automatically applies this fixture.
+
 Build and test locally without deployment configuration:
 
 ```bash

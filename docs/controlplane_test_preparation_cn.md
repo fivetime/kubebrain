@@ -1,5 +1,23 @@
 # 隔离完整控制面验收准备
 
+## KWOK RBAC 定义（尚未实际授权验证）
+
+新增 `hack/scale-lab/config/controlplane-kwok-rbac.json`，仅用于隔离 API 的
+`kubebrain-test-kwok` 用户：集群级 Node/Pod 读取；限定 `reference-node` 的
+Node status patch/update；`controlplane-smoke` 中 Pod status patch/update 与
+Event create/patch/update；`kube-node-lease` 中同名 Lease 的读取和更新。
+没有 Pod create/binding、Secret、RBAC 管理或 Lease create 权限，不能应用到
+管理集群。后续驱动必须预创建同名 Lease，并用 `--manage-single-node`，使
+KWOK 的 Lease list/watch 带名字 field selector；否则 resourceNames 限制会拒绝。
+这是依据固定本地 KWOK 源码的准备，仍需实际验证首次接管和持续续租。
+
+新测试严格比较所有六个对象、角色规则及唯一用户绑定，拒绝额外权限、通配符、
+错误作用域和多余绑定。首次因清单不存在而失败（session 84287），新增清单后
+race 通过（session 66428，1.048 秒），vet、JSON 结构和 diff 检查通过。
+该测试是静态权限集合锁定，不是 Kubernetes Authorizer 的替代实现，也不证明
+真实 API 允许/拒绝结果。当前驱动尚未自动应用清单，未启动新负载；本准备提交
+跳过 CI，完整 KWOK 接入与审计仍是待完成工作。
+
 ## KWOK 身份生成器（尚未接入控制器）
 
 `hack/dev/create-apiserver-test-pki.sh /absolute/new/pki --controlplane-kwok`
