@@ -37,6 +37,12 @@ Watch 失败诊断补齐 source/target、Created/Canceled、原因及 entry/appl
 矩阵、受控延迟及屏障三项 `go test -race -count=3 -timeout=5m` 通过，
 session 45117 退出 0，65.869s。随后仅整理单测 goroutine 回收方式；屏障单测
 10 轮 race 通过（1.381s），探针包 go vet 通过，session 59460 退出 0。
+随后在最终 `e87ee17695b65123ed30e1dcec7312d3b9228dad` 上运行完整
+`go test -race -count=1 -timeout=20m ./hack/production/cmd/rollout-availability-probe`
+通过（session 47250 退出 0，321.603s）。新 CI `35215373370` 后来失败在
+最先执行的服务整包测试，尚未执行认证矩阵所在的探针包；详见
+[周期进度测试修正记录](acceptance_watch_progress_observation_20260917_cn.md)。
+不能把本地整包成功写成远端验收通过，也不能将另一测试失败认作认证修正失败。
 这些结果不是新的 CI 成功，也不能追溯改变 `35213373516` 的失败结论。
 
 完整旧 CI 日志归档 session 93870 退出 0：

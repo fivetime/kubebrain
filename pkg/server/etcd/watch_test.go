@@ -2996,6 +2996,13 @@ func TestPeriodicProgressTickRehomesQuietSelfFencedGeneration(t *testing.T) {
 			Key: []byte("/registry/watch/quiet-fenced"), StartRevision: 10, ProgressNotify: true,
 		})
 	}()
+	defer func() {
+		cancel()
+		<-done
+		if t.Failed() {
+			t.Logf("quiet rehomed watch recorded %d responses", len(stream.snapshot()))
+		}
+	}()
 	require.Equal(t, uint64(10), <-localCalled)
 	fresh.Store(false)
 
@@ -3005,14 +3012,26 @@ func TestPeriodicProgressTickRehomesQuietSelfFencedGeneration(t *testing.T) {
 	require.Equal(t, uint64(10), <-proxyCalled)
 	require.Empty(t, stream.snapshot())
 	proxyCh <- etcdproxy.WatchResult{ProgressRevision: 10}
+	// A quiet watch may repeat the same valid watermark every 5ms. Observe
+	// slower than that deliberately: requiring exactly one recorded response
+	// makes correctness depend on this test goroutine winning the scheduler.
 	require.Eventually(t, func() bool {
-		responses := stream.snapshot()
-		return len(responses) == 1 && responses[0].Header.GetRevision() == 10
-	}, time.Second, time.Millisecond)
+		return len(stream.snapshot()) >= 3
+	}, time.Second, 50*time.Millisecond)
 
 	cancel()
 	close(proxyCh)
 	<-done
+	for _, response := range stream.snapshot() {
+		require.Equal(t, int64(10), response.Header.GetRevision())
+		require.Equal(t, int64(7), response.WatchId)
+		require.False(t, response.Created)
+		require.False(t, response.Canceled)
+		require.False(t, response.Fragment)
+		require.Zero(t, response.CompactRevision)
+		require.Empty(t, response.CancelReason)
+		require.Empty(t, response.Events)
+	}
 }
 
 func TestLeaderWatchRechecksFreshnessAfterPrevKVAssemblyBeforeSend(t *testing.T) {
