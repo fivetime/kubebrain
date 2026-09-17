@@ -95,8 +95,17 @@ func verifyRestoredAuthDelayedApply(t *testing.T, ctx context.Context, adminConf
 	_, err = keepAlive()
 	require.ErrorIs(t, rpctypes.Error(err), rpctypes.ErrInvalidAuthToken)
 	require.NoError(t, opCtx.Err(), "failure must precede pause timeout")
+	// The matrix's post-application barrier must not mistake the token suffix
+	// for the actual Authenticate entry while this follower is still paused.
+	barrierCtx, stopBarrier := context.WithTimeout(opCtx, 20*time.Millisecond)
+	barrierErr := waitForRestoredAuthAppliedIndex(barrierCtx, entryIndex, servers[target].Server.AppliedIndex)
+	stopBarrier()
+	require.ErrorIs(t, barrierErr, context.DeadlineExceeded)
 	gate.open()
-	require.Eventually(t, func() bool { return servers[target].Server.AppliedIndex() >= entryIndex }, 3*time.Second, time.Millisecond)
+	barrierCtx, stopBarrier = context.WithTimeout(opCtx, 3*time.Second)
+	barrierErr = waitForRestoredAuthAppliedIndex(barrierCtx, entryIndex, servers[target].Server.AppliedIndex)
+	stopBarrier()
+	require.NoError(t, barrierErr)
 	created := watchOnce()
 	require.True(t, created.Created && !created.Canceled)
 	alive, err := keepAlive()

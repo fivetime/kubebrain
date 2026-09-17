@@ -25,6 +25,8 @@ import (
 
 // Exercise every authentication-member -> request-member edge explicitly.
 // Raw generated RPC clients have no etcd-client token refresh or retry wrapper.
+// This is post-application interoperability, not immediate token propagation;
+// the delayed-follower test separately covers the upstream simple-token window.
 // This local test does not claim to reproduce the intermittent deployed failure.
 func TestRestoredAuthTokensAcrossAllMemberPairs(t *testing.T) {
 	testRestoredAuthMemberClients(t, false, false)
@@ -164,6 +166,18 @@ func testRestoredAuthMemberClients(t *testing.T, officialRefresh, delayedApply b
 				tokenCtx := metadata.AppendToOutgoingContext(ctx, "token", response.Token)
 				for target, conn := range connections {
 					opCtx, stop := context.WithTimeout(tokenCtx, 5*time.Second)
+					// Authenticate can return before another member applies that
+					// entry. Its token suffix is the *previous* consistent index,
+					// so waiting for tokenIndex alone is insufficient. Keep this
+					// barrier inside the original operation timeout, with no RPC
+					// retry or token refresh. The delayed-apply test retains the
+					// failure-before-application assertion on the same raw token.
+					err = waitForRestoredAuthAppliedIndex(opCtx, entryIndex, servers[target].Server.AppliedIndex)
+					if err != nil {
+						stop()
+						t.Fatalf("auth apply barrier source=%d target=%d entry=%d applied=%d: %v",
+							source, target, entryIndex, servers[target].Server.AppliedIndex(), err)
+					}
 					if userIndex == 4 {
 						stream, err := etcdserverpb.NewWatchClient(conn).Watch(opCtx)
 						require.NoError(t, err)
@@ -172,7 +186,10 @@ func testRestoredAuthMemberClients(t *testing.T, officialRefresh, delayedApply b
 						}}))
 						created, err := stream.Recv()
 						require.NoError(t, err, "Watch source=%d target=%d", source, target)
-						require.True(t, created.Created && !created.Canceled)
+						require.True(t, created.Created && !created.Canceled,
+							"Watch source=%d target=%d created=%t canceled=%t reason=%q entry=%d applied=%d",
+							source, target, created.Created, created.Canceled, created.CancelReason,
+							entryIndex, servers[target].Server.AppliedIndex())
 						require.NotNil(t, created.Header)
 						require.Equal(t, uint64(servers[target].Server.MemberID()), created.Header.MemberId,
 							"Watch must reach the selected target member")

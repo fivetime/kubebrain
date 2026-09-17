@@ -61,3 +61,27 @@ result.json、replacement-state-check.json、replacement-audit-check.json
 
 下一步：新增夹具 CI 验证后，在共享后端满足新鲜零租约准入、身份校验及
 恢复约束时运行 KubeBrain 对照。原 742e8b8c 的 60 秒清理失败不变。
+
+## 真实错误 UID 前置条件实验
+
+11:06:44.584367 UTC，另建一套本机参考控制面，仅在私有 PATH 的 curl 包装器
+中把该夹具 DELETE 的 UID 前置条件改为
+`11111111-1111-4111-8111-111111111111`。包装器限制固定 loopback 18455、
+`controlplane-smoke/pods/chain-*` 路径及本轮 DeleteOptions 文件；原源码和
+原始请求记录不改写。真实 apiserver 返回 HTTP 409/Conflict，指出请求 UID
+与对象 UID `665daf69-2aba-4af3-91bd-bf5910a350ff` 不符。
+
+这是期望失败实验：session 81325 终态 22，子结果
+`operation_exit=22, backend_cleanup_exit=0, runner_exit=22`。审计仅有这一次
+Pod DELETE 409，没有成功删除；脚本未继续生成 replacement-pods.json，
+也没有把失败报告为替换成功。不是新一次正向替换通过或 KubeBrain 验收。
+
+退出前观察到的五个 timeout supervisor PID（37590、37626、37876、37877、
+38353）退出后均不存在，18455/13583/13584 均无监听。脚本 EXIT 路径逐个
+终止并 wait 自有 supervisor；本次证明这种失败路径已收尾，不代表 SIGKILL、
+宿主机崩溃等所有退出场景。共享集群和现有租约观察未改动。
+
+证据：`/root/.local/state/kubebrain/replacement-precondition-reference.CNDYFeVu/`，
+子目录 `controlplane-reference.jImT68lb`，包含注入包装器及其 SHA、原始和
+注入 DeleteOptions、409 响应、审计及退出结果。此项发生于同一固定
+`4ada3d15` 源码上，没有触发额外 CI 或产品镜像构建。
