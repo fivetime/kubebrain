@@ -8,6 +8,12 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 backend=${CONTROLPLANE_BACKEND:-reference}
 case "$backend" in reference|kubebrain) ;; *) echo 'unknown CONTROLPLANE_BACKEND' >&2; exit 2 ;; esac
 binary_names=(APISERVER_BIN CONTROLLER_MANAGER_BIN SCHEDULER_BIN)
+kwok=${CONTROLPLANE_KWOK:-false}
+case "$kwok" in true|false) ;; *) echo 'invalid CONTROLPLANE_KWOK' >&2; exit 2 ;; esac
+if [[ $kwok == true ]]; then
+  binary_names+=(KWOK_BIN)
+  source "$root/hack/scale-lab/controlplane-kwok.sh"
+fi
 if [[ $backend == reference ]]; then
   binary_names+=(REFERENCE_ETCD_BIN)
 else
@@ -34,6 +40,9 @@ done
 work=$(mktemp -d "$WORK_PARENT/controlplane-$backend.XXXXXXXX")
 echo "CONTROLPLANE_EVIDENCE=$work"
 sha256sum "${BASH_SOURCE[0]}" "$root/hack/scale-lab/verify-controlplane-audit.jq" > "$work/runner.sha256"
+if [[ $kwok == true ]]; then
+  sha256sum "$root/hack/scale-lab/controlplane-kwok.sh" "$root/hack/scale-lab/verify-controlplane-kwok-audit.jq" "$root/hack/scale-lab/config/controlplane-kwok-"* >> "$work/runner.sha256"
+fi
 pids=()
 finish() {
   result=$?
@@ -75,8 +84,11 @@ for name in APISERVER_BIN CONTROLLER_MANAGER_BIN SCHEDULER_BIN; do
   "${!name}" --version > "$work/$name.version"
   [[ $(<"$work/$name.version") == 'Kubernetes v1.36.1' ]] || exit 2
 done
-bash "$root/hack/dev/create-apiserver-test-pki.sh" "$work/pki" --controlplane
-for identity in admin controller-manager scheduler; do
+pki_mode=--controlplane
+identities=(admin controller-manager scheduler)
+if [[ $kwok == true ]]; then pki_mode=--controlplane-kwok; identities+=(kwok); fi
+bash "$root/hack/dev/create-apiserver-test-pki.sh" "$work/pki" "$pki_mode"
+for identity in "${identities[@]}"; do
   jq -n --arg server "https://127.0.0.1:$api_port" --arg pki "$work/pki" --arg identity "$identity" '
     {apiVersion:"v1",kind:"Config",clusters:[{name:"isolated",cluster:{server:$server,"certificate-authority":($pki+"/ca.crt")}}],
      users:[{name:$identity,user:{"client-certificate":($pki+"/"+$identity+".crt"),"client-key":($pki+"/"+$identity+".key")}}],
@@ -102,9 +114,10 @@ else
   run_id="$(date -u +%Y%m%d%H%M%S)-$(openssl rand -hex 12)"
   controlplane_backend_prepare "$work" "$run_id"
 fi
-jq -n '{apiVersion:"audit.k8s.io/v1",kind:"Policy",omitStages:["RequestReceived"],rules:[
+jq -n --argjson kwok "$kwok" '{apiVersion:"audit.k8s.io/v1",kind:"Policy",omitStages:["RequestReceived"],rules:((if $kwok then [
+  {level:"RequestResponse",users:["kubebrain-test-kwok"],verbs:["patch","update"],resources:[{group:"",resources:["nodes/status","pods/status"]},{group:"coordination.k8s.io",resources:["leases"]}]}] else [] end) + [
   {level:"RequestResponse",verbs:["create"],namespaces:["controlplane-smoke"],resources:[{group:"apps",resources:["replicasets"]},{group:"",resources:["pods"]}]},
-  {level:"Metadata"}]}' > "$work/audit-policy.json"
+  {level:"Metadata"}])}' > "$work/audit-policy.json"
 start apiserver "$APISERVER_BIN" --bind-address=127.0.0.1 --advertise-address=127.0.0.1 \
   --secure-port="$api_port" --authorization-mode=Node,RBAC --anonymous-auth=false \
   --client-ca-file="$work/pki/ca.crt" --tls-cert-file="$work/pki/apiserver.crt" --tls-private-key-file="$work/pki/apiserver.key" \
@@ -127,15 +140,21 @@ for identity in controller-manager scheduler; do
   kubectl --kubeconfig="$work/$identity.conf" --context=isolated --request-timeout=5s auth can-i create deployments.apps -n default > "$work/$identity.denied" || denied=$?
   [[ $denied == 1 && $(<"$work/$identity.denied") == no ]]
 done
+controllers=deployment-controller,replicaset-controller,serviceaccount-controller,serviceaccount-token-controller
+if [[ $kwok == true ]]; then controllers+=,node-lifecycle-controller,taint-eviction-controller; fi
 start controller-manager "$CONTROLLER_MANAGER_BIN" --kubeconfig="$work/controller-manager.conf" \
   --bind-address=127.0.0.1 --secure-port=0 --leader-elect=true --use-service-account-credentials=true \
-  --controllers=deployment-controller,replicaset-controller,serviceaccount-controller,serviceaccount-token-controller \
+  --controllers="$controllers" \
   --service-account-private-key-file="$work/pki/sa.key" --root-ca-file="$work/pki/ca.crt" --v=2
 start scheduler "$SCHEDULER_BIN" --kubeconfig="$work/scheduler.conf" --bind-address=127.0.0.1 --secure-port=0 --leader-elect=true --v=2
 kctl create namespace controlplane-smoke -o json > "$work/namespace.json"
-# A fake Ready node exercises the real scheduler only. No kubelet or KWOK runs,
-# so this test must not claim containers started or Deployment availability.
+# Create only a fixture Node. Default mode supplies scheduling-only status;
+# optional KWOK owns simulated status, with real node lifecycle reconciliation.
+# Neither mode runs containers.
 jq -n '{apiVersion:"v1",kind:"Node",metadata:{name:"reference-node",labels:{"kubernetes.io/hostname":"reference-node"}},spec:{}}' | kctl create -f - -o json > "$work/node.json"
+if [[ $kwok == true ]]; then
+  controlplane_kwok_start
+else
 kctl patch node reference-node --subresource=status --type=merge -p '{"status":{"capacity":{"cpu":"4","memory":"8Gi","pods":"32"},"allocatable":{"cpu":"4","memory":"8Gi","pods":"32"},"conditions":[{"type":"Ready","status":"True","reason":"IsolatedSchedulingFixture","message":"No kubelet; scheduling only"}]}}' > "$work/node-status.log"
 # Node admission adds not-ready even though this fixture later patches Ready.
 # No node-lifecycle controller is enabled here. Remove only that exact initial
@@ -147,6 +166,7 @@ node_patch=$(jq -ce '
    {op:"test",path:"/metadata/resourceVersion",value:.metadata.resourceVersion},
    {op:"test",path:"/spec/taints",value:.spec.taints}, {op:"remove",path:"/spec/taints"}]' "$work/node-ready.json")
 kctl patch node reference-node --type=json -p "$node_patch" -o json > "$work/node-schedulable.json"
+fi
 jq -n '{apiVersion:"apps/v1",kind:"Deployment",metadata:{name:"chain",namespace:"controlplane-smoke"},spec:{replicas:3,selector:{matchLabels:{app:"chain"}},template:{metadata:{labels:{app:"chain"}},spec:{automountServiceAccountToken:false,containers:[{name:"pause",image:"registry.k8s.io/pause:3.10",resources:{requests:{cpu:"10m",memory:"8Mi"}}}]}}}}' | kctl create -f - -o json > "$work/deployment-created.json"
 deadline=$((SECONDS+120))
 until (
@@ -167,10 +187,12 @@ until (
   alive; ((SECONDS < deadline)); sleep 1
 done
 alive
+if [[ $kwok == true ]]; then controlplane_kwok_verify; fi
 kctl -n kube-system get leases kube-controller-manager kube-scheduler -o json > "$work/component-leases.json"
 jq -e '.items|length==2 and all(.[]; (.spec.holderIdentity|type)=="string" and (.spec.holderIdentity|length)>0)' "$work/component-leases.json" >/dev/null
 kctl -n controlplane-smoke get events -o json > "$work/events.json"
-# Bodies are captured only for fixture RS/Pod creates, never token responses.
+# Bodies cover fixture RS/Pod creates and optional KWOK status/Lease updates,
+# never token responses.
 jq -s -e --slurpfile rs "$work/replicasets.json" --slurpfile pods "$work/pods.json" \
   -f "$root/hack/scale-lab/verify-controlplane-audit.jq" "$work/audit.jsonl" > "$work/audit-check.json"
-echo "CONTROLPLANE_SCHEDULING_OPERATION_PASS backend=$backend: fake node, no Running/HA claim; final cleanup result still required"
+echo "CONTROLPLANE_SCHEDULING_OPERATION_PASS backend=$backend kwok=$kwok: no real container/HA claim; final cleanup result still required"

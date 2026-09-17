@@ -1,5 +1,11 @@
 # 隔离完整控制面验收准备
 
+最新进展：[参考 etcd + KWOK 联动验证](acceptance_reference_kwok_20260917_cn.md)
+已完成：真实权限检查、节点生命周期、真实控制器/调度器创建绑定、KWOK 模拟
+Ready/Running、Deployment 可用性及节点 Lease 两次更新审计均通过；默认无
+KWOK 路径重跑通过。尚未执行共享 KubeBrain 后端 KWOK 对照或规模验证。
+以下“尚未接入／未实际授权验证”描述为此前准备记录。
+
 ## KWOK RBAC 定义（尚未实际授权验证）
 
 新增 `hack/scale-lab/config/controlplane-kwok-rbac.json`，仅用于隔离 API 的

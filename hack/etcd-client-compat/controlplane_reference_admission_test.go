@@ -12,7 +12,7 @@ import (
 )
 
 func TestControlPlaneReferenceAdmission(t *testing.T) {
-	for _, mode := range []string{"no-consent", "bad-hash", "duplicate-ports", "reserved-api-port"} {
+	for _, mode := range []string{"no-consent", "bad-hash", "duplicate-ports", "reserved-api-port", "invalid-kwok-mode", "missing-kwok", "bad-kwok-hash"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			binary := filepath.Join(dir, "must-not-execute")
@@ -34,6 +34,16 @@ func TestControlPlaneReferenceAdmission(t *testing.T) {
 				"API_PORT=" + api, "ETCD_CLIENT_PORT=" + client, "ETCD_PEER_PORT=13580", "TEST_EXECUTED=" + filepath.Join(dir, "executed")}
 			for _, name := range []string{"APISERVER_BIN", "CONTROLLER_MANAGER_BIN", "SCHEDULER_BIN", "REFERENCE_ETCD_BIN"} {
 				env = append(env, name+"="+binary, name+"_SHA256="+digest)
+			}
+			switch mode {
+			case "invalid-kwok-mode":
+				env = append(env, "CONTROLPLANE_KWOK=typo")
+			case "missing-kwok":
+				env = append(env, "CONTROLPLANE_KWOK=true", "KWOK_BIN=/nonexistent/kwok", "KWOK_BIN_SHA256="+digest)
+			case "bad-kwok-hash":
+				env = append(env, "CONTROLPLANE_KWOK=true", "KWOK_BIN="+binary, "KWOK_BIN_SHA256="+fmt.Sprintf("%064d", 0))
+			default:
+				env = append(env, "CONTROLPLANE_KWOK=false")
 			}
 			out, err := runCompatCommandContext(t, context.Background(), "bash", []string{filepath.Join("..", "scale-lab", "controlplane-reference-smoke.sh")}, env)
 			require.Error(t, err, "%s", out)

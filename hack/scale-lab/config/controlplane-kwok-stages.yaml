@@ -1,0 +1,79 @@
+# Only for the disposable controlplane-smoke fixture. Status is simulated;
+# no containers are run and no scheduler/controller-created objects are injected.
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: isolated-node-ready
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Node
+  selector:
+    matchExpressions:
+    - key: .metadata.name
+      operator: In
+      values: [reference-node]
+    - key: '.status.conditions.[] | select(.type == "Ready") | .status'
+      operator: NotIn
+      values: ['True']
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      conditions:
+      {{ range NodeConditions }}
+      - type: {{ .type | Quote }}
+        status: {{ .status | Quote }}
+        reason: {{ .reason | Quote }}
+        message: {{ .message | Quote }}
+        lastHeartbeatTime: {{ $now | Quote }}
+        lastTransitionTime: {{ $now | Quote }}
+      {{ end }}
+      capacity: {cpu: '4', memory: 8Gi, pods: '32'}
+      allocatable: {cpu: '4', memory: 8Gi, pods: '32'}
+      phase: Running
+---
+apiVersion: kwok.x-k8s.io/v1alpha1
+kind: Stage
+metadata:
+  name: isolated-pod-ready
+spec:
+  resourceRef:
+    apiGroup: v1
+    kind: Pod
+  selector:
+    matchExpressions:
+    - key: .metadata.namespace
+      operator: In
+      values: [controlplane-smoke]
+    - key: .spec.nodeName
+      operator: In
+      values: [reference-node]
+    - key: .metadata.deletionTimestamp
+      operator: DoesNotExist
+    - key: .status.phase
+      operator: NotIn
+      values: [Running]
+  next:
+    statusTemplate: |
+      {{ $now := Now }}
+      conditions:
+      - type: Initialized
+        status: 'True'
+        lastTransitionTime: {{ $now | Quote }}
+      - type: Ready
+        status: 'True'
+        lastTransitionTime: {{ $now | Quote }}
+      - type: ContainersReady
+        status: 'True'
+        lastTransitionTime: {{ $now | Quote }}
+      containerStatuses:
+      {{ range .spec.containers }}
+      - name: {{ .name | Quote }}
+        image: {{ .image | Quote }}
+        ready: true
+        restartCount: 0
+        state:
+          running:
+            startedAt: {{ $now | Quote }}
+      {{ end }}
+      phase: Running
