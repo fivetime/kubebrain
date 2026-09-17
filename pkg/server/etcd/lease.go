@@ -1520,6 +1520,9 @@ func (m *leaseManager) refreshUncheckpointedLeaseDuringUnrelatedTeardown(ctx con
 	if ctx.Err() != nil {
 		return 0, false
 	}
+	if currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); !leadingFresh || currentEpoch != epoch {
+		return 0, false
+	}
 	st := m.leases[id]
 	if st == nil || st.remainingTTL != 0 || !st.deadline.After(time.Now()) {
 		return 0, false
@@ -1598,6 +1601,11 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 		unlock()
 		return 0, err
 	}
+	if currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); !leadingFresh || currentEpoch != epoch {
+		m.leaseMu.Unlock()
+		unlock()
+		return 0, errLeaseDemotedDuringRenew
+	}
 	st, ok := m.leases[id]
 	if !ok {
 		m.leaseMu.Unlock()
@@ -1670,6 +1678,14 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 		}
 	}
 	m.leaseMu.Lock()
+	// Both the checkpoint reconciliation and this state-lock wait can span a
+	// leadership transition. Fence the actual deadline publication as well as
+	// admission, including a return to leadership in a different epoch.
+	if currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); !leadingFresh || currentEpoch != epoch {
+		m.leaseMu.Unlock()
+		unlock()
+		return 0, errLeaseDemotedDuringRenew
+	}
 	st, ok = m.leases[id]
 	if !ok {
 		m.leaseMu.Unlock()
