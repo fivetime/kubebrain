@@ -1,5 +1,35 @@
 # 隔离完整控制面验收准备
 
+## KWOK 固定二进制与配置隔离准备（08:18 UTC）
+
+本机 `/root/kwok` 干净源码 `099ce5faf29193ac19f0d7529103327c48570f20` 已构建为
+私有二进制，session 86474 退出 0，目录 `kwok-reference-preparation.s56sqftz`。
+显式 `GOTOOLCHAIN=go1.26.8`、`-mod=readonly -trimpath -buildvcs=true`；构建前后
+工作树干净，实际 buildinfo 的源码 SHA、`vcs.modified=false`、Go 1.26.8 已核验，
+版本报告 `v0.9.0-alpha`，client-go v0.36.1。二进制 SHA-256：
+`4ec439887e6e1e6f333235d481fb6b22d3d1c652aa53cc0b73e70b32ce2e1a6c`。
+这是本地固定源码构建，不是官方发布签名验证，也未安装到系统路径或启动控制器。
+首次准备因 KWOK 目录自动选用 Go 1.26.0，被工具链门限拒绝，未开始编译；
+显式固定工具链后才完成上述构建，没有修改 KWOK 仓库。
+
+源码 `pkg/config/flags.go` 会在显式 `--config` 之前加载默认工作目录配置。
+实际二进制在 `unshare --net` 中完成拒绝/隔离对照（session 11580 退出 0）：
+私有模拟默认目录含无效 YAML，即使指定有效配置，`--help` 仍退出 1；换用独立
+空 `KWOK_WORKDIR` 则退出 0。未改宿主默认配置、HOME 或任何 kubeconfig。
+后续运行必须固定独立 KWOK_WORKDIR、显式有效测试 kubeconfig 和静态 Stage，
+不能把 `--config` 单独作为配置隔离边界。尚待实现专属非管理员身份/RBAC、
+KWOK 写入者审计、节点 Lease 更新与 Pod 模拟状态核验；这不是 KWOK 功能验收。
+
+本轮还复核了租约恢复源码：KubeBrain `applyLeaseRecordsWithPrimary` 与参考 etcd
+`lessor.Promote`/`Lease.refresh` 均在无剩余 TTL checkpoint 时使用授予 TTL
+重建截止时间；KubeBrain checkpoint 间隔为五分钟。已有
+`TestReloadResetsDeadlineToGrantedTTL` 和 checkpoint 恢复测试覆盖相关分支。
+这解释了为什么恢复后的剩余 TTL 不能与此前推算直接比较，但未采集本轮每次
+领导权变化及 checkpoint 记录，不能据此认定某次变化的确切原因。本轮未更改
+产品租约语义，也未重新运行这些已有测试。
+
+## 前一轮控制面准备与执行记录
+
 最新终态：[ba1dab70 候选报告](acceptance_controlplane_ba1dab70_20260917_cn.md)。
 驱动 83888 退出 70：操作通过、固定 60 秒租约清理失败；原镜像恢复及预拉取
 任务清理均成功，独立后置核验通过，本轮 12 个可证明临时卷已回收。两条空长
