@@ -55,6 +55,41 @@ granted TTL 3660、remaining TTL 3371、关联键数 0，测试 prefix 为空。
 没有发送 KeepAlive 或 Revoke；不能只靠 before/after lease 差集证明归属并撤销。
 仍待自然到期后另行确认，这不会追溯改变本轮 cleanup_failed=1 的结果。
 
+后续终态：2026-09-17 02:51:10 UTC 只读确认该 lease `TTL=-1`、granted TTL 0、
+关联键数 0，`lease list` 为 `found 0 leases`，测试 prefix 为空；自然到期已确认。
+会话 91299 退出 0，证据 `lease-observation.LK4fv7BJ/`。未发送 Revoke/KeepAlive，
+本轮原先的 60 秒清理失败和整体退出 70 不变。
+
+### 后续诊断：空 lease 不等于失效 lease
+
+2026-09-17 02:26:02 UTC 再次只读观测：同一 lease 剩余 TTL 1489、granted TTL
+3660、关联键数 0，prefix 仍为空。成员日志 `logs/original-2/container.log:783`
+记录故障前 01:46:36.930 的 `forward lease grant`：ID `458140032567809`
+（即上述十六进制 ID）、**请求 TTL 已是 3660**。因此不能把 granted TTL 3660
+归因于这次故障后的额外延长。日志随后有 Event 写入，但缺少 key/lease 绑定证据，
+不能据此证明该 lease 的对象归属或授权撤销。
+
+本机参考 etcd `5cd9f4ee13801e18825d661e5005ae599460bc3a` 的
+`server/lease/lessor.go:Detach` 只移除键的关联，不删除 lease。独立单成员对照：
+Grant 3660 秒、写入一个附租约 key、删除该 key，再等待 65 秒；空 lease 仍有效，
+granted TTL 仍为 3660。会话 53433 退出 0。此最小对照证明“删除最后一个 key”
+不意味着 lease 应在 60 秒内消失，**不是本轮 KubeBrain 自然过期正确性的证明**。
+测试最后只撤销由自身 Grant 返回 ID 的本机租约，然后停止自身 etcd；端口已释放。
+未触碰远端集群 lease。证据目录：
+`/root/.local/state/kubebrain/empty-lease-reference.5Rl3rEzF/`。
+首次准备 `empty-lease-reference.eiVireAg` 因启动参数中的多余 `+` 失败，
+会话 32170 退出 1；没有执行 Grant，不计为对照结果，失败证据保留。
+
+本机 Kubernetes 源码 `5b0cba2ee0da06385b12a9ae20cd0671ea3f860d` 的
+`staging/src/k8s.io/apiserver/pkg/storage/etcd3/lease_manager.go:GetLease`
+还会为请求 TTL 增加最多 60 秒的复用余量；Event TTL 默认一小时。
+这为 3660 秒提供了与日志相容的解释，但不是官方 v1.36.1 二进制的逐行来源证明，
+也不是这条 lease 的完整因果追踪。
+
+结论：本轮仍是 cleanup_failed=1、整体退出 70；暂不因这项观测修改产品的
+空 lease 生命周期，不缩短 Event TTL 或放宽原清理窗口来制造通过结果。
+继续独立验证自然到期，并保留写故障可用性与清理门限两个不同问题。
+
 部署前、候选及重建阶段三份 Bound 快照确认本轮 14 个独立 scratch PV。逐卷核对
 UID/full spec、Released/Retain、替代 PVC 绑定不同卷、无 VolumeAttachment 后，用
 UID/RV/spec/phase 前置条件仅改变这些卷的回收策略并等待删除；会话 94990 退出 0。
@@ -63,6 +98,17 @@ LogicalVolume 共 14；另 2 个是上一轮缺少历史 Bound 证据而保留�
 三份辅助二进制按 `helpers.sha256` 验证后删除，源码、日志、归档保留。
 
 ## 后续代码修复的边界
+
+2026-09-17 后续 CI：修复提交 `96a004800858bdd5cc8db50fbac8264903d387b2`
+的[回归作业 35174037159](https://github.com/fivetime/kubebrain/actions/runs/35174037159)
+attempt 1 已成功。下载完整日志后确认三个新增连接监控测试与
+`TestTxnDoesNotReplayAmbiguousForwardResult` 实际执行通过；日志采集 race 测试
+4.835 秒、完整 rollout probe race 测试 307.088 秒通过。etcd 非 race 全包及原有
+Auth/Lease/Watch race 分组分别为 137.792、87.867、70.582、24.440 秒，均通过。
+这不覆盖下面记录的额外全包 race 五分钟超时，也不等于集群故障验收通过。
+镜像作业 `35174037137` 随后也成功完成；新镜像独立审计已启动，尚未部署。
+CI 原始日志与摘要保存在私有 `release-96a00480.yeI5nxKJ/probe-ci.log`、
+`probe-ci.sha256`；下载会话 67225 退出 0。
 
 原 `trackLeaderConnectionAttempt` 在创建时核对一次，其后主要靠新请求的 `waitReady`
 取消过期连接尝试。已经转发的请求、或新 leader 直接本地处理的请求，不一定进入
