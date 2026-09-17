@@ -1,5 +1,11 @@
 # KubeBrain 固定基线控制面调度测试
 
+后续清理核验（08:05:16 UTC）：只读观察 session 97069 成功退出 0，
+`expiry-observer.43ahMqUt/sample-39` 确认两条 TTL 均为 -1、LeaseList 为零、
+原测试前缀为空，原入口 Pod 身份未变。未 Revoke/KeepAlive，转发已回收，
+18383/18453 端口释放。这补齐了自然到期证据，不改变原 60 秒清理失败、
+整体退出 70 的结论；下文“预计到期／尚未到期”均为此前记录。
+
 2026-09-17，首次将[参考控制面负载](acceptance_reference_controlplane_20260917_cn.md)
 接到本地盘 KubeBrain。**操作阶段通过，但租约清理失败，整体退出 70；不是完整验收通过。**
 
@@ -29,6 +35,16 @@ Available、多控制器覆盖、HA、故障恢复或规模性能。
 本轮没有部署，不能据此宣称修复回归。ReplicaSet 日志还出现两次
 `read version ... is not as new as written version ...`；仅记录观测，不凭一次重试
 日志推断为数据丢失或认定所有 stale-read 场景已修复。
+
+后续源码定位：Kubernetes `pkg/controller/util/consistency/consistency.go` 的
+`EnsureReady` 比较 informer store 的 `LastStoreSyncResourceVersion()` 与控制器
+记录的已写 RV；ReplicaSet 的 `syncReplicaSet` 在 lister.Get 前调用该检查，
+落后时计入 requeue skip 并返回错误。故这里的“read version”是控制器缓存进度，
+不是一次已证实返回旧值的线性一致 Range RPC。最终 ReplicaSet 快照为 RV34277、
+observedGeneration=1、replicas=3。这与缓存追赶后完成调谐相符，但没有逐条 Watch
+交付时间证据，不能据此断言延迟只来自 Kubernetes、排除 KubeBrain 影响，或判断
+两个 Count 错误与缓存滞后的因果关系。需要在新候选同负载中继续对比，不能关闭
+该一致性检查来消除日志。
 
 ## 清理与残留
 
@@ -93,3 +109,23 @@ KeepAlive 或修改内部时间，等待真实定时器自然过期，核对 Lea
 （13.381s），产品包 vet 通过。首次编译因新增测试漏导入 fmt 失败，补齐后重跑；
 不是产品行为的红绿复现。测试使用内存后端和短 TTL，不代替 TiKV 后端一小时
 残留租约的真实到期验证。本轮未修改产品租约行为或集群参数。
+
+后续同源 CI `35193444669`（`ba1dab709c4a6362552cfc5ab0876bbbfbee55ca`，attempt 1）
+已成功，日志确认上述自然过期测试的点删除/前缀删除两个分支在非 race 及 Lease
+race 阶段均执行通过（各 4.04s）。这是后续源码测试证据，不追溯改变旧基线
+控制面实验的退出 70，也不代表镜像审计或新候选真实部署已完成。
+
+## 参考 etcd 实际空租约对照
+
+07:56 UTC，隔离参考实测 session 49422 退出 0，证据目录
+`/root/.local/state/kubebrain/reference-empty-lease.mmIZd8rt/`。使用上述固定参考
+etcd 源码二进制，先核验服务端/etcdctl SHA-256 和服务端构建来源，再在
+127.0.0.1:13581/13582 启动独立临时实例，未接入测试集群。
+
+点删除、前缀删除各自申请 5 秒租约，先验证一个附着键；删除后均验证 TTL=4、
+无附着键且 LeaseList 仍为一条。未执行 Revoke/KeepAlive 或修改内部时间，
+随后轮询直到 TTL=-1、LeaseList 为零，并检查空前缀。点删除前后公开 revision
+保持 3，前缀删除前后保持 5：空租约自然过期没有额外增加 revision。
+服务进程已停止并回收，两个端口释放；数据和逐步响应保留在私有证据目录。
+该结果将此前源码推断补充为参考运行证据，但仍不代替当前 TiKV 后端旧租约
+自然到期的独立观察，也不追溯改变原控制面验收失败结论。

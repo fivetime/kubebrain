@@ -105,3 +105,11 @@ gRPC 的 context 错误转换不在本测试范围内。
 race 通过（2.459 秒）。完整新分组在本地通过（29.396 秒），详细日志确认 Range 和 Watch
 两个联动测试均实际执行通过。证据 `read-barrier-ci.Q4whCsQ7/local-race.log`。
 这些是本地结果，新源码的 GitHub CI 结果须另行核验，不沿用 886179af 的绿色状态。
+
+后续同源 CI 已核验：`63e0bd48b8f3b0536a68d2a92ae41c11c7daec73` 的
+[回归 35186634732](https://github.com/fivetime/kubebrain/actions/runs/35186634732)
+attempt 1 成功。完整日志确认新增 Range 和 Watch 联动测试在普通全包及加入 ReadBarrier
+后的 race 分组均执行通过。etcd 普通全包 140.690 秒；Auth/Lease/Watch+ReadBarrier
+race 分别 90.860、73.105、26.181 秒；proxy race 5.281 秒、revision race 8.343 秒、
+探针全量 race 328.808 秒。日志和 SHA-256 位于私有 `release-63e0bd48.8pcmIS6U`。
+该结果不是镜像身份核验或持续负载回滚通过；后两项仍需独立证据。
