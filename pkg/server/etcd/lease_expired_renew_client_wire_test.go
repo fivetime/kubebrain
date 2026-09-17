@@ -35,6 +35,7 @@ func TestClientExpiredLeaseKeepAliveOnceRoutesAfterTermEnds(t *testing.T) {
 	var leading atomic.Bool
 	leading.Store(true)
 	var forwarded atomic.Int32
+	var keepAliveStreams atomic.Int32
 	header := proxiedResponseHeader(s, int64(s.backend.GetCurrentRevision()))
 	s.peers = testPeerService{isLeaderFn: leading.Load, proxyEnabled: true,
 		leaseKeepAliveFn: func(_ context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
@@ -42,7 +43,14 @@ func TestClientExpiredLeaseKeepAliveOnceRoutesAfterTermEnds(t *testing.T) {
 			return &etcdserverpb.LeaseKeepAliveResponse{Header: header, ID: req.ID, TTL: 37}, nil
 		},
 	}
-	gs := grpc.NewServer(s.ClientServerOptions()...)
+	options := append(s.ClientServerOptions(), grpc.ChainStreamInterceptor(
+		func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+			if info.FullMethod == "/etcdserverpb.Lease/LeaseKeepAlive" {
+				keepAliveStreams.Add(1)
+			}
+			return handler(srv, stream)
+		}))
+	gs := grpc.NewServer(options...)
 	etcdserverpb.RegisterLeaseServer(gs, s)
 	listener := bufconn.Listen(1 << 20)
 	defer listener.Close()
@@ -96,6 +104,9 @@ func TestClientExpiredLeaseKeepAliveOnceRoutesAfterTermEnds(t *testing.T) {
 		require.Equal(t, grant.ID, got.response.ID)
 		require.Equal(t, int64(37), got.response.TTL)
 		require.Equal(t, int32(1), forwarded.Load())
+		// KeepAliveOnce retries failed streams internally. Success must come
+		// from the original pending stream, not a fresh RPC after demotion.
+		require.Equal(t, int32(1), keepAliveStreams.Load(), "renewal must survive on its original RPC stream")
 		requireClientLeaseHeaderWellFormed(t, got.response.ResponseHeader)
 	case <-time.After(time.Second):
 		t.Fatal("official client renewal remained blocked after term ended")
