@@ -40,5 +40,8 @@
 
 回归 CI 增加 revision 包的 vet 和全包 race，工作流契约测试锁定这两条命令。
 build 包全量 race 通过（2.485 秒），revision 包 vet 和 diff 空白检查通过。
+在本地提交 `93c4a9b3` 上，上层 etcd 包的 `ReadBarrier|FollowerWatch` 既有回归
+race 重复三次通过（9.744 秒）；这是上层错误映射与 Watch 的补充检查，
+不是接入真实 revision syncer 的完整角色切换端到端验收。
 私有证据：`/root/.local/state/kubebrain/revision-promotion.2d5y5x1A/`。
 新源码尚未完成 CI、镜像核验或集群复验；不覆盖此前失败记录。
