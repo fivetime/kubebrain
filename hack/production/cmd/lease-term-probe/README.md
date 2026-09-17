@@ -20,6 +20,9 @@ Required flags:
 The endpoint must resolve to the intended member, not a load-balanced service.
 TLS verification is mandatory. The probe checks cluster/member/leader identity,
 then requires a negative TTL, positive granted TTL and the expected attachment.
+Status and TTL must report the same member and nonzero RaftTerm. This detects
+observed preflight leadership changes, not an atomic fence against a change after
+preflight; the experiment still needs independent leader/term observations.
 It permits only one TCP dial attempt and disables configured gRPC retries.
 A connection or stream failure is a failed experiment, not transparently retried.
 Deadline bounds the entire probe including preflight; SIGTERM cancels it.

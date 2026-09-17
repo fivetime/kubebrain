@@ -145,3 +145,10 @@ race 重复十次通过；工作流契约 race 和 vet 通过，源码/日志 SH
 
 43a0df5f 的回归 CI `35245499360` 已成功；镜像 CI `35245499187` 在此次记录时
 仍运行。这两个任务均不包含上述后续单流断言、探针及 TCP/mTLS 测试。
+
+再检查发现探针预检只核验 TTL 的 cluster ID，可能接受 Status 与 TTL 之间的
+成员/任期切换。新增 changed-member、changed-term、zero-term 三个用例，
+修复前均错误返回成功而失败（session 9854，0.029s）；修复要求 Status 与 TTL
+响应的成员和非零 RaftTerm 一致，并将集群/任期写入预检 JSON。修复后的完整
+探针 race 重复十次 12.156s、vet 及工作流契约 race 2.506s 通过（session 84136）。
+这不是服务端原子选主栅栏，不能证明预检之后至请求处理之间未发生任期切换。

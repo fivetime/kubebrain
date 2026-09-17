@@ -55,7 +55,7 @@ func (s *fixture) LeaseKeepAlive(stream pb.Lease_LeaseKeepAliveServer) error {
 }
 
 func TestProbeOriginalStream(t *testing.T) {
-	for _, name := range []string{"success", "unavailable", "deadline", "wrong-cluster", "live-lease", "missing-lease", "wrong-key", "wrong-response", "output-failure"} {
+	for _, name := range []string{"success", "unavailable", "deadline", "wrong-cluster", "changed-member", "changed-term", "zero-term", "live-lease", "missing-lease", "wrong-key", "wrong-response", "output-failure"} {
 		t.Run(name, func(t *testing.T) {
 			header := &pb.ResponseHeader{ClusterId: 11, MemberId: 22, Revision: 3, RaftTerm: 4}
 			s := &fixture{header: header,
@@ -69,6 +69,15 @@ func TestProbeOriginalStream(t *testing.T) {
 				s.block = true
 			case "wrong-cluster":
 				s.header.ClusterId = 99
+				wantStreams = 0
+			case "changed-member":
+				s.ttl.Header = &pb.ResponseHeader{ClusterId: 11, MemberId: 44, RaftTerm: 4}
+				wantStreams = 0
+			case "changed-term":
+				s.ttl.Header = &pb.ResponseHeader{ClusterId: 11, MemberId: 22, RaftTerm: 5}
+				wantStreams = 0
+			case "zero-term":
+				s.header.RaftTerm = 0
 				wantStreams = 0
 			case "live-lease":
 				s.ttl.TTL = 1

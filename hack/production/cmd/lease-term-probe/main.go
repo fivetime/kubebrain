@@ -85,7 +85,8 @@ func probe(ctx context.Context, conn grpc.ClientConnInterface, id int64, cluster
 	if err != nil {
 		return fmt.Errorf("status preflight: %w", err)
 	}
-	if status.GetHeader().GetClusterId() != cluster || status.GetHeader().GetMemberId() != member || status.Leader != member {
+	term := status.GetHeader().GetRaftTerm()
+	if status.GetHeader().GetClusterId() != cluster || status.GetHeader().GetMemberId() != member || status.Leader != member || term == 0 {
 		return errors.New("preflight cluster/member/leader mismatch")
 	}
 	lease := pb.NewLeaseClient(conn)
@@ -97,11 +98,11 @@ func probe(ctx context.Context, conn grpc.ClientConnInterface, id int64, cluster
 	for _, attached := range ttl.Keys {
 		found = found || string(attached) == key
 	}
-	if ttl.ID != id || ttl.TTL >= 0 || ttl.GrantedTTL <= 0 || !found || ttl.GetHeader().GetClusterId() != cluster {
+	if ttl.ID != id || ttl.TTL >= 0 || ttl.GrantedTTL <= 0 || !found || ttl.GetHeader().GetClusterId() != cluster || ttl.GetHeader().GetMemberId() != member || ttl.GetHeader().GetRaftTerm() != term {
 		return errors.New("preflight requires expired retained lease with expected attachment and cluster")
 	}
 	enc := json.NewEncoder(out)
-	if err := enc.Encode(map[string]any{"phase": "expired_preflight", "at": time.Now().UTC(), "lease_id": id, "ttl": ttl.TTL, "member_id": member}); err != nil {
+	if err := enc.Encode(map[string]any{"phase": "expired_preflight", "at": time.Now().UTC(), "lease_id": id, "ttl": ttl.TTL, "member_id": member, "raft_term": term, "cluster_id": cluster}); err != nil {
 		return err
 	}
 	// Raw generated RPC: no KeepAliveOnce wrapper or application retry loop.
