@@ -47,6 +47,25 @@ leader race（2.568 秒）、build race（3.920 秒）、proxy go vet 通过。
 私有复现及日志：`/root/.local/state/kubebrain/txn-retirement-diagnostic.6jAV7BB5/`。
 旧实现红测是诊断证据，不是通过结果。
 
-本修复尚未通过新镜像的专用集群故障验收。对端真正死亡、提交后丢失响应、超过退休预算、
+最终源码 `602912b7ec8614175a7707aeecb349bda2682f75` 的
+[回归 CI 35177817480](https://github.com/fivetime/kubebrain/actions/runs/35177817480)
+attempt 1 已成功。原始日志确认上述六个新增顶层测试及既有不确定 Txn 不重放测试
+实际执行通过，包括 caller deadline 子用例。etcd 非 race 全包 132.048 秒，
+Auth/Lease/Watch race 分组分别 85.218、72.737、24.222 秒；代理全包 race 5.317 秒，
+完整 rollout probe race 331.763 秒，均通过。
+日志与摘要保存在私有 `release-602912b7.jiuiZPn9/probe-ci.log`、`probe-ci.sha256`。
+这证明既定 CI 范围通过，不是额外全包全 race 或真实集群故障验收通过。
+
+镜像 CI [35177817589](https://github.com/fivetime/kubebrain/actions/runs/35177817589)
+同一源码 attempt 1 成功；独立核验进程退出 0，检查了 OCI 多架构索引、平台摘要、
+发布标签、amd64 二进制版本/源码及 TiKV 客户端依赖。固定镜像为
+`ghcr.io/fivetime/kubebrain@sha256:89df69763ed64b1e5c2215a7052a2320de1b3318739bb752204d56967e003cd3`。
+私有证据：`release-602912b7.jiuiZPn9/audit.kaKB1pZC/verified.json`。
+这是镜像身份核验，不代替运行时验收。
+
+本修复的[专用集群故障验收](acceptance_apiserver_fault_602912b7_20260917_cn.md)
+完成 2000 次 ConfigMap 更新，但整体因租约清理失败退出 70；内部 Lease Txn 仍失败，
+并记录了故障前 Txn Range Count 不一致和故障后内部 Watch 超时，原镜像已恢复。
+对端真正死亡、提交后丢失响应、超过退休预算、
 频繁切换触发淘汰等情况仍可能返回不确定结果。它消除的是可避免的代理主动中断窗口，
 不宣称实现 exactly-once，也不宣称已经解决所有 Kubernetes 写可用性差距。
