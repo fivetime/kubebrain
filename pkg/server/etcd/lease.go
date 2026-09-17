@@ -924,7 +924,9 @@ func (m *leaseManager) LeaseTimeToLive(ctx context.Context, req *etcdserverpb.Le
 		}
 		return nil, err
 	}
-	m.leaseMu.Lock()
+	if err := m.leaseMu.LockContext(ctx); err != nil {
+		return nil, err
+	}
 	// Mirror etcd leaseTimeToLive's post-lookup Demoted check. Leadership may
 	// change after the initial routing decision while this RPC waits for the
 	// lease snapshot lock; never return that now-stale local state.
@@ -1028,7 +1030,9 @@ func (m *leaseManager) LeaseLeases(ctx context.Context, req *etcdserverpb.LeaseL
 		}
 		return nil, err
 	}
-	m.leaseMu.Lock()
+	if err := m.leaseMu.LockContext(ctx); err != nil {
+		return nil, err
+	}
 	if err := m.requireLeaseLeader("lease leases"); err != nil {
 		m.leaseMu.Unlock()
 		if m.srv.peers.EtcdProxyEnabled() {

@@ -18,6 +18,10 @@ session 71111 退出 0，2.477s。仓库 go.mod/go.sum 未改动。
 此前尝试直接列出测试文件编译因共享 helper 缺少符号而失败，未采用该方案。
 这些是本地证据，不冒充远端 CI 成功。新增工作流需要实际远端执行后再确认。
 
+远端步骤核验：`0ad6d7b6` 的手动回归 `35206137761` 已实际完成固定 etcd
+检出及 `Verify isolated control-plane harness contracts`，两步 conclusion 均为
+success。09:46 UTC 作业其余服务/探针回归仍在运行，不称整体 CI 已通过。
+
 同轮只读残留检查 session 57364 退出 0，证据
 `kwok-candidate-3e813b99.ZNyd87Zs/residual-inspection.JZfZI9qo`：
 租约 `0003a0aea810bc02` 剩余 TTL 2926 秒，仍存在；两条租约无附着键，
