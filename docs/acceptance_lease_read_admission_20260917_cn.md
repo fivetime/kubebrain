@@ -1,5 +1,41 @@
 # Lease 读取状态锁取消准入
 
+## 取消与锁可用同时发生的回归补充
+
+2026-09-17 10:52 UTC：新增 `TestLeaseStateMutexCancellationAtAdmission`，
+使用包装的真实 context，在 select 求值 Done 时触发取消，让可用锁与取消同时
+就绪；重复 1000 次，要求返回 Canceled，且后续请求仍能获取并释放锁。
+不依赖 sleep 猜测竞争时序；重复执行覆盖 select 的两种选择，不声称形式化证明。
+
+隔离副本仅移除拿锁后的 ctx.Err 检查，新测试立即失败（退出 1：admitted a
+waiter whose context was canceled before selection）。正式实现未改动，
+`go test -race -count=10 ./pkg/server/etcd -run '^TestLeaseStateMutex'`
+通过（session 57120，退出 0，1.869s）。变异副本位于私有
+`lease-admission-race.W8fI66zc`，未替换仓库产品代码。这是本地新增回归，
+不属于下述旧源码的 CI/镜像证据，也不修复或豁免集群 60 秒清理失败。
+
+RPC 层取消回归 `go test -race -count=5 ./pkg/server/etcd -run
+'^TestLeaseReadStateAdmission'` 亦通过（session 51175，退出 0，3.151s）。
+
+对照 `/root/etcd/server/lease/lessor.go` 的 Lookup/Leases 仍为普通 RLock；
+本测试锁定的是 KubeBrain 的取消资源回收保护，不宣称发现 etcd 线协议差异。
+
+后续发布与集群结果：镜像 CI 和独立身份审计均已成功；实际候选部署的控制面操作
+通过，但 60 秒长租约清理失败，整体退出 70，已恢复原镜像并回收本轮临时卷。
+详见 [候选回归报告](acceptance_controlplane_kwok_742e8b8c_20260917_cn.md)。
+不能将本地/CI 取消测试通过扩大为整体现网验收通过。
+
+远端回归更新（10:18 UTC）：源码 `742e8b8c2196e985b208394e79007262570dcb36`
+的 CI `35207999892`，attempt 1，completed/success；新增 LeaseReadStateAdmission
+与 LeaseStateMutex 测试在普通及租约 race 两条路径均通过。完整服务 136.884s，
+Auth/Lease/Watch race 88.719/78.383/26.283s，控制面夹具 race 8.390s，
+proxy/revision/log-capture race 5.292/8.409/4.841s，全探针 race 317.904s。
+当时镜像 `35208578969` 尚未完成；后续发布、审计及部署结果见本页顶部链接。
+
+日志归档 session 36569 退出 0，证据位于
+`/root/.local/state/kubebrain/release-742e8b8c.HKcubH7A/`；
+probe-ci.log SHA-256 `180270eca87bba6972381fc63088606249905259cdf85c7107eb41172d3a2c50`。
+
 2026-09-17，基于 `0ad6d7b6` 的本地产品修改，尚未部署。
 
 TTL、TTL(Keys=true)、LeaseList 在等待 `leaseMu` 时使用普通不可取消 Lock。

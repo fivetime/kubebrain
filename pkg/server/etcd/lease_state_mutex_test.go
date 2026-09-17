@@ -56,3 +56,35 @@ func TestLeaseStateMutexExclusive(t *testing.T) {
 	group.Wait()
 	require.Equal(t, 8000, value)
 }
+
+// Cancel while LockContext evaluates its select operands: the initial Err
+// check has passed, and both cancellation and an available lock are ready.
+// This uses a real cancellable context, without scheduler-dependent sleeps.
+type leaseStateCancelOnDoneContext struct {
+	context.Context
+	cancel context.CancelFunc
+}
+
+func (c leaseStateCancelOnDoneContext) Done() <-chan struct{} {
+	c.cancel()
+	return c.Context.Done()
+}
+
+func TestLeaseStateMutexCancellationAtAdmission(t *testing.T) {
+	var m leaseStateMutex
+	for i := 0; i < 1000; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		err := m.LockContext(leaseStateCancelOnDoneContext{Context: ctx, cancel: cancel})
+		cancel()
+		if err == nil {
+			m.Unlock()
+			t.Fatal("admitted a waiter whose context was canceled before selection")
+		}
+		require.ErrorIs(t, err, context.Canceled)
+		follow, stop := context.WithTimeout(context.Background(), time.Second)
+		err = m.LockContext(follow)
+		stop()
+		require.NoError(t, err, "cancellation must release any acquired ownership")
+		m.Unlock()
+	}
+}
