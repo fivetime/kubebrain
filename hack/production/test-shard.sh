@@ -27,11 +27,14 @@ if [[ "$mode" == run ]]; then
   [[ "$index" =~ ^[0-9]+$ && "$index" -lt "$total" ]] || usage
 fi
 
-mapfile -t tests < <(
-  cd "$ROOT_DIR"
+# Process substitution would hide a failed discovery pipeline from mapfile.
+# Accept the inventory only after every discovery stage has exited successfully.
+inventory="$(
+  cd "$ROOT_DIR" || exit 1
   go test ./hack/production -list '^Test' | awk '/^Test[A-Za-z0-9_]+$/ {print}' | LC_ALL=C sort -u
-)
-[[ ${#tests[@]} -gt 0 ]] || { echo "no production tests discovered" >&2; exit 1; }
+)" || { echo "production test discovery failed" >&2; exit 1; }
+[[ -n "$inventory" ]] || { echo "no production tests discovered" >&2; exit 1; }
+mapfile -t tests <<<"$inventory"
 
 bucket_for() {
   local digest

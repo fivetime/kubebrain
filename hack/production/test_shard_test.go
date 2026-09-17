@@ -2,11 +2,66 @@ package production_test
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestProductionTestShardsRejectPartialDiscovery(t *testing.T) {
+	for _, mode := range []string{"--list", "--verify", "0"} {
+		t.Run(mode, func(t *testing.T) {
+			bin := t.TempDir()
+			marker := filepath.Join(bin, "test-run-started")
+			writeExecutable(t, filepath.Join(bin, "go"), `#!/usr/bin/env bash
+if [[ "$*" == *"-list"* ]]; then
+  echo TestPartialInventory
+  echo 'discovery failed after partial output' >&2
+  exit 17
+fi
+touch "$SHARD_RUN_MARKER"
+`)
+			output, err := runProductionCommand(t, "bash", []string{"test-shard.sh", mode, "1"}, []string{
+				"PATH=" + bin + ":" + os.Getenv("PATH"),
+				"SHARD_RUN_MARKER=" + marker,
+			})
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), "discovery failed after partial output")
+			require.NotContains(t, string(output), "verified 1 production tests")
+			require.NotContains(t, string(output), "running production test shard")
+			require.NoFileExists(t, marker)
+		})
+	}
+}
+
+func TestProductionTestShardsRejectFailedInventoryFilter(t *testing.T) {
+	for _, stage := range []string{"awk", "sort"} {
+		for _, mode := range []string{"--list", "--verify", "0"} {
+			t.Run(stage+"/"+mode, func(t *testing.T) {
+				bin := t.TempDir()
+				writeExecutable(t, filepath.Join(bin, "go"), "#!/usr/bin/env bash\necho TestPartialInventory\n")
+				writeExecutable(t, filepath.Join(bin, stage), "#!/usr/bin/env bash\ncat >/dev/null\necho TestPartialInventory\nexit 17\n")
+				output, err := runProductionCommand(t, "bash", []string{"test-shard.sh", mode, "1"}, []string{"PATH=" + bin + ":" + os.Getenv("PATH")})
+				require.Error(t, err, string(output))
+				require.Contains(t, string(output), "production test discovery failed")
+				require.NotContains(t, string(output), "running production test shard")
+			})
+		}
+	}
+}
+
+func TestProductionTestShardsRejectEmptyInventory(t *testing.T) {
+	for _, mode := range []string{"--list", "--verify", "0"} {
+		t.Run(mode, func(t *testing.T) {
+			bin := t.TempDir()
+			writeExecutable(t, filepath.Join(bin, "go"), "#!/usr/bin/env bash\necho 'ok package with no discovered tests'\n")
+			output, err := runProductionCommand(t, "bash", []string{"test-shard.sh", mode, "1"}, []string{"PATH=" + bin + ":" + os.Getenv("PATH")})
+			require.Error(t, err, string(output))
+			require.Contains(t, string(output), "no production tests discovered")
+		})
+	}
+}
 
 func TestProductionTestShardsAreExhaustiveAndNonEmpty(t *testing.T) {
 	output, err := runProductionCommand(t, "bash", []string{"test-shard.sh", "--verify", "4"}, nil)
