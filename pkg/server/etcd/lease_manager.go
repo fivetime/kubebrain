@@ -68,7 +68,7 @@ type leaseManager struct {
 	leaseCheckpointLocks [256]leaseWriteMutex
 	// State access remains exclusive. Read RPC admission may cancel while
 	// queued; internal state transitions retain the blocking Lock/Unlock API.
-	leaseMu leaseWriteMutex
+	leaseMu leaseStateMutex
 	leaseID int64
 	// automaticLeaseIDs uses etcd's member/time/counter layout once the static
 	// DBaaS member set is installed. Keeping the generator in an atomic pointer

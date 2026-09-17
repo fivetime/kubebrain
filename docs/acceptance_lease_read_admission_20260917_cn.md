@@ -21,3 +21,25 @@ session 12769 三个场景均 RED，3.091s。属于处理协程资源回收风�
 Attachment 扩展 race 81.671s（session 1090 退出 0）。diff 检查通过。
 没有该产品修改的 CI 或真实集群验收成功声明；待前一轮 CI 完成再推送，
 避免触发 concurrency 取消正在收集的回归结果。
+
+## 推送前的状态锁开销复核
+
+初版 `ce81eb8d` 尚未推送。微基准 session 18726 退出 0，三轮、
+GOMAXPROCS=1/4、空临界区比较普通 Mutex 与复用的 weighted 锁。四线程竞争
+下前者 113.7–120.8 ns/op、0 allocs/op，后者 641.8–668.7 ns/op、
+175 B/op、2 allocs/op。这不是业务性能对照，但提示全局状态锁分配代价。
+
+后续工作树改为专用 `leaseStateMutex`：容量 1 的 channel 仅提供独占访问，
+保留阻塞 Lock/Unlock；LockContext 在取消时退出，并在获锁后的取消竞态中
+释放刚取得的所有权。绑定/checkpoint 的读写锁不变。不创建等待辅助 goroutine。
+零值、已取消 context、阻塞 deadline、取消后重新获锁、非法 Unlock 和并发
+互斥测试十轮 race 通过（session 41537，1.481s）。
+
+新实现微基准 session 87600 退出 0，四线程竞争 287.3–296.9 ns/op、
+0 B/op、0 allocs/op；串行约 60–79 ns/op，仍高于普通 Mutex 的约 16–17 ns/op。
+数据来自本机微基准，非受控业务负载；不能推算实际 RPC 吞吐或宣布性能门限通过。
+基准保留三种实现以便后续复核。
+
+新实现五轮定向 race 3.476s、扩展租约 race 79.754s（session 21834 退出 0）；
+完整服务 147.309s，随后 vet 通过（session 16988 退出 0）。这些是新实现的
+独立结果，不复用上节 ce81eb8d 的完整回归。仍未推送、部署或取得对应远端 CI。
