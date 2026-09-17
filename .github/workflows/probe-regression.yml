@@ -7,6 +7,9 @@ name: Rollout probe regression
       - 'hack/production/cmd/rollout-availability-probe/**'
       - 'hack/production/cmd/pod-log-capture/**'
       - 'hack/production/internal/**'
+      - 'hack/scale-lab/**'
+      - 'hack/etcd-client-compat/**'
+      - 'hack/dev/create-apiserver-test-pki.sh'
       - 'pkg/**'
       - 'go.mod'
       - 'go.sum'
@@ -47,6 +50,28 @@ jobs:
           go mod verify
           go test -race -count=1 ./build
           go vet ./hack/production/cmd/rollout-availability-probe
+      - name: Check out pinned etcd reference for harness compilation
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: etcd-io/etcd
+          ref: 5cd9f4ee13801e18825d661e5005ae599460bc3a
+          path: .ci-reference-etcd
+          persist-credentials: false
+      - name: Verify isolated control-plane harness contracts
+        run: |
+          set -euo pipefail
+          command -v bash jq openssl
+          test "$(git -C .ci-reference-etcd rev-parse HEAD)" = 5cd9f4ee13801e18825d661e5005ae599460bc3a
+          cd hack/etcd-client-compat
+          # All five source replacements are bound to the pinned checkout.
+          for module in api cache client/pkg client/v3 server; do
+            module_path="go.etcd.io/etcd/$module"
+            if [[ "$module" != client/v3 ]]; then module_path+=/v3; fi
+            go mod edit "-replace=$module_path=$GITHUB_WORKSPACE/.ci-reference-etcd/$module"
+          done
+          go mod tidy
+          go mod verify
+          go test -race -count=1 -timeout=3m -v . -run '^Test(ControlPlane|Ephemeral.*PKI)'
       - name: Verify etcd service and Watch regressions
         run: |
           set -euo pipefail

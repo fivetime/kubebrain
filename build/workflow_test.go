@@ -86,7 +86,7 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	require.Contains(t, workflow.On, "push")
 	require.Contains(t, workflow.On, "workflow_dispatch")
 	require.Equal(t, []string{"dbaas"}, workflow.On["push"].Branches)
-	for _, path := range []string{"hack/production/cmd/rollout-availability-probe/**", "hack/production/cmd/pod-log-capture/**", "hack/production/internal/**", "pkg/**", "go.mod", "go.sum", "build/workflow_test.go", ".github/workflows/probe-regression.yml"} {
+	for _, path := range []string{"hack/production/cmd/rollout-availability-probe/**", "hack/production/cmd/pod-log-capture/**", "hack/production/internal/**", "hack/scale-lab/**", "hack/etcd-client-compat/**", "hack/dev/create-apiserver-test-pki.sh", "pkg/**", "go.mod", "go.sum", "build/workflow_test.go", ".github/workflows/probe-regression.yml"} {
 		require.Contains(t, workflow.On["push"].Paths, path)
 	}
 	require.Equal(t, map[string]string{"contents": "read"}, workflow.Permissions)
@@ -104,6 +104,16 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 		}
 	}
 	require.Contains(t, commands, "go test -race -count=1 ./build\n")
+	require.Contains(t, commands, "cd hack/etcd-client-compat\n")
+	require.Contains(t, commands, "command -v bash jq openssl\n")
+	require.Contains(t, string(data), "repository: etcd-io/etcd\n")
+	require.Contains(t, string(data), "ref: 5cd9f4ee13801e18825d661e5005ae599460bc3a\n")
+	require.Contains(t, commands, "test \"$(git -C .ci-reference-etcd rev-parse HEAD)\" = 5cd9f4ee13801e18825d661e5005ae599460bc3a\n")
+	require.Contains(t, commands, "for module in api cache client/pkg client/v3 server; do\n")
+	require.Contains(t, commands, "go mod edit \"-replace=$module_path=$GITHUB_WORKSPACE/.ci-reference-etcd/$module\"\n")
+	require.Contains(t, commands, "go mod tidy\n")
+	require.Contains(t, commands, "go mod verify\n")
+	require.Contains(t, commands, "go test -race -count=1 -timeout=3m -v . -run '^Test(ControlPlane|Ephemeral.*PKI)'\n")
 	require.Contains(t, commands, "go vet ./hack/production/cmd/rollout-availability-probe\n")
 	require.Contains(t, commands, "go vet ./pkg/server/service/etcdproxy\n")
 	require.Contains(t, commands, "go vet ./pkg/server/service/revision\n")
