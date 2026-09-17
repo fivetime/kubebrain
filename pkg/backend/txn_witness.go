@@ -160,6 +160,9 @@ type txnRevisionIndexExpectation struct {
 	userKey  []byte
 	revision uint64
 	verb     proto.Event_EventType
+	// Nonzero only for full historical-object verification (not startup's
+	// index-only mode). DELETE refers to its preceding live object version.
+	objectRevision uint64
 }
 
 type txnRevisionIndexCorruption struct {
@@ -494,10 +497,6 @@ func (b *backend) validatePersistedTxnWitnessesAfter(
 			var count uint32
 			var referenceErr error
 			indexExpectations := make([]txnRevisionIndexExpectation, 0, record.count)
-			objectKeys := make([][]byte, 0, record.count)
-			seenObjects := make(map[string]struct{}, record.count)
-			objectRevisions := make(map[string]uint64, record.count)
-			objectUserKeys := make(map[string][]byte, record.count)
 			for !eventEOF {
 				if !eventReady {
 					if nextErr := events.Next(ctx); nextErr != nil {
@@ -536,19 +535,14 @@ func (b *backend) validatePersistedTxnWitnessesAfter(
 						referenceErr = fmt.Errorf("event has invalid object reference")
 					}
 					if referenceErr == nil {
+						var historicalRevision uint64
+						if verifyObjects {
+							historicalRevision = valueRevision
+						}
 						indexExpectations = append(indexExpectations, txnRevisionIndexExpectation{
 							userKey: append([]byte(nil), eventUserKey...), revision: revision, verb: verb,
+							objectRevision: historicalRevision,
 						})
-					}
-					if verifyObjects && revision > compactRevision && referenceErr == nil {
-						objectKey := b.coder.EncodeObjectKey(eventUserKey, valueRevision)
-						if _, duplicate := seenObjects[string(objectKey)]; !duplicate {
-							objectID := string(objectKey)
-							seenObjects[objectID] = struct{}{}
-							objectRevisions[objectID] = valueRevision
-							objectUserKeys[objectID] = append([]byte(nil), eventUserKey...)
-							objectKeys = append(objectKeys, objectKey)
-						}
 					}
 				}
 				count++
@@ -560,47 +554,6 @@ func (b *backend) validatePersistedTxnWitnessesAfter(
 			} else if referenceErr != nil {
 				cause = fmt.Errorf("%w: persisted witness object reference at revision %d: %v",
 					ErrTxnWitnessCorrupt, revision, referenceErr)
-			}
-			if cause == nil && verifyObjects && revision > compactRevision {
-				values, incomplete, loadErr := b.loadEventValues(ctx, objectKeys)
-				if loadErr != nil {
-					return loadErr
-				}
-				if incomplete {
-					// Physical compaction may have advanced after our initial
-					// snapshot. Only a still-supported revision is corruption.
-					refreshed, refreshErr := b.GetCompactRevisionFresh(ctx)
-					if refreshErr != nil {
-						return refreshErr
-					}
-					compactRevision = max(compactRevision, refreshed)
-					if revision > compactRevision {
-						cause = fmt.Errorf("%w: persisted witness at revision %d references a missing object version",
-							ErrTxnWitnessCorrupt, revision)
-					}
-				} else {
-					for _, objectKey := range objectKeys {
-						validationErr := b.validateEventObjectValue(
-							ctx, objectUserKeys[string(objectKey)], objectRevisions[string(objectKey)], values[string(objectKey)],
-						)
-						if validationErr == nil {
-							continue
-						}
-						if !errors.Is(validationErr, ErrInvalidMVCCMetadata) {
-							return validationErr
-						}
-						refreshed, refreshErr := b.GetCompactRevisionFresh(ctx)
-						if refreshErr != nil {
-							return refreshErr
-						}
-						compactRevision = max(compactRevision, refreshed)
-						if revision > compactRevision {
-							cause = fmt.Errorf("%w: persisted witness at revision %d references an invalid object value: %v",
-								ErrTxnWitnessCorrupt, revision, validationErr)
-						}
-						break
-					}
-				}
 			}
 			if cause == nil && revision > compactRevision {
 				if queueErr := queueIndexes(indexExpectations, key, raw, revision); queueErr != nil {
@@ -633,6 +586,12 @@ func (b *backend) validateTxnRevisionIndexes(
 ) (*txnRevisionIndexCorruption, error) {
 	if len(expectations) == 0 {
 		return nil, nil
+	}
+	// Share the already bounded index window across historical object reads.
+	// The caller rechecks witness presence, compaction and exact evidence before
+	// arming corruption; a read window is never a cached integrity verdict.
+	if evidence, err := b.validateWitnessObjectWindow(ctx, expectations); err != nil {
+		return evidence, err
 	}
 	indexKeys := make([][]byte, len(expectations))
 	uniqueIndexKeys := make([][]byte, 0, len(expectations))
