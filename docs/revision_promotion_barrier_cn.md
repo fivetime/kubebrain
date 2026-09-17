@@ -58,3 +58,22 @@ rollout probe 全量 race 316.736 秒，均通过。
 完成 2000 次更新、Watch 审计、清理及原镜像恢复，均退出 0。
 本轮旧查询在本机升主后明确返回 leader changed，未检出此前 revision 查询超时；
 但仍有 Range leader changed 警告，单次实验不覆盖所有切换时序，也不改写此前失败记录。
+
+## RPC 与真实同步器联动回归
+
+新增 `TestReadBarrierRangeWithRealSyncerDuringPromotion` 将真实 revision syncer、
+HTTP `/status` 请求及 Range handler 接在一起，使用内存存储与受控 election 状态。
+以已提交键为对照：未升主时完成同步并返回原值；升主前的旧 Range 返回 Unavailable，
+不安装被拒绝的远端 revision、不进入后端 Get；下一次请求仅在 fresh leadership 下
+返回已提交值，陈旧租约仍返回 Unavailable，三个场景各只发送一次 HTTP 请求。
+
+隔离 Go overlay 仅替换为 `fafbd95b` 的旧 revision 实现：未升主对照通过，
+fresh/stale 两种升主均耗尽 2 秒调用预算，测试退出 1（4.260 秒）。
+这里直接调用 handler，旧错误的 `status.Code` 为 Unknown，不据此推断 gRPC 线上代码；
+gRPC 的 context 错误转换不在本测试范围内。
+当前实现聚焦 race 重复三次通过（2.977 秒），`ReadBarrier|FollowerWatch`
+组合 race 重复三次通过（11.489 秒），etcd 包 vet 通过。
+
+证据 `range-promotion-integration.3og17xvS`，不修改产品实现、不提高原预算、
+不改集群或重跑 CI。本测试覆盖直接读屏障路径，不覆盖 follower gRPC 转发、
+真实选主实现、存储故障或 Watch 与真实同步器的联动；这些边界不能由测试名称推定通过。
