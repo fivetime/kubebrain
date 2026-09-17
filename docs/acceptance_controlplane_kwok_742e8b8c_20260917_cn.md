@@ -1,6 +1,12 @@
 # 742e8b8c 候选控制面/KWOK 回归
 
-10:50 UTC 后续：已启动只读自然到期观察（session 25778，证据目录
+后续自然到期核验：11:44:03 UTC，原只读观察 session 25778 退出 0。
+`expiry-observer.EZ1YH2TQ/sample-107` 中两条租约 TTL 均为 -1、无附着键，
+LeaseList 为零，原前缀 Range 含响应 header 且 count/KV 均为零；恢复后
+固定入口 Pod 和 cluster/member 身份检查通过。未 Revoke/KeepAlive，转发
+已停止，18383/18453 无监听。**不改变原 60 秒清理失败和整体退出 70。**
+
+10:50 UTC 历史：启动只读自然到期观察（session 25778，证据目录
 `expiry-observer.EZ1YH2TQ`），首次两条 TTL 均为 3214 秒，恢复后固定 Pod
 及 cluster/member 身份检查通过。仍未证明到期；观察期间临时占用 18383，
 不发送 Revoke/KeepAlive，不改变下述原清理失败结论。

@@ -39,7 +39,11 @@ Watch race 的名称筛选不包含 `PeriodicProgress`，这次同时补入该�
 race 通过（session 14886，30.518s），workflow 合约 race 通过（session
 94514，2.503s），完整服务测试通过（145.503s），随后 go vet 也通过
 （两者所在 session 34031 终态 0）。
-尚未得到新 CI 成功结论。
+后续 ab043b11 的 CI `35216878670` attempt 1 全部成功：服务整包
+144.258s、扩展 Watch race 26.342s，周期进度测试在普通与 race 中均有
+PASS。完整探针 race 293.604s。此前失败记录保留；后续真实后端
+[Pod 替换验收](acceptance_controlplane_replacement_742e_ab043_20260917_cn.md)
+操作通过，但原租约清理门限失败，不与 CI 成功混为一谈。
 
 完整失败日志归档 session 22362 退出 0：
 `/root/.local/state/kubebrain/auth-apply-e87ee176.mAe9VOxF/ci-failure.4BkFJUw0/run.log`，
