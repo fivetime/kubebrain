@@ -295,6 +295,15 @@ func (r *revisionSyncer) getRevisionFromLeaderWithRetry(ctx context.Context) (ui
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
+		// A fetch admitted while we were a follower cannot use the local
+		// leader's HTTP status as a remote read barrier: the identity check
+		// below deliberately rejects it. End this batch on promotion instead
+		// of retrying the same rejected result until the shared budget expires.
+		// Like etcd's ReadIndex leader-change path, callers may start a new
+		// barrier; do not install a peer revision or trust a stale local lease.
+		if r.leaderElection.IsLeader() {
+			return 0, fmt.Errorf("%w: local node became leader", errLeaderChanged)
+		}
 		rev, err := r.getRevisionFromLeaderWithSchemas(ctx)
 		if err == nil {
 			return rev, nil
