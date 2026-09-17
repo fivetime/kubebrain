@@ -400,7 +400,7 @@ func (s *putResultServer) Put(context.Context, *etcdserverpb.PutRequest) (*etcds
 	return s.put()
 }
 
-func startPutResultServer(t *testing.T, upstream *putResultServer) string {
+func startPutResultServer(t *testing.T, upstream etcdserverpb.KVServer) string {
 	t.Helper()
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
