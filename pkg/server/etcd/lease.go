@@ -78,20 +78,27 @@ func markInvalidLeaseMetadata(err error) error {
 }
 
 func (m *leaseManager) keysForLease(id int64) []string {
+	keys, _ := m.keysForLeaseContext(context.Background(), id)
+	return keys
+}
+
+func (m *leaseManager) keysForLeaseContext(ctx context.Context, id int64) ([]string, error) {
 	if id == 0 {
-		return nil
+		return nil, nil
 	}
-	m.leaseMu.Lock()
+	if err := m.leaseMu.LockContext(ctx); err != nil {
+		return nil, err
+	}
 	defer m.leaseMu.Unlock()
 	lease := m.leases[id]
 	if lease == nil {
-		return nil
+		return nil, nil
 	}
 	keys := make([]string, 0, len(lease.keys))
 	for key := range lease.keys {
 		keys = append(keys, key)
 	}
-	return keys
+	return keys, nil
 }
 
 const leaseExpiryRetryInterval = time.Second
@@ -1506,7 +1513,9 @@ func (m *leaseManager) refreshUncheckpointedLeaseDuringUnrelatedTeardown(ctx con
 	if currentEpoch, leadingFresh := m.srv.peers.EpochAndLeadingFresh(); !leadingFresh || currentEpoch != epoch {
 		return 0, false
 	}
-	m.leaseMu.Lock()
+	if err := m.leaseMu.LockContext(ctx); err != nil {
+		return 0, false
+	}
 	defer m.leaseMu.Unlock()
 	if ctx.Err() != nil {
 		return 0, false
@@ -1538,7 +1547,11 @@ func (m *leaseManager) refreshLeaseAuthorized(ctx context.Context, caller *authC
 		unlockCheckpoint()
 		return 0, err
 	}
-	if err := m.authorizeLeaseKeys(ctx, caller, m.keysForLease(id), authpb.WRITE); err != nil {
+	keys, err := m.keysForLeaseContext(ctx, id)
+	if err == nil {
+		err = m.authorizeLeaseKeys(ctx, caller, keys, authpb.WRITE)
+	}
+	if err != nil {
 		m.leaseWriteMu.Unlock()
 		unlockCheckpoint()
 		return 0, err
@@ -1577,7 +1590,14 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 		unlock()
 		return 0, errLeaseDemotedDuringRenew
 	}
-	m.leaseMu.Lock()
+	// This is admission, before any checkpoint mutation. Cancellation must
+	// release the binding/checkpoint locks even while a state owner is stalled.
+	// Reacquisition after a checkpoint write below remains blocking so its
+	// committed transition is still reconciled.
+	if err := m.leaseMu.LockContext(ctx); err != nil {
+		unlock()
+		return 0, err
+	}
 	st, ok := m.leases[id]
 	if !ok {
 		m.leaseMu.Unlock()

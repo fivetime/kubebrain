@@ -14,7 +14,7 @@ import (
 // Test the worker itself: the outer RPC can return on cancellation while a
 // blocked worker survives and later extends the deadline behind the caller.
 func TestLeaseKeepAliveCanceledAdmission(t *testing.T) {
-	for _, owner := range []string{"binding", "checkpoint-barrier", "checkpoint-stripe"} {
+	for _, owner := range []string{"binding", "checkpoint-barrier", "checkpoint-stripe", "state"} {
 		for _, deadline := range []bool{false, true} {
 			name := "cancel"
 			if deadline {
@@ -31,6 +31,9 @@ func TestLeaseKeepAliveCanceledAdmission(t *testing.T) {
 				s.leaseMu.Unlock()
 				var unlock func()
 				switch owner {
+				case "state":
+					s.leaseMu.Lock()
+					unlock = s.leaseMu.Unlock
 				case "binding":
 					s.leaseWriteMu.Lock()
 					unlock = s.leaseWriteMu.Unlock
@@ -108,7 +111,7 @@ func TestLeaseKeepAliveCanceledAdmission(t *testing.T) {
 
 func TestLeaseAuthorizedRenewalCanceledAdmission(t *testing.T) {
 	for _, role := range []string{"root", "writer"} {
-		for _, owner := range []string{"binding", "checkpoint-barrier", "checkpoint-stripe"} {
+		for _, owner := range []string{"binding", "checkpoint-barrier", "checkpoint-stripe", "state"} {
 			t.Run(role+"/"+owner, func(t *testing.T) {
 				s, closeFn := newTestRPCServer(t)
 				defer closeFn()
@@ -126,6 +129,9 @@ func TestLeaseAuthorizedRenewalCanceledAdmission(t *testing.T) {
 				s.leaseMu.Unlock()
 				var unlock func()
 				switch owner {
+				case "state":
+					s.leaseMu.Lock()
+					unlock = s.leaseMu.Unlock
 				case "binding":
 					s.leaseWriteMu.Lock()
 					unlock = s.leaseWriteMu.Unlock
