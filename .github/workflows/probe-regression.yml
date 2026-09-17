@@ -6,6 +6,7 @@ name: Rollout probe regression
     paths:
       - 'hack/production/cmd/rollout-availability-probe/**'
       - 'hack/production/cmd/pod-log-capture/**'
+      - 'hack/production/cmd/lease-term-probe/**'
       - 'hack/production/internal/**'
       - 'hack/scale-lab/**'
       - 'hack/etcd-client-compat/**'
@@ -96,6 +97,11 @@ jobs:
           set -euo pipefail
           go vet ./hack/production/cmd/pod-log-capture
           go test -race -count=1 -timeout=2m -v ./hack/production/cmd/pod-log-capture
+      - name: Verify single-stream lease term probe
+        run: |
+          set -euo pipefail
+          go vet ./hack/production/cmd/lease-term-probe
+          go test -race -count=1 -timeout=2m -v ./hack/production/cmd/lease-term-probe
       - name: Race test all probe regressions
         run: |
           set -euo pipefail
