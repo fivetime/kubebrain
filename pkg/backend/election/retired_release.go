@@ -1,6 +1,7 @@
 package election
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/kubewharf/kubebrain/pkg/backend/restorationfence"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
 
 // retiredOwnership is an internal transaction precondition, NOT authentication
@@ -18,6 +20,31 @@ type retiredOwnership struct {
 	holder string
 	record []byte
 	token  []byte
+}
+
+// OwnershipCondition is an opaque, detached transaction condition. It is NOT a
+// retirement receipt or authorization. No public release operation is exposed.
+type OwnershipCondition struct{ claim retiredOwnership }
+
+func (OwnershipCondition) String() string   { return "ownership condition (redacted)" }
+func (OwnershipCondition) GoString() string { return "ownership condition (redacted)" }
+
+// OwnershipConditionProvider captures only the exact successful own mutation
+// supplied by the serialized election loop. Implementations must perform no I/O.
+type OwnershipConditionProvider interface {
+	OwnershipConditionFor(resourcelock.LeaderElectionRecord) (OwnershipCondition, bool)
+}
+
+func (r *resourceLock) OwnershipConditionFor(expected resourcelock.LeaderElectionRecord) (OwnershipCondition, bool) {
+	claim, ok := r.ownershipSnapshot()
+	if !ok {
+		return OwnershipCondition{}, false
+	}
+	raw, err := json.Marshal(expected)
+	if err != nil || !bytes.Equal(raw, claim.record) {
+		return OwnershipCondition{}, false
+	}
+	return OwnershipCondition{claim: claim}, true
 }
 
 // ownershipSnapshot copies one coherent locally known ownership condition

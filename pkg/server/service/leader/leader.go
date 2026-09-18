@@ -181,7 +181,7 @@ type leaderElection struct {
 	// for an acquired elector, synchronously before another elector is created.
 	// It must honor ctx (which may already be canceled). This is not durable
 	// release confirmation or authentication for a remote release request.
-	onTermRetired func(context.Context)
+	onTermRetired func(context.Context, election.OwnershipCondition, bool)
 	// leader indicates whether this instance is leader (1 = leader). It is written
 	// by the leader-election callbacks and read by IsLeader() from every RPC
 	// goroutine, so it is accessed atomically (#60/#68).
@@ -294,6 +294,8 @@ type renewStampingLock struct {
 	onRelease  func()
 	onRecord   func(resourcelock.LeaderElectionRecord, []byte)
 	onMutation func()
+	// onOwnMutation captures this exact acknowledged mutation before retirement.
+	onOwnMutation func(resourcelock.LeaderElectionRecord)
 }
 
 func (r *renewStampingLock) Get(ctx context.Context) (*resourcelock.LeaderElectionRecord, []byte, error) {
@@ -312,6 +314,9 @@ func (r *renewStampingLock) Create(ctx context.Context, ler resourcelock.LeaderE
 	err := r.Interface.Create(ctx, ler)
 	if err == nil {
 		if own {
+			if r.onOwnMutation != nil {
+				r.onOwnMutation(ler)
+			}
 			r.onRenew()
 		}
 		if r.onMutation != nil {
@@ -332,6 +337,9 @@ func (r *renewStampingLock) Update(ctx context.Context, ler resourcelock.LeaderE
 	err := r.Interface.Update(ctx, ler)
 	if err == nil {
 		if own {
+			if r.onOwnMutation != nil {
+				r.onOwnMutation(ler)
+			}
 			r.onRenew()
 		}
 		if r.onMutation != nil {
@@ -382,8 +390,9 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 		elector, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 			Lock: &renewStampingLock{
 				Interface: l.resourceLock, onRenew: renewal.renew, onRecord: l.observeLeadershipRecordRaw,
-				onRelease:  renewal.retire,
-				onMutation: func() { acquireOnce.Do(func() { close(acquired) }) },
+				onOwnMutation: renewal.capture,
+				onRelease:     renewal.retire,
+				onMutation:    func() { acquireOnce.Do(func() { close(acquired) }) },
 			},
 			ReleaseOnCancel: true,
 			LeaseDuration:   l.leaseDuration,
@@ -468,7 +477,8 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 		if l.onTermRetired != nil {
 			select {
 			case <-acquired:
-				l.onTermRetired(ctx)
+				condition, available := renewal.retiredCondition()
+				l.onTermRetired(ctx, condition, available)
 			default:
 			}
 		}

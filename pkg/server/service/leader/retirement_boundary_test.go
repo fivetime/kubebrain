@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/golang/mock/gomock"
+	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/stretchr/testify/require"
@@ -45,7 +46,7 @@ func TestRetirementBoundaryWaitsForCleanupAndInitializationJoin(t *testing.T) {
 			return false
 		}
 	}
-	l.onTermRetired = func(ctx context.Context) {
+	l.onTermRetired = func(ctx context.Context, _ election.OwnershipCondition, _ bool) {
 		_, fresh := l.EpochAndLeadingFresh()
 		observed <- closed(initExited) && closed(cleanupExited) && !fresh && !l.IsLeader() && ctx.Err() != nil
 		<-hookResume
@@ -114,7 +115,7 @@ func TestUnacquiredCampaignDoesNotReportRetirement(t *testing.T) {
 	l := &leaderElection{backend: &revisionRecorder{}, resourceLock: lock, metricCli: m,
 		leaseDuration: time.Second, renewDeadline: 200 * time.Millisecond, retryPeriod: 10 * time.Millisecond,
 		onStartedLeading: func(context.Context) { t.Error("unexpected acquisition") },
-		onStoppedLeading: func() {}, onTermRetired: func(context.Context) { retired.Add(1) },
+		onStoppedLeading: func() {}, onTermRetired: func(context.Context, election.OwnershipCondition, bool) { retired.Add(1) },
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
@@ -142,7 +143,7 @@ func TestRetirementBoundaryPrecedesReacquisition(t *testing.T) {
 		leaseDuration: time.Second, renewDeadline: 200 * time.Millisecond, retryPeriod: 10 * time.Millisecond,
 		onStartedLeading: func(ctx context.Context) { close(nextStarted); <-ctx.Done() },
 		onStoppedLeading: func() {},
-		onTermRetired: func(ctx context.Context) {
+		onTermRetired: func(ctx context.Context, _ election.OwnershipCondition, _ bool) {
 			if retirements.Add(1) == 1 {
 				callbackCanceled.Store(ctx.Err() != nil)
 				close(hookEntered)
@@ -215,7 +216,7 @@ func TestRetirementCleanupFollowsLateInitialization(t *testing.T) {
 				ready.Store(true)
 			}
 			l.onStoppedLeading = func() { ready.Store(false); close(cleaned) }
-			l.onTermRetired = func(context.Context) { close(retired) }
+			l.onTermRetired = func(context.Context, election.OwnershipCondition, bool) { close(retired) }
 			ctx, cancel := context.WithCancel(context.Background())
 			go func() { defer close(done); l.Campaign(ctx) }()
 			defer func() {

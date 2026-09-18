@@ -256,3 +256,22 @@ func TestOwnershipSnapshotRejectsWithdrawnOrInconsistentCache(t *testing.T) {
 		})
 	}
 }
+
+func TestOwnershipConditionBindsAcknowledgedMutation(t *testing.T) {
+	a, _, _, original := retiredReleaseFixture(t)
+	var record resourcelock.LeaderElectionRecord
+	require.NoError(t, json.Unmarshal(original.record, &record))
+	condition, ok := a.OwnershipConditionFor(record)
+	require.True(t, ok)
+	require.Equal(t, original, condition.claim)
+	record.LeaderTransitions++
+	_, ok = a.OwnershipConditionFor(record)
+	require.False(t, ok, "must not capture cache for a different acknowledged mutation")
+	require.NoError(t, a.Update(context.Background(), record))
+	next, ok := a.OwnershipConditionFor(record)
+	require.True(t, ok)
+	require.NotEqual(t, condition.claim.token, next.claim.token)
+	require.Equal(t, original, condition.claim, "captured condition must remain detached across future acquisitions")
+	require.Equal(t, "ownership condition (redacted)", condition.String())
+	require.Equal(t, "ownership condition (redacted)", condition.GoString())
+}
