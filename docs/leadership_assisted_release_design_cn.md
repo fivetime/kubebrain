@@ -1233,3 +1233,8 @@ watch_test.go:975 的响应头 revision 断言得到 0，预期为 seed revision
 仍运行。失败日志保存在私有 credential-expiry-txn.FXNmj6Yf/probe-failure.log，
 SHA-256 cf595a8f038079f19aaa3e3d16c75867d052002eca61b12134435c806d63a2f0。
 正在单独复现此 Watch 失败；未归因于 Runner，也未放宽断言或重复触发 CI。
+
+后续已通过固定“提交完成但事件尚未发布”的窗口复现相同 2/0 差异，并修正
+无效范围创建拒绝响应的 revision 来源，详见
+[无效 Watch 创建响应头](watch_invalid_create_revision_cn.md)。原 CI 失败记录
+仍保留，不能用本机通过追溯改写为远端成功。

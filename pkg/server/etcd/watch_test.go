@@ -970,9 +970,40 @@ func TestWatchInvalidCreateAutomaticIDAndUnknownCancelKeepStreamAlive(t *testing
 	require.Equal(t, int64(103), stream.sent[5].WatchId)
 	require.True(t, stream.sent[6].Canceled)
 	require.Equal(t, int64(103), stream.sent[6].WatchId)
-	for _, response := range stream.sent {
+	for index, response := range stream.sent {
 		require.NotNil(t, response.Header)
-		require.Equal(t, seed.Header.Revision, response.Header.Revision)
+		require.Equal(t, seed.Header.Revision, response.Header.Revision, "response[%d] id=%d created=%t canceled=%t reason=%q", index, response.WatchId, response.Created, response.Canceled, response.CancelReason)
+	}
+}
+
+func TestInvalidWatchCreateHeaderUsesCommittedRevisionBeforePublication(t *testing.T) {
+	for _, mode := range []string{"receive loop", "direct start"} {
+		t.Run(mode, func(t *testing.T) {
+			server, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			seed, err := server.Put(context.Background(), &etcdserverpb.PutRequest{Key: []byte("/invalid-watch/seed"), Value: []byte("value")})
+			require.NoError(t, err)
+			backend := &futureProgressBackend{BackendShim: server.backend}
+			backend.published.Store(0)
+			server.backend = backend
+			create := &etcdserverpb.WatchCreateRequest{Key: []byte("/invalid-watch/key"), RangeEnd: []byte("/invalid-watch/key"), WatchId: 41}
+			stream := &scriptedWatchServer{fakeWatchServer: &fakeWatchServer{ctx: context.Background()}, reqs: []*etcdserverpb.WatchRequest{{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: create}}}}
+			if mode == "receive loop" {
+				requireWatchCanceled(t, server.Watch(stream))
+			} else {
+				w := &watcher{backend: backend, watchServer: stream, grpcServer: server, watches: make(map[int64]*watch), metricCli: server.metricCli}
+				w.Start(context.Background(), create)
+			}
+			require.Len(t, stream.sent, 1)
+			response := stream.sent[0]
+			require.True(t, response.Created)
+			require.True(t, response.Canceled)
+			require.Equal(t, int64(-1), response.WatchId)
+			require.Equal(t, "mvcc: watcher range is empty", response.CancelReason)
+			require.NotNil(t, response.Header)
+			require.Equal(t, seed.Header.Revision, response.Header.Revision)
+			require.Zero(t, backend.GetPublishedRevision(), "control headers must not advance event publication")
+		})
 	}
 }
 

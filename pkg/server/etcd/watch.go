@@ -705,8 +705,10 @@ func (s *RPCServer) Watch(ws etcdserverpb.Watch_WatchServer) (err error) {
 			// stream. A follower must not turn this deterministic control response
 			// into Unavailable merely because its leader read barrier is down.
 			if len(r.RangeEnd) != 0 && bytes.Compare(r.Key, r.RangeEnd) >= 0 {
+				// A rejected create is a control response, not an event-delivery
+				// watermark. A committed Put may precede hub publication.
 				if err := w.SendControl(canceledWatchCreateResponse(
-					w.responseRevision(), "mvcc: watcher range is empty",
+					w.committedResponseRevision(), "mvcc: watcher range is empty",
 				)); err != nil {
 					return err
 				}
@@ -905,7 +907,7 @@ func (w *watcher) start(c context.Context, r *etcdserverpb.WatchCreateRequest, p
 		cancel()
 		releaseReservedQuota()
 		_ = w.SendControl(canceledWatchCreateResponse(
-			w.responseRevision(), "mvcc: watcher range is empty",
+			w.committedResponseRevision(), "mvcc: watcher range is empty",
 		))
 		return
 	}

@@ -36,6 +36,45 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
+func TestClientInvalidWatchHeaderBeforeEventPublication(t *testing.T) {
+	server, closeFn := newTestRPCServer(t)
+	defer closeFn()
+	backend := &futureProgressBackend{BackendShim: server.backend}
+	server.backend = backend // Keep published progress at zero while writes commit.
+	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
+	etcdserverpb.RegisterKVServer(grpcServer, server)
+	etcdserverpb.RegisterWatchServer(grpcServer, server)
+	listener := bufconn.Listen(1 << 20)
+	defer listener.Close()
+	done := make(chan error, 1)
+	go func() { done <- grpcServer.Serve(listener) }()
+	defer func() { grpcServer.Stop(); require.NoError(t, <-done) }()
+	client, err := clientv3.New(clientv3.Config{Endpoints: []string{"bufnet"}, DialTimeout: time.Second, DialOptions: []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) }),
+	}})
+	require.NoError(t, err)
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	seed, err := client.Put(ctx, "/invalid-watch/wire-seed", "value")
+	require.NoError(t, err)
+	stream, err := etcdserverpb.NewWatchClient(client.ActiveConnection()).Watch(ctx)
+	require.NoError(t, err)
+	require.NoError(t, stream.Send(&etcdserverpb.WatchRequest{RequestUnion: &etcdserverpb.WatchRequest_CreateRequest{CreateRequest: &etcdserverpb.WatchCreateRequest{
+		Key: []byte("/invalid-watch/key"), RangeEnd: []byte("/invalid-watch/key"), WatchId: 42,
+	}}}))
+	response, err := stream.Recv()
+	require.NoError(t, err)
+	require.True(t, response.Created)
+	require.True(t, response.Canceled)
+	require.Equal(t, int64(-1), response.WatchId)
+	require.Equal(t, "mvcc: watcher range is empty", response.CancelReason)
+	require.NotNil(t, response.Header)
+	require.Equal(t, seed.Header.Revision, response.Header.Revision)
+	require.Zero(t, backend.GetPublishedRevision())
+}
+
 func TestClientWatchFragmentDeliversLargeBatchWithSmallRecvLimit(t *testing.T) {
 	server, closeFn := newTestRPCServer(t)
 	defer closeFn()
