@@ -279,3 +279,21 @@ revokec、demotec 和 stopC，KeepAlive 在 Renew 前构造 revision header。
 这证明该作业覆盖的本地容器协议测试，不证明专用集群故障门限。记录时
 探针 35352626497 和镜像 35352626418 仍在运行；本地完整
 `go test -race -count=1 ./hack/production` 的会话 90010 也仍未终结。
+
+会话 90010 后续得到 Go 失败终态：整包达到默认 10m 总时限，输出
+`FAIL .../hack/production 600.054s`。当时运行的
+`TestRolloutAvailabilityRunnerDeletesOwnedProbeWhenCreateResponseDrifts`
+只开始了约 1 秒，因此该栈不能直接证明这个测试卡住。原 shell 后面继续
+执行 vet/diff，最终 shell 退出 0；这里按 Go 的明确 FAIL 记录为失败，
+不能因外层 0 改记为通过。超时输出已单独保留。
+
+该测试随后独立 race 三轮通过（7.923s）。完整包改用显式 `-timeout=30m`
+重新运行并保存逐测试 JSON、stderr、独立 Go 退出码；仅在原进程已经
+终结后开始，会话为 8608，owner：
+`/root/.local/state/kubebrain/production-full-regression.Zna8XATn`。
+这调整的是本地整包测试时限，不是原始 30 秒集群故障验收门限，也没有
+改动 CI 或将失败记录抹掉。尚须等待该整包测试的真实终态。
+
+同一候选的探针 CI 35352626497 已确认完成并通过
+`Verify etcd service and Watch regressions` 步骤，即覆盖上次失败的 Watch
+回归；这仍只是该步骤的结论，不代表整个探针作业或镜像构建成功。
