@@ -12,6 +12,7 @@ name: Rollout probe regression
       - 'hack/etcd-client-compat/**'
       - 'hack/dev/create-apiserver-test-pki.sh'
       - 'pkg/**'
+      - 'cmd/option/**'
       - 'go.mod'
       - 'go.sum'
       - 'build/workflow_test.go'
@@ -87,6 +88,8 @@ jobs:
           set -euo pipefail
           go vet ./pkg/server/service/leader
           go test -race -count=1 -timeout=3m -v ./pkg/server/service/leader
+          go vet ./cmd/option
+          go test -race -count=1 -timeout=3m -v ./cmd/option
       - name: Verify follower proxy regressions
         run: |
           set -euo pipefail

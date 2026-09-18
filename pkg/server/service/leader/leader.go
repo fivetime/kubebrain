@@ -257,14 +257,23 @@ func (c Config) LeaseExpiryExtension() time.Duration {
 	return c.withDefaults().LeaseDuration
 }
 
-// Validate enforces the ordering client-go requires and that the #39 write-fence
-// self-fencing stays safe: RetryPeriod < RenewDeadline < LeaseDuration. Called on
-// the operator-supplied values (defaults already applied).
+// Validate enforces client-go's retry jitter bound and keeps the local
+// self-fencing deadline below the lease duration actually stored in seconds.
 func (c Config) Validate() error {
 	c = c.withDefaults()
 	if !(c.RetryPeriod < c.RenewDeadline && c.RenewDeadline < c.LeaseDuration) {
 		return fmt.Errorf("leader election durations must satisfy RetryPeriod(%s) < RenewDeadline(%s) < LeaseDuration(%s)",
 			c.RetryPeriod, c.RenewDeadline, c.LeaseDuration)
+	}
+	// client-go serializes LeaseDurationSeconds using integer division. Checking
+	// the unrounded duration alone could admit a successor before self-fencing.
+	storedLease := (c.LeaseDuration / time.Second) * time.Second
+	if storedLease <= c.RenewDeadline {
+		return fmt.Errorf("leader election stored lease (%s, truncated to whole seconds) must exceed RenewDeadline(%s)", storedLease, c.RenewDeadline)
+	}
+	jitteredRetry := time.Duration(leaderelection.JitterFactor * float64(c.RetryPeriod))
+	if jitteredRetry < c.RetryPeriod || c.RenewDeadline <= jitteredRetry {
+		return fmt.Errorf("leader election RenewDeadline(%s) must exceed RetryPeriod(%s)*JitterFactor(%g)", c.RenewDeadline, c.RetryPeriod, leaderelection.JitterFactor)
 	}
 	return nil
 }

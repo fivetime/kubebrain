@@ -49,3 +49,31 @@ func TestLeaderConfigDefaultsAndValidate(t *testing.T) {
 	require.Equal(t, 3*time.Second, le.renewDeadline, "leadership-validity bound must track RenewDeadline")
 	require.Equal(t, 6*time.Second, le.leaseDuration)
 }
+
+func TestLeaderConfigPersistedLeaseAndJitterBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name                string
+		lease, renew, retry time.Duration
+		wantErr             string
+	}{
+		{"zero-second stored lease", 900 * time.Millisecond, 500 * time.Millisecond, 100 * time.Millisecond, "stored lease"},
+		{"stored lease shorter than renew", 1500 * time.Millisecond, 1200 * time.Millisecond, 100 * time.Millisecond, "stored lease"},
+		{"stored lease equals renew", 1500 * time.Millisecond, time.Second, 100 * time.Millisecond, "stored lease"},
+		{"below jitter bound", 4 * time.Second, 1100 * time.Millisecond, time.Second, "JitterFactor"},
+		{"at jitter bound", 4 * time.Second, 1200 * time.Millisecond, time.Second, "JitterFactor"},
+		{"above jitter bound", 4 * time.Second, 1200*time.Millisecond + time.Nanosecond, time.Second, ""},
+		{"safe fractional lease", 4500 * time.Millisecond, 2 * time.Second, 500 * time.Millisecond, ""},
+		{"just below stored lease", 4500 * time.Millisecond, 4*time.Second - time.Nanosecond, time.Second, ""},
+		{"jitter duration overflow", time.Duration(9_000_000_000_000_000_000), time.Duration(8_500_000_000_000_000_000), time.Duration(8_000_000_000_000_000_000), "JitterFactor"},
+		{"test cluster unchanged", 30 * time.Second, 25 * time.Second, 500 * time.Millisecond, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (Config{LeaseDuration: tc.lease, RenewDeadline: tc.renew, RetryPeriod: tc.retry}).Validate()
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

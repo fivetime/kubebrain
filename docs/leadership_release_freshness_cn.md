@@ -27,8 +27,36 @@ HolderIdentity 更新共享选主锁。原 `renewStampingLock` 将任何成功�
 （13.996 秒）。合入工作区后完整 leader 包 race 重复五次通过（8.577 秒），
 vet 与 diff 检查通过。完整 etcd 普通回归通过（151.578 秒），
 Lease/Revoke/Expiry/Checkpoint/Attachment 扩展 race 回归通过（81.563 秒）；
-连续执行任务终态为 0。本提交独立 CI 尚待完成。
+连续执行任务终态为 0。
 
 这些是内存存储替身测试，不是实际 TiKV 分区或分布式双主证据。旧版
-`e3623644` 的 CI 不包含本修复；尚未发布或部署本修改。原真实集群
+`e3623644` 的 CI 不包含本修复。本修复的发布核验见下文，尚未部署。原真实集群
 30 秒故障切换门限及总体生产就绪仍未通过。
+
+## 同源码发布核验（2026-09-18）
+
+源码 `4479078a93188b097af98e897b9b57094a2550e1` 的
+[回归 CI](https://github.com/fivetime/kubebrain/actions/runs/35304294701) 和
+[镜像 CI](https://github.com/fivetime/kubebrain/actions/runs/35304294727)
+均在 attempt 1 成功。回归日志明确包含两个释放用例、两个初始化新鲜度用例、
+两个延迟退位回调用例及过期续租运行时栈用例的 PASS；未触发该源码的后端集成 CI，
+不以其他提交的后端结果替代。
+
+独立发布核验退出 0，确认索引及两个平台摘要：
+
+- 索引：`sha256:d3b992e92148979cae703804193ac2be7dcd0cd16b098876b7aebb71a948a729`
+- amd64：`sha256:6c0edc53b0ae9c7ffb1c3a16ff7092fa694dc58e8c17c17e24ec1c2e5d31bb4b`
+- arm64：`sha256:178c95c9367f88ca320550f32e0d399ba5fdf0a2cb58c0caa8f4f6ba502c7f16`
+
+实际执行的是 amd64 镜像中的二进制，确认版本 `0.0.0-dbaas-4479078a9318`、
+源码 SHA、Go 1.26.8、TiKV 存储类型、非 root 配置和 OCI 标签，以及独立 fork
+`github.com/fivetime/tikv-client-go/v2 v2.0.8-0.20260909023231-832b70fd622f`
+与 gRPC v1.83.2。arm64 仅核验清单身份，不宣称实际运行。核验时发布标签与索引一致。
+临时容器和提取二进制已清理并确认不存在。
+
+证据目录：
+`/root/.local/state/kubebrain/release-4479078a.j3RC1sRq/audit.QJqo7f2V`。
+这仅证明发布镜像身份，不是部署验收。只读复查时 `kubebrain-local` 仍为
+generation 38、3 个副本 Ready，使用原固定镜像
+`sha256:50b9938fe3e5ad379136957438abe3c2d4bf250dc6c5973c869e0ef1341d1537`；
+本轮未切换镜像、修改选主参数或注入故障。
