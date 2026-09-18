@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"net/http"
 	"strings"
@@ -31,6 +32,33 @@ type peerSuccessorDiscovery struct {
 }
 
 type peerSuccessorTarget struct{ endpoint, holder string }
+
+// proxyTLS binds every new/reconnected gRPC transport to the exact configured
+// endpoint's holder, including the initial authoritative route. Normal TLS
+// chain and hostname verification still run before this additional pin check.
+func (d *peerSuccessorDiscovery) proxyTLS(base *tls.Config, endpoint string) (*tls.Config, error) {
+	if d == nil || base == nil || base.InsecureSkipVerify || base.VerifyConnection != nil || base.VerifyPeerCertificate != nil {
+		return nil, errPeerSuccessorUnavailable
+	}
+	holder := ""
+	if endpoint == d.sender.holder {
+		holder = d.sender.holder
+	}
+	for _, target := range d.targets {
+		if target.endpoint == endpoint {
+			holder = target.holder
+			break
+		}
+	}
+	if holder == "" || len(d.auth.holders[holder]) == 0 {
+		return nil, errPeerSuccessorUnavailable
+	}
+	config := base.Clone()
+	config.VerifyConnection = func(state tls.ConnectionState) error {
+		return d.auth.authorizeVerifiedCertificate(&state, d.auth.instance, holder, time.Now())
+	}
+	return config, nil
+}
 
 // endpointHolders is operator configuration, not a redirect or response body.
 // Require an exact mapping for every endpoint already validated by the sender.

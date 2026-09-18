@@ -16,6 +16,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"expvar"
@@ -379,7 +380,10 @@ func newServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	// revisionSyncer sync revision from leader to follower
 	proxyElection := election
 	if retirement != nil && retirement.discovery != nil {
-		proxyElection = &successorRoutingView{LeaderElection: election, discover: retirement.discovery.discover}
+		proxyElection = &successorRoutingView{LeaderElection: election, discover: retirement.discovery.discover,
+			peerTLS: func(endpoint string) (*tls.Config, error) {
+				return retirement.discovery.proxyTLS(config.ProxyTLS, endpoint)
+			}}
 	}
 	peerService := service.NewPeerServiceWithProxyElection(runCtx, election, proxyElection, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server

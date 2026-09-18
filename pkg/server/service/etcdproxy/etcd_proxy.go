@@ -413,7 +413,15 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 	e.lock.Unlock()
 
 	klog.InfoS("try to conn to new leader", "leaderIdentity", curLeader)
-	tlsConfigs := e.dialTLSConfigs()
+	tlsConfigs, tlsErr := e.dialTLSConfigsForEndpoint(curLeader)
+	if tlsErr != nil {
+		e.lock.Lock()
+		e.err = status.Error(codes.Unavailable, "peer endpoint TLS identity unavailable")
+		e.curLeader = ""
+		e.deferLeaderRetryLocked(curLeader)
+		e.lock.Unlock()
+		return
+	}
 
 	// The election identity is already the leader's peer endpoint.
 	dialEndpoint := curLeader
@@ -541,6 +549,22 @@ func (e *etcdProxy) dialTLSConfigs() []*tls.Config {
 		configs = append(configs, nil)
 	}
 	return configs
+}
+
+func (e *etcdProxy) dialTLSConfigsForEndpoint(endpoint string) ([]*tls.Config, error) {
+	if provider, ok := e.election.(interface {
+		ProxyTLSForEndpoint(string) (*tls.Config, error)
+	}); ok {
+		config, err := provider.ProxyTLSForEndpoint(endpoint)
+		if err != nil {
+			return nil, err
+		}
+		if config == nil || config.InsecureSkipVerify || e.allowInsecure {
+			return nil, errors.New("invalid endpoint-bound peer TLS")
+		}
+		return []*tls.Config{config}, nil
+	}
+	return e.dialTLSConfigs(), nil
 }
 
 func (e *etcdProxy) hasClient() bool {

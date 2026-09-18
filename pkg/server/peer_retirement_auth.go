@@ -53,7 +53,18 @@ func newPeerRetirementAuthorizer(instance string, holderPins map[string][]string
 // headers, source IPs or serialized certificate objects. A successful result
 // proves only configured sender authority, NOT retirement or CAS freshness.
 func (a *peerRetirementAuthorizer) authorize(state *tls.ConnectionState, instance, holder string, now time.Time) error {
-	if a == nil || instance != a.instance || state == nil || !state.HandshakeComplete || state.Version < tls.VersionTLS12 || len(state.PeerCertificates) == 0 {
+	if state == nil || !state.HandshakeComplete {
+		return errPeerRetirementUnauthorized
+	}
+	return a.authorizeVerifiedCertificate(state, instance, holder, now)
+}
+
+// authorizeVerifiedCertificate also supports tls.Config.VerifyConnection, which
+// runs after certificate verification but before HandshakeComplete is published.
+// Only that callback may use this entry before handshake completion. HTTP
+// request authorization continues to require the completed-handshake wrapper.
+func (a *peerRetirementAuthorizer) authorizeVerifiedCertificate(state *tls.ConnectionState, instance, holder string, now time.Time) error {
+	if a == nil || instance != a.instance || state == nil || state.Version < tls.VersionTLS12 || len(state.PeerCertificates) == 0 {
 		return errPeerRetirementUnauthorized
 	}
 	keys, known := a.holders[holder]

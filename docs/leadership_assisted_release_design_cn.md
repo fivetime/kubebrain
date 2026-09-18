@@ -856,3 +856,35 @@ MemberId/缓存 RaftTerm 必须立即等于新成员直连响应。检查当前�
 原 30/25/0.5 配置验收。夹具整体关闭时的 successor 等待截止被单独记录，
 不能当作平滑滚动退出成功。远端 8a667c24 三条 CI 已均报告 success，
 但其镜像审计及后续本地提交的 CI/镜像验证尚未完成，本轮未部署。
+
+## 实验转发连接增加逐目标成员 pin
+
+补齐发现之后的 gRPC 连接身份边界：`successorRoutingView` 现在为 connector
+提供 `ProxyTLSForEndpoint`。每个固定目标（包括初始权威路由）生成独立 TLS
+配置，正常 CA/主机名验证后再校验该 URL 对应 holder 的 SPKI；原入口自身
+身份仅允许使用其本机 holder pin。未知地址、provider 错误、nil TLS、跳过
+验证及明文回退全部拒绝，不退回普通 CA-only 配置。普通 proxy 没有此可选
+接口，原配置行为保持不变。连接重建时仍使用绑定目标的 VerifyConnection，
+不会仅凭之前 HTTP 发现成功就信任随后连接的任何同 CA 成员。
+
+首次接入错误地复用了要求 HandshakeComplete 的 HTTP 认证入口，导致正确
+证书也被拒绝，定向握手用例 27985 和原流用例 89142 均失败。Go TLS 的
+VerifyConnection 在证书验证后、握手完成标志发布前执行，因此抽出共用的
+已验证证书链/pin 检查：仅 TLS 回调使用该入口，HTTP 请求仍必须经过要求
+完整握手的原包装。未关闭证书链、域名、证书有效期或 pin 校验。
+
+新增真实握手对照先证明另一 holder 的证书可通过普通 CA 和相同 SAN 校验，
+再确认逐目标配置拒绝它，同时正确 holder 通过。还验证配置克隆不修改共享
+TLS、未知地址拒绝，以及 connector 对 provider 错误/nil/跳过验证/明文
+回退均不降级。修正后握手及原过期 KeepAlive 流定向 race 通过（88404，
+10.824 秒）；server、etcdproxy、leader、revision、election 三轮 race
+通过（19674，52.985/13.982/6.219/22.627/3.770 秒），随后 vet/diff 通过。
+默认入口和集群部署均未变化。
+
+另外已下载核对远端 8a667c24 的 probe CI 35319131319 日志：checkout SHA
+一致，实际包含 retirement HTTP/1/2 认证结果、lost-ACK、存储 round-trip
+及同 holder 再获权后的 replay 测试通过记录。私有日志
+`successor-endpoint-tls.3Xg52qGa/probe-8a667c24.log` 的 SHA-256 为
+`59c6e534b5c1290ec573aaccbf34bf44586639aa22ae67a082cc438516e95480`。
+该 CI 不包含本节及此前本地新提交；镜像独立审计和真实 TiKV/原门限验收
+仍待完成，不能将这些本机回归写成生产就绪。

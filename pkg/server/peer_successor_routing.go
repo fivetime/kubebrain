@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"sync"
 	"time"
 
@@ -14,10 +15,20 @@ import (
 type successorRoutingView struct {
 	leader.LeaderElection
 	discover       func(context.Context) (string, error)
+	peerTLS        func(string) (*tls.Config, error)
 	mu             sync.Mutex
 	hint, observed string
 	epoch, term    uint64
 	until          time.Time
+}
+
+// ProxyTLSForEndpoint is consumed only by the proxy connector. Unknown routes
+// fail closed rather than falling back to a CA-only or plaintext connection.
+func (v *successorRoutingView) ProxyTLSForEndpoint(endpoint string) (*tls.Config, error) {
+	if v.peerTLS == nil {
+		return nil, errPeerSuccessorUnavailable
+	}
+	return v.peerTLS(endpoint)
 }
 
 func (v *successorRoutingView) GetLeaderInfo() string {
