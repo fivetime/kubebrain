@@ -1106,3 +1106,33 @@ TiKV 故障验收；长连接重验、gRPC 接入和独立成员证书部署仍�
 测试用例前的 server/endpoint/transportidentity 完整单轮 race 通过：6051，
 20.843/15.524/1.027 秒，随后相关 vet/diff 通过；生产代码在这两次验证之间
 未变化，不把较早全包结果说成包含新增测试用例。
+
+## gRPC 客户端凭据适配准备
+
+将材料加载和 TLS 配置构造提取为共用内部函数，HTTP 路径保留原行为。
+新增 client-only 的 TransportCredentials 适配器，每次 ClientHandshake
+使用当前材料，绑定固定本机/远端 holder 和主机名，并受配置预算及调用方
+上下文共同限制。加载、TLS 或 ALPN 失败均关闭底层 socket；不返回材料
+来源的原始错误。Clone 复制配置，不提供运行时 OverrideServerName，也
+不允许误用为服务端凭据。此适配器尚未接入代理连接器。
+
+已检查当前依赖 grpc-go v1.83.2 的 credentials/tls.go ClientHandshake：
+它会用 authority 覆盖 config.ServerName。因此先验证调用方 authority 的
+主机名等于固定目标，再把操作员名称策略交给标准 TLS 凭据实现，不能仅设置
+config.ServerName 后假设它不变。标准 gRPC 包装返回 TLSInfo、
+PrivacyAndIntegrity 和底层连接包装；额外要求实际协商 h2，即使库的兼容
+开关允许缺少 ALPN 也拒绝。材料中的操作员 ServerName 覆盖策略仍保留，
+不是允许 RPC 调用方任意更改认证目标。
+
+测试包含真实 mTLS/h2 握手、TLSInfo 身份、错误 CA/pin/authority、加载错误、
+没有 h2 的服务端拒绝，以及同一凭据对象下一次连接重新读取已移除的 CA。
+另用真实 gRPC Health Check 验证适配器可完成 RPC，不只是返回模拟 AuthInfo。
+它仅覆盖新建连接，不证明既有长流已被定期重验；连接器接入、长连接退休和
+CLI 配置仍待完成。未改变测试集群、默认开关或固定镜像。
+
+最终定向三轮 race 通过（54894，1.380 秒）。新增下一连接移除 CA 的测试
+断言前，server/etcdproxy/endpoint/transportidentity 完整单轮 race 已通过
+（65051，22.181/5.444/15.655/1.029 秒），随后相关 vet/diff 通过。
+两次验证之间生产代码未改；最后新增的断言只计入定向验证。
+e994f2c3 的镜像 35326113519 和回归 35326113607 最后检查均 in_progress；
+本轮提交不在该 CI 源码范围，未推送取消运行中的构建。

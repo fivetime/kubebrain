@@ -21,7 +21,23 @@ func handshakeReloadedPeer(ctx context.Context, raw net.Conn, source transportid
 			_ = raw.Close()
 		}
 	}()
-	if ctx == nil || raw == nil || source == nil || auth == nil || hostname == "" || ctx.Err() != nil {
+	if raw == nil {
+		return nil, errPeerCredentialVerification
+	}
+	config, err := reloadedPeerTLSConfig(ctx, source, auth, localHolder, remoteHolder, hostname, protocols)
+	if err != nil {
+		return nil, err
+	}
+	conn = tls.Client(raw, config)
+	if err := conn.HandshakeContext(ctx); err != nil || ctx.Err() != nil {
+		return nil, errPeerCredentialVerification
+	}
+	success = true
+	return conn, nil
+}
+
+func reloadedPeerTLSConfig(ctx context.Context, source transportidentity.ClientCredentialSource, auth *peerRetirementAuthorizer, localHolder, remoteHolder, hostname string, protocols []string) (*tls.Config, error) {
+	if ctx == nil || source == nil || auth == nil || hostname == "" || ctx.Err() != nil {
 		return nil, errPeerCredentialVerification
 	}
 	if _, bounded := ctx.Deadline(); !bounded {
@@ -48,10 +64,5 @@ func handshakeReloadedPeer(ctx context.Context, raw net.Conn, source transportid
 			return err
 		},
 	}
-	conn = tls.Client(raw, config)
-	if err := conn.HandshakeContext(ctx); err != nil || ctx.Err() != nil {
-		return nil, errPeerCredentialVerification
-	}
-	success = true
-	return conn, nil
+	return config, nil
 }
