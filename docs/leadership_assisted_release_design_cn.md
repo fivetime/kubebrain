@@ -981,3 +981,36 @@ server/cmd-option 完整单轮 race 通过（91172，15.548/1.029/25.854/1.225 �
 同时明确连接老化模式下控制 HTTP 的协议边界，再接命令行入口及独立 holder
 证书。旧集群、已有共享证书和默认开关未改动。两条 5b8f6af7 CI 本轮最后
 检查仍 in_progress，本修复未推送，不能归入它们的验证范围。
+
+## 凭据适配准备：只传递重新加载的材料，不接受任意 TLS 回调
+
+新增 `transportidentity.ClientCredentialSource/ClientCredentialMaterial` 作为
+数据边界，包含证书/私钥对象、CA 池、可选解析后的 CRL、服务名和 TLS 参数，
+不包含 GetClientCertificate/VerifyConnection 等任意函数。新增 endpoint
+内部 `peerCredentialSource` 捕获操作员提供的文件路径和策略，每次 Load 都
+重新读取内容，不缓存上一份成功材料；支持独立出站 client cert/key，未配置
+时使用 peer cert/key。调用方修改 SecurityConfig 不会改写已创建来源的路径
+和策略，返回的证书、CA、CRL 和 cipher slice 均由本次加载独立拥有。
+
+来源要求 TLS-only、明确 ClientAuth 和 CA，拒绝混合明文模式、不完整的
+出站密钥配置及低于 TLS 1.2 的版本组合；加载时解析匹配的 X509 key pair，
+检查本机叶证书有效期、CA PEM 和 CRL DER。错误统一返回不含材料内容的
+错误，不退回旧证书。材料加载**不是对端认证**，CRL 的实际撤销判定、
+链/主机名验证、本机 holder 归属、远端逐目标 pin 仍须由后续适配器实施。
+
+文件加载使用非阻塞 open，并对实际打开的对象要求普通文件；允许 Kubernetes
+Secret 的符号链接，但拒绝 FIFO、设备和目录。PEM/密钥上限 1 MiB，CRL
+上限 16 MiB，读取时仍限制字节数，避免只依赖打开前 stat。上下文在阶段间
+检查，**不宣称能中断内核中阻塞的普通文件 I/O**，也没有用后台 goroutine
+掩盖这种限制。
+
+测试覆盖同一来源重复加载证书、根 CA 和 CRL 的变化、移除旧 CA 后不再信任
+旧证书、返回值修改隔离、错误内容不泄漏、失败无旧材料回退、取消、独立
+client key pair、Secret 符号链接及非普通/超大文件拒绝。定向三轮 race
+通过（82757，1.179 秒）；endpoint/transportidentity/server/cmd-option
+完整单轮 race 通过（20414，15.523/1.029/25.516/1.231 秒），vet/diff 通过。
+
+这个材料来源尚未接到实验 sender/proxy，未替换现有端点的动态 TLS/CRL
+回调，未启用命令行入口或改变集群。下一步必须在受控适配器中以每次新加载
+的材料执行完整校验，并覆盖真实握手中的轮换、撤销、错误 pin 和会话重连，
+之后才能把配置接入部署；不能仅凭材料加载测试宣称轮换链路已经完成。
