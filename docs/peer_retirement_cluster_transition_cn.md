@@ -328,3 +328,46 @@ current 不变；三个 Pod UID、spec 和容器进程状态一致。所有 port
 这证明当前服务的实际挂载与旧单 CA 信任边界，而非新双 CA 已启用。未创建
 候选 Secret、未重启 Pod、未操作数据卷；仍须将相同检查和三成员写读一起
 接入阶段 VERIFIER，扩展后断言新身份也被接受，恢复后再次断言其被拒绝。
+
+## 阶段 VERIFIER 已接好并验证原配置
+
+`deploy/test-cluster/verify-peer-trust-stage.sh` 实现驱动约定的五参数接口。
+在受 SHA-256 绑定的 receipt 中增加 verification 字段：bundle_dir、
+client_tls_dir、material_verifier、material_verifier_sha256、peer_dns、
+client_dns、cluster_id（全部为字符串）。路径须指向已审核的私有材料；
+material_verifier 是上文材料校验器，复制后再次检查摘要。不得使用包含
+测试替身、任意第三方脚本或未经审核材料的 receipt。
+
+preflight 从原/候选 Secret data 解码本轮私有文件，验证三个新成员材料，
+以及用于应用读写的客户端证书有效期、客户端用途、CA 链和 key 匹配。
+此阶段无集群访问，不把服务已 Ready 作为恢复前置条件。after 检查实际
+Pod UID/owner/spec 与驱动捕获的对象匹配、三个挂载文件哈希正确，以旧根、
+明确 DNS 和原叶证书 SPKI pin 进行旧/新/旧三次独立连接：expand 要求三次
+均到达 HTTP 404；restore 要求新身份收到明确 TLS 证书拒绝、其余成功。
+
+接着通过三个实际 Pod 的客户端端口分别取得一致 cluster/leader、不同
+member ID，创建三个随机 owner 专属的 VERSION=0 条件写入键，交叉线性
+读取九次；用 VALUE 条件精确删除后，再交叉确认九次不存在。所有不确定
+写入前保存清理输入，异常退出尝试条件清理，失败则保留证据并返回失败。
+结束前核对 Pod 进程状态未变，清理 port-forward。只删除自己的临时测试
+键，不做范围删除或租约/卷操作。脚本耗时受外层驱动 120 秒校验门限约束。
+
+现场 `stage-hook-baseline.lq6jbAb6` 的 restore/preflight 和 restore/after
+均成功，执行 4597 终态 0；这里的 restore **只是校验当前原状态的模式**，
+没有执行恢复更新。记录包括挂载、真实 mTLS 正负请求、三写九读及精确清理。
+随后最终脚本增加客户端材料准入检查，该 preflight 在真实材料上通过；
+还故意用 expand/after 校验当前单 CA 实例，正确因首个 Pod 挂载根不匹配
+退出 1，在启动 port-forward 和任何测试写入之前拒绝。该负向验证执行
+46693 终态 0（断言预期失败成立），不是扩展通过。
+
+验证用 receipt 明确为 verification_only，候选 Secret 尚未真实创建，不能
+直接送给迁移驱动。最终实际 STS UID、完整 spec、generation 38、3 Ready
+不变；六个本机转发端口均无监听，测试数据已精确删除且不可恢复。旧/新
+材料均未改写，未触碰数据卷。现场仍缺实际 Secret 创建收据、第一阶段
+expand/after 成功与受控恢复证据；不能将这个原配置检查当作迁移完成。
+
+本地完整 `go test -race -count=1 -timeout=2m ./deploy/test-cluster` 通过
+（60.617s，执行 7926 终态 0），vet、Bash 语法和 diff 检查通过。新增自动
+测试覆盖两个模式的离线准入，以及校验器摘要改变、根/私钥不匹配、应用
+客户端错误 CA/key、不安全 peer 配置与非法模式的拒绝，并断言 preflight
+不会调用 Kubernetes。正在运行的 02786d91 CI 不包含本次新增阶段脚本。
