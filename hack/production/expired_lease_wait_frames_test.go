@@ -23,6 +23,9 @@ func TestExpiredLeaseWaitFramesRequireReviewedSourceAndExactTopWaitSite(t *testi
 	}{
 		{"matching", frame, source, hash, 1, false},
 		{"reviewed new source", frame, "da303fdbd460ee42f3aa158fac27c396faf6b58f", hash, 1, false},
+		{"post join release source", frame, "2ad79751ebc35291ed8caac144a6e73442b927a6", hash, 1, false},
+		{"post join source wrong file", frame, "2ad79751ebc35291ed8caac144a6e73442b927a6", strings.Repeat("b", 64), 0, true},
+		{"post join short source", frame, "2ad79751", hash, 0, true},
 		{"new source wrong file", frame, "da303fdbd460ee42f3aa158fac27c396faf6b58f", strings.Repeat("b", 64), 0, true},
 		{"waiting duration", strings.Replace(frame, "[select]", "[select, 1 minutes]", 1), source, hash, 1, false},
 		{"unknown source", frame, strings.Repeat("a", 40), hash, 0, true},
