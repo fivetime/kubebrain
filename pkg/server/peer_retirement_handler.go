@@ -8,6 +8,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"golang.org/x/time/rate"
+	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
 
 // peerRetirementHandler is intentionally not registered yet. The release
@@ -22,6 +23,22 @@ type peerRetirementHandler struct {
 	readBudget, operationBudget time.Duration
 	slots                       chan struct{}
 	rate                        *rate.Limiter
+}
+
+// newStoragePeerRetirementHandler binds authorization to the local lock's
+// cluster/keyspace/election namespace before any endpoint can be registered.
+// auth.instance must be the operator-approved RetirementScope, not request data.
+func newStoragePeerRetirementHandler(auth *peerRetirementAuthorizer, lock resourcelock.Interface,
+	readBudget, operationBudget time.Duration, concurrency int, requestsPerSecond float64,
+) (*peerRetirementHandler, error) {
+	releaser, ok := lock.(election.RetiredOwnershipReleaser)
+	if !ok || auth == nil || auth.instance == "" || releaser.RetirementScope() == "" || auth.instance != releaser.RetirementScope() {
+		return nil, errors.New("peer retirement instance does not match storage scope")
+	}
+	scope := auth.instance
+	return newPeerRetirementHandler(auth, func(ctx context.Context, condition election.OwnershipCondition) error {
+		return releaser.ReleaseRetiredOwnership(ctx, scope, condition)
+	}, readBudget, operationBudget, concurrency, requestsPerSecond)
 }
 
 func newPeerRetirementHandler(auth *peerRetirementAuthorizer, release func(context.Context, election.OwnershipCondition) error,

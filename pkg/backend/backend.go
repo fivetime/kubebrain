@@ -699,7 +699,7 @@ func NewBackend(kv storage.KvStorage, config Config, metricCli metrics.Metrics) 
 	}
 	normalCoder := ks.NewCoder()
 	clusterID := deriveClusterID(kv, config.Keyspace)
-	electionConfig := election.Config{Prefix: config.Prefix, Identity: config.Identity, Timeout: unaryRpcTimeout}
+	electionConfig := election.Config{Prefix: config.Prefix, Keyspace: config.Keyspace, Identity: config.Identity, Timeout: unaryRpcTimeout}
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	b := &backend{
 		kv:                    kv,

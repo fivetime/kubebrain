@@ -66,7 +66,10 @@ type RestorationFenceTokenProvider interface {
 }
 
 type Config struct {
-	Prefix   string
+	Prefix string
+	// Keyspace participates in the assisted-retirement scope; it does not
+	// rewrite existing election keys or migrate stored records.
+	Keyspace string
 	Identity string
 	Timeout  time.Duration
 }
@@ -81,7 +84,8 @@ func NewResourceLockManager(config Config, store storage.KvStorage) ResourceLock
 	}
 	return &resourceLockManager{
 		resourceLock: &resourceLock{
-			store: store,
+			store:           store,
+			retirementScope: retirementScopeFor(store, config),
 			lockConfig: resourcelock.ResourceLockConfig{
 				Identity: config.Identity,
 			},
@@ -104,8 +108,9 @@ func (r *resourceLockManager) GetResourceLock() resourcelock.Interface {
 }
 
 type resourceLock struct {
-	store      storage.KvStorage
-	lockConfig resourcelock.ResourceLockConfig
+	store           storage.KvStorage
+	retirementScope string
+	lockConfig      resourcelock.ResourceLockConfig
 	// mu guards the mutable election state (record/lastVal/tso). It is written by
 	// the single leader-election goroutine (Get/Create/Update) and read
 	// concurrently by RPC goroutines via Describe (#60/#68). Storage I/O is done

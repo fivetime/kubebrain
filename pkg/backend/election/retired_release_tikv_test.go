@@ -20,7 +20,7 @@ import (
 )
 
 // Run only through the disposable local protocol fixture. This exercises the
-// private storage primitive, not holder authentication or lease continuity.
+// scoped storage capability, not holder authentication or lease continuity.
 func TestRealTiKVRetiredRelease(t *testing.T) {
 	pd := os.Getenv("KUBEBRAIN_TIKV_PROTOCOL_PD")
 	if pd == "" {
@@ -52,6 +52,12 @@ func TestRealTiKVRetiredRelease(t *testing.T) {
 	require.NoError(t, initial.Commit(ctx))
 	a := NewResourceLockManager(Config{Prefix: prefix + "lock", Identity: "old", Timeout: 10 * time.Second}, kv).GetResourceLock().(*resourceLock)
 	b := NewResourceLockManager(Config{Prefix: prefix + "lock", Identity: "helper", Timeout: 10 * time.Second}, kv).GetResourceLock().(*resourceLock)
+	scope := b.RetirementScope()
+	require.NotEmpty(t, scope)
+	require.Equal(t, a.RetirementScope(), scope)
+	release := func(ctx context.Context, claim retiredOwnership) error {
+		return b.ReleaseRetiredOwnership(ctx, scope, OwnershipCondition{claim: claim})
+	}
 	payload := []byte(prefix + "payload")
 	t.Cleanup(func() {
 		cleanupCtx, stop := context.WithTimeout(context.Background(), 20*time.Second)
@@ -68,16 +74,18 @@ func TestRealTiKVRetiredRelease(t *testing.T) {
 	claim, ok := a.ownershipSnapshot()
 	require.True(t, ok)
 	before := retiredReleaseSnapshot(t, a)
+	require.Error(t, b.ReleaseRetiredOwnership(ctx, "wrong-instance", OwnershipCondition{claim: claim}))
+	require.Equal(t, before, retiredReleaseSnapshot(t, a))
 	wrong := claim
 	wrong.token = []byte(uuid.NewString())
-	require.ErrorIs(t, b.releaseRetiredOwnership(ctx, wrong), storage.ErrCASFailed)
+	require.ErrorIs(t, release(ctx, wrong), storage.ErrCASFailed)
 	require.Equal(t, before, retiredReleaseSnapshot(t, a))
 	gate := a.restorationFenceKeys[len(a.restorationFenceKeys)-1]
 	closed := kv.BeginBatchWrite()
 	closed.Put(gate, []byte("closed"), 0)
 	require.NoError(t, closed.Commit(ctx))
 	before = retiredReleaseSnapshot(t, a)
-	require.ErrorIs(t, b.releaseRetiredOwnership(ctx, claim), storage.ErrCASFailed)
+	require.ErrorIs(t, release(ctx, claim), storage.ErrCASFailed)
 	require.Equal(t, before, retiredReleaseSnapshot(t, a), "restoration refusal must not partially rotate tokens")
 	opened := kv.BeginBatchWrite()
 	opened.Put(gate, []byte(restorationfence.Open), 0)
@@ -106,7 +114,7 @@ func TestRealTiKVRetiredRelease(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	releaseErr := b.releaseRetiredOwnership(ctx, claim)
+	releaseErr := release(ctx, claim)
 	close(resume)
 	staleErr := <-done
 	require.NoError(t, releaseErr)
@@ -125,6 +133,6 @@ func TestRealTiKVRetiredRelease(t *testing.T) {
 	record.LeaderTransitions++
 	require.NoError(t, a.Update(ctx, *record))
 	before = retiredReleaseSnapshot(t, a)
-	require.ErrorIs(t, b.releaseRetiredOwnership(ctx, claim), storage.ErrCASFailed)
+	require.ErrorIs(t, release(ctx, claim), storage.ErrCASFailed)
 	require.Equal(t, before, retiredReleaseSnapshot(t, a), "replay must preserve same-holder reacquisition")
 }

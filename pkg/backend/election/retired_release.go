@@ -23,7 +23,8 @@ type retiredOwnership struct {
 }
 
 // OwnershipCondition is an opaque, detached transaction condition. It is NOT a
-// retirement receipt or authorization. No public release operation is exposed.
+// retirement receipt or authorization. Release requires a separately authorized
+// post-retirement request and the locally bound storage scope.
 type OwnershipCondition struct{ claim retiredOwnership }
 
 func (OwnershipCondition) String() string   { return "ownership condition (redacted)" }
@@ -80,8 +81,8 @@ func (r *resourceLock) ownershipSnapshot() (retiredOwnership, bool) {
 
 // releaseRetiredOwnership deliberately ignores this receiver's cached lastVal
 // and ownership token. A delayed request must never release a later acquisition.
-// It remains internal and unwired until the retirement/authorization protocol is
-// complete. Errors, including an uncertain commit, do not authorize reactivation
+// The scoped exported adapter delegates here, but no network route is enabled
+// yet. Errors, including an uncertain commit, do not authorize reactivation
 // of the old holder. A replay fails its original preconditions without changing
 // newer ownership; it is not reported as an independently confirmed success.
 func (r *resourceLock) releaseRetiredOwnership(parent context.Context, claim retiredOwnership) error {

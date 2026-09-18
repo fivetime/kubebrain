@@ -503,3 +503,45 @@ ServerName 覆盖；根据目标主机名正常验证服务端。最低 TLS 1.2�
 真实后端释放。下一步必须完成实例/keyspace 绑定、精确条件释放的跨包接线，
 并证明先前已确认续租的连续性，之后才能开启专用集群实验。没有部署或改变
 30/25 秒选主参数，也未将这些测试计入原 30 秒故障门限。
+
+## 真实条件释放接线与存储作用域
+
+在已推送 `7d8b1724` 之后，本地增加可选 `RetiredOwnershipReleaser` 能力及
+`newStoragePeerRetirementHandler`。scope 为版本化的真实底层 ClusterID、
+keyspace 和选主前缀元组的 SHA-256 摘要；命名空间按原始字节编码，避免无效
+UTF-8 被 JSON 替换后产生别名。holder 不参与 scope，使同一实例成员一致。
+backend 将已验证的 keyspace 传入锁构造；不改现有选主 key，不迁移记录。
+
+没有 ClusterIdentifier、ID 为零或前缀为空时 scope 为空，拒绝绑定接口。
+不会把 memkv/badger 面向公开 etcd 协议的合成 ClusterID 当作真实集群身份。
+接收端构造要求认证策略的 instance 等于本地锁 scope；每次释放也重新检查
+scope，再执行原有精确记录、令牌、恢复屏障的原子事务。请求无法指定后端
+地址或 key。这个进程内能力不是认证或退位证明，调用者仍必须遵守身份校验
+和不可撤回的 post-join 退位约束；尚未在 listener 注册任何路由。
+
+真实 mTLS 到 memkv 事务联调确认：同 CA 未授权 key 无法释放，正常请求清空
+旧记录并轮换全部隔离令牌。另在事务成功后主动丢弃网络确认，发送端报告
+未确认；随后模拟同 holder 的新一次获取，再重放旧请求，记录及全部令牌
+不变。这里的 memkv 通过测试包装显式提供 ClusterIdentifier，不能误称普通
+memkv 已获得真实集群身份。构造负例覆盖不同 PD 身份、keyspace、前缀及无身份。
+
+单独五轮 race 覆盖 backend 配置传递以及 server/election/leader（64546，
+1.528/12.527/5.536/9.171 秒），vet 通过。最初 backend 测试的 Close 调用因
+接口未暴露该方法而编译失败，改为现有测试惯用的具体类型清理后通过。
+随后完整 backend 树、server、endpoint、build race 回归通过（92601，主后端
+91.081 秒、server 3.946 秒、endpoint 15.685 秒），相关 vet/diff 检查通过。
+
+再次核查固定 `/root/etcd` 提交 `5cd9f4ee13801e18825d661e5005ae599460bc3a`
+的 `server/lease/lessor.go`：Promote 刷新期限、Demote 停止权威过期处理。当前
+KubeBrain 仍在恢复时使用持久 checkpoint TTL 与选主窗口扩展，在退位清理时
+StopLeases；这些代码观察不代替跨节点已确认续租的连续性证明。该验证和
+Campaign/peer-only listener 接线仍未完成。没有集群部署或原门限通过结论。
+
+真实本机 TiKV race fixture 随后终态成功（15967，`result=0 cleanup_failed=0`）。
+`TestRealTiKVRetiredRelease` 已通过新的 scope 适配器执行，明确 PASS 6.47 秒，
+涵盖错误 scope 无修改、旧事务已暂存后的冲突、恢复门拒绝和新任期重放拒绝。
+证据 `/tmp/kubebrain-real-protocol.LJVSt2nRqp`，该用例日志 SHA-256 为
+`9c79cf547ab3d2bb458fdfef3977b398c7c25186d057b33abe10b640c6b4dd04`。
+独立复查本次 owner 的容器、网络及两个测试二进制均不存在，日志保留。
+只运行了该套件 race 版本；这不是 TLS-to-TiKV 跨节点验收。远端 CI 仍验证
+此前 `7d8b1724`，不覆盖本轮本地作用域改动。
