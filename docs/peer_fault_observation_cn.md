@@ -150,3 +150,33 @@ UID/resourceVersion/完整 spec 前置条件、API dry-run、强制前后验证�
 （7.373s），完整部署工具包 race 通过（89.342s）。测试使用模拟集群；
 实际诊断验证回调仍需实现，不能把现有 peer 验证器直接用作诊断验证器。
 没有据此启用现场 pprof 或开展故障注入。
+
+## 有界 info 诊断探针及原基线只读烟测
+
+`hack/production/cmd/info-diagnostic-probe` 提供 protected/disabled 两种模式。
+先验证带证书的健康接口；protected 模式确认无证书请求被 TLS 拒绝后才
+采集有界栈，disabled 模式要求两种访问方式均返回 profile 404。固定使用
+HTTPS loopback、正常 CA/DNS 校验及审核过的服务端 SPKI；无代理、重试、
+重定向或压缩。栈最多 8 MiB、exclusive-create 0600；输出明确不证明 Pod
+身份、栈对应哪条 RPC 或故障验收。
+
+首轮真实 TLS 测试发现 TLS 1.2 无证书拒绝返回 handshake_failure，而非
+TLS 1.3 的 certificate_required。探针现在要求已经验证服务端、观察到
+服务端请求客户端证书、返回空证书后收到远端 TLS alert；不把普通连接
+失败或 HTTP 错误文本视为鉴权证据。真实 CA 双向验证的 TLS 1.2/1.3、
+禁用路由、未开启认证、伪造 alert 文本、重定向、超限、截断、错误身份、
+取消和禁止覆盖文件测试通过三轮 race（3.635s）；CI 工作流契约三轮通过
+（5.618s），vet/diff 通过。新增 CI 路径触发和独立回归步骤。
+
+提交 `ca922277` 的只读现场烟测 owner：
+`/root/.local/state/kubebrain/info-diagnostic-smoke.eYOZbv7d`。
+一次性 run.sh 终态 0（45899），通过 namespace/StatefulSet/Pod 身份检查后
+将 kubebrain-local-0 的 info 端口转发至 18584，正常服务端 TLS+SPKI 验证、
+健康检查及两种访问方式的 pprof 404 全部通过。前后完整 StatefulSet spec、
+generation 56、Pod UID/spec/containerStatuses 不变，3/3 Ready。
+
+端口转发已退出，18584 无监听；完整证据摘要已验证，唯一编译出的临时
+probe 二进制已删除，源码及哈希保留，可按相同源码重建。未复制私钥到
+仓库，未启用 pprof，未改动集群资源或注入故障。此烟测只证明原基线的
+disabled 模式；下一步仍须完成诊断阶段验证回调、开启后的逐 Pod 运行
+验证及恢复链，然后才能运行原始 30 秒故障门限。
