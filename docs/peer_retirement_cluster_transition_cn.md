@@ -304,3 +304,27 @@ Secret 解码文件仍仅在前一受限 owner 中。没有创建 Secret、修�
 远端 dcca4197 的 image/probe/backend 三个 run 均已终态 success；API 元数据
 已保存在 `ci-dcca4197.P8woEvJj`。这是 CI 状态证据，尚不替代该版镜像摘要、
 构建信息与节点实际二进制的独立校验，也不覆盖后续本地提交。
+
+## 当前三实例实际挂载与 mTLS 信任基线
+
+2026-09-18，`runtime-baseline.Mxky8PCp` 对实际三个 kubebrain-local Pod 完成
+只读运行时检查，执行 16057 终态 0。每个 Pod 内执行 sha256sum，ca.crt、
+tls.crt、tls.key 三个挂载文件均匹配已捕获的原材料；不读取或输出 key 内容。
+随后通过仅绑定 loopback 的 peer 3380 port-forward，使用显式旧 CA、公共
+peer DNS 和原叶证书 SPKI pin 发起 HTTPS 请求，不使用 insecure TLS。
+
+每个实例依次执行三次新的 TLS 连接：旧客户端身份访问不存在的只读路径
+得到 HTTP 404；新 CA 签发的该成员身份被拒绝，curl 退出 56、HTTP 状态 000，
+明确收到 TLS `unknown ca` alert；再次使用旧身份仍得到 HTTP 404。最后
+一次正向连接排除了把停止监听或一般网络中断误判为证书拒绝。404 在这里
+只证明已通过 mTLS 并到达 HTTP 路由，不证明业务读写或控制协议可用；正常
+写读证据仍来自上文独立 preflight。
+
+前后确认 namespace/StatefulSet UID、原完整 spec、generation 38、3 Ready/
+current 不变；三个 Pod UID、spec 和容器进程状态一致。所有 port-forward
+进程均已退出，对应本机端口无监听。证据包含原/后资源 JSON、三个挂载
+哈希、正负请求状态及错误、SHA-256 清单，均位于仓库外私有 owner。
+
+这证明当前服务的实际挂载与旧单 CA 信任边界，而非新双 CA 已启用。未创建
+候选 Secret、未重启 Pod、未操作数据卷；仍须将相同检查和三成员写读一起
+接入阶段 VERIFIER，扩展后断言新身份也被接受，恢复后再次断言其被拒绝。
