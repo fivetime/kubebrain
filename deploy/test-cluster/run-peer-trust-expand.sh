@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dedicated-test adjacent trust phases. No Secret creation or volume cleanup.
+# Dedicated-test adjacent trust/diagnostic phases. No Secret creation or cleanup.
 set -euo pipefail
 umask 077
 if [[ $# != 8 || $1 != --execute || ( $2 != expand && $2 != restore ) ]]; then
@@ -10,14 +10,16 @@ mode=$2; receipt=$3; digest=$4; out=$5; kubeconfig=$6; context=$7; verifier=$8
 [[ $receipt == /* && $out == /* && $kubeconfig == /* && $verifier == /* && -n $context && $digest =~ ^[a-f0-9]{64}$ ]]
 [[ -f $receipt && -f $kubeconfig && -f $verifier ]]
 [[ $(sha256sum "$receipt" | cut -d ' ' -f 1) == "$digest" ]]
-jq -e '.phase == null or .phase == "roots" or .phase == "members" or .phase == "protocol"' "$receipt" >/dev/null
+jq -e '.phase == null or .phase == "roots" or .phase == "members" or .phase == "protocol" or .phase == "diagnostics"' "$receipt" >/dev/null
 trust_phase=$(jq -r '.phase // "roots"' "$receipt")
+planner_name=peer-trust-expand-plan.jq
+if [[ $trust_phase == diagnostics ]]; then planner_name=diagnostic-plan.jq; fi
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # Exclusive output directory is also the execution claim. Never reuse an attempt.
 mkdir -m 700 -- "$out"
 trap 'printf "%s\n" "$?" > "$out/exit-code"' EXIT
 cp -- "$receipt" "$out/receipt.json"
-cp -- "$source_dir/peer-trust-expand-plan.jq" "$out/planner.jq"
+cp -- "$source_dir/$planner_name" "$out/planner.jq"
 cp -- "$verifier" "$out/verifier.sh"
 cp -- "${BASH_SOURCE[0]}" "$out/driver.sh"
 chmod 600 "$out/receipt.json" "$out/planner.jq" "$out/verifier.sh" "$out/driver.sh"
@@ -25,8 +27,10 @@ chmod 600 "$out/receipt.json" "$out/planner.jq" "$out/verifier.sh" "$out/driver.
 sha256sum "$out/receipt.json" "$out/planner.jq" "$out/verifier.sh" "$out/driver.sh" > "$out/inputs.sha256"
 namespace=$(jq -er '.baseline.metadata.namespace | select(test("^[a-z0-9][a-z0-9-]*$"))' "$out/receipt.json")
 sts=$(jq -er '.baseline.metadata.name | select(test("^[a-z0-9][a-z0-9-]*$"))' "$out/receipt.json")
-old_secret=$(jq -er '.original_secret.metadata.name | select(test("^[a-z0-9][a-z0-9.-]*$"))' "$out/receipt.json")
-dual_secret=$(jq -er '.expanded_secret.metadata.name | select(test("^[a-z0-9][a-z0-9.-]*$"))' "$out/receipt.json")
+if [[ $trust_phase != diagnostics ]]; then
+ old_secret=$(jq -er '.original_secret.metadata.name | select(test("^[a-z0-9][a-z0-9.-]*$"))' "$out/receipt.json")
+ dual_secret=$(jq -er '.expanded_secret.metadata.name | select(test("^[a-z0-9][a-z0-9.-]*$"))' "$out/receipt.json")
+fi
 if [[ $trust_phase == members || $trust_phase == protocol ]]; then
  member_secret=$(jq -er '.member_secret.metadata.name | select(test("^[a-z0-9][a-z0-9.-]*$"))' "$out/receipt.json")
 fi
@@ -37,8 +41,13 @@ capture() {
  mkdir -m 700 "$out/$phase"
  timeout --kill-after=2s 20s "${k[@]}" get namespace "$namespace" -o json > "$out/$phase/namespace.json"
  timeout --kill-after=2s 20s "${k[@]}" get sts "$sts" -o json > "$out/$phase/current.json"
- timeout --kill-after=2s 20s "${k[@]}" get secret "$old_secret" -o json > "$out/$phase/original-secret.json"
- timeout --kill-after=2s 20s "${k[@]}" get secret "$dual_secret" -o json > "$out/$phase/expanded-secret.json"
+ if [[ $trust_phase == diagnostics ]]; then
+  printf 'null\n' > "$out/$phase/original-secret.json"
+  printf 'null\n' > "$out/$phase/expanded-secret.json"
+ else
+  timeout --kill-after=2s 20s "${k[@]}" get secret "$old_secret" -o json > "$out/$phase/original-secret.json"
+  timeout --kill-after=2s 20s "${k[@]}" get secret "$dual_secret" -o json > "$out/$phase/expanded-secret.json"
+ fi
  if [[ $trust_phase == members || $trust_phase == protocol ]]; then
   timeout --kill-after=2s 20s "${k[@]}" get secret "$member_secret" -o json > "$out/$phase/member-secret.json"
  else
@@ -52,7 +61,7 @@ capture() {
   --slurpfile original "$out/$phase/original-secret.json" \
   --slurpfile expanded "$out/$phase/expanded-secret.json" \
   --slurpfile member "$out/$phase/member-secret.json" \
-  '. + {mode:$mode, namespace:$ns[0], current:$current[0], live_original_secret:$original[0], live_expanded_secret:$expanded[0], live_member_secret:$member[0]}' \
+  '. + {mode:(if .phase=="diagnostics" and $mode=="expand" then "enable" else $mode end), namespace:$ns[0], current:$current[0], live_original_secret:$original[0], live_expanded_secret:$expanded[0], live_member_secret:$member[0]}' \
   "$out/receipt.json" > "$out/$phase/input.json"
  jq -er -f "$out/planner.jq" "$out/$phase/input.json" > "$out/$phase/patch.json"
 }
@@ -65,7 +74,7 @@ finish() {
   # planning accepts only the two known specs, and still refuses external drift.
   local restore_rc=0
   # The saved driver resolves the planner alongside itself.
-  cp "$out/planner.jq" "$out/peer-trust-expand-plan.jq"
+  cp "$out/planner.jq" "$out/$planner_name"
   bash "$out/driver.sh" --execute restore "$out/receipt.json" "$digest" \
    "$out/recovery" "$kubeconfig" "$context" "$out/verifier.sh" \
    > "$out/recovery.log" 2>&1 || restore_rc=$?
@@ -112,8 +121,8 @@ jq -e --slurpfile sts "$out/after/current.json" '
   .metadata.deletionTimestamp==null and .metadata.labels["controller-revision-hash"]==$s.status.updateRevision and
   any(.status.conditions[]?;.type=="Ready" and .status=="True") and
   any(.status.containerStatuses[]?;.name=="kubebrain" and .ready==true and .state.running!=null) and
-  ([.spec.containers[]|select(.name=="kubebrain")|{image,args,volumeMounts}]==
-   [$s.spec.template.spec.containers[]|select(.name=="kubebrain")|{image,args,volumeMounts}]) and
+  ([.spec.containers[]|select(.name=="kubebrain")|{image,args,volumeMounts,livenessProbe,startupProbe,readinessProbe}]==
+   [$s.spec.template.spec.containers[]|select(.name=="kubebrain")|{image,args,volumeMounts,livenessProbe,startupProbe,readinessProbe}]) and
   ([.spec.volumes[]|select(.name=="peer-tls")]==[$s.spec.template.spec.volumes[]|select(.name=="peer-tls")]))
 ' "$out/after/pods.json" >/dev/null
 timeout --kill-after=5s 120s bash "$out/verifier.sh" "$mode" after "$out" "$kubeconfig" "$context" > "$out/verify.log" 2>&1

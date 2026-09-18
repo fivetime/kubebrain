@@ -65,7 +65,7 @@ case "$1" in
   if [[ $SCENARIO == lost-response && ! -f "$FIXTURE/response-lost" ]]; then touch "$FIXTURE/response-lost"; exit 124; fi
   cat "$FIXTURE/current.json";;
  rollout)
-  expanded=$(jq -r --slurpfile receipt "$FIXTURE/receipt.json" 'if $receipt[0].phase=="protocol" then .spec.template.spec.containers[0].image==$receipt[0].candidate_image else ($receipt[0]|if .phase=="members" then .member_secret.metadata.name else .expanded_secret.metadata.name end) as $target | any(.spec.template.spec.volumes[];.name=="peer-tls" and .secret.secretName==$target) end' "$FIXTURE/current.json")
+  expanded=$(jq -r --slurpfile receipt "$FIXTURE/receipt.json" 'if $receipt[0].phase=="diagnostics" then (.spec.template.spec.containers[0].args|index("--enable-pprof=true")!=null) elif $receipt[0].phase=="protocol" then .spec.template.spec.containers[0].image==$receipt[0].candidate_image else ($receipt[0]|if .phase=="members" then .member_secret.metadata.name else .expanded_secret.metadata.name end) as $target | any(.spec.template.spec.volumes[];.name=="peer-tls" and .secret.secretName==$target) end' "$FIXTURE/current.json")
   if [[ $SCENARIO == rollout-failure && $expanded == true ]]; then exit 1; fi
   if [[ $SCENARIO == rollout-timeout && $expanded == true ]]; then exit 124; fi
   ;;
@@ -83,6 +83,10 @@ func TestPeerTrustMembersDriverRecovery(t *testing.T) {
 
 func TestPeerProtocolDriverRecovery(t *testing.T) {
 	testPeerTrustDriverRecovery(t, "protocol")
+}
+
+func TestDiagnosticDriverRecovery(t *testing.T) {
+	testPeerTrustDriverRecovery(t, "diagnostics")
 }
 
 func testPeerTrustDriverRecovery(t *testing.T, phase string) {
@@ -108,6 +112,13 @@ func testPeerTrustDriverRecovery(t *testing.T, phase string) {
 			if phase == "protocol" {
 				in = protocolTrustInput(t)
 			}
+			if phase == "diagnostics" {
+				in = diagnosticInput(t)
+				in["phase"] = "diagnostics"
+				for _, key := range []string{"original_secret", "expanded_secret", "live_original_secret", "live_expanded_secret"} {
+					delete(in, key)
+				}
+			}
 			data, err := json.Marshal(in)
 			require.NoError(t, err)
 			receipt := write("receipt.json", string(data), 0600)
@@ -115,7 +126,12 @@ func testPeerTrustDriverRecovery(t *testing.T, phase string) {
 			current, err := json.Marshal(in["current"])
 			require.NoError(t, err)
 			if scenario == "resumed-preflight-failure" {
-				planned, err := trustPlan(t, in)
+				var planned []byte
+				if phase == "diagnostics" {
+					planned, err = diagnosticPlan(t, in)
+				} else {
+					planned, err = trustPlan(t, in)
+				}
 				require.NoError(t, err, string(planned))
 				patch, err := jsonpatch.DecodePatch(planned)
 				require.NoError(t, err)
@@ -164,7 +180,10 @@ if [[ $SCENARIO == verify-failure && $1 == expand && $2 == after ]]; then exit 1
 					require.Equal(t, in["candidate_image"], c["image"])
 					require.Contains(t, c["args"], "--experimental-peer-retirement-config=/etc/kubebrain/peer-tls/policy.json")
 				}
-				if members {
+				if phase == "diagnostics" {
+					require.Contains(t, string(after), "--enable-pprof=true")
+					require.Contains(t, string(after), "--info-client-cert-auth=true")
+				} else if members {
 					require.Contains(t, string(after), "peer-members-dual-test")
 				} else {
 					require.Contains(t, string(after), "peer-old-dual-test")
@@ -191,6 +210,9 @@ if [[ $SCENARIO == verify-failure && $1 == expand && $2 == after ]]; then exit 1
 			require.NoError(t, err)
 			require.NotContains(t, string(calls), " delete ")
 			require.NotContains(t, string(calls), " create ")
+			if phase == "diagnostics" {
+				require.NotContains(t, string(calls), "get secret ", "diagnostic phase must not read unrelated peer keys")
+			}
 			if members && scenario == "success" {
 				require.GreaterOrEqual(t, strings.Count(string(calls), "get secret peer-members-dual-test "), 5, "refresh member Secret in every captured phase")
 			}
