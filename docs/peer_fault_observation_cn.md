@@ -306,3 +306,16 @@ revokec、demotec 和 stopC，KeepAlive 在 Renew 前构造 revision header。
 claimed/verified.json。审核脚本要求三项同源码 CI 全部成功；其精确容器
 ID/归属标签清理保护已用模拟 Docker 验证，不涉及实际容器删除。
 本地完整工具回归 8608 仍需单独收集终态，不能被这两项 CI 代替。
+
+8608 后续也达到明确的 30m 整包总时限，独立退出码 1，JSON 记录
+1800.056s aggregate fail；保留失败，不改写为通过。752 个顶层测试中
+已有 712 个完成并通过，没有 named-test fail 事件，但整个调用仍失败。
+本次超时发生在 `TestValidateDataplaneReadonlyProbe` 的子测试期间。
+
+已生成完整测试清单 test-list.txt 和差集 partition.json，准确列出剩余
+40 个顶层测试，包含被中断的整个父测试，不按已通过子测试跳过它。
+初始源码 572b8e42 到分组源码 e7763cd1 的非 docs 内容无差异。追加两组
+race/count=1/15m 验证：68407 跑该父测试，52684 跑其余 39 个；各有独立
+JSON、stderr、退出码。尚需等两组终态并验证完整清单覆盖；即使分组全部
+通过，也只能报告分组覆盖完成，不能把原 30m 整跑改记为成功。这不改变
+任何集群故障门限或断言。
