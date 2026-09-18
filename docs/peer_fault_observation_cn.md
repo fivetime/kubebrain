@@ -91,3 +91,33 @@ HTTPS 健康探针不带客户端证书。旧实验的 diagnostic-patch.jq 同�
 info mTLS 并把健康探针换为带证书的 exec curl，但绑定旧源码和旧 spec，
 不能直接执行。新故障驱动必须将诊断配置纳入独立审核/并发前置条件及
 恢复路径，验证未认证客户端无法读取 pprof，然后才能采集等待栈。
+
+## 诊断配置规划与 API dry-run
+
+新增 `deploy/test-cluster/diagnostic-plan.jq`，输入为审核过的 baseline、
+current、namespace UID、info DNS 及 enable/restore。它不修改镜像；
+可在原基线或已启用 peer 协议的 spec 上生成一个独立诊断阶段。只改变
+pprof/info mTLS 参数和三个健康探针，其余完整 spec 必须保留。
+
+原配置必须关闭 pprof、有唯一受审核的 info TLS 参数、只读证书挂载和
+预期 HTTPS 健康探针；拒绝已有不明诊断参数、明文配置、重复开关、
+不支持的 rollout 或 spec 漂移。启用时同时强制 info 客户端证书认证和
+trusted CA，把三个健康探针改为直接 argv 的 mTLS curl；禁用 .curlrc、
+代理和重试，保留探针周期/阈值及原 timeoutSeconds，内部超时为 1/1/5 秒。
+
+启用要求已观测的三个 Ready/current 副本；恢复即使未 Ready 也可执行，
+但只接受 baseline 或精确推导的 enabled spec。补丁含 UID、resourceVersion
+及完整 spec 并发前置条件，重复规划返回空补丁，不将空补丁当作运行验证。
+
+针对性 race 通过（1.711s），覆盖原/协议布局、只修改许可字段、未就绪
+回退、漂移、重复/不安全参数和并发冲突。随后在专用集群仅做 server
+dry-run：owner `/root/.local/state/kubebrain/diagnostic-plan-check.CSDuZfgC`，
+执行 31223 终态 0。API 返回候选 generation 57，规划逆向补丁也成功；
+实际前后仍 generation 56、完整 spec 相同、3/3 Ready，没有开放 pprof。
+
+这仅证明规划约束及 API 接收，不证明 curl 在容器中的证书可用性或实际
+pprof 鉴权。下一步必须把诊断阶段纳入完整故障驱动的恢复链，先验证
+无客户端证书被拒绝、合法身份可捕获完整栈，再进入真实故障门限。
+
+完整 `go test -count=1 ./deploy/test-cluster` 通过（75.939s），vet 和 diff
+检查通过。所有验证均未持久化诊断配置。
