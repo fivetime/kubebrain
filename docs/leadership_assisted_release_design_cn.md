@@ -1333,3 +1333,29 @@ vet 和完整单轮 race 步骤，沿用 self-hosted、失败即停、3 分钟�
 当前远端 16f9fa1a 的运行不包含这个新步骤，不能回溯称其覆盖 endpoint。
 修改后的 build 工作流契约和 transportidentity 全包 race 通过（4280，
 2.539/1.030 秒）。本轮仅本地提交，未取消运行中的 CI，也未部署到集群。
+
+## 双 Endpoint 在线出站证书轮换
+
+新增 TestExperimentalEndpointPairReloadsProjectedClientCertificate，复用双端点
+正常转发夹具，但 follower 的独立出站 cert/key 指向同一个目录符号链接。
+预先配置旧/新两个 key 的 holder pin，运行中通过 rename 原子替换目录链接，
+两端 Endpoint 和 backend 均不重启。使用现有 GRPCMaxConnectionAge=750ms、
+Grace=250ms 促成真实 gRPC 重连；这只是测试连接老化配置，不改默认的动态
+连接信任周期，也不改变集群的选举参数或原验收门限。
+
+leader 的入站 peer VerifyConnection 测试观察器串接在原有校验之后，记录
+真正呈现的证书 serial，保留标准 mTLS 校验和原回调。先断言观察到旧证书
+201 且尚未观察到新证书 299；切换目录后等待实际新握手呈现 299，然后再经
+follower Put、leader Get 核对 value 和 revision。它不是只看本地证书文件
+已变化，也不是靠重启构造器重新加载。首轮 race 通过（53054，10.797 秒）。
+
+此用例覆盖预授权新 key 的出站客户端证书轮换、原子目录投影、运行时文件
+来源、TLS 握手和新请求转发；不覆盖 CA/CRL 轮换、撤销旧 pin、在途原始
+Watch/Lease 流无损延续或零瞬时错误。整个夹具退出时仍可能返回已记录的
+successor 等待超时，不将其描述成优雅交接成功。两条远端 16f9fa1a CI
+仍在运行，不含此本地测试和上一轮新增的 endpoint CI 步骤。
+
+最终定向三轮 race 通过（66646，30.225 秒），随后 endpoint 和
+transportidentity 全包单轮 race 通过（45.829/1.027 秒），相关 vet/diff
+通过。证据日志在私有 credential-expiry-txn.FXNmj6Yf 目录的
+endpoint-rotation.log 和 endpoint-rotation-repeated.log。未推送或部署。

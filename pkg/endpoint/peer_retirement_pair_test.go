@@ -7,7 +7,9 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +29,14 @@ type sharedPeerEndpointStorage struct{ peerEndpointStorage }
 func (sharedPeerEndpointStorage) Close() error { return nil }
 
 func TestExperimentalEndpointPairForwardsThroughDynamicPeerCredentials(t *testing.T) {
+	runExperimentalEndpointPair(t, false)
+}
+
+func TestExperimentalEndpointPairReloadsProjectedClientCertificate(t *testing.T) {
+	runExperimentalEndpointPair(t, true)
+}
+
+func runExperimentalEndpointPair(t *testing.T, rotate bool) {
 	ca := newRotationCA(t)
 	caFile := filepath.Join(t.TempDir(), "ca.pem")
 	writeRotationCA(t, caFile, ca)
@@ -61,6 +71,20 @@ func TestExperimentalEndpointPairForwardsThroughDynamicPeerCredentials(t *testin
 		hash := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
 		pins[urls[i]] = []string{hex.EncodeToString(hash[:])}
 	}
+	var activeLink, rotatedDir string
+	var oldHandshakes, rotatedHandshakes atomic.Int32
+	if rotate {
+		rotatedDir = t.TempDir()
+		certFile, keyFile := writeRotationCertificate(t, rotatedDir, "rotated-member-1", ca, 299, "peer.test")
+		certificate, err := tls.LoadX509KeyPair(certFile, keyFile)
+		require.NoError(t, err)
+		leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+		require.NoError(t, err)
+		hash := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+		pins[urls[1]] = append(pins[urls[1]], hex.EncodeToString(hash[:]))
+		activeLink = filepath.Join(t.TempDir(), "active")
+		require.NoError(t, os.Symlink(filepath.Dir(paths[1][0]), activeLink))
+	}
 	storage := memkv.NewKvStorage()
 	defer storage.Close()
 	metrics := metricmock.NewMinimalMetrics(gomock.NewController(t))
@@ -75,7 +99,38 @@ func TestExperimentalEndpointPairForwardsThroughDynamicPeerCredentials(t *testin
 			ExperimentalPeerRetirement: &PeerRetirementOptions{Scope: b.GetResourceLock().(election.RetiredOwnershipReleaser).RetirementScope(),
 				HolderPins: pins, EndpointHolders: map[string]string{urls[1-i]: urls[1-i]}, ReadBudget: time.Second,
 				OperationBudget: time.Second, SendBudget: time.Second, Concurrency: 2, RequestsPerSecond: 100}}
+		if rotate {
+			// Exercise real connection aging rather than resetting the proxy or
+			// restarting either Endpoint to force credential reload.
+			config.GRPCMaxConnectionAge = 750 * time.Millisecond
+			config.GRPCMaxConnectionAgeGrace = 250 * time.Millisecond
+			if i == 1 {
+				config.PeerSecurityConfig.ClientCertFile = filepath.Join(activeLink, "tls.crt")
+				config.PeerSecurityConfig.ClientKeyFile = filepath.Join(activeLink, "tls.key")
+			}
+		}
 		require.NoError(t, config.Validate())
+		if rotate && i == 0 {
+			// Observe the actually verified inbound peer certificate, without
+			// replacing the existing verifier or bypassing mTLS validation.
+			previous := config.PeerSecurityConfig.serverTlsConfig.VerifyConnection
+			config.PeerSecurityConfig.serverTlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+				if previous != nil {
+					if err := previous(state); err != nil {
+						return err
+					}
+				}
+				if len(state.PeerCertificates) > 0 {
+					switch state.PeerCertificates[0].SerialNumber.Int64() {
+					case 201:
+						oldHandshakes.Add(1)
+					case 299:
+						rotatedHandshakes.Add(1)
+					}
+				}
+				return nil
+			}
+		}
 		endpoint := NewEndpoint(b, metrics, config)
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
@@ -121,4 +176,21 @@ func TestExperimentalEndpointPairForwardsThroughDynamicPeerCredentials(t *testin
 	require.Len(t, got.Kvs, 1)
 	require.Equal(t, "through-pinned-peer", string(got.Kvs[0].Value))
 	require.Equal(t, put.Header.Revision, got.Kvs[0].ModRevision)
+	if rotate {
+		require.Positive(t, oldHandshakes.Load(), "leader must observe the original follower certificate")
+		require.Zero(t, rotatedHandshakes.Load())
+		require.NoError(t, os.Symlink(rotatedDir, activeLink+".next"))
+		require.NoError(t, os.Rename(activeLink+".next", activeLink))
+		require.Eventually(t, func() bool { return rotatedHandshakes.Load() > 0 }, 8*time.Second, 20*time.Millisecond,
+			"leader must observe the rotated certificate on a new peer handshake")
+		postCtx, finish := context.WithTimeout(context.Background(), 5*time.Second)
+		defer finish()
+		put, err := clients[1].Put(postCtx, "/endpoint-pair/after-rotation", "new-credential")
+		require.NoError(t, err)
+		got, err := clients[0].Get(postCtx, "/endpoint-pair/after-rotation")
+		require.NoError(t, err)
+		require.Len(t, got.Kvs, 1)
+		require.Equal(t, "new-credential", string(got.Kvs[0].Value))
+		require.Equal(t, put.Header.Revision, got.Kvs[0].ModRevision)
+	}
 }
