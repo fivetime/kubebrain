@@ -7,6 +7,7 @@ name: Rollout probe regression
       - 'hack/production/cmd/rollout-availability-probe/**'
       - 'hack/production/cmd/pod-log-capture/**'
       - 'hack/production/cmd/lease-term-probe/**'
+      - 'hack/production/cmd/peer-retirement-scope/**'
       - 'hack/production/internal/**'
       - 'hack/scale-lab/**'
       - 'hack/etcd-client-compat/**'
@@ -93,6 +94,8 @@ jobs:
           set -euo pipefail
           go vet ./pkg/backend/election
           go test -race -count=1 -timeout=3m -v ./pkg/backend/election
+          go vet ./hack/production/cmd/peer-retirement-scope
+          go test -race -count=1 -timeout=2m -v ./hack/production/cmd/peer-retirement-scope
           go vet ./pkg/server/service/leader
           go test -race -count=1 -timeout=3m -v ./pkg/server/service/leader
           go vet ./pkg/server

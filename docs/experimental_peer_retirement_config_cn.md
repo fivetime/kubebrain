@@ -61,3 +61,27 @@ peer TLS 材料的握手时重载是独立机制，不能误当作 pin 策略也
 
 传输使用既有实验性 peer 专用请求头/协议分类期限。此参数不调整公共端点、
 选举租约、客户端重试或验收门限，也不会自动部署、迁移后端或变更磁盘。
+
+## 离线计算 scope
+
+先独立核验真实 PD/TiKV cluster ID、启动 keyspace 和传给 backend 的有效
+选举 prefix，再运行：
+
+```sh
+go run ./hack/production/cmd/peer-retirement-scope \
+  --storage-cluster-id=42 \
+  --keyspace= \
+  --election-prefix=/endpoint-pair
+```
+
+这是编码示例，不是测试集群参数。工具直接复用 resource lock 的版本化
+编码函数，不连接网络、不读取存储或 Secret、不写文件；JSON 输出包含
+scope 和输入，cluster ID 用十进制字符串保存，避免 uint64 被 JSON 消费者
+转为浮点数时损失精度。三个参数均须显式传入，包括空 keyspace；不接受
+零 cluster ID、空 prefix、溢出 ID 或位置参数。输出失败时命令返回失败。
+
+`inputs_verified:false` 是刻意的：离线工具不能证明操作者输入来自目标
+集群。特别注意 CLI 在非空 keyspace 时将默认内部 prefix 追加
+`/ks-<keyspace>` 后才传给 backend；不要把未追加的 prefix、用户键前缀、
+etcd 兼容层的合成 cluster ID 或 Kubernetes namespace UID 当作输入。
+上线时 server 构造器仍会与实际 resource lock scope 比较，不匹配则拒绝。

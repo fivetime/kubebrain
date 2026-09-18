@@ -1507,3 +1507,35 @@ etcdproxy 全包单轮 race 通过（68.088/5.453 秒），vet/diff 通过，执
 终态 0。最后补充显式断言实际 granted TTL 为三秒、TimeToLive 的 GrantedTTL
 一致，防止将请求 TTL 误当作实际 TTL；该最终版本定向 race 再通过（33823，
 14.942 秒）。CI 两项仍在运行，本轮只本地提交测试与记录。
+
+## 集群接入准备：共享 scope 编码与只读复核
+
+2026-09-18 只读复核 kubebrain-local StatefulSet：UID 仍为
+7d760f53-5bb5-4429-a2f8-651b89665616、generation 38、三副本均 Ready，仍使用
+固定 bb89c3f8 镜像，30s/25s/500ms 选举参数未变。advertise-host 为
+`$(POD_NAME).kubebrain-local-peer.kubebrain-dbaas-test.svc.cluster.local`，
+peer 端口 3380。现有模板共享 peer TLS 挂载，不能将此直接视为独立成员密钥
+已准备好，更不能为了配置不同 pin 而关闭 key/pin 一致性检查。
+
+将原 resource lock scope 编码抽出为 ComputeRetirementScope，运行时与
+新增离线命令 peer-retirement-scope 共用一个实现。保留原字段顺序、JSON
+字节数组编码与 retirement-v1 前缀；现有真实 Endpoint 的 cluster 42、空
+keyspace、/endpoint-pair 固定 golden 未变。新增 backend 绑定测试验证命令
+使用的函数与真实 resource lock 输出一致，未提供合成 cluster ID 回退。
+
+本轮从 kb-local-pd-0 的本机只读 /pd/api/v1/cluster 接口复核 cluster ID
+7686251028133611667、max_peer_count=3。结合 StatefulSet 的 keyspace
+kubebrain-local、CLI 默认 /kubebrain-internal 及 /ks-<keyspace> 追加规则，
+离线计算的候选 scope 为：
+
+`retirement-v1:eae4aff6f2031aaa6a12a1270887357c7aa2a03b3428e3ca46a4e6b3fd8569d9`
+
+命令执行 23195 终态 0。它不是已启用协议的运行时 scope 证明；部署时仍须
+核对新镜像实际参数并由 server 构造器绑定验证。尚未创建新证书、Secret、
+策略 ConfigMap 或修改 StatefulSet，也未改变任何存储资源。
+
+定向三轮 race（76829）通过 election 1.172 秒、命令 1.081 秒；随后完整
+election/命令/build 单轮 race 通过（28254，2.141/1.083/2.609 秒），backend
+scope 绑定定向三轮 race 通过（1.377 秒），相关 vet/diff 通过，执行链终态 0。
+命令 CI 路径和测试步骤已加并由工作流契约锁定，但当前运行中的 c7e2e0a9
+CI 不包含这些新增检查。本轮不推送、不取消现有 CI。

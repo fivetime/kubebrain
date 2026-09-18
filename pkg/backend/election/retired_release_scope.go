@@ -28,20 +28,32 @@ func retirementScopeFor(store storage.KvStorage, config Config) string {
 		return ""
 	}
 	clusterID := identifier.ClusterID()
-	if clusterID == 0 {
+	scope, err := ComputeRetirementScope(clusterID, config.Keyspace, config.Prefix)
+	if err != nil {
 		return ""
+	}
+	return scope
+}
+
+// ComputeRetirementScope is the versioned, offline encoding used by the lock
+// and operator tooling. Inputs must come from an independently verified storage
+// cluster and the effective election namespace. Computing a hash neither proves
+// those inputs nor grants authority to release an owner.
+func ComputeRetirementScope(clusterID uint64, keyspace, electionPrefix string) (string, error) {
+	if clusterID == 0 || electionPrefix == "" {
+		return "", errors.New("retirement scope requires a storage cluster ID and election prefix")
 	}
 	encoded, err := json.Marshal(struct {
 		Version        int
 		ClusterID      uint64
 		Keyspace       []byte
 		ElectionPrefix []byte
-	}{1, clusterID, []byte(config.Keyspace), []byte(config.Prefix)})
+	}{1, clusterID, []byte(keyspace), []byte(electionPrefix)})
 	if err != nil {
-		return ""
+		return "", err
 	}
 	sum := sha256.Sum256(encoded)
-	return "retirement-v1:" + hex.EncodeToString(sum[:])
+	return "retirement-v1:" + hex.EncodeToString(sum[:]), nil
 }
 
 func (r *resourceLock) RetirementScope() string { return r.retirementScope }
