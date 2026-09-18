@@ -948,3 +948,36 @@ revision/election 三轮 race 通过（21382，64.761/13.977/6.017/22.749/
 in_progress，未重复触发或取消。检查 workflow 后确认 probe 会完整执行
 server 和 etcdproxy 的 race 测试，不会因测试名筛选漏掉新接棒用例；但
 这两条构建不包含本节的后续修复，本轮仅本地提交，未推送打断现有构建。
+
+## 实际 peer HTTP 监听器补齐已验证 TLS 身份传递
+
+检查部署接入时发现：外层 `identityTLSListener` 已验证 mTLS 并注册连接身份，
+但 peer HTTP transport 没有像 client transport 一样传入身份注册表；而 TLS
+已在外层终止，内部 net/http 的 Request.TLS 为 nil。此前 httptest 直接终止
+TLS 的测试无法覆盖这个实际监听器边界。
+
+先使用真实 secure listener/cmux/net/http 组合复现：要求已验证 TLS 身份的
+peer handler 在 HTTP/1 和 HTTP/2 两种子用例均返回 403（98693，0.152 秒）。
+现在两个 peer HTTP 构造分支共用 `newPeerHTTPTransport`，通过 ConnContext
+传递连接注册表状态，再仅在 Request.TLS 缺失时克隆请求并恢复该状态。
+不读证书转发头，不覆盖原生 TLS 状态，不把没有 VerifiedChains 的连接
+升级为已认证连接；具体范围/holder/pin 授权仍由内部协议 handler 执行。
+client/info 路径不变，本轮未注册任何实验接口或新增命令行开关。
+
+测试使用临时真实 CA 和双用途证书，验证传递后的客户端证书 DER 精确相符，
+并验证 ResponseController 读 deadline 在实际 peer HTTP handler 可用。
+补充头部伪造、原生 TLS 优先、不制造验证链、原始请求不被修改的反例。
+首次修复后的测试 56133 曾因 ALPN 协商得到 HTTP/1 而非预期 HTTP/2 失败：
+现有监听器在双方提供两个协议时优先 HTTP/1。测试改为每个子用例只提供
+所测协议，没有修改产品 ALPN 顺序，也没有把 HTTP/1 结果写成 HTTP/2 成功。
+
+最终定向三轮 race 通过（47746，1.256 秒）；endpoint/transportidentity/
+server/cmd-option 完整单轮 race 通过（91172，15.548/1.029/25.854/1.225 秒），
+随后相关 vet/diff 通过。临时监听器、客户端和证书目录按测试生命周期清理。
+
+部署接入尚未完成：Endpoint.Run 仍调用普通 NewServer。实际端点 TLS 使用
+动态证书/CA/CRL 校验回调，而实验发送器明确拒绝这些回调；不能为启用实验
+而静默删除轮换或撤销策略。下一阶段必须定义受控的凭据适配及配置校验，
+同时明确连接老化模式下控制 HTTP 的协议边界，再接命令行入口及独立 holder
+证书。旧集群、已有共享证书和默认开关未改动。两条 5b8f6af7 CI 本轮最后
+检查仍 in_progress，本修复未推送，不能归入它们的验证范围。

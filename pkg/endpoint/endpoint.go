@@ -174,13 +174,13 @@ func (e *Endpoint) runPeerServer(ctx context.Context) error {
 	peerHTTPHandler := e.buildPeerHTTPHandler()
 	if e.config.GRPCMaxConnectionAge > 0 {
 		grpcTransport := newNativeGRPCServer(peerGrpc)
-		httpTransport := newGRPCMuxedHTTPServer(grpc.NewServer(), peerHTTPHandler)
+		httpTransport := e.newPeerHTTPTransport(grpc.NewServer(), peerHTTPHandler)
 		e.registerPeerTransportDrain(grpcTransport.quiesce)
 		e.registerPeerTransportDrain(httpTransport.quiesce)
 		exposedServers := e.buildExposedServers(e.config.PeerSecurityConfig, grpcTransport, httpTransport)
 		return newRootServer(e.config.PeerPort, exposedServers...).run(ctx)
 	}
-	muxedServer := newGRPCMuxedHTTPServer(peerGrpc, peerHTTPHandler)
+	muxedServer := e.newPeerHTTPTransport(peerGrpc, peerHTTPHandler)
 	e.registerPeerTransportDrain(muxedServer.quiesce)
 	exposedServers := e.buildExposedServers(e.config.PeerSecurityConfig, muxedServer)
 	peerServiceGroup := newRootServer(e.config.PeerPort, exposedServers...)
