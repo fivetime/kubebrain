@@ -1,7 +1,8 @@
 # 专用集群 peer 身份迁移与恢复准备
 
-状态：离线挂载片段和契约测试已准备，**尚未执行迁移**。本页不表示新镜像
-或原 30 秒故障验收已经通过。目标仅为 kubebrain-dbaas-test/kubebrain-local，
+状态：第一阶段“旧叶证书＋双 CA”已在现场扩展、验证并恢复；独立新叶证书
+和实验交接协议尚未部署。本页不表示新镜像或原 30 秒故障验收已经通过。
+目标仅为 kubebrain-dbaas-test/kubebrain-local，
 不涉及旧 Ceph 实例、TiKV/PD 数据卷或 TopoLVM VG 初始化。
 
 ## 成员私钥挂载
@@ -371,3 +372,50 @@ expand/after 成功与受控恢复证据；不能将这个原配置检查当作�
 测试覆盖两个模式的离线准入，以及校验器摘要改变、根/私钥不匹配、应用
 客户端错误 CA/key、不安全 peer 配置与非法模式的拒绝，并断言 preflight
 不会调用 Kubernetes。正在运行的 02786d91 CI 不包含本次新增阶段脚本。
+
+## 第一阶段现场扩展、恢复及精确清理（2026-09-18）
+
+私有 owner `peer-retirement-preparation.QjFVoLV6/live-first-phase.8u66oAH6`
+保存了新的现场快照和固定脚本副本。准入重新核对 namespace/StatefulSet
+UID、原完整 spec、generation 38、三个 Ready 副本、原 Secret UID/RV/data，
+以及三个新成员证书有效期。保护集合捕获所有原 PV，其中本地 StorageClass
+为 12 Bound、2 Released。当前原镜像保持先前已审核的固定摘要，未部署
+仍在 CI 的 02786d91 镜像，也未把本地脚本测试表述成该版 CI 验收。
+
+随后实际创建不可变 Secret `kubebrain-local-peer-old-dual-qx4iltrm`，UID
+`b91298a7-ecd2-4293-b586-bd5b33b22527`。原 cert/key 字节不变，只有 CA 信任
+扩展为已审核的旧＋新两根；没有新叶证书挂载、子目录切换、实验参数或
+镜像变化。驱动经 server dry-run、重新读取对象和完整 spec/UID/RV 前置
+检查更新 StatefulSet，三个成员依序滚动至 generation 39。
+
+expand 驱动及 after 校验均成功：每成员三个文件挂载哈希正确，旧、新、
+旧三个独立 TLS 客户端连接均到达 HTTP 404；服务端仍是原叶证书，DNS、
+显式旧 CA 与 SPKI pin 验证开启。新证书这里只用于测试客户端身份，不
+表示新服务端证书已部署。三成员分别完成条件写入、九次交叉读取、精确
+条件删除及九次不存在确认。原 30s/25s/500ms 选举参数及默认 2PC 不变。
+
+同一执行器随后显式恢复原单 CA Secret，三个成员依序滚动至 generation
+40。restore 驱动和 after 校验均成功：原完整 spec/固定镜像恢复、三个
+Ready/current 副本；三个新身份分别收到明确 unknown-ca TLS 拒绝，旧身份
+前后均连接成功。恢复后的三写九读与精确清理也通过。主执行 13279 终态
+0，两阶段 exit-code 均为 0；不是由失败恢复分支掩盖的成功。
+
+清理前按扩展阶段 Pod UID → ephemeral PVC owner UID → PV claimRef UID
+确定六个中间临时卷，逐个确认不在原保护集合、原 Pod/PVC 已不在场、没有
+当前 PVC 使用、PV 为 Released/Retain 且完整 spec 和 CSI driver 匹配。
+只对这些 PV 用 UID/RV/spec/phase JSON Patch 前置条件改为 Delete，并
+等待实际删除。检查当前 Pod/controller 无引用后，以 UID/RV 前置条件删除
+本次 Secret。清理执行 71341 终态 0，六个临时卷数据不可恢复；Secret 材料
+仍有私有离线备份，不是删除原共享 Secret。
+
+所有原 PV 的 UID 和 spec 均保留。最终本地存储为 12 Bound、8 Released：
+额外六个 Released 是滚动前已经存在的临时卷，本轮按原保护集合保留，
+不是遗失归属后泛化清理。六个数据卷和旧 Ceph 卷未删除或改策略，当前
+六个临时卷属于恢复后的 Pod。临时编译的 uid-delete 二进制已精确删除，
+源码和摘要保留；所有本机 port-forward 已退出。
+
+核心证据：baseline、created-secret.json（敏感）、live-receipt.json（敏感）、
+expand/restore 的各阶段资源和运行时校验、cleanup 的目标与前置条件/删除
+证据、verified.json。源脚本、两阶段校验及清理 SHA-256 清单均复核通过。
+这次证明第一阶段真实信任扩展及恢复，不证明滚动过程零中断、公共长流
+连续性、独立服务端成员证书迁移、交接协议、原 30 秒故障门限或生产就绪。
