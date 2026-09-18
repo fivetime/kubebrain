@@ -184,3 +184,40 @@ port-forward 子进程均已退出。证据及 SHA-256 清单保存在仓库外�
 这证明原固定镜像在当次无故障状态下三个成员可写及正常转发，不证明原
 公共流连续性、Watch/Lease 故障行为、30 秒恢复门限或证书迁移成功。尚未
 创建候选 peer Secret 或开始 rollout；有界阶段执行与逆向恢复仍待完成。
+
+## 第一阶段离线变更与回退计划器
+
+`deploy/test-cluster/peer-trust-expand-plan.jq` 只规划原布局与“旧叶证书＋双 CA”
+之间的转换，不负责创建 Secret、访问集群或驱动 rollout。调用方式为
+`jq -er -f deploy/test-cluster/peer-trust-expand-plan.jq`，标准输入必须来自
+受限证据文件，不能输出或提交包含 Secret data 的输入。
+
+输入字段为 `baseline`、`current` StatefulSet，实时 `namespace` 及已记录的
+`namespace_uid`，已审核的 `original_secret`、`expanded_secret` 和各自实时
+`live_original_secret`、`live_expanded_secret`，以及 `mode`（expand/restore）。
+Secret 收据必须来自实际创建/读取，不能用 server dry-run 身份代替。调用方
+仍须验证收据来源、证书链/用途/有效期和双根内容；计划器只检查旧 cert/key
+字节保持一致、根内容不同、三项数据布局和新 Secret 不可变，不解析 X.509。
+
+计划器校验 namespace/StatefulSet 身份、Secret UID/resourceVersion/data，
+只接受完整 spec 恰为原始或唯一派生的双 CA 第一阶段。扩展前要求原三个
+副本已观测且 Ready/current；失败滚动后的恢复不要求 Ready，否则会阻断
+恢复本身。从新叶证书或实验参数等后续阶段直接恢复会被拒绝，不能用这个
+计划器绕过前述逆向信任顺序。输出带 StatefulSet UID、最新 resourceVersion
+和完整 spec 的 JSON Patch test，仅替换 peer Secret 名称；已处于目标 spec
+时输出空数组，**不代表 Pod、挂载或功能已验证成功**。
+
+本地契约测试实际应用 JSON Patch，覆盖正向、幂等、非 Ready 回退、身份/
+数据/spec 漂移、提前换叶证书、额外 CA key、可变 Secret、后续阶段回退，
+以及计划生成后的 UID/resourceVersion/spec 并发变化。测试最初发现真实
+manifest 中 `&&` 的 JSON 编码与 json-patch v4 标量比较不兼容；已让输出
+匹配 Go HTML-safe 编码，并额外测试特殊字符、Unicode 分隔符及字面转义
+文本，保留完整 spec 前置检查，不通过缩小校验范围规避问题。
+
+修正后 `go test -race -count=3 -timeout=2m ./deploy/test-cluster` 通过
+（2.629s），`go vet ./deploy/test-cluster` 和 diff 检查通过。现有 probe CI
+已覆盖这个包；上述结果为本地验证，不冒充正在运行的旧源码 CI 结果。
+
+namespace/Secret 读取与 StatefulSet 更新不是跨对象原子事务；调用方仍须
+在写入前复核，限制外部变更、处理删除/重建和 rollout 失败，并验证运行
+Pod 实际材料。这个计划器及离线测试本身不构成有界执行器或迁移完成证明。
