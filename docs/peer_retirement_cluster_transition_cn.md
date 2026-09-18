@@ -108,3 +108,21 @@ before.json、candidate.json、preconditioned-patch.json、server-dry-run.json�
 after.json、smoke-manifest.json、smoke-created.json、smoke-pods-final.json、
 三个 Pod 日志、smoke-cleanup.log、after-smoke.json。一次性执行脚本有已执行
 拒绝重用检查，不能将旧 resourceVersion 补丁直接用于以后真实变更。
+
+## 三成员双向 TLS 过渡与回退演练
+
+`TestThreePeerTrustTransitionAndRollback` 使用三个真实 SecurityConfig 的
+server/client TLS 配置，经 net.Pipe 完成 mTLS 握手，不是仅解析证书文件。
+起点与现有部署一样，共享旧 peer 叶证书；随后为每个成员提供不同的新 key
+与叶证书。在每个单成员变更之后，检查其余所有成员组合的六个通信方向，
+并核对双方实际看到的证书 serial，避免仅凭“某次握手成功”漏掉旧材料缓存。
+
+测试保持同一组 TLS config，依次执行旧证书扩展双 CA、逐成员换独立新
+证书、全部切换后删除旧 CA；逆向则先恢复双 CA，再逐成员恢复旧证书，
+最后恢复单旧 CA。提前只换一个新叶证书，以及直接将一个成员退回旧单 CA
+材料，均断言双向握手不能全部成功。删除旧 CA 后旧客户端证书遭服务端
+拒绝；回退完成后新客户端证书也必须遭服务端拒绝，不能悄悄保留双信任。
+
+这项测试演练信任顺序与普通 peer TLS 文件加载，不启用实验 holder pin
+协议、不使用真实 TiKV，也不模拟 kubelet subPath 自动更新。现场方案仍需
+按版本化挂载重建 Pod，并验证应用请求及原故障门限。
