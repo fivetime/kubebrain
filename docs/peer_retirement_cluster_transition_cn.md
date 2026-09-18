@@ -74,3 +74,37 @@ spec。直接让旧单 CA Pod 与新 CA 叶证书 Pod 混跑不是可靠回退�
 做合并，逐字段比较只允许的 Secret/mount 变化，并检查 POD_NAME 来源、
 无额外容器/根卷挂载/CA key。它不证明 kubelet 运行时隔离、访问权限、TLS
 信任过渡、现场 rollout 或故障门限；这些须在受控部署阶段分别验证。
+
+## 现场 dry-run 与三节点假材料挂载 smoke（2026-09-18）
+
+本轮保存实际 StatefulSet before.json，确认固定原镜像、UID、generation 38
+及 3/3 Ready 后，将离线片段本地合并。实际 server dry-run 使用 JSON Patch
+对 metadata.uid、metadata.resourceVersion、完整原 spec.template 三项先做
+test，再替换候选模板。API Server 返回成功，候选 generation 39；**这个
+generation 39 没有持久化**。再次读取的实际 spec 与原始对象完全相同，仍为
+generation 38 和 3/3 Ready。
+
+随后在独立临时 namespace `kb-peer-mount-smoke-zutq93pz` 创建不可变假材料
+Secret、默认拒绝 ingress/egress 的 NetworkPolicy，以及三个短命验证 Pod。
+Pod 分别在 worker1/2/3，使用现有已审核固定镜像的 /bin/sh，不启动 KubeBrain
+服务，不使用真实证书/私钥、PVC 或 TiKV。安全上下文与实际实例一致：
+UID/GID/fsGroup 65532、非 root、只读根文件系统、drop ALL、禁止提权，
+不挂载 ServiceAccount token。每 Pod 使用正式片段的同一 Secret items
+和 subPathExpr，假 tls.key 内容仅为其 Pod 名。
+
+三个 Pod 全部 Succeeded、exitCode 0，记录了各自正确成员标识。验证：本机
+tls.key 可读但不可写、内容对应 metadata.name、挂载目录恰好四个文件、
+无 ca.key、无法通过挂载子目录或相邻目录读取其他成员路径。实际 Pod 只有
+peer-tls 这一个 volume。它证明了本次三节点 kubelet 对这种布局的运行时
+挂载行为；不证明真实 TLS 握手、权限模型抵抗宿主机入侵或信任迁移完成。
+
+执行 86485 终态 0。清理前核对临时 namespace UID，删除该 namespace 及
+本次 Pod/假 Secret/NetworkPolicy，随后确认 namespace 不存在。假材料可从
+保留的 manifest 再生成；没有删除真实证书、数据卷或原实例资源。再次
+读取实际 StatefulSet，UID、spec、generation 38、3/3 Ready 均与实验前一致。
+
+证据在私有 owner `peer-retirement-preparation.QjFVoLV6/mount-dry-run.ZUTq93pz`：
+before.json、candidate.json、preconditioned-patch.json、server-dry-run.json、
+after.json、smoke-manifest.json、smoke-created.json、smoke-pods-final.json、
+三个 Pod 日志、smoke-cleanup.log、after-smoke.json。一次性执行脚本有已执行
+拒绝重用检查，不能将旧 resourceVersion 补丁直接用于以后真实变更。

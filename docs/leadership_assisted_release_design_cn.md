@@ -1586,3 +1586,21 @@ client/info TLS、资源与存储等不变；并校验 metadata.name 注入 POD_
 离线片段没有 UID/resourceVersion 前置条件，禁止直接用它代替现场捕获与
 受控执行器。运行时挂载隔离、信任过渡与故障验收尚缺实证；未创建 Secret、
 未 server dry-run、未修改集群。c7e2e0a9 两项 CI 仍在运行，本轮不推送。
+
+## 后续现场挂载验证完成，尚未迁移实际 peer 身份
+
+上一节的“未 server dry-run、运行时挂载尚缺证据”已由本轮受控检查补充，
+完整范围见[现场验证记录](peer_retirement_cluster_transition_cn.md)。从实际
+generation 38 捕获原 spec，带 UID/resourceVersion/完整模板 test 的 JSON
+Patch server dry-run 通过；API 返回候选 generation 39，但复查实际仍为 38。
+
+独立 namespace kb-peer-mount-smoke-zutq93pz 内，三台 worker 各运行一个
+非 root 短命 Pod，用现有固定镜像、正式挂载片段和假材料验证自身目录读取、
+只读权限、四文件范围、其他成员与 CA 私钥不可见。全部 Succeeded/exit 0，
+没有真实私钥、PVC、业务请求或新产品镜像参与。执行 86485 终态 0，临时
+对象已按 namespace UID 核对后清理，namespace 已不存在；假材料 manifest
+保留可再生成，不涉及用户数据删除。实际 StatefulSet 前后 spec 完全一致、
+generation 38、3/3 Ready。
+
+这不替代真实独立证书的信任过渡、完整配置启动、scope 绑定、TiKV 故障或
+原 30 秒验收。两项 c7e2e0a9 CI 仍在运行；本轮仅保存验证记录，不推送。
