@@ -157,3 +157,30 @@ DNS 检查通过。实际新 CA 单独验证旧叶证书失败，旧 CA 验证�
 这些 dry-run 对象的 UID 不是未来实际创建身份，补丁中的 resourceVersion
 也不得事后盲用。执行前仍须补齐有界阶段驱动、功能探针、实时身份与
 Pod/PVC/PV 归属记录及恢复路径；不能把离线材料就绪表述成真实迁移完成。
+
+## 滚动前实际三成员读写与卷基线
+
+2026-09-18，`preflight.mj2Kib6B` 完成现场基线检查，执行 93610 终态 0。
+通过仅绑定本机 loopback 的三个 Pod port-forward，使用原 client CA、有效
+root 客户端证书和显式服务 DNS 校验访问 HTTPS gateway；未关闭 TLS 验证。
+三个 Maintenance Status 返回同一实际 cluster ID、三个不同 member ID 和
+一致的非零 leader，且 leader 对应其中一个成员。
+
+分别向三个成员发送一个 VERSION=0 条件创建事务，每个键使用本次 owner
+专属路径及独立随机值，再从三个成员逐一线性读取，九次均匹配。之后以
+VALUE 相等为条件精确删除三个测试键，再从三成员分别确认九次读取均为空。
+未使用范围删除、未创建租约、未施加故障或修改配置；清理仅删除本轮测试
+数据，不可恢复。写入前保存了逐键清理输入，异常退出路径也仅作条件删除，
+不会无条件覆盖或删除不匹配的值。
+
+前后捕获 namespace/StatefulSet、Pod、PVC 与 PV JSON。实际 StatefulSet
+UID、完整 spec、generation 38、3 Ready/current 保持不变；本地 KubeBrain、
+PD、TiKV 九个 Pod 的 UID、容器状态与进程身份前后一致并全部 Ready。
+所有已记录 PV/PVC 的 UID、spec 和 phase 前后相同；其中本地 StorageClass
+仍为 12 Bound、2 Released，全部作为迁移前保护集合保存，未回收任何卷。
+port-forward 子进程均已退出。证据及 SHA-256 清单保存在仓库外私有 owner
+`peer-retirement-preparation.QjFVoLV6/preflight.mj2Kib6B`。
+
+这证明原固定镜像在当次无故障状态下三个成员可写及正常转发，不证明原
+公共流连续性、Watch/Lease 故障行为、30 秒恢复门限或证书迁移成功。尚未
+创建候选 peer Secret 或开始 rollout；有界阶段执行与逆向恢复仍待完成。
