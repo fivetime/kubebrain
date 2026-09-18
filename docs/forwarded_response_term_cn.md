@@ -33,8 +33,14 @@ RPC 返回 TTL=10，但入口响应头仍为 124。完整现场结论见
 一次请求、不新建流、返回后继任期且不改选主缓存。
 
 本地验证：定向 race 回归通过；原流续租及响应任期测试在 `-race -count=20`
-下重复通过（10.651 秒）；`go vet ./pkg/server/etcd` 通过。整包 race
-回归结果待补充。原始日志保存在本机私有状态目录
+下重复通过（10.651 秒）；`go vet ./pkg/server/etcd` 通过。
+`go test -race -count=1 -timeout=15m ./pkg/server/etcd` 整包通过
+（351.579 秒）。`pkg/server` 的三个真实网络交接测试
+`TestPeerRetirementFullServerNetworkLeaseHandoff`、
+`TestPeerRetirementPendingExpiredStreamDuringStorageFailure`、
+`TestPeerRetirementPendingStreamWithReloadedProxyCredentials` 在 race 模式
+通过（34.793 秒）。上述本地验证对应产品修复提交 `009ce5ca`，不是
+实际 Kubernetes 集群故障验收。原始日志保存在本机私有状态目录
 `/root/.local/state/kubebrain/forwarded-term-fix.qQlAxyQj/`。
 
 修复尚未通过新镜像 CI 和现场原 30 秒门限
