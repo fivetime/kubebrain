@@ -27,7 +27,7 @@ func TestPeerRetirementConfigurationBindsLocalCredentials(t *testing.T) {
 			PeerURLs: []string{"https://peer.invalid:3380"}, TLS: &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{certs[0]}},
 			ReadBudget: time.Second, OperationBudget: time.Second, SendBudget: time.Second, Concurrency: 2, RequestsPerSecond: 10}
 	}
-	for _, name := range []string{"scope", "shared key", "missing local", "wrong local cert", "plaintext", "zero budget", "one member"} {
+	for _, name := range []string{"scope", "shared key", "missing local", "wrong local cert", "wrong signing key", "plaintext", "zero budget", "one member"} {
 		t.Run(name, func(t *testing.T) {
 			config := makeConfig()
 			switch name {
@@ -40,6 +40,8 @@ func TestPeerRetirementConfigurationBindsLocalCredentials(t *testing.T) {
 				delete(config.HolderPins, "old")
 			case "wrong local cert":
 				config.TLS.Certificates = []tls.Certificate{certs[1]}
+			case "wrong signing key":
+				config.TLS.Certificates[0].PrivateKey = certs[1].PrivateKey
 			case "plaintext":
 				config.PeerURLs[0] = "http://peer.invalid:3380"
 			case "zero budget":

@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
@@ -78,6 +79,10 @@ func newPeerRetirementSender(instance, holder string, endpoints []string, creden
 	if err != nil {
 		return nil, invalid
 	}
+	publicKey, err := retirementSigningPublicKey(certificate.PrivateKey)
+	if err != nil || !bytes.Equal(publicKey, leaf.RawSubjectPublicKeyInfo) {
+		return nil, invalid
+	}
 	cert := tls.Certificate{Certificate: chain, PrivateKey: certificate.PrivateKey, Leaf: leaf}
 	targets := make([]string, 0, len(endpoints))
 	seen := make(map[string]bool)
@@ -103,6 +108,28 @@ func newPeerRetirementSender(instance, holder string, endpoints []string, creden
 	}
 	return &peerRetirementSender{instance: instance, holder: holder, endpoints: targets, budget: budget,
 		client: &http.Client{Transport: transport, Timeout: budget, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
+}
+
+// A certificate pin authenticates the public key, not arbitrary PrivateKey
+// contents. Validate the configured signer before any server workers start.
+// Some malformed standard keys (e.g. short Ed25519 keys) panic in Public;
+// contain that configuration failure without reflecting key material.
+func retirementSigningPublicKey(key any) (encoded []byte, err error) {
+	invalid := errors.New("invalid peer retirement signing key")
+	defer func() {
+		if recover() != nil {
+			encoded, err = nil, invalid
+		}
+	}()
+	signer, ok := key.(crypto.Signer)
+	if !ok || signer == nil {
+		return nil, invalid
+	}
+	encoded, err = x509.MarshalPKIXPublicKey(signer.Public())
+	if err != nil {
+		return nil, invalid
+	}
+	return encoded, nil
 }
 
 // send makes at most one attempt per configured peer under ONE shared deadline.
