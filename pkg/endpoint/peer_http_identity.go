@@ -2,13 +2,22 @@ package endpoint
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 	"google.golang.org/grpc"
 )
 
 func (e *Endpoint) newPeerHTTPTransport(rpc *grpc.Server, handler http.Handler) *grpcMuxedHTTPServer {
-	return newGRPCMuxedHTTPServer(rpc, peerHTTPTransportIdentity(handler), e.tlsIdentities)
+	transport := newGRPCMuxedHTTPServer(rpc, peerHTTPTransportIdentity(handler), e.tlsIdentities)
+	if e.config != nil && e.config.ExperimentalPeerRetirement != nil {
+		// Bound admission before the control handler's body/storage budgets begin.
+		// Leave whole-request deadlines unset: this port also carries gRPC streams.
+		transport.httpServer.svr.ReadHeaderTimeout = 5 * time.Second
+		transport.httpServer.svr.MaxHeaderBytes = 16 << 10
+		transport.classificationTimeout = 5 * time.Second
+	}
+	return transport
 }
 
 // TLS terminates outside net/http in the peer cmux listener, so Request.TLS is

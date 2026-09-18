@@ -110,6 +110,22 @@ func (t *secureServer) serve(listener net.Listener) (err error) {
 		handshakeTimeout: tlsIdentityHandshakeTimeout,
 	}
 	mux := cmux.New(tlsListener)
+	// The TLS handshake has finished, but an authenticated peer may send no
+	// application bytes. Apply opt-in transport admission bounds to this second
+	// classification stage as well; net/http cannot time out a socket it has
+	// not received yet. Ordinary transports retain their existing policy.
+	var classificationTimeout time.Duration
+	for _, server := range t.internalServers {
+		if bounded, ok := server.(interface{ initialReadTimeout() time.Duration }); ok {
+			candidate := bounded.initialReadTimeout()
+			if candidate > 0 && (classificationTimeout == 0 || candidate < classificationTimeout) {
+				classificationTimeout = candidate
+			}
+		}
+	}
+	if classificationTimeout > 0 {
+		mux.SetReadTimeout(classificationTimeout)
+	}
 	defer func() {
 		cancel()
 		if err != nil {

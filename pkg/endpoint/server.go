@@ -433,12 +433,17 @@ func newGRPCMuxedHTTPServer(
 }
 
 type grpcMuxedHTTPServer struct {
+	classificationTimeout  time.Duration
 	grpcServer             *grpc.Server
 	httpServer             *httpServer
 	quiescing              atomic.Bool
 	quiesceDone            chan struct{}
 	quiesceErr             error
 	goAwayPropagationDelay time.Duration
+}
+
+func (s *grpcMuxedHTTPServer) initialReadTimeout() time.Duration {
+	return s.classificationTimeout
 }
 
 func (s *grpcMuxedHTTPServer) name() string {

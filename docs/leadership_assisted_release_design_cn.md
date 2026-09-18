@@ -1385,3 +1385,34 @@ git diff --check 通过，同一执行链终态 0。
 收尾时远端 16f9fa1a 的 probe 35328959294 仍在 Race test all probe
 regressions 步骤，image 35328959280 仍在 Build and push TiKV test image
 步骤。它们不包含本轮修改；没有取消、重复触发或推送，也没有集群写入。
+
+## 实验性 peer 请求头与 TLS 后协议分类的期限
+
+CLI 接入前检查发现，handler 的 read/operation budget 不覆盖读取请求头：
+peer 仍继承普通端点五分钟 ReadHeaderTimeout 和默认约 1 MiB 请求头限制。
+新增真实 mTLS 套接字回归先在旧实现失败（72643，7.170 秒）：24 KiB 请求头
+到达 handler 并返回 204，未完成的请求头直到客户端七秒期限仍未被关闭。
+
+现在仅 ExperimentalPeerRetirement 非 nil 的 peer HTTP transport 使用
+五秒 ReadHeaderTimeout 和 16 KiB MaxHeaderBytes；普通 client/info/peer
+配置不变。MaxHeaderBytes 是 net/http 的配置限额，解析器可能有读取余量，
+不宣称逐字节的内存硬上限。保持整个请求的 ReadTimeout/WriteTimeout 为零，
+避免把这些期限变成长时间运行的 gRPC 流的整体寿命。
+
+另外，TLS 握手已完成但尚未发送应用协议字节的连接还未进入 net/http；
+对该实验 transport 将五秒期限传入 TLS 内层 cmux 分类阶段。检查实际依赖
+cmux v0.1.5 的 serve 实现：匹配成功后清除分类读期限，再转交内部服务。
+原 TLS 握手及外层分类的独立期限没有修改。新增测试覆盖 TLS 后静默连接，
+以及慢请求头关闭和超大请求头返回 431，检查均未进入 handler。
+
+这不是全链路单一五秒截止保证，各阶段期限独立；也不是所有已建立连接的
+总量限制、HTTP/2 压力测试或原始长流无损证明。CLI 尚未开放。远端旧提交
+16f9fa1a 的 probe 35328959294 已成功，image 35328959280 仍在运行；该 probe
+不包含后续本地增加的 endpoint CI 步骤，不能当作本轮变更的验收。
+
+最终定向三轮 race 通过（59500，31.286 秒）；endpoint、server、
+transportidentity、cmd/option 全包单轮 race 分别通过（75380，
+54.862/50.686/1.030/1.228 秒），相关 vet 和 diff 检查通过，执行链终态 0。
+本地参考 etcd 的 server/embed/serve.go 中普通 HTTP ReadHeaderTimeout
+也是五分钟；本轮更严格限制仅用于显式实验 peer，不修改公共 etcd 客户端
+端点的兼容性配置。没有集群部署、推送或重跑 CI。
