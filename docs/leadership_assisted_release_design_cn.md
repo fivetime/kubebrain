@@ -677,3 +677,32 @@ checkpoint 清理、选主窗口扩展测试 race 三轮通过（42427，2.491 �
 配置入口也用错配私钥确认在启动服务前拒绝。最终 server/leader/election
 race 五轮通过（29607，14.200/9.085/5.581 秒），相关 vet 和 diff 检查通过。
 默认入口仍关闭，无集群变更。当前远端三条 CI 只验证 8a667c24，不包括本修复。
+
+## 完整 server 与真实 TLS 网络的租约接棒测试
+
+新增 `TestPeerRetirementFullServerNetworkLeaseHandoff`，在本机创建两个完整
+server，各自使用独立 backend，共享 memkv 测试存储。两个 peer HTTP/2 TLS
+listener 使用不同 holder 密钥；公共请求走实际 TCP 上的 mTLS gRPC，并安装
+真实 ClientServerOptions 和客户端服务。先让旧 server 完成初始化/ready，
+通过公共 RPC 创建租约、写入绑定键并收到 KeepAlive 成功响应，然后启动
+另一个 server，确认其观察到原 leader，才拒绝旧节点选主锁的 Get/Update。
+
+启用实验构造器时，新 server 通过真实 peer 请求、存储条件释放和正常选举
+接棒，并完成修订/租约等初始化。公共 TTL 和 Range 验证租约及绑定键仍在；
+默认 NewServer 对照不发送请求，短观察期内不会越过仍有效的持久选主记录。
+第一轮单例 race 通过（43059，1.910 秒）；加入默认关闭对照后，server/
+leader/election race 五轮通过（34110，28.531/9.378/5.519 秒），vet/diff 通过。
+随后补充实际 HTTP/2/已验证 TLS 以及公开成员/任期字段断言，结果另记。
+
+边界：注入仅拒绝旧选主锁 Get/Update，不是隔离所有 TiKV RPC；使用 memkv
+及测试 ClusterIdentifier，不是 TiKV 网络故障。持久租期 30 秒，但本机测试
+RenewDeadline 500 毫秒、RetryPeriod 50 毫秒，未改集群原 30/25/0.5 秒配置。
+成功的 KeepAlive 响应收到后即关闭该测试流，接棒后另建客户端验证状态，
+所以它不证明原“已过期且仍等待”的同一 KeepAlive 流恢复。这个缺口及真实
+专用集群原 30 秒总门限仍然开放，不能用本测试取代。
+
+补充断言后的最终五轮 race 通过（73124）：server 28.728 秒、leader 9.406
+秒、election 5.696 秒，相关 vet/diff 通过。释放请求实际经过 HTTP/2 已验证
+mTLS，接棒后的公开 RPC 保持 ClusterId、改变 MemberId 并提升 RaftTerm。
+测试清理关闭客户端、TCP/gRPC/HTTP listener、server 及 backend 工作线程，
+没有创建集群资源。本轮本地提交，不推送取消仍在运行的 8a667c24 构建。
