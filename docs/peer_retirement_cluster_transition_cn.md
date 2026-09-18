@@ -271,3 +271,36 @@ API 故障注入、kubelet/证书迁移或 30 秒服务恢复验收。现场仍�
 `dcca4197` 的 probe run 35334686727 已报告 success，image run 35334686689
 仍在 Verify published test image 阶段；不将这些旧源码 CI 状态视为本驱动
 的 CI 验证，也不在其运行期间推送取消构建。
+
+## 第一阶段证书材料校验器及真实材料复核
+
+`deploy/test-cluster/verify-peer-trust-material.sh ORIGINAL_DIR EXPANDED_DIR
+NEW_MEMBER_DIR PEER_DNS` 是离线校验器，各目录含 ca.crt、tls.crt、tls.key，
+只接受可信私有目录中的普通非符号链接文件（各不超过 1 MiB）。它不是
+运行时凭据加载器，不能用于攻击者可并发替换文件的目录，也不是驱动所需
+完整 VERIFIER 的替代品。
+
+校验限定本次单旧 CA、单新 CA、双 CA 过渡布局，要求原 cert/key 字节不变，
+双根除空行外精确等于旧根后接新根，不允许额外证书、注释或私钥 PEM 块。
+旧、新 CA 指纹及成员 SPKI 必须不同，两个叶证书分别与 key 匹配；根和叶
+剩余有效期超过一小时，并通过显式 CA（不使用系统信任目录/存储）的当前
+时间、DNS、sslserver/sslclient 验证。双 CA 必须接受双方，而两套单 CA
+必须分别拒绝对方叶证书。输出只含离线通过标记，不输出 key。
+
+本地测试包含有效材料、空行、错误 DNS、过短有效期、缺 clientAuth、错 key、
+跨 CA 复用成员 key、提前替换旧叶证书、缺旧根、额外根、CA 数据夹带私钥及
+重复同一身份。初始测试夹具因 CA 与叶证书同名导致 OpenSSL 路径校验失败，
+已修正夹具；不能将其记成产品证书轮换失败。
+
+实际 `material-check.KVdBjJp9` 初次复核退出 1，原因是原准备脚本为 CA 拼接
+加入空行，而初版校验器要求字节完全连续；失败目录原样保留。修正为仅忽略
+空行后，在新 `material-recheck.N9McdFy1` 中对三个真实成员全部通过，执行
+终态 0。该目录保存校验器副本、三个无密钥输出的日志和 SHA-256 清单，原
+Secret 解码文件仍仅在前一受限 owner 中。没有创建 Secret、修改 StatefulSet
+或轮换实际服务证书；现场挂载/握手及阶段读写校验仍须接入完整 VERIFIER。
+
+最终本地 `go test -race -count=1 -timeout=2m ./deploy/test-cluster` 通过
+（54.948s，执行 99124 终态 0），vet、Bash 语法及 diff 检查通过。
+远端 dcca4197 的 image/probe/backend 三个 run 均已终态 success；API 元数据
+已保存在 `ci-dcca4197.P8woEvJj`。这是 CI 状态证据，尚不替代该版镜像摘要、
+构建信息与节点实际二进制的独立校验，也不覆盖后续本地提交。
