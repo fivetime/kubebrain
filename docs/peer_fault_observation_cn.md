@@ -319,3 +319,38 @@ race/count=1/15m 验证：68407 跑该父测试，52684 跑其余 39 个；各�
 JSON、stderr、退出码。尚需等两组终态并验证完整清单覆盖；即使分组全部
 通过，也只能报告分组覆盖完成，不能把原 30m 整跑改记为成功。这不改变
 任何集群故障门限或断言。
+
+两组追加验证现均成功：68407 为 298.433s，52684 为 438.368s，独立退出码
+均为 0。coverage.json 核对原先完成项与两组完成项的并集，752/752 个
+顶层测试恰好覆盖，missing/extra/named_failures 均为空。证据摘要校验
+通过。记录为完整清单的分组覆盖，不改写两个整跑超时的历史结果。
+
+## 原镜像上的真实诊断启用与恢复
+
+owner `/root/.local/state/kubebrain/diagnostic-live.ggqlxESW`，工具冻结自
+已通过 CI 的 da303fdb。execute.sh 28660、enable、restore 均终态 0。
+原固定镜像未改变，generation 56 → 57（诊断开启）→ 58（完整原 spec
+恢复）。这不是候选镜像升级或原始 30 秒故障实验。
+
+预检曾发现本地旧 client.crt 仅含 serverAuth，不能直接作为现场健康
+身份的依据；实际挂载证书是另一个双用途叶证书，SHA-256 为
+`3c5466cf76e9962cf20c5d78cf9d6e721a142b24c4853beb5d9c6e8976d6626d`。
+变更前直接只读取得三个 Pod 的公有叶证书和 info CA，逐个验证客户端
+用途、CA 一致性和有效期超过一小时；没有改证书或导出 Pod 私钥。
+
+开启后三个成员均通过实际挂载证书的 liveness/readiness curl、合法
+info TLS 身份访问、独立匿名隧道的 TLS 拒绝及有界 debug=2 采栈，栈大小
+分别为 1,720,761、1,915,532、1,937,975 字节。随后立即恢复；三个成员
+两种访问方式均收到 pprof 404，最终原完整 spec、3/3 Ready。其他已有
+Pod 的 UID/spec/containerStatuses 保持不变，没有注入故障、创建租约/
+alarm 或发送 retirement CAS；这些栈不作为候选源码的续租等待证明。
+
+cleanup.sh 66499 终态 0，只回收 enable 阶段新建且已 Released 的六个
+临时 scratch PV，逐卷核对创建记录、claim/Pod UID、当前无引用，以及
+UID/resourceVersion/spec/status 前置条件。原有所有 PV 的 UID/spec
+保留，包括本轮替换下来的六个原始 scratch PV。最终 12 Bound、32
+Released。回收卷内容不可恢复，验证日志和栈证据保留。
+
+证据摘要校验通过，五份临时探针二进制已删除并留存哈希；18584/18585
+无残留监听。未进入自动恢复分支。后续候选故障实验必须重新 admission，
+以 generation 58 和新的 PV 保护集合为基线，不得重用本次已消费目录。
