@@ -36,10 +36,33 @@ grpc v1.83.2；不是只看标签或版本字符串。冻结的 lease.go 文件�
 证据与源码摘要检查通过。临时审核容器及提取出的二进制已删除，精确
 owner 标签的容器查询为空；镜像缓存和源码、日志、清单证据保留。
 
-## 尚未证明
+## 独立审核本身不覆盖的内容
 
 `verified.json` 明确限定 `published_image_identity_only`、执行平台 amd64，
 `deployment_acceptance_proven=false`。本轮未运行 arm64 程序，未验证三台
 工作节点实际 imageID/版本，未进行诊断启用/恢复或原始 30 秒故障实验。
 下一步应先做逐节点版本烟测，再用新 admission 进入专用集群实验。
 本地完整工具包回归会话 8608 仍需独立收集终态，不能用 CI 成功代替。
+
+## 后续三节点版本验证
+
+owner：`/root/.local/state/kubebrain/release-da303fdb.OAubJCfA/nodes.5sJE7lqd`。
+一次性 verify.sh 58367 终态 0，主验证和清理分别为 0。重新核验 release
+证据后，在独立临时命名空间创建 deny-all 网络策略及三个受限、非 root、
+无 ServiceAccount token、无数据卷的版本 Pod，分别绑定 worker1/2/3。
+镜像请求指定已审核的 amd64 摘要，不使用可变标签。
+
+三个 Pod 均 Succeeded、退出码 0；实际 imageID 均为
+`ghcr.io/fivetime/kubebrain@sha256:0484a6308fef13268edea2f033867a84323ead0a801fc6e7543c69ede3e522d1`。
+日志中的完整源码 SHA、版本、TiKV、Go 1.26.8、linux/amd64 均匹配。
+先保留所有版本日志，再断言 imageID，避免失败时丢失运行证据。
+
+前后三个节点 UID 一致；原 StatefulSet 仍 generation 56、完整 spec
+不变、3/3 Ready，原命名空间已有 Pod 的 UID/spec/containerStatuses
+全部一致。临时命名空间 `kb-image-da303fdb-5sje7lqd` 及三个版本 Pod 已
+按 UID 清理，额外查询确认命名空间不存在。没有读写原数据卷或执行
+故障注入。完整证据摘要校验成功，临时 uid-delete 二进制已删除并留存
+哈希，其源码可重建，验证日志保留。
+
+至此已证明该候选在三台工作节点的版本执行，不代表实际 KubeBrain
+副本已升级，也不证明诊断启用/恢复或原始 30 秒故障验收完成。
