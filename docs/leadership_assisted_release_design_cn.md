@@ -1299,3 +1299,37 @@ Watch 断言失败；不把镜像成功当作该源码回归通过，也未进�
 最终代码（含 peer retirement 400 断言）的 endpoint/server/cmd-option
 完整单轮 race 通过（82459，26.038/48.877/1.219 秒），随后相关 vet/diff
 通过。本轮仍未覆盖两个真实 Endpoint 之间的证书轮换或原 TiKV 故障门限。
+
+## 双真实 Endpoint 的动态凭据转发链路
+
+新增 TestExperimentalEndpointPairForwardsThroughDynamicPeerCredentials：
+两个独立 backend/Endpoint.Run 共享带 cluster ID 的 memkv 测试存储，
+各自 client/peer TCP 端口、独立密钥和固定 holder pin。先启动第一个成员
+并通过公共 Range 确认可用，再启动第二个成员；通过两个公共 Status 响应
+确认第二个确为 follower、其 leader 为第一个成员，而不是两个孤立 leader。
+随后通过 follower 的官方 client/v3 Put 写入，再从 leader Get 校验 value
+和 mod_revision 与 Put 响应一致。共享存储只在两个 Endpoint 全部退出后关闭。
+
+证书只有 peer.test DNS SAN，不含 IP SAN；实际 peer URL 使用 127.0.0.1。
+bootstrap TLS 不携带 ServerName，运行时动态材料保留 peer.test。成功的
+follower 转发因此也检查了运行时名称策略确实生效，不只验证路由配置被创建。
+公共测试客户端必须显式 grpc.WithAuthority("peer.test")：首轮遗漏此配置
+被 grpc-go 按 IP 校验而失败（5337），补充身份断言但尚未修正 authority 的
+三轮也失败（25266）。没有关闭证书验证或给 fixture 补 IP SAN 来回避该边界。
+修正后定向 race 单轮通过（73959，10.302 秒）。
+
+整个夹具退出时保留并检查既有的 successor 等待超时，只允许已知
+context.DeadlineExceeded，其他关闭错误仍失败；这不是优雅交接通过结论。
+本项是真实两个监听端点之间的正常转发，不是运行中证书轮换、原流跨轮换
+恢复、TiKV/PD 故障或原 30 秒验收。入站 CN/hostname allowlist 的现有
+校验留在原 server TLS 配置，本轮没有更改该策略，也不声称本测试覆盖其
+全部组合。两条 16f9fa1a CI 已从 queued 转为 in_progress，未重复触发。
+
+最终双端点定向三轮 race 通过（99470，28.673 秒），随后 endpoint 全包
+单轮 race 通过（35.181 秒），vet/diff 通过。另发现现有 probe 工作流虽被
+pkg/** 修改触发，却未运行 endpoint 测试：新增 endpoint/transportidentity
+vet 和完整单轮 race 步骤，沿用 self-hosted、失败即停、3 分钟包超时及
+30 分钟作业总预算。工作流契约先红测确认旧 YAML 缺少命令，随后补齐工作流。
+当前远端 16f9fa1a 的运行不包含这个新步骤，不能回溯称其覆盖 endpoint。
+修改后的 build 工作流契约和 transportidentity 全包 race 通过（4280，
+2.539/1.030 秒）。本轮仅本地提交，未取消运行中的 CI，也未部署到集群。

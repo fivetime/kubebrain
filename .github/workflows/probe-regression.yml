@@ -83,6 +83,11 @@ jobs:
           go test -race -count=1 -timeout=8m -v ./pkg/server/etcd -run '(Lease|Revoke|Expiry|Checkpoint|Attachment)'
           go test -race -count=1 -timeout=8m -v ./pkg/server/etcd -run '(ReadBarrier|Watch|Prev[Kk][Vv]|PrevHint|RevKeyCache|CachePromotion|MetadataSingleflight|PeriodicProgress)'
           go test -race -count=1 -timeout=3m -v ./pkg/server/etcd -run '^TestMaintenanceSnapshotCancellation'
+      - name: Verify endpoint transports and credential lifecycle
+        run: |
+          set -euo pipefail
+          go vet ./pkg/endpoint ./pkg/transportidentity
+          go test -race -count=1 -timeout=3m -v ./pkg/endpoint ./pkg/transportidentity
       - name: Verify leadership freshness regressions
         run: |
           set -euo pipefail
