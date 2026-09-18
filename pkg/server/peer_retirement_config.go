@@ -11,6 +11,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	"github.com/kubewharf/kubebrain/pkg/metrics"
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
 
@@ -19,9 +20,13 @@ import (
 // and approve the exact backend scope. Lease continuity and production fault
 // acceptance remain required before enabling this in a deployment.
 type PeerRetirementConfig struct {
-	Scope      string
-	HolderPins map[string][]string
-	PeerURLs   []string
+	// ControlCredentialSource reloads credentials for each control HTTP request.
+	// Requires SuccessorHolders. TLS remains mandatory for startup validation;
+	// this source does not configure the independent gRPC proxy TLS transport.
+	ControlCredentialSource transportidentity.ClientCredentialSource
+	Scope                   string
+	HolderPins              map[string][]string
+	PeerURLs                []string
 	// SuccessorHolders optionally enables read-only discovery for forwarding.
 	// Keys are exact canonical peer base URLs; values are configured holders.
 	SuccessorHolders                        map[string]string
@@ -65,6 +70,11 @@ func preparePeerRetirement(lock resourcelock.Interface, config PeerRetirementCon
 	if config.SuccessorHolders != nil {
 		protocol.discovery, err = newPeerSuccessorDiscovery(sender, auth, config.SuccessorHolders)
 		if err != nil {
+			return nil, invalid
+		}
+	}
+	if config.ControlCredentialSource != nil {
+		if protocol.discovery == nil || protocol.discovery.useCredentialSource(config.ControlCredentialSource) != nil {
 			return nil, invalid
 		}
 	}
