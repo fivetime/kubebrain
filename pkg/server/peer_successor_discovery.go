@@ -95,22 +95,32 @@ func (d *peerSuccessorDiscovery) discover(parent context.Context) (string, error
 	}
 	ctx, cancel := context.WithTimeout(parent, d.sender.budget)
 	defer cancel()
-	for _, target := range d.targets {
+	for i, target := range d.targets {
 		if ctx.Err() != nil {
 			break
 		}
-		r, err := http.NewRequestWithContext(ctx, http.MethodPost, target.endpoint+peerSuccessorPath, nil)
+		// Reserve a fair share for every remaining configured candidate. A
+		// blackholed first peer must not consume each search's entire budget
+		// forever, starving reachable successors later in the fixed list.
+		deadline, _ := ctx.Deadline()
+		attemptBudget := time.Until(deadline) / time.Duration(len(d.targets)-i)
+		attempt, finish := context.WithTimeout(ctx, attemptBudget)
+		r, err := http.NewRequestWithContext(attempt, http.MethodPost, target.endpoint+peerSuccessorPath, nil)
 		if err != nil {
+			finish()
 			return "", errPeerSuccessorUnavailable
 		}
 		r.Header.Set(retirementInstanceHeader, d.sender.instance)
 		r.Header.Set(retirementHolderHeader, d.sender.holder)
 		response, err := d.sender.client.Do(r)
 		if err != nil {
+			finish()
 			continue
 		}
 		_ = response.Body.Close()
-		if response.StatusCode != http.StatusNoContent || ctx.Err() != nil {
+		timely := attempt.Err() == nil
+		finish()
+		if response.StatusCode != http.StatusNoContent || !timely || ctx.Err() != nil {
 			continue
 		}
 		if len(response.Header.Values(successorScopeHeader)) != 1 || response.Header.Get(successorScopeHeader) != d.auth.instance || len(response.Header.Values(successorHolderHeader)) != 1 || response.Header.Get(successorHolderHeader) != target.holder {
