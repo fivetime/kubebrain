@@ -72,12 +72,16 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool) {
 	var servers [2]atomic.Pointer[server]
 	var peerRPC [2]atomic.Pointer[grpc.Server]
 	var peerRenewals [2]atomic.Int32
+	var discoveryRequests [2]atomic.Int32
 	var requests atomic.Int32
 	var authenticatedHTTP2 atomic.Bool
 	urls := make([]string, 2)
 	for i := range urls {
 		i := i
 		peer := retirementHandlerServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == peerSuccessorPath {
+				discoveryRequests[i].Add(1)
+			}
 			if rpc := peerRPC[i].Load(); rpc != nil && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
 				rpc.ServeHTTP(w, r)
 				return
@@ -300,6 +304,32 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool) {
 			require.Equal(t, ack.Header.MemberId, got.response.Header.MemberId, "public header identifies the original ingress member, even when forwarded")
 			require.GreaterOrEqual(t, got.response.Header.RaftTerm, ack.Header.RaftTerm)
 			require.Positive(t, peerRenewals[1].Load(), "successor peer must actually consume the forwarded renewal")
+			require.True(t, oldStore.failed.Load())
+			// Keep the original stream alive beyond the two-second routing hint
+			// lifetime. Repeated renewal must survive revalidation while the old
+			// ingress still cannot refresh the authoritative election record.
+			continued := 0
+			initialDiscovery := discoveryRequests[1].Load()
+			until := time.Now().Add(3 * time.Second)
+			for time.Now().Before(until) {
+				timer := time.NewTimer(200 * time.Millisecond)
+				select {
+				case <-timer.C:
+				case <-rpcCtx.Done():
+					timer.Stop()
+					t.Fatal("original stream deadline expired during hint revalidation")
+				}
+				require.NoError(t, stream.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: grant.ID}))
+				response, err := stream.Recv()
+				require.NoError(t, err)
+				require.Equal(t, grant.ID, response.ID)
+				require.Positive(t, response.TTL, "hint expiry must not lose the short lease")
+				continued++
+			}
+			require.Equal(t, int32(1), streamCount.Load())
+			require.Equal(t, int32(2+continued), messageCount.Load())
+			require.GreaterOrEqual(t, peerRenewals[1].Load(), int32(1+continued))
+			require.Greater(t, discoveryRequests[1].Load(), initialDiscovery, "expired hint must trigger another authenticated discovery")
 			require.True(t, oldStore.failed.Load())
 		case <-rpcCtx.Done():
 			t.Fatal("original expired keepalive stream did not recover while old storage remained unavailable")
