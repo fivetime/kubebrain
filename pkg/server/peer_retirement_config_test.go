@@ -16,6 +16,38 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
 
+func TestSuccessorForwardingRejectsUnsafeTLSBeforeStarting(t *testing.T) {
+	kv := memkv.NewKvStorage()
+	t.Cleanup(func() { require.NoError(t, kv.Close()) })
+	lock := election.NewResourceLockManager(election.Config{Prefix: "/successor-config", Identity: "old", Timeout: time.Second}, retirementStorageFixture{kv, 42}).GetResourceLock()
+	pool, certs := retirementTestCertificates(t)
+	retirement := PeerRetirementConfig{Scope: lock.(election.RetiredOwnershipReleaser).RetirementScope(),
+		HolderPins: map[string][]string{"old": {retirementTestPin(certs[0])}, "helper": {retirementTestPin(certs[1])}},
+		PeerURLs:   []string{"https://peer.invalid:3380"}, SuccessorHolders: map[string]string{"https://peer.invalid:3380": "helper"},
+		TLS: &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{certs[0]}}, ReadBudget: time.Second,
+		OperationBudget: time.Second, SendBudget: time.Second, Concurrency: 1, RequestsPerSecond: 10}
+	for _, mode := range []string{"missing TLS", "insecure fallback", "skip verification", "wrong holder", "dynamic certificate"} {
+		t.Run(mode, func(t *testing.T) {
+			config := Config{EnableEtcdProxy: true, ProxyTLS: retirement.TLS.Clone()}
+			switch mode {
+			case "missing TLS":
+				config.ProxyTLS = nil
+			case "insecure fallback":
+				config.ProxyAllowInsecure = true
+			case "skip verification":
+				config.ProxyTLS.InsecureSkipVerify = true
+			case "wrong holder":
+				config.ProxyTLS.Certificates = []tls.Certificate{certs[1]}
+			case "dynamic certificate":
+				config.ProxyTLS.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { panic("must never run") }
+			}
+			s, err := NewServerWithPeerRetirement(context.Background(), &retirementLifecycleBackend{lock: lock}, nil, config, retirement)
+			require.Error(t, err)
+			require.Nil(t, s)
+		})
+	}
+}
+
 func TestPeerRetirementConfigurationBindsLocalCredentials(t *testing.T) {
 	kv := memkv.NewKvStorage()
 	t.Cleanup(func() { require.NoError(t, kv.Close()) })
@@ -27,10 +59,16 @@ func TestPeerRetirementConfigurationBindsLocalCredentials(t *testing.T) {
 			PeerURLs: []string{"https://peer.invalid:3380"}, TLS: &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{certs[0]}},
 			ReadBudget: time.Second, OperationBudget: time.Second, SendBudget: time.Second, Concurrency: 2, RequestsPerSecond: 10}
 	}
-	for _, name := range []string{"scope", "shared key", "missing local", "wrong local cert", "wrong signing key", "plaintext", "zero budget", "one member"} {
+	for _, name := range []string{"scope", "shared key", "missing local", "wrong local cert", "wrong signing key", "plaintext", "zero budget", "one member", "unknown successor", "self successor", "missing successor"} {
 		t.Run(name, func(t *testing.T) {
 			config := makeConfig()
 			switch name {
+			case "unknown successor":
+				config.SuccessorHolders = map[string]string{"https://peer.invalid:3380": "unknown"}
+			case "self successor":
+				config.SuccessorHolders = map[string]string{"https://peer.invalid:3380": "old"}
+			case "missing successor":
+				config.SuccessorHolders = map[string]string{}
 			case "scope":
 				config.Scope = "wrong"
 			case "shared key":

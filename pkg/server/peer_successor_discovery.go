@@ -21,7 +21,7 @@ var errPeerSuccessorUnavailable = errors.New("peer successor unavailable")
 // A successful probe supplies only a forwarding candidate, never election
 // ownership. The candidate may demote immediately after replying: normal peer
 // admission and backend fencing must still validate every forwarded operation.
-// This component is not yet registered or wired into the proxy connector.
+// Registration and connector use require explicit SuccessorHolders opt-in.
 type peerSuccessorDiscovery struct {
 	sender  *peerRetirementSender
 	auth    *peerRetirementAuthorizer

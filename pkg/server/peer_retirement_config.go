@@ -19,9 +19,12 @@ import (
 // and approve the exact backend scope. Lease continuity and production fault
 // acceptance remain required before enabling this in a deployment.
 type PeerRetirementConfig struct {
-	Scope                                   string
-	HolderPins                              map[string][]string
-	PeerURLs                                []string
+	Scope      string
+	HolderPins map[string][]string
+	PeerURLs   []string
+	// SuccessorHolders optionally enables read-only discovery for forwarding.
+	// Keys are exact canonical peer base URLs; values are configured holders.
+	SuccessorHolders                        map[string]string
 	TLS                                     *tls.Config `json:"-"`
 	ReadBudget, OperationBudget, SendBudget time.Duration
 	Concurrency                             int
@@ -29,8 +32,9 @@ type PeerRetirementConfig struct {
 }
 
 type peerRetirementProtocol struct {
-	handler *peerRetirementHandler
-	sender  *peerRetirementSender
+	handler   *peerRetirementHandler
+	sender    *peerRetirementSender
+	discovery *peerSuccessorDiscovery
 }
 
 func preparePeerRetirement(lock resourcelock.Interface, config PeerRetirementConfig) (*peerRetirementProtocol, error) {
@@ -57,7 +61,14 @@ func preparePeerRetirement(lock resourcelock.Interface, config PeerRetirementCon
 	if _, ok := auth.holders[lock.Identity()][sha256.Sum256(leaf.RawSubjectPublicKeyInfo)]; !ok {
 		return nil, invalid
 	}
-	return &peerRetirementProtocol{handler: handler, sender: sender}, nil
+	protocol := &peerRetirementProtocol{handler: handler, sender: sender}
+	if config.SuccessorHolders != nil {
+		protocol.discovery, err = newPeerSuccessorDiscovery(sender, auth, config.SuccessorHolders)
+		if err != nil {
+			return nil, invalid
+		}
+	}
+	return protocol, nil
 }
 
 // NewServerWithPeerRetirement validates the experimental protocol before any
@@ -78,6 +89,21 @@ func NewServerWithPeerRetirement(ctx context.Context, b backend.Backend, metricC
 	protocol, err := preparePeerRetirement(b.GetResourceLock(), retirement)
 	if err != nil {
 		return nil, err
+	}
+	if protocol.discovery != nil && config.EnableEtcdProxy {
+		if config.ProxyAllowInsecure {
+			return nil, errors.New("successor forwarding requires strict peer TLS")
+		}
+		proxyCredentials, err := newPeerRetirementSender(retirement.Scope, b.GetResourceLock().Identity(), retirement.PeerURLs, config.ProxyTLS, retirement.SendBudget)
+		if err != nil {
+			return nil, errors.New("invalid successor forwarding TLS")
+		}
+		tlsConfig := proxyCredentials.client.Transport.(*http.Transport).TLSClientConfig
+		leaf := tlsConfig.Certificates[0].Leaf
+		if _, ok := protocol.handler.auth.holders[b.GetResourceLock().Identity()][sha256.Sum256(leaf.RawSubjectPublicKeyInfo)]; !ok {
+			return nil, errors.New("invalid successor forwarding identity")
+		}
+		config.ProxyTLS = tlsConfig
 	}
 	return newServer(ctx, b, metricCli, config, protocol), nil
 }

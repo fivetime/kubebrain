@@ -808,3 +808,51 @@ HTTP/1 与 HTTP/2 真实 mTLS 用例覆盖就绪/非 leader、发送者和接收
 多个目标共享截止时间（首个超时后不请求第二个）。最终五轮定向 race
 通过（39331，4.159 秒），随后 server vet/diff 通过。没有运行或宣称完整
 server 套件成功，因为原流恢复用例仍是未解决的失败草稿。
+
+## 实验转发入口已接入发现，原过期续租流本机回归通过
+
+增加显式可选 `PeerRetirementConfig.SuccessorHolders`。只有非 nil 且完整
+验证的 URL/holder 映射才注册 peer-only 发现 handler，并给单一 proxy
+connector 使用 `successorRoutingView`。普通 NewServer、未提供该映射的
+实验构造器、client/info HTTP 入口均不启用发现。接收端同时检查本地
+EpochAndLeadingFresh、未 draining 和 leaderServing，不使用 follower
+代理就绪作为 leader 证明。
+
+路由视图只在权威记录刷新失败且本机已经非 leader/非 fresh 时探测候选。
+权威读取最多使用 100 毫秒或剩余预算的一半，为探测留出同一上下文中的
+时间；底层仍须遵守取消。候选缓存有效期两秒，本机领导权、epoch、已观察
+任期或 holder 变化都会使其失效，存储刷新成功也立即清除。探测期间变化
+亦拒绝发布候选。该视图仅传给 proxy connector：Campaign、revision sync、
+PeerService 公开选主信息和 backend 写入 fence 全部保留原 election，
+绝不将候选写入权威选主状态。健康检查和实际 RPC 仍保留原 peer 校验。
+
+发现启用且转发打开时，启动前额外拒绝无 ProxyTLS、明文回退、跳过验证、
+动态证书回调和错误本机 holder 私钥，使用复制后的严格 TLS 配置。
+尚无 CLI 启用或集群部署；发现 pin 校验不等于新增了每次 gRPC 连接的
+逐目标 pin 绑定，后续凭据/监听器部署审查仍需明确其信任边界。
+
+原先失败的 `TestPeerRetirementPendingExpiredStreamDuringStorageFailure`
+首次通过（7038，15.584 秒）。最终用例保留原十秒请求上下文、真实 TTL=1
+自然过期、四秒本机 RenewDeadline、旧存储故障持续开启，一个公共流和
+两条入站消息的限制。补充新 leader peer gRPC 实际收到续租消息计数，
+确认成功响应经过转发，而非客户端新请求或旧 leader 本地续命。
+
+补充响应头断言曾失败两次（45434/61954）：错误地预期原入口响应的
+MemberId/缓存 RaftTerm 必须立即等于新成员直连响应。检查当前拦截器和
+本地 etcd header.fill 后，MemberId 应标识原入口成员；本实现在旧存储
+不可达时仍使用旧入口缓存任期。最终断言固定 ClusterId、原入口 MemberId、
+任期不倒退，并用新 peer 入站计数证明转发，未改产品响应头来迎合测试。
+**这不证明原入口立即展示最新任期**；该元数据传播差距仍待单独对照分析。
+
+路由失效/探测竞态/预算和发现协议定向 race 五轮通过（98350，4.548 秒）。
+第一次广回归三轮通过（73055）：server 58.277、etcdproxy 14.059、leader
+6.045、revision 22.722、election 3.769 秒，vet/diff 通过。最终加入 TLS
+拒绝、入口隔离和 peer 接收计数后，定向测试通过（66310，15.869 秒），
+完整 server/service 子包/election 单轮 race 再通过（13129）：16.707/
+5.338/2.738/8.373/2.024 秒，随后 vet/diff 通过。原流用例现在纳入正常
+回归，不再是失败草稿，也没有 skip。
+
+边界仍保留：这是 memkv 存储接口故障，不是专用集群真实 TiKV 网络隔离或
+原 30/25/0.5 配置验收。夹具整体关闭时的 successor 等待截止被单独记录，
+不能当作平滑滚动退出成功。远端 8a667c24 三条 CI 已均报告 success，
+但其镜像审计及后续本地提交的 CI/镜像验证尚未完成，本轮未部署。

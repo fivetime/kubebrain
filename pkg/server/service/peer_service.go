@@ -52,6 +52,13 @@ type Config struct {
 
 // NewPeerService return a PeerService for server
 func NewPeerService(ctx context.Context, le leader.LeaderElection, m metrics.Metrics, b backend.Backend, config Config) PeerService {
+	return NewPeerServiceWithProxyElection(ctx, le, le, m, b, config)
+}
+
+// NewPeerServiceWithProxyElection permits a routing-only view for the connector.
+// Campaign, write fencing, revision synchronization and public election metadata
+// retain le. The alternate view must never grant leadership or mutate ownership.
+func NewPeerServiceWithProxyElection(ctx context.Context, le, proxyElection leader.LeaderElection, m metrics.Metrics, b backend.Backend, config Config) PeerService {
 	ps := &peerService{
 		LeaderElection: le,
 		RevisionSyncer: revision.NewRevisionSyncer(b, m, le, config.TLS),
@@ -61,7 +68,7 @@ func NewPeerService(ctx context.Context, le leader.LeaderElection, m metrics.Met
 		config:         config,
 	}
 	if config.EnableEtcdProxy {
-		ps.EtcdProxy = etcdproxy.NewEtcdProxyWithMetrics(ctx, le, config.TLS, config.AllowInsecure, config.MaxRequestBytes, m)
+		ps.EtcdProxy = etcdproxy.NewEtcdProxyWithMetrics(ctx, proxyElection, config.TLS, config.AllowInsecure, config.MaxRequestBytes, m)
 	}
 	return ps
 }

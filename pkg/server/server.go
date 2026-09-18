@@ -377,7 +377,11 @@ func newServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		return epoch, fresh
 	})
 	// revisionSyncer sync revision from leader to follower
-	peerService := service.NewPeerService(runCtx, election, metricCli, backend, config.getPeerServiceConfig())
+	proxyElection := election
+	if retirement != nil && retirement.discovery != nil {
+		proxyElection = &successorRoutingView{LeaderElection: election, discover: retirement.discovery.discover}
+	}
+	peerService := service.NewPeerServiceWithProxyElection(runCtx, election, proxyElection, metricCli, backend, config.getPeerServiceConfig())
 	// construct etcd & brian grpc server
 	s.etcdServer = etcd.New(backend, metricCli, peerService)
 	s.genericAlarms = s.etcdServer.GenericAlarms
@@ -936,6 +940,13 @@ func (s *server) GetPeerHttpHandlers() map[string]http.Handler {
 	}
 	if s.retirement != nil {
 		handlers[peerRetirementPath] = s.retirement.handler
+		if s.retirement.discovery != nil {
+			handlers[peerSuccessorPath] = &peerSuccessorHandler{limits: s.retirement.handler,
+				holder: s.retirement.sender.holder, ready: func() bool {
+					_, fresh := s.leaderElection.EpochAndLeadingFresh()
+					return fresh && !s.draining.Load() && s.leaderServing()
+				}}
+		}
 	}
 	return handlers
 }

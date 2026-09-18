@@ -1,0 +1,69 @@
+package server
+
+import (
+	"context"
+	"sync"
+	"time"
+
+	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
+)
+
+// successorRoutingView is passed ONLY to the proxy connector. All other users
+// retain the original election, including Campaign and backend write fencing.
+// Hints expire and are invalidated by local leadership or a new observed record.
+type successorRoutingView struct {
+	leader.LeaderElection
+	discover       func(context.Context) (string, error)
+	mu             sync.Mutex
+	hint, observed string
+	epoch, term    uint64
+	until          time.Time
+}
+
+func (v *successorRoutingView) GetLeaderInfo() string {
+	observed := v.LeaderElection.GetLeaderInfo()
+	epoch, fresh := v.EpochAndLeadingFresh()
+	term := v.CurrentLeadershipTerm()
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.hint != "" && !fresh && !v.IsLeader() && observed == v.observed && epoch == v.epoch && term == v.term && time.Now().Before(v.until) {
+		return v.hint
+	}
+	v.hint = ""
+	return observed
+}
+
+func (v *successorRoutingView) RefreshLeaderInfo(ctx context.Context) error {
+	// Reserve time for authenticated discovery even if local storage stalls.
+	budget := 100 * time.Millisecond
+	if deadline, ok := ctx.Deadline(); ok {
+		budget = min(budget, time.Until(deadline)/2)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, budget)
+	err := v.LeaderElection.RefreshLeaderInfo(readCtx)
+	cancel()
+	v.mu.Lock()
+	v.hint = ""
+	v.mu.Unlock()
+	if err == nil || ctx.Err() != nil || v.IsLeader() {
+		return err
+	}
+	epoch, fresh := v.EpochAndLeadingFresh()
+	if fresh {
+		return err
+	}
+	observed := v.LeaderElection.GetLeaderInfo()
+	term := v.CurrentLeadershipTerm()
+	hint, discoveryErr := v.discover(ctx)
+	if discoveryErr != nil || hint == "" || ctx.Err() != nil {
+		return err
+	}
+	currentEpoch, currentFresh := v.EpochAndLeadingFresh()
+	if currentFresh || v.IsLeader() || currentEpoch != epoch || v.CurrentLeadershipTerm() != term || v.LeaderElection.GetLeaderInfo() != observed {
+		return err
+	}
+	v.mu.Lock()
+	v.hint, v.observed, v.epoch, v.term, v.until = hint, observed, epoch, term, time.Now().Add(2*time.Second)
+	v.mu.Unlock()
+	return nil
+}
