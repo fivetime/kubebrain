@@ -1238,3 +1238,34 @@ SHA-256 cf595a8f038079f19aaa3e3d16c75867d052002eca61b12134435c806d63a2f0。
 无效范围创建拒绝响应的 revision 来源，详见
 [无效 Watch 创建响应头](watch_invalid_create_revision_cn.md)。原 CI 失败记录
 仍保留，不能用本机通过追溯改写为远端成功。
+
+## Endpoint API 的显式实验接入
+
+Endpoint.Config 新增默认 nil 的 ExperimentalPeerRetirement；只含 scope、
+holder pin、固定端点映射和预算，不接受 TLS 回调或私钥对象。Run 通过
+newDataServer 选择普通构造器或实验构造器。实验路径必须使用 TLS-only、
+ClientAuth 和明确 CA 的 peer 文件策略，控制 HTTP 与 gRPC 代理共用重新
+加载来源。端点映射复制并排序，pin slice 复制，不依赖外部 map 的后续改动。
+
+启动先加载一次材料，构造现有服务端静态身份校验所需的 bootstrap snapshot；
+运行时两类出站连接均使用来源重新加载，包含 ServerName/CRL 策略。bootstrap
+没有动态回调，不是静默删除普通 endpoint 的回调，而是显式实验模式改用
+已实现的受控材料校验。启动加载有五秒上下文预算，但仍不声称它能中断内核
+中的普通文件 I/O。后续 scope、pin、URL 和协议预算由实验服务端构造器检查。
+
+Run 的清理改为在构造器之前注册，校验失败也取消上下文并关闭后端；只有
+实际创建了 server 才调用其 Close，监听器在构造成功之后才启动。测试覆盖
+材料共享、真实文件轮换、保留服务名策略、映射隔离，以及明文/混合模式、
+缺 CA、缺目标和取消时不创建 server 并清理后端。定向三轮 race 通过
+（14505，1.152 秒）。准备配置测试中的模拟 pin 不被当作服务端身份校验
+通过证据；完整启动的 scope/pin 校验由后续构造器承担。
+
+尚无 CLI 开关，未在集群启用。新 Endpoint 实验路径的成功启动、真实监听器
+与两节点证书轮换联调仍待覆盖；现有测试不替代这些步骤。控制 HTTP 仍受现有
+监听器边界约束，生产前须审查握手/头部期限及连接准入，不能仅因为有 handler
+级预算便宣称完整抗滥用策略已经完成。静态默认路径保持不变。
+
+最终 endpoint/server/transportidentity/cmd-option 全包单轮 race 通过
+（44106，16.704/48.119/1.030/1.236 秒），随后相关 vet/diff 通过。
+镜像 35326113519 最后检查仍 in_progress，probe 35326113607 的 Watch
+失败未被远端重验；Watch 修复和本轮接入均未推送或部署。

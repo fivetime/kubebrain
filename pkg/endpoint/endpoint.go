@@ -89,10 +89,11 @@ func NewEndpoint(b backend.Backend, m metrics.Metrics, config *Config) *Endpoint
 //	InfoPort  ───  Insecure   ─── HTTP
 func (e *Endpoint) Run(ctx context.Context) (err error) {
 	runCtx, cancel := context.WithCancel(ctx)
-	e.server = server.NewServer(runCtx, e.backend, e.metrics, e.config.getServerConfig())
 	defer func() {
 		cancel()
-		err = errors.Join(err, e.server.Close())
+		if e.server != nil {
+			err = errors.Join(err, e.server.Close())
+		}
 		if closer, ok := e.backend.(interface{ Close() error }); ok {
 			err = errors.Join(err, closer.Close())
 		}
@@ -102,6 +103,10 @@ func (e *Endpoint) Run(ctx context.Context) (err error) {
 			klog.Info("shutdown complete")
 		}
 	}()
+	e.server, err = e.newDataServer(runCtx)
+	if err != nil {
+		return err
+	}
 
 	group, runCtx := errgroup.WithContext(runCtx)
 

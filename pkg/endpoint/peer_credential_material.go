@@ -15,8 +15,8 @@ import (
 
 // peerCredentialSource captures operator-owned file paths and TLS policy, not
 // live SecurityConfig callback pointers. Files are re-read on every Load. It is
-// preparation for the experimental transport adapter, not wired to that adapter
-// yet. Existing endpoint TLS rotation and revocation callbacks remain unchanged.
+// used by the explicit experimental endpoint mode. Existing normal endpoint TLS
+// rotation and revocation callbacks remain unchanged.
 type peerCredentialSource struct {
 	certFile, keyFile, caFile, crlFile, serverName string
 	minVersion, maxVersion                         uint16

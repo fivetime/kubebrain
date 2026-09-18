@@ -65,6 +65,9 @@ var secureModeStrings = []string{
 var tlsNextProtos = []string{"http/1.1", "h2"}
 
 type Config struct {
+	// ExperimentalPeerRetirement is an explicit API-only opt-in. It requires
+	// distinct holder pins and TLS-only peer credentials; nil disables it.
+	ExperimentalPeerRetirement *PeerRetirementOptions
 	// Port is the listened port for client server
 	Port int
 
