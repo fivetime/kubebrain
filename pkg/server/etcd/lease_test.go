@@ -3090,6 +3090,7 @@ func TestLeaseFollowerKeepAliveRejectsInvalidProxyResult(t *testing.T) {
 			err := server.LeaseKeepAlive(stream)
 			require.Equal(t, codes.DataLoss, status.Code(err))
 			require.Empty(t, stream.sent)
+			require.Zero(t, server.forwardedResponseTerm.Load(), "invalid payload must not influence response terms")
 			require.Equal(t, []interface{}{int64(0), 1},
 				recordedLeaseProxyIntegrityValues(rec, leaseProxyRPCKeepAlive))
 		})

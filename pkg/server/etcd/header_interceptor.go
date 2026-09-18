@@ -544,7 +544,7 @@ func (s *RPCServer) responseRaftTerm(ctx context.Context) (uint64, error) {
 				metrics.Tag("path", path), metrics.Tag("outcome", outcome))
 		}
 	}
-	if term := s.peers.CurrentLeadershipTerm(); term != 0 {
+	if term := max(s.peers.CurrentLeadershipTerm(), s.forwardedResponseTerm.Load()); term != 0 {
 		observe("cache", "success")
 		return term, nil
 	}
@@ -554,7 +554,7 @@ func (s *RPCServer) responseRaftTerm(ctx context.Context) (uint64, error) {
 		return 0, retryableCoordinationStatusErr(err)
 	}
 	observe("read", "success")
-	return term, nil
+	return max(term, s.forwardedResponseTerm.Load()), nil
 }
 
 func (s *RPCServer) stampUnary(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, retErr error) {

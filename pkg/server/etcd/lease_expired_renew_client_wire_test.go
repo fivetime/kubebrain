@@ -60,10 +60,14 @@ func testClientExpiredLeaseKeepAliveOnceRoutes(t *testing.T, delayedCallback boo
 	var keepAliveStreams atomic.Int32
 	var keepAliveMessages atomic.Int32
 	header := proxiedResponseHeader(s, int64(s.backend.GetCurrentRevision()))
+	// A backend-isolated ingress may still cache the old shared term while a
+	// verified successor answers the forwarded renewal over the peer path.
+	header.RaftTerm = 125
 	epoch, fresh := s.peers.EpochAndLeadingFresh()
 	require.True(t, fresh)
 	s.peers = testPeerService{isLeaderFn: func() bool { return delayedCallback || leading.Load() }, proxyEnabled: true,
-		epochFn: func() (uint64, bool) { return epoch, leading.Load() },
+		currentTermFn: func() uint64 { return 124 },
+		epochFn:       func() (uint64, bool) { return epoch, leading.Load() },
 		leaseKeepAliveFn: func(_ context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
 			forwarded.Add(1)
 			return &etcdserverpb.LeaseKeepAliveResponse{Header: header, ID: req.ID, TTL: 37}, nil
@@ -138,6 +142,8 @@ func testClientExpiredLeaseKeepAliveOnceRoutes(t *testing.T, delayedCallback boo
 		require.Equal(t, int32(1), keepAliveStreams.Load(), "renewal must survive on its original RPC stream")
 		require.Equal(t, int32(1), keepAliveMessages.Load(), "client must not resend the consumed request")
 		requireClientLeaseHeaderWellFormed(t, got.response.ResponseHeader)
+		require.Equal(t, uint64(125), got.response.RaftTerm, "ingress must not overwrite the successor term with its stale cache")
+		require.Equal(t, uint64(124), s.peers.CurrentLeadershipTerm(), "response observations must not alter election ownership")
 	case <-time.After(time.Second):
 		t.Fatal("official client renewal remained blocked after term ended")
 	}

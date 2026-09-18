@@ -52,7 +52,13 @@ func validateProxyResponseHeader(response any, identity proxyResponseIdentity, r
 	if !ok || headerResponse.GetHeader() == nil {
 		return "without a header"
 	}
-	header := headerResponse.GetHeader()
+	return validateProxyResponseHeaderValue(headerResponse.GetHeader(), identity, revisionPolicy)
+}
+
+func validateProxyResponseHeaderValue(header *etcdserverpb.ResponseHeader, identity proxyResponseIdentity, revisionPolicy proxyResponseRevisionPolicy) string {
+	if header == nil {
+		return "without a header"
+	}
 	if header.GetRevision() < 0 {
 		return "with a negative header revision"
 	}

@@ -91,6 +91,9 @@ type RPCServer struct {
 
 	metricCli metrics.Metrics
 	peers     service.PeerService
+	// Response metadata only: observing a peer term must never refresh election
+	// ownership, lease freshness, routing, or write fences.
+	forwardedResponseTerm atomic.Uint64
 	// Tests shorten this internal reliability boundary; zero uses the production
 	// default. It is immutable after the RPC server starts serving.
 	proxyStreamTrailingStatusTimeout time.Duration

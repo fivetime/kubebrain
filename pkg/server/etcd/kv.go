@@ -2912,9 +2912,21 @@ func txnHeader(rev int64) *etcdserverpb.ResponseHeader {
 // least as fresh as a successful response it returned to the same client. It
 // deliberately does not advance the published watch watermark: event delivery
 // remains responsible for proving that a revision is safe for watch progress.
+// It also retains a validated peer term for response metadata, independently
+// of the election cache and all ownership/freshness decisions.
 func (s *RPCServer) observeForwardedRevision(header *etcdserverpb.ResponseHeader, err error) {
 	if err == nil && header != nil && header.Revision > 0 {
 		s.backend.SetCurrentRevision(uint64(header.Revision))
+	}
+	// Callers validate method-specific payloads before observing a successful
+	// response. Recheck identity here before accepting a reporting-only term.
+	if err != nil || header == nil || validateProxyResponseHeaderValue(header, s.expectedProxyResponseIdentity(), proxyResponseRevisionNonNegative) != "" {
+		return
+	}
+	for old := s.forwardedResponseTerm.Load(); header.RaftTerm > old; old = s.forwardedResponseTerm.Load() {
+		if s.forwardedResponseTerm.CompareAndSwap(old, header.RaftTerm) {
+			break
+		}
 	}
 }
 
