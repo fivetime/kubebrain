@@ -610,3 +610,41 @@ EnsureVoluntaryRelease 等待至 5 秒后返回 deadline exceeded（34707）。�
 最终回归（74685）成功：server/leader/election race 五轮分别为
 14.230/9.364/5.620 秒；endpoint/option/build race 一轮分别为
 15.701/1.243/2.678 秒，相关 vet 与 diff 检查通过。没有集群变更。
+
+## 两个独立后端的续租恢复边界测试
+
+新增 `TestAcknowledgedLeaseSurvivesAssistedReleaseAndNewBackend`：两个独立
+backend 和 RPC/lease manager 共享 memkv，仅测试包装提供 ClusterIdentifier。
+旧 backend 真实获取选主记录/隔离令牌并挂接写入准入，新 backend 不共享旧
+租约内存。覆盖纯内存续租及已有短 remaining-TTL checkpoint 后的续租，公共
+LeaseKeepAlive 测试流明确收到成功 TTL；在 Send 边界读取持久记录，要求
+checkpoint 已清零，再记录已确认的内存期限。
+
+之后关闭旧 freshness、StopLeases，健康节点提交 scoped release，正常获取
+新选主记录、初始化持久修订并 ReloadLeases。断言新恢复期限不早于旧确认期限、
+TTL 为正、绑定关系和键仍存在，旧管理器不能再次续租。恢复扩展仍为 30 秒。
+此处直接调用存储释放，不包含 TLS/Campaign 故障链；前几节各自的测试不能
+拼接成已经完成真实网络端到端验收的结论。
+
+检查固定参考 etcd `server/lease/lessor.go` 的 Renew 路径：持久 remaining-TTL
+checkpoint 清零发生在期限刷新与返回 TTL 之前。本测试针对这一时序，而非
+仅检查最终记录。首轮夹具错误使用 300 秒租约并假定 checkpointTimer 非空，
+Stop 空指针 panic 后清理又等待未释放锁，最终 60 秒超时（24099）；这是新增
+测试本身的错误。已改用 600 秒租约、检查定时器存在性并 defer 解锁，未修改
+产品代码、原测试集群参数或原验收门限。重跑结果另记。
+
+`7d8b1724` 服务回归 run `35316598625` 已成功（attempt 1），完整日志明确
+包含 HTTP/2 慢请求、真实 H1/H2 发送接收及丢失响应不自动重发测试 PASS。
+日志 SHA-256：`ea0370fa352c54f44efe85597cc7d678a8ee43414e4d192262908149d99396ff`。
+镜像 run `35316598611` 仍在 Build and push 步骤，本地后续提交不能归入该 CI。
+
+修正夹具及增加 Send 边界断言后，新增续租恢复测试与既有退位发布屏障、
+checkpoint 清理、选主窗口扩展测试 race 三轮通过（42427，2.491 秒），etcd
+包 vet/diff 通过。随后按 CI 的完整 `(Lease|Revoke|Expiry|Checkpoint|Attachment)`
+模式运行 race 一轮，通过（82550，82.476 秒），包括新增用例。没有产品行为
+修改，亦没有真实网络连续性或原 30 秒门限通过结论。
+
+随后镜像 CI 也成功；三条 `7d8b1724` 固定源码 attempt 1、workflow 路径及
+具体测试日志已独立核对成功（88847），证据为私有目录
+`release-7d8b1724.7vFpQLN1/ci-evidence.sJZwBH2V/verified.json`。
+独立镜像审计已开始，完成结果须另记，不能从 CI 成功推定镜像身份或部署验收。
