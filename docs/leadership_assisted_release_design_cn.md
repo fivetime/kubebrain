@@ -1359,3 +1359,29 @@ successor 等待超时，不将其描述成优雅交接成功。两条远端 16f
 transportidentity 全包单轮 race 通过（45.829/1.027 秒），相关 vet/diff
 通过。证据日志在私有 credential-expiry-txn.FXNmj6Yf 目录的
 endpoint-rotation.log 和 endpoint-rotation-repeated.log。未推送或部署。
+
+## 动态 gRPC 连接的 CRL 有效期边界
+
+动态连接原先按 30 秒最大寿命及证书到期时间关闭，但未将本次握手使用的
+CRL NextUpdate 纳入截止时间，因此短有效期 CRL 到期后连接仍可能继续使用。
+现在 TLS 材料构造同时返回本地证书与 CRL 的最早到期时间；gRPC 再与远端
+证书链到期时间、原连接寿命上限取最小值，交给现有连接关闭机制。
+签名、颁发者、撤销项及当前有效期校验仍在握手期间执行，没有延长过期
+CRL 的有效期，也没有在加载失败时回退旧材料。普通静态 TLS 路径不变。
+
+新增 TestReloadedGRPCConnectionExpiresWithCRL，使用真实 TCP/mTLS gRPC
+Health 服务与约两秒有效期的签名 CRL：先确认 RPC 成功，等待旧连接离开
+Ready，断言过期材料不能使第二个 RPC 到达服务端；再发布新的有效签名
+CRL，确认同一个客户端通过重新握手恢复。恢复阶段只对只读 Health 调用
+使用 WaitForReady，不给业务写请求增加重放。定向三轮 race 本轮重新运行
+通过（23651，9.166 秒）；随后 server、endpoint、etcdproxy、transportidentity
+全包单轮 race 分别通过（51.326/44.923/5.352/1.027 秒），相关 go vet 与
+git diff --check 通过，同一执行链终态 0。
+
+这验证内存材料源的 CRL 到期拒绝及更新后恢复，不是实际文件投影轮换、
+在途 Watch/Lease 无损恢复或真实 TiKV 故障验收。连接关闭受运行时调度影响，
+不是硬实时撤销保证；在途写入结果仍可能不确定，不能自动重放。
+
+收尾时远端 16f9fa1a 的 probe 35328959294 仍在 Race test all probe
+regressions 步骤，image 35328959280 仍在 Build and push TiKV test image
+步骤。它们不包含本轮修改；没有取消、重复触发或推送，也没有集群写入。

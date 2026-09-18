@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"math/big"
 	"net"
 	"net/http"
 	"strings"
@@ -20,6 +21,60 @@ import (
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
+
+func TestReloadedGRPCConnectionExpiresWithCRL(t *testing.T) {
+	pool, certs, issuer, signer := retirementTestCertificatesAndIssuer(t)
+	now := time.Now()
+	der, err := x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(1), ThisUpdate: now.Add(-time.Minute), NextUpdate: now.Add(2 * time.Second)}, issuer, signer)
+	require.NoError(t, err)
+	list, err := x509.ParseRevocationList(der)
+	require.NoError(t, err)
+	var currentCRL atomic.Pointer[x509.RevocationList]
+	currentCRL.Store(list)
+	auth, err := newPeerRetirementAuthorizer("scope", map[string][]string{"local": {retirementTestPin(certs[0])}, "remote": {retirementTestPin(certs[1])}})
+	require.NoError(t, err)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	var calls, loads atomic.Int32
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(&tls.Config{Certificates: []tls.Certificate{certs[1]}, ClientCAs: pool, ClientAuth: tls.RequireAndVerifyClientCert})),
+		grpc.UnaryInterceptor(func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+			calls.Add(1)
+			return handler(ctx, req)
+		}))
+	healthpb.RegisterHealthServer(server, health.NewServer())
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(listener) }()
+	defer func() { server.Stop(); require.NoError(t, <-done) }()
+	source := networkCredentialSource(func(context.Context) (transportidentity.ClientCredentialMaterial, error) {
+		loads.Add(1)
+		return transportidentity.ClientCredentialMaterial{Roots: pool.Clone(), Certificate: certs[0], Revocations: currentCRL.Load()}, nil
+	})
+	client, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(&reloadedPeerGRPC{source: source, auth: auth, local: "local", remote: "remote", hostname: "127.0.0.1", budget: time.Second}))
+	require.NoError(t, err)
+	defer client.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	_, err = healthpb.NewHealthClient(client).Check(ctx, &healthpb.HealthCheckRequest{})
+	require.NoError(t, err)
+	for client.GetState() == connectivity.Ready {
+		require.True(t, client.WaitForStateChange(ctx, connectivity.Ready), "CRL expiry must retire the old connection before the 30-second age limit")
+	}
+	require.NoError(t, ctx.Err())
+	_, err = healthpb.NewHealthClient(client).Check(ctx, &healthpb.HealthCheckRequest{})
+	require.Error(t, err)
+	require.Eventually(t, func() bool { return loads.Load() >= 2 }, time.Second, 10*time.Millisecond)
+	require.Equal(t, int32(1), calls.Load(), "an expired CRL must not authorize another RPC on the old connection")
+	der, err = x509.CreateRevocationList(rand.Reader, &x509.RevocationList{Number: big.NewInt(2), ThisUpdate: time.Now().Add(-time.Second), NextUpdate: time.Now().Add(time.Hour)}, issuer, signer)
+	require.NoError(t, err)
+	fresh, err := x509.ParseRevocationList(der)
+	require.NoError(t, err)
+	currentCRL.Store(fresh)
+	recoveryCtx, finish := context.WithTimeout(context.Background(), 5*time.Second)
+	defer finish()
+	_, err = healthpb.NewHealthClient(client).Check(recoveryCtx, &healthpb.HealthCheckRequest{}, grpc.WaitForReady(true))
+	require.NoError(t, err)
+	require.Equal(t, int32(2), calls.Load(), "a fresh signed CRL must restore new RPC admission")
+}
 
 func TestReloadedGRPCExpiresAndRejectsRemovedCA(t *testing.T) {
 	pool, certs, issuer, signer := retirementTestCertificatesAndIssuer(t)

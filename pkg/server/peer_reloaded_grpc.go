@@ -38,7 +38,7 @@ func (c *reloadedPeerGRPC) ClientHandshake(parent context.Context, authority str
 	ctx, cancel := context.WithTimeout(parent, c.budget)
 	defer cancel()
 	until := time.Now().Add(peerCredentialMaxConnectionAge)
-	config, err := reloadedPeerTLSConfig(ctx, c.source, c.auth, c.local, c.remote, c.hostname, []string{"h2"})
+	config, materialUntil, err := reloadedPeerTLSConfig(ctx, c.source, c.auth, c.local, c.remote, c.hostname, []string{"h2"})
 	if err != nil {
 		return nil, nil, errPeerCredentialVerification
 	}
@@ -62,8 +62,8 @@ func (c *reloadedPeerGRPC) ClientHandshake(parent context.Context, authority str
 			}
 		}
 	}
-	if leaf := config.Certificates[0].Leaf; leaf.NotAfter.Before(until) {
-		until = leaf.NotAfter
+	if materialUntil.Before(until) {
+		until = materialUntil
 	}
 	if !time.Now().Before(until) {
 		_ = conn.Close()
