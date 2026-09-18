@@ -378,10 +378,11 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 						cancel()
 						return
 					}
-					// Publish only after the new epoch and freshness stamp are live,
-					// so every admitted write is fenced to this exact term.
+					// Publish the new epoch without refreshing lastRenew. Only a
+					// successful durable lock mutation establishes freshness;
+					// initialization may outlast RenewDeadline while renewal fails.
+					// RPC admission must retain that stale stamp and self-fence.
 					atomic.AddUint64(&l.epoch, 1)
-					l.stampRenew()
 					if l.onPreparingLeading != nil {
 						l.onPreparingLeading()
 					}
@@ -451,8 +452,8 @@ func (l *leaderElection) IsLeader() bool {
 }
 
 // stampRenew records the current time as the most recent successful leadership
-// renew. Called on every successful lease Create/Update and once in
-// OnStartedLeading before leader is published.
+// renew. Called only on successful lease Create/Update, never merely because
+// leadership initialization has completed.
 func (l *leaderElection) stampRenew() {
 	clock := l.clock
 	if clock == nil {
