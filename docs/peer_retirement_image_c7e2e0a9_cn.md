@@ -43,3 +43,29 @@ CI 证据在 ci-evidence.NV2qWJcc，包含两个原日志及 SHA-256、API run �
 `deployment_acceptance_proven:false`。没有修改 StatefulSet、导入实际 peer
 Secret 或开始故障实验。还须按[迁移与恢复准备](peer_retirement_cluster_transition_cn.md)
 执行现场独立身份接入、完整启动和原 30 秒故障门限验证。
+
+## 三台 worker 的拉取与版本执行已验证
+
+后续在独立 namespace `kb-peer-image-c7e2e0a9-7k4mg01u` 创建三个短命 Pod，
+分别固定到 k8s3-worker1/2/3，使用上述 index digest，只执行 version。
+没有数据卷、Secret、API token 或 TiKV 连接，采用非 root、只读根文件系统、
+drop ALL、禁止提权，并预先创建 namespace 网络默认拒绝策略。
+
+执行 29700 终态 0，三个 Pod 均 Succeeded/exitCode 0，实际 imageID 均为
+上述 amd64 digest，输出 Git SHA、Storage TiKV、Go 1.26.8、linux/amd64
+均匹配。创建响应与结束时 Pod UID 一致，节点分配正确，前后 node UID
+未变。拉取等待上限十分钟只是传输预算，不改变产品故障验收的 30 秒门限。
+
+临时 namespace 和 Pod/NetworkPolicy 已按创建时 namespace UID 核对后
+清理，并确认 namespace 不存在；留下节点镜像缓存，未做全局镜像删除。
+原实例 StatefulSet 前后 spec 完全一致，generation 38、3/3 Ready。
+
+证据目录为上述 owner 下 node-evidence.7K4Mg01u，包括一次性脚本、输入
+manifest、namespace/Pod 创建响应、各节点版本日志、最终 Pod/事件对象、
+node/StatefulSet 前后对象及 cleanup.log。补充 UID 检查最初误把 kubectl
+create 输出当作 List，jq 退出 5；按实际连续三个 Pod JSON 对象修正检查后
+通过，未重跑 Pod 或覆盖失败为初次成功。
+
+这只证明镜像在这三台节点能拉取并执行 version，**不是新服务启动或
+TiKV 故障验收**。现有实例仍未切换到候选镜像。最新 dcca4197 的三项 CI
+仍在运行，其结果与本次 c7e2e0a9 验证分开记录。

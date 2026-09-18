@@ -1636,3 +1636,17 @@ index 为 ab75be8a79d4c25a41f53dfefcdf359e04890cdf1050a5ff5ea78241fee4bc11；
 审计容器与提取二进制已清理，未部署新镜像。两项旧 CI 均已终结，准备将
 后续本地工具、测试和现场准备记录推送以保存并触发新版本 CI；不将新作业
 尚未完成的状态表述成已通过，也不将镜像身份正确视作故障验收完成。
+
+## c7e2e0a9 已在三台测试 worker 完成版本执行
+
+使用已审计 index digest 在隔离短命 Pod 中执行 version，未启动 KubeBrain
+服务或连接 TiKV。三台节点均成功，actual imageID 为 amd64
+9e02fc2d0fc1591609519250eedc3d3e28e5e30a017e3107d2055983d6b7b70b，创建到结束
+的 Pod UID、节点分配及前后 node UID 已核对。执行 29700 终态 0，临时
+namespace/Pod/NetworkPolicy 已清理，原 StatefulSet spec/generation 38/3 Ready
+未变。补充检查曾因 create JSON 输出格式假设错误而失败，随后只修正解析
+并通过，不重跑实验；详见[镜像与节点证据](peer_retirement_image_c7e2e0a9_cn.md)。
+
+新版 dcca4197 的 image 35334686689、probe 35334686727、backend
+35334686844 均已进入 in_progress。当前不推送取消它们，不宣称新版本 CI
+或候选服务部署已完成。下一阶段仍是实际 peer 信任过渡和独立证书接入。
