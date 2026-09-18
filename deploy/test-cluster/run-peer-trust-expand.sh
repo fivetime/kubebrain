@@ -10,7 +10,7 @@ mode=$2; receipt=$3; digest=$4; out=$5; kubeconfig=$6; context=$7; verifier=$8
 [[ $receipt == /* && $out == /* && $kubeconfig == /* && $verifier == /* && -n $context && $digest =~ ^[a-f0-9]{64}$ ]]
 [[ -f $receipt && -f $kubeconfig && -f $verifier ]]
 [[ $(sha256sum "$receipt" | cut -d ' ' -f 1) == "$digest" ]]
-jq -e '.phase == null or .phase == "roots" or .phase == "members"' "$receipt" >/dev/null
+jq -e '.phase == null or .phase == "roots" or .phase == "members" or .phase == "protocol"' "$receipt" >/dev/null
 trust_phase=$(jq -r '.phase // "roots"' "$receipt")
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # Exclusive output directory is also the execution claim. Never reuse an attempt.
@@ -27,7 +27,7 @@ namespace=$(jq -er '.baseline.metadata.namespace | select(test("^[a-z0-9][a-z0-9
 sts=$(jq -er '.baseline.metadata.name | select(test("^[a-z0-9][a-z0-9-]*$"))' "$out/receipt.json")
 old_secret=$(jq -er '.original_secret.metadata.name | select(test("^[a-z0-9][a-z0-9.-]*$"))' "$out/receipt.json")
 dual_secret=$(jq -er '.expanded_secret.metadata.name | select(test("^[a-z0-9][a-z0-9.-]*$"))' "$out/receipt.json")
-if [[ $trust_phase == members ]]; then
+if [[ $trust_phase == members || $trust_phase == protocol ]]; then
  member_secret=$(jq -er '.member_secret.metadata.name | select(test("^[a-z0-9][a-z0-9.-]*$"))' "$out/receipt.json")
 fi
 k=(kubectl --kubeconfig="$kubeconfig" --context="$context" --request-timeout=15s -n "$namespace")
@@ -39,7 +39,7 @@ capture() {
  timeout --kill-after=2s 20s "${k[@]}" get sts "$sts" -o json > "$out/$phase/current.json"
  timeout --kill-after=2s 20s "${k[@]}" get secret "$old_secret" -o json > "$out/$phase/original-secret.json"
  timeout --kill-after=2s 20s "${k[@]}" get secret "$dual_secret" -o json > "$out/$phase/expanded-secret.json"
- if [[ $trust_phase == members ]]; then
+ if [[ $trust_phase == members || $trust_phase == protocol ]]; then
   timeout --kill-after=2s 20s "${k[@]}" get secret "$member_secret" -o json > "$out/$phase/member-secret.json"
  else
   printf 'null\n' > "$out/$phase/member-secret.json"

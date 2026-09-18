@@ -65,7 +65,7 @@ case "$1" in
   if [[ $SCENARIO == lost-response && ! -f "$FIXTURE/response-lost" ]]; then touch "$FIXTURE/response-lost"; exit 124; fi
   cat "$FIXTURE/current.json";;
  rollout)
-  expanded=$(jq -r --slurpfile receipt "$FIXTURE/receipt.json" '($receipt[0]|if .phase=="members" then .member_secret.metadata.name else .expanded_secret.metadata.name end) as $target | any(.spec.template.spec.volumes[];.name=="peer-tls" and .secret.secretName==$target)' "$FIXTURE/current.json")
+  expanded=$(jq -r --slurpfile receipt "$FIXTURE/receipt.json" 'if $receipt[0].phase=="protocol" then .spec.template.spec.containers[0].image==$receipt[0].candidate_image else ($receipt[0]|if .phase=="members" then .member_secret.metadata.name else .expanded_secret.metadata.name end) as $target | any(.spec.template.spec.volumes[];.name=="peer-tls" and .secret.secretName==$target) end' "$FIXTURE/current.json")
   if [[ $SCENARIO == rollout-failure && $expanded == true ]]; then exit 1; fi
   if [[ $SCENARIO == rollout-timeout && $expanded == true ]]; then exit 124; fi
   ;;
@@ -74,14 +74,19 @@ esac
 `
 
 func TestPeerTrustExpansionDriverRecovery(t *testing.T) {
-	testPeerTrustDriverRecovery(t, false)
+	testPeerTrustDriverRecovery(t, "roots")
 }
 
 func TestPeerTrustMembersDriverRecovery(t *testing.T) {
-	testPeerTrustDriverRecovery(t, true)
+	testPeerTrustDriverRecovery(t, "members")
 }
 
-func testPeerTrustDriverRecovery(t *testing.T, members bool) {
+func TestPeerProtocolDriverRecovery(t *testing.T) {
+	testPeerTrustDriverRecovery(t, "protocol")
+}
+
+func testPeerTrustDriverRecovery(t *testing.T, phase string) {
+	members := phase == "members" || phase == "protocol"
 	scenarios := []string{"success", "preflight-failure", "resumed-preflight-failure", "conflict", "lost-response", "drift", "rollout-failure", "rollout-timeout", "verify-failure"}
 	if members {
 		scenarios = append(scenarios, "member-secret-drift", "member-secret-after-dry-run")
@@ -99,6 +104,9 @@ func testPeerTrustDriverRecovery(t *testing.T, members bool) {
 			in := trustPlanInput(t)
 			if members {
 				in = memberTrustInput(t)
+			}
+			if phase == "protocol" {
+				in = protocolTrustInput(t)
 			}
 			data, err := json.Marshal(in)
 			require.NoError(t, err)
@@ -151,6 +159,11 @@ if [[ $SCENARIO == verify-failure && $1 == expand && $2 == after ]]; then exit 1
 			require.NoError(t, json.Unmarshal(after, &object))
 			switch scenario {
 			case "success":
+				if phase == "protocol" {
+					c := trustMap(object, "spec", "template", "spec")["containers"].([]any)[0].(map[string]any)
+					require.Equal(t, in["candidate_image"], c["image"])
+					require.Contains(t, c["args"], "--experimental-peer-retirement-config=/etc/kubebrain/peer-tls/policy.json")
+				}
 				if members {
 					require.Contains(t, string(after), "peer-members-dual-test")
 				} else {
@@ -202,13 +215,12 @@ if [[ $SCENARIO == verify-failure && $1 == expand && $2 == after ]]; then exit 1
 }
 
 func TestPeerTrustDriverRejectsUnknownPhaseBeforeAPIAccess(t *testing.T) {
-	for _, phase := range []string{"unknown", "protocol"} {
+	for _, phase := range []string{"unknown", "PROTOCOL"} {
 		t.Run(phase, func(t *testing.T) { rejectUnsupportedTrustDriverPhase(t, phase) })
 	}
 }
 
-// The offline protocol planner must not accidentally enable an executor that
-// has not yet implemented protocol provenance and runtime verification.
+// Unknown phases must fail before either an API call or an execution claim.
 func rejectUnsupportedTrustDriverPhase(t *testing.T, phase string) {
 	t.Helper()
 	dir := t.TempDir()

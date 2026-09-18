@@ -20,7 +20,7 @@ Secret 身份约束下推导已隔离的成员双 CA 布局，只允许改变镜
 单 CA 或共享叶证书被拒绝。补丁包含 UID、resourceVersion 和完整 spec
 并发前置条件，其余配置包括原选举时限、数据卷、挂载隔离保持不变。
 
-这是离线规划器，不是部署完成：现有 `run-peer-trust-expand.sh` 仍明确
+该阶段最初仅为离线规划器，不是部署完成：当时 `run-peer-trust-expand.sh` 明确
 拒绝 protocol，测试锁定它在创建执行目录或访问 API 前退出。必须补齐
 该阶段的发布身份审查、真实 scope/控制路由鉴权验证和自动相邻恢复，才
 能接入执行器，不能仅放开 phase 列表后直接运行。
@@ -59,7 +59,7 @@ HTTP/1 与 HTTP/2 的空条件和无 Content-Type 探针回归，断言释放回
 使用 memkv，不宣称已在 TiKV 集群执行探针。新增探针 race、真实 handler
 race、Endpoint race 均通过，Endpoint 最终运行 11.568s；探针 vet 通过。
 
-## 协议阶段校验器接入（尚未开放执行器）
+## 协议阶段校验器接入（当时尚未开放执行器）
 
 `verify-peer-trust-stage.sh` 已识别 protocol：expand 和 restore 都使用
 独立成员叶证书、双 CA 和四文件隔离挂载，不在 restore 时错误地期待旧
@@ -79,12 +79,36 @@ after/expand 分支核对 Pod 镜像及运行时 index/amd64 摘要、唯一实�
 
 新增预检回归覆盖两种方向、审计/探针被修改、镜像或源码不符、缺少 CI
 字段、symlink 和不可执行探针，检查没有 API 调用或探针执行。运行时
-protocol 分支尚未获得现场或完整故障注入驱动证据；执行器仍拒绝此阶段，
+protocol 分支当时尚未获得现场或完整故障注入驱动证据；执行器仍拒绝此阶段，
 不能把这一接入记录写成已部署或完成原故障门限。
 
 本轮协议/成员预检及执行器拒绝用例 race 通过（30.174s），完整
 `go test -count=1 ./deploy/test-cluster` 通过（59.048s），vet、Bash 语法
 和 diff 检查通过。未修改集群，未启用协议执行器。
+
+## 协议执行器与校验流程模拟回归
+
+后续 `run-peer-trust-expand.sh` 已接入 protocol，与 members 一样在每次
+before/admitted/fresh/after/final 抓取时重新读取成员 Secret；规划器仍
+要求只在成员双 CA 布局与候选协议布局之间切换。mandatory verifier
+调用及失败后相邻恢复机制不变，不创建 Secret 或删除任何卷。
+
+新增十一类协议执行器场景覆盖成功、预检失败、已切换后的预检失败、
+补丁冲突、持久化后 API 响应丢失、外部漂移、rollout 失败/超时、后置
+校验失败，以及成员 Secret 初始/干跑后重建。恢复后必须完全等于原成员
+双 CA spec，不能保留实验参数或跳回共享叶证书；原失败仍保留非零退出。
+
+完整 shell 校验器另用隔离的模拟命令覆盖 expand/restore：三次按预期
+发送/接收成员和固定 SPKI 的探针调用、三次写入、九次交叉读取、条件
+删除、九次缺失检查和最终 Pod 身份检查。错误镜像、源码版本、控制探针
+失败或恢复后控制路由仍存在，必须在第一次普通业务写入前退出。
+这些是编排与清理回归，**模拟 kubectl/curl 不证明真实 Kubernetes、TLS
+或 TiKV 行为**；真实协议部署、独立后端 scope 和原 30 秒故障验收仍待做。
+
+验证：协议执行器故障矩阵 race 通过（10.684s），初次完整模拟校验
+通过（8.057s）；加强成员/凭据/SPKI 参数断言后的全包
+`go test -race -count=1 ./deploy/test-cluster` 通过（80.633s），vet、
+Bash 语法和 diff 检查通过。本轮仅修改工具与测试，没有变更集群。
 
 ## 成员私钥挂载
 
