@@ -735,3 +735,45 @@ cleanup_failed=0，PD/TiKV 启动中断清理均记录 resources_absent=true。
 日志保存在私有目录 `retirement-storage-fault.9yvOvymf/backend-8a667c24.log`，
 SHA-256 为 `dc4103c442e1e32ee2124fb059d843265d1e1312a8665b2740a10398b2bd2af9`。
 这不覆盖该 SHA 之后的本地修改；镜像和 probe CI 本轮检查时仍在运行。
+
+## 未解决：旧存储持续失联时原过期 KeepAlive 流不能发现接棒者
+
+在 b9c565b3 上扩展完整 server 测试，开启真实 peer gRPC 转发（HTTP/2
+mTLS，与退任 HTTP handler 共用监听器），保留原公共 gRPC KeepAlive 流。
+授予 TTL=1 的租约并确认初次续租 ACK；启动另一节点并注入旧节点存储故障，
+等待两秒自然超过该 TTL，再沿同一流发送一次续租。测试服务端计数确认
+旧任期内已收到第二条消息，随后没有提前返回。RenewDeadline 使用本机
+四秒配置，以在同一任期内覆盖过期等待；这仍不是集群原 30 秒验收。
+
+定向 race 复现 **失败**（50563，20.246 秒）：接棒者成为 leader 且 ready，
+新节点公共 TTL/Range 验证租约及绑定键存在，集群身份/新任期断言通过；
+原连接只有一个 KeepAlive 流、两条入站消息（初次 ACK 请求及待恢复请求），
+但后者在自创建租约前开始计时的十秒上下文内未收到成功响应。旧存储故障
+仍开启，旧节点缓存 leader 仍是自身地址而不是接棒者。没有增加截止时间、
+恢复存储、重建客户端或用 TTL=0 当作成功。
+
+源码定位：`etcdproxy.updateClient` 使用 `GetLeaderInfo` 决定目标，失败后
+`refreshFailedLeader` 调用 `RefreshLeaderInfo`；后者依赖旧节点已失联的
+存储路径，失败时继续保留旧地址。已有退任协议只负责条件释放，不提供
+接棒路由发现。因此“新节点已恢复”与“原入口的在途请求恢复”是两个不同
+条件，当前实现只证明前者。对照本地 etcd 的 `LeaseRenew`：退任后通过
+`waitLeader` 和成员 PeerURLs 寻找 leader；不能假定 KubeBrain 的存储轮询
+在同样故障下仍可承担这一职责。
+
+测试草稿保留于工作区 `peer_retirement_network_test.go`，新增用例尚未通过，
+**未提交为已通过的回归，也未跳过失败断言**。草稿和完整日志另存私有目录
+`retirement-pending-stream.ccAJP7by/`。日志 SHA-256：
+`944597a6fb9c9695bdc0fe78f5acc2a893dec820b0463a0f5bbfdae7cdb85450`。
+原有完整 server/default-disabled/存储夹具用例单轮 race 仍通过
+（83009，4.028 秒），随后 vet/diff 通过；不能据此称全套测试通过。
+
+夹具同时关闭两个 campaign 时，两次 Close 各耗尽五秒 successor 等待预算，
+日志保留该结果，工作线程及监听器继续走 Close/Stop 清理；这不是干净的
+单节点滚动退出验收。早期复现还修正了夹具把“可代理的 follower ready”误当
+“成为新 leader”的判断，现在同时要求 IsLeader 与 requestPathReady。
+
+后续需补足不依赖旧节点存储可达性的、经过认证且有界的接棒发现。不能把
+释放请求的 204 当作对方已经成为 leader，不能据此重新激活旧任期，也不能
+把未经验证的地址写入路由。原请求恢复和真实 TiKV 故障验收仍未完成。
+本轮没有修改产品代码或集群资源。远端 8a667c24 probe CI 35319131319
+已返回 success，镜像 CI 35319131308 仍在运行；均不包含本地后续修改。
