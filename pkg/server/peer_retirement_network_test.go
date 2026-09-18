@@ -356,6 +356,32 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 			require.GreaterOrEqual(t, peerRenewals[1].Load(), int32(1+continued))
 			require.Greater(t, discoveryRequests[1].Load(), initialDiscovery, "expired hint must trigger another authenticated discovery")
 			require.True(t, oldStore.failed.Load())
+			// Recovery is a separate phase: the original pending request and
+			// hint revalidation above must succeed BEFORE storage is restored.
+			// Restoring access must not regress the term or require a new stream.
+			oldStore.failed.Store(false)
+			require.NoError(t, stream.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: grant.ID}))
+			recovered, err := stream.Recv()
+			require.NoError(t, err)
+			require.NotNil(t, recovered)
+			require.Equal(t, grant.ID, recovered.ID)
+			require.Positive(t, recovered.TTL)
+			require.NotNil(t, recovered.Header)
+			require.Equal(t, value.Header.ClusterId, recovered.Header.ClusterId)
+			require.Equal(t, ack.Header.MemberId, recovered.Header.MemberId)
+			require.GreaterOrEqual(t, recovered.Header.RaftTerm, value.Header.RaftTerm)
+			require.Equal(t, int32(1), streamCount.Load())
+			require.Equal(t, int32(3+continued), messageCount.Load(), "recovery must not resend the pending request")
+			require.GreaterOrEqual(t, peerRenewals[1].Load(), int32(2+continued))
+			ttl, err = etcdserverpb.NewLeaseClient(nextClient).LeaseTimeToLive(rpcCtx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grant.ID, Keys: true})
+			require.NoError(t, err)
+			require.Positive(t, ttl.GrantedTTL)
+			require.Contains(t, ttl.Keys, key)
+			persisted, err := etcdserverpb.NewKVClient(nextClient).Range(rpcCtx, &etcdserverpb.RangeRequest{Key: key})
+			require.NoError(t, err)
+			require.Len(t, persisted.Kvs, 1)
+			require.Equal(t, grant.ID, persisted.Kvs[0].Lease)
+			require.Equal(t, []byte("kept"), persisted.Kvs[0].Value)
 		case <-rpcCtx.Done():
 			t.Fatal("original expired keepalive stream did not recover while old storage remained unavailable")
 		}
