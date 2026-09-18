@@ -6,6 +6,30 @@
 目标仅为 kubebrain-dbaas-test/kubebrain-local，
 不涉及旧 Ceph 实例、TiKV/PD 数据卷或 TopoLVM VG 初始化。
 
+## 协议启用的离线变更规划（2026-09-18）
+
+`peer-trust-expand-plan.jq` 新增 `phase=protocol`，在原始基线及三份
+Secret 身份约束下推导已隔离的成员双 CA 布局，只允许改变镜像和追加
+`--experimental-peer-retirement-config=/etc/kubebrain/peer-tls/policy.json`。
+`candidate_image` 必须是 ghcr.io/fivetime/kubebrain 的完整 SHA-256 摘要，
+且不同于原镜像；这个格式检查**不证明 CI 或镜像来源可信**，调用方仍须
+独立核对精确源码、发布审计和实际后端 scope。
+
+扩展要求原成员布局已全部 Ready/current；恢复允许候选未 Ready，只回到
+旧镜像、关闭实验参数的成员双 CA 布局，不同时回退证书。跨阶段直接恢复
+单 CA 或共享叶证书被拒绝。补丁包含 UID、resourceVersion 和完整 spec
+并发前置条件，其余配置包括原选举时限、数据卷、挂载隔离保持不变。
+
+这是离线规划器，不是部署完成：现有 `run-peer-trust-expand.sh` 仍明确
+拒绝 protocol，测试锁定它在创建执行目录或访问 API 前退出。必须补齐
+该阶段的发布身份审查、真实 scope/控制路由鉴权验证和自动相邻恢复，才
+能接入执行器，不能仅放开 phase 列表后直接运行。
+
+验证：协议/成员/根信任规划相关 race 用例通过（36.905s），完整
+`go test -count=1 ./deploy/test-cluster` 通过（44.996s），`go vet` 和
+`git diff --check` 通过。覆盖只改镜像/参数、未就绪恢复、禁止跳阶段、
+摘要格式、Secret 重建和补丁并发冲突；这些仍不是现场协议验收。
+
 ## 成员私钥挂载
 
 [挂载片段](../deploy/test-cluster/peer-retirement-mounts.patch.json) 是战略合并

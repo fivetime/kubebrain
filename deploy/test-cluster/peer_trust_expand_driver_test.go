@@ -202,9 +202,18 @@ if [[ $SCENARIO == verify-failure && $1 == expand && $2 == after ]]; then exit 1
 }
 
 func TestPeerTrustDriverRejectsUnknownPhaseBeforeAPIAccess(t *testing.T) {
+	for _, phase := range []string{"unknown", "protocol"} {
+		t.Run(phase, func(t *testing.T) { rejectUnsupportedTrustDriverPhase(t, phase) })
+	}
+}
+
+// The offline protocol planner must not accidentally enable an executor that
+// has not yet implemented protocol provenance and runtime verification.
+func rejectUnsupportedTrustDriverPhase(t *testing.T, phase string) {
+	t.Helper()
 	dir := t.TempDir()
 	in := memberTrustInput(t)
-	in["phase"] = "unknown"
+	in["phase"] = phase
 	data, err := json.Marshal(in)
 	require.NoError(t, err)
 	receipt := filepath.Join(dir, "receipt.json")

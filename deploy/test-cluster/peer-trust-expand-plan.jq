@@ -5,6 +5,9 @@
 # Optional phase="members" additionally requires member_secret/live_member_secret.
 # Default phase="roots": original <-> shared-old-leaf/dual-CA.
 # Members phase: shared-old-leaf/dual-CA <-> distinct-member-leaves/dual-CA.
+# Protocol phase additionally requires an independently audited candidate_image:
+# member layout <-> same layout plus pinned image and explicit opt-in argument.
+# This planner validates a digest reference, not CI provenance or running scope.
 # Secret inputs contain private data: pipe from restricted files, never log them.
 # The caller must independently verify X.509 roots/purposes/expiry, authenticate
 # receipts, recheck namespace/Secret identities before patch, and bound rollout.
@@ -28,7 +31,7 @@ def same_secret($saved; $live):
 
 . as $in |
 need(.mode == "expand" or .mode == "restore"; "unsupported phase") |
-need(.phase == null or .phase == "roots" or .phase == "members"; "unsupported trust phase") |
+need(.phase == null or .phase == "roots" or .phase == "members" or .phase == "protocol"; "unsupported trust phase") |
 need((.namespace_uid | nonempty) and .namespace.kind == "Namespace" and
      .namespace.metadata.uid == .namespace_uid and (.namespace | active);
      "namespace identity changed") |
@@ -67,7 +70,7 @@ need($volumes[0].value.secret.secretName == .original_secret.metadata.name and
      $base.spec.replicas == 3 and $base.spec.updateStrategy.type == "RollingUpdate";
      "baseline is not original three-member nonexperimental layout") |
 ($base.spec | .template.spec.volumes[$index].secret.secretName = $in.expanded_secret.metadata.name) as $expanded |
-(if (.phase // "roots") == "members" then
+(if .phase == "members" or .phase == "protocol" then
   need(same_secret(.member_secret; .live_member_secret) and .member_secret.immutable == true and
        .member_secret.metadata.namespace == $base.metadata.namespace and
        .member_secret.metadata.name != .original_secret.metadata.name and
@@ -101,7 +104,18 @@ need($volumes[0].value.secret.secretName == .original_secret.metadata.name and
   ($expanded |
    .template.spec.volumes[$index].secret = {secretName:$in.member_secret.metadata.name,defaultMode:288,optional:false,items:$items} |
    .template.spec.containers[0].volumeMounts[$mounts[0].key].subPathExpr = "$(POD_NAME)") as $member_spec |
-  {from:$expanded,to:$member_spec}
+  if $in.phase == "protocol" then
+    need(($in.candidate_image | type) == "string";
+         "protocol phase requires audited digest reference") |
+    need(($in.candidate_image | test("^ghcr.io/fivetime/kubebrain@sha256:[0-9a-f]{64}$")) and
+         $in.candidate_image != $member_spec.template.spec.containers[0].image;
+         "protocol image must be a distinct fixed digest") |
+    ($member_spec |
+      .template.spec.containers[0].image = $in.candidate_image |
+      .template.spec.containers[0].args += ["--experimental-peer-retirement-config=/etc/kubebrain/peer-tls/policy.json"]
+    ) as $protocol_spec |
+    {from:$member_spec,to:$protocol_spec}
+  else {from:$expanded,to:$member_spec} end
  else {from:$base.spec,to:$expanded} end) as $transition |
 need($live.spec == $transition.from or $live.spec == $transition.to;
      "unknown spec: refusing drift or nonadjacent trust transition") |
@@ -118,7 +132,7 @@ else
   [{op:"test",path:"/metadata/uid",value:$live.metadata.uid},
    {op:"test",path:"/metadata/resourceVersion",value:$live.metadata.resourceVersion},
    {op:"test",path:"/spec",value:$live.spec}] +
-  (if (.phase // "roots") == "members" then
+  (if .phase == "members" or .phase == "protocol" then
     [{op:"replace",path:"/spec/template",value:$desired.template}]
    else
     [{op:"replace",path:"/spec/template/spec/volumes/\($index)/secret/secretName",
