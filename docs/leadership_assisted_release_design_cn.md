@@ -1049,3 +1049,32 @@ client key pair、Secret 符号链接及非普通/超大文件拒绝。定向三
 日志 SHA-256 为 cebe4198dc510d855bf50a63edcc0f79e98f3b10d355d833a19cf85648f2477f，
 位于私有 peer-reloaded-verification.a5VUp97u 目录。该 CI 不包含此后的
 本地凭据适配修改；镜像 CI 35323093221 最后检查仍在运行，未重复触发或部署。
+
+## 受控新连接握手适配器
+
+新增内部 `handshakeReloadedPeer`：接管调用方已连接的 socket，要求带截止时间的
+有效上下文，每次握手从 ClientCredentialSource 加载新材料并检查本机 holder。
+构造独立 TLS 配置，保留标准 RootCAs/ServerName 验证，再通过 VerifyConnection
+执行当前材料的链、撤销和精确远端 holder 校验；没有 InsecureSkipVerify、
+继承的任意回调或会话缓存。协议列表和 cipher 列表复制，失败均关闭 socket，
+错误不携带来源错误或证书材料。正常 TLS 的 VerifiedChains 保留，供后续 HTTP
+响应身份检查使用。
+
+真实 mTLS 测试从服务端记录客户端证书序列号，验证下一次握手确实使用轮换后的
+证书；覆盖移除 CA、加载错误、错误本机/远端 pin、错误主机名以及恢复后的新加载。
+另覆盖无界/取消/nil 上下文在加载前拒绝，和不响应的 net.Pipe 对端按截止时间
+退出并关闭 socket。最终定向三轮 race 通过（28950，1.512 秒）。
+最终 server/endpoint/transportidentity 完整单轮 race 通过（42771，
+21.003/15.543/1.030 秒），随后相关 vet 和 diff check 通过。
+
+对照本地 etcd 5cd9f4ee13801e18825d661e5005ae599460bc3a 的
+client/pkg/transport/listener.go：baseConfig 的 GetClientCertificate 会重新
+读取客户端证书，ClientConfig 构造时读取 CA 池。这里保留新握手使用当前
+客户端凭据的目标，并针对实验控制通道额外每次加载 CA/CRL；不声称这是
+etcd 原生逐成员 SPKI 机制，也未改变 etcd 客户端可观察的数据语义。
+
+这一适配器仍待 sender/discovery/proxy 调用接入。当前每条新连接采用独立握手，
+不复用 TLS session cache；并未解决已建立的长连接何时重验和淘汰，也不宣称
+取消能中断普通文件的内核 I/O。端点默认行为与集群未改变。镜像 CI 35323093221
+最新检查已完成 success，源码仍是 5b8f6af7，不包括这批本地修改；镜像身份审计
+及新版发布、真实 TiKV 故障门限验收仍未完成。
