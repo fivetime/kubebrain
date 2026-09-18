@@ -1650,3 +1650,17 @@ namespace/Pod/NetworkPolicy 已清理，原 StatefulSet spec/generation 38/3 Rea
 新版 dcca4197 的 image 35334686689、probe 35334686727、backend
 35334686844 均已进入 in_progress。当前不推送取消它们，不宣称新版本 CI
 或候选服务部署已完成。下一阶段仍是实际 peer 信任过渡和独立证书接入。
+
+## 现场原材料快照与三阶段候选 Secret 已离线准备
+
+trust-stages.Qx4iLtRM 保存原 peer Secret/StatefulSet 快照以及旧证书双 CA、
+独立新证书双 CA、独立新证书单 CA 三个不可变候选。敏感 JSON/key 均 0600，
+在仓库外私有 owner，不含生成 CA 的私钥。证书/key 配对、用途、域名、
+有效期和 policy pin 校验通过，新旧单 CA 互不接受对方叶证书，双 CA 接受
+双方。原 Secret UID/resourceVersion/data 前后未变。
+
+三个 Secret server dry-run 通过并确认现场不存在这些对象；第一阶段的
+精确前置条件 StatefulSet patch dry-run 也通过，验证只改变 peer Secret
+名字。原实例仍为 generation 38/3 Ready，未开始滚动。证据边界与剩余执行
+准备见[过渡材料记录](peer_retirement_cluster_transition_cn.md)。本轮首次
+查询 dcca4197 三项 CI 均在运行，没有推送、取消或重复触发。

@@ -126,3 +126,34 @@ server/client TLS 配置，经 net.Pipe 完成 mTLS 握手，不是仅解析证�
 这项测试演练信任顺序与普通 peer TLS 文件加载，不启用实验 holder pin
 协议、不使用真实 TiKV，也不模拟 kubelet subPath 自动更新。现场方案仍需
 按版本化挂载重建 Pod，并验证应用请求及原故障门限。
+
+## 实际材料的三阶段准备与 dry-run
+
+2026-09-18，私有 owner 的 trust-stages.Qx4iLtRM 已捕获实际 namespace、
+StatefulSet 与原 peer Secret。原 Secret 的 UID/resourceVersion/data 在
+准备前后保持一致；完整备份、解码旧 key 及候选 Secret JSON 都是 0600，
+仅位于仓库外受限目录，不得输出 data 或加入 Git。
+
+已离线生成三个不可变候选 Secret（**尚未创建到集群**）：
+
+| 名称 | 叶证书 | 信任 |
+| --- | --- | --- |
+| kubebrain-local-peer-old-dual-qx4iltrm | 原共享 peer cert/key | 旧＋新 CA |
+| kubebrain-local-peer-dual-qx4iltrm | 每成员独立新 cert/key | 旧＋新 CA |
+| kubebrain-local-peer-new-qx4iltrm | 每成员独立新 cert/key | 新 CA |
+
+第一个保留原三文件布局；后两个按成员提供十二个文件，匹配已验证的隔离
+子目录挂载。都不含 CA 私钥。旧、新叶证书与 key 的公钥逐一相符，新成员
+策略 pin 与实际 SPKI SHA-256 相符；有效期检查均超过一小时。新证书的
+serverAuth/clientAuth 与成员/公共 peer DNS 检查通过，旧证书的公共 peer
+DNS 检查通过。实际新 CA 单独验证旧叶证书失败，旧 CA 验证三个新叶证书
+都失败，双 CA 验证双方成功；没有通过保留过宽信任伪造过渡结果。
+
+三个 Secret 的 `create --dry-run=server` 均成功，随后确认候选名称在现场
+仍不存在。第一阶段旧证书双 CA 的 StatefulSet 补丁带 UID/resourceVersion/
+完整模板 test，server dry-run 成功；将唯一的 peer Secret 名称变化还原后，
+候选 spec 与原 spec 完全一致。现场仍为 generation 38、3 Ready。
+
+这些 dry-run 对象的 UID 不是未来实际创建身份，补丁中的 resourceVersion
+也不得事后盲用。执行前仍须补齐有界阶段驱动、功能探针、实时身份与
+Pod/PVC/PV 归属记录及恢复路径；不能把离线材料就绪表述成真实迁移完成。
