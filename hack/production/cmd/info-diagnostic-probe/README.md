@@ -12,7 +12,12 @@ Required flags: `--endpoint https://127.0.0.1:PORT`, `--server-name INFO_DNS`,
 `--server-spki-sha256 HEX`, `--cacert CA_FILE`, `--cert CLIENT_CERT`,
 `--key CLIENT_KEY`, and `--mode protected|disabled`.
 
-- `protected` requires `--stack-output NEW_FILE`. Checks authenticated `/ping`
+- `protected` requires `--stack-output NEW_FILE` and `--anonymous-endpoint
+  https://127.0.0.1:OTHER_PORT`, a separate tunnel to the **same** admitted Pod.
+  A negative TLS alert can terminate kubectl's entire port-forward process;
+  isolating that check protects the authenticated tunnel without retrying it.
+  Both tunnels must be independently started, bound and cleaned up by the caller.
+  Checks authenticated `/ping`
   and `/ready`, rejects anonymous profile access at TLS, then captures authenticated
   `/debug/pprof/goroutine?debug=2`. The missing-certificate test requires normal
   server chain/name/SPKI verification, an observed client-certificate request,

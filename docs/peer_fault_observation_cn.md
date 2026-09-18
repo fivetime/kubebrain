@@ -180,3 +180,31 @@ probe 二进制已删除，源码及哈希保留，可按相同源码重建。�
 仓库，未启用 pprof，未改动集群资源或注入故障。此烟测只证明原基线的
 disabled 模式；下一步仍须完成诊断阶段验证回调、开启后的逐 Pod 运行
 验证及恢复链，然后才能运行原始 30 秒故障门限。
+
+## 诊断阶段逐 Pod 验证回调
+
+`deploy/test-cluster/verify-diagnostic-stage.sh` 接入守护执行器的五参数
+MODE/PHASE/EVIDENCE/KUBECONFIG/CONTEXT 契约。诊断 receipt 的 verification
+包含 diagnostic_probe、diagnostic_probe_sha256、info_server_cert、
+info_server_cert_sha256、client_tls_dir（ca.crt/probe.crt/probe.key）；info_dns
+仍位于 receipt 顶层。探针和服务端证书必须是审核过的普通文件，复制到
+私有证据目录后核对哈希；验证证书用途、名称、密钥匹配及一小时有效期。
+恢复预检不要求当前服务健康，避免将故障状态作为拒绝回退的理由。
+
+after 阶段核对 namespace/StatefulSet/三个 Pod 与执行器快照；开启时运行
+Pod 实际配置的 liveness/readiness exec curl，验证挂载的健康证书可用，
+再做 TLS 身份测试和有界栈采集。关闭时检查两种访问方式的 profile 404。
+每个成员前后 Pod UID、spec、containerStatuses 必须一致；外层执行器
+还会复核整个阶段的最终完整 spec 和三个 Pod 状态。回调不读 peer Secret、
+不创建或删除集群资源，也不把诊断通过当作故障验收。
+
+protected 模式现在强制独立 anonymous-endpoint：负向 TLS alert 可能
+终止 kubectl 的整个转发进程，因此合法身份和匿名检查各使用一个绑定
+同一 Pod 的转发进程（18584/18585），每个成员结束或失败时均清理。这
+不是重新连接同一条 KeepAlive，也不构成重试；KeepAlive 连续性仍由原
+故障探针验证。
+
+针对性模拟测试通过（6.313s）：预检、错误哈希/DNS/密钥、开启/恢复、
+探针失败、实际健康命令失败及 Pod 被替换。首轮失败是 mock 转发命令
+将端口取为第五参数而非第四参数，已修复夹具并确认失败场景到达相应
+检查点；没有因此放宽运行条件。真实 TLS 探针更新后 race 通过（1.948s）。

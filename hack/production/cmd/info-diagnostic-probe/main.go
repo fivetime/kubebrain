@@ -27,16 +27,33 @@ const stackLimit = 8 << 20
 const stackPath = "/debug/pprof/goroutine?debug=2"
 
 type config struct {
-	endpoint, serverName, serverPin, ca, cert, key, mode, stackOutput string
+	endpoint, anonymousEndpoint, serverName, serverPin, ca, cert, key, mode, stackOutput string
 }
 
-func (c config) validate() error {
-	u, err := url.Parse(c.endpoint)
+func validateOrigin(endpoint string) error {
+	u, err := url.Parse(endpoint)
 	if err != nil || u.Scheme != "https" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.Port() == "" {
 		return errors.New("endpoint must be an HTTPS loopback origin with explicit port")
 	}
 	if ip := net.ParseIP(u.Hostname()); ip == nil || !ip.IsLoopback() {
 		return errors.New("endpoint must use a literal loopback address bound by the caller's tunnel")
+	}
+	return nil
+}
+
+func (c config) validate() error {
+	if err := validateOrigin(c.endpoint); err != nil {
+		return err
+	}
+	if c.mode == "protected" {
+		if err := validateOrigin(c.anonymousEndpoint); err != nil {
+			return fmt.Errorf("anonymous endpoint: %w", err)
+		}
+		if c.endpoint == c.anonymousEndpoint {
+			return errors.New("protected mode requires an independent anonymous tunnel")
+		}
+	} else if c.anonymousEndpoint != "" {
+		return errors.New("anonymous-endpoint is only used in protected mode")
 	}
 	if c.serverName == "" || strings.ContainsAny(c.serverName, " /\r\n\x00") {
 		return errors.New("explicit TLS server name required")
@@ -148,7 +165,11 @@ func probe(ctx context.Context, c config) ([]byte, error) {
 		return nil, err
 	}
 	defer anonymous.CloseIdleConnections()
-	_, err = request(ctx, anonymous, c.endpoint, stackPath, http.StatusNotFound, 4096)
+	anonymousEndpoint := c.endpoint
+	if c.mode == "protected" {
+		anonymousEndpoint = c.anonymousEndpoint
+	}
+	_, err = request(ctx, anonymous, anonymousEndpoint, stackPath, http.StatusNotFound, 4096)
 	if c.mode == "protected" {
 		// Connection refusal, timeout, EOF and local trust failures are not
 		// authentication proof. Require a verified server, its certificate
@@ -211,6 +232,7 @@ func run(c config, output io.Writer) error {
 func main() {
 	var c config
 	flag.StringVar(&c.endpoint, "endpoint", "", "HTTPS literal loopback origin")
+	flag.StringVar(&c.anonymousEndpoint, "anonymous-endpoint", "", "independent tunnel to the same Pod for protected-mode negative TLS check")
 	flag.StringVar(&c.serverName, "server-name", "", "verified info TLS DNS name")
 	flag.StringVar(&c.serverPin, "server-spki-sha256", "", "operator-audited info server SPKI")
 	flag.StringVar(&c.ca, "cacert", "", "server CA PEM file")

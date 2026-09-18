@@ -69,8 +69,12 @@ func fixture(t *testing.T, auth tls.ClientAuthType, version uint16, handler http
 		MinVersion: version, MaxVersion: version}
 	s.StartTLS()
 	t.Cleanup(s.Close)
+	anonymous := httptest.NewUnstartedServer(handler)
+	anonymous.TLS = s.TLS.Clone()
+	anonymous.StartTLS()
+	t.Cleanup(anonymous.Close)
 	pin := sha256.Sum256(s.Certificate().RawSubjectPublicKeyInfo)
-	return config{endpoint: s.URL, serverName: "info.test", serverPin: hex.EncodeToString(pin[:]),
+	return config{endpoint: s.URL, anonymousEndpoint: anonymous.URL, serverName: "info.test", serverPin: hex.EncodeToString(pin[:]),
 		ca: caPath, cert: certPath, key: keyPath, mode: "protected", stackOutput: filepath.Join(dir, "stack.txt")}
 }
 
@@ -135,6 +139,7 @@ func TestDisabledProfileRequires404ForBothIdentities(t *testing.T) {
 	var calls atomic.Int32
 	c := fixture(t, tls.NoClientCert, tls.VersionTLS13, handler(t, "disabled", &calls))
 	c.mode, c.stackOutput = "disabled", ""
+	c.anonymousEndpoint = ""
 	require.NoError(t, run(c, io.Discard))
 	require.EqualValues(t, 4, calls.Load())
 }
