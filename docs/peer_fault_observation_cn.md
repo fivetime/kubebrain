@@ -297,3 +297,12 @@ revokec、demotec 和 stopC，KeepAlive 在 Renew 前构造 revision header。
 同一候选的探针 CI 35352626497 已确认完成并通过
 `Verify etcd service and Watch regressions` 步骤，即覆盖上次失败的 Watch
 回归；这仍只是该步骤的结论，不代表整个探针作业或镜像构建成功。
+
+随后探针作业 35352626497 已确认 completed/success，head SHA 精确为
+`da303fdbd460ee42f3aa158fac27c396faf6b58f`；持续观察会话 79557 终态 0。
+因此该候选的探针和后端集成 CI 均通过，镜像作业 35352626418 仍未终结。
+独立镜像审核准备在
+`/root/.local/state/kubebrain/release-da303fdb.OAubJCfA`，尚未执行、没有
+claimed/verified.json。审核脚本要求三项同源码 CI 全部成功；其精确容器
+ID/归属标签清理保护已用模拟 Docker 验证，不涉及实际容器删除。
+本地完整工具回归 8608 仍需单独收集终态，不能被这两项 CI 代替。
