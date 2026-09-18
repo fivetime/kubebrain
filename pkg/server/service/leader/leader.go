@@ -274,7 +274,10 @@ func (c Config) Validate() error {
 // internal state. It records the renew time used to bound leadership freshness.
 type renewStampingLock struct {
 	resourcelock.Interface
-	onRenew    func()
+	onRenew func()
+	// onRelease fences local admission before relinquishing durable ownership.
+	// It must run even if the ensuing storage mutation fails.
+	onRelease  func()
 	onRecord   func(resourcelock.LeaderElectionRecord, []byte)
 	onMutation func()
 }
@@ -288,9 +291,15 @@ func (r *renewStampingLock) Get(ctx context.Context) (*resourcelock.LeaderElecti
 }
 
 func (r *renewStampingLock) Create(ctx context.Context, ler resourcelock.LeaderElectionRecord) error {
+	own := ler.HolderIdentity != "" && ler.HolderIdentity == r.Identity()
+	if !own && r.onRelease != nil {
+		r.onRelease()
+	}
 	err := r.Interface.Create(ctx, ler)
 	if err == nil {
-		r.onRenew()
+		if own {
+			r.onRenew()
+		}
 		if r.onMutation != nil {
 			r.onMutation()
 		}
@@ -302,9 +311,15 @@ func (r *renewStampingLock) Create(ctx context.Context, ler resourcelock.LeaderE
 }
 
 func (r *renewStampingLock) Update(ctx context.Context, ler resourcelock.LeaderElectionRecord) error {
+	own := ler.HolderIdentity != "" && ler.HolderIdentity == r.Identity()
+	if !own && r.onRelease != nil {
+		r.onRelease()
+	}
 	err := r.Interface.Update(ctx, ler)
 	if err == nil {
-		r.onRenew()
+		if own {
+			r.onRenew()
+		}
 		if r.onMutation != nil {
 			r.onMutation()
 		}
@@ -352,6 +367,7 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 		elector, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 			Lock: &renewStampingLock{
 				Interface: l.resourceLock, onRenew: l.stampRenew, onRecord: l.observeLeadershipRecordRaw,
+				onRelease:  l.invalidateRenew,
 				onMutation: func() { acquireOnce.Do(func() { close(acquired) }) },
 			},
 			ReleaseOnCancel: true,
@@ -452,8 +468,8 @@ func (l *leaderElection) IsLeader() bool {
 }
 
 // stampRenew records the current time as the most recent successful leadership
-// renew. Called only on successful lease Create/Update, never merely because
-// leadership initialization has completed.
+// renew. Called only on successful own-holder lease Create/Update, never merely
+// because initialization has completed or the record was released.
 func (l *leaderElection) stampRenew() {
 	clock := l.clock
 	if clock == nil {
@@ -461,6 +477,15 @@ func (l *leaderElection) stampRenew() {
 	}
 	l.renewMu.Lock()
 	l.lastRenew = clock.Now()
+	l.renewMu.Unlock()
+}
+
+// invalidateRenew self-fences before a release storage call can admit a successor.
+// Keep lifecycle callbacks and joining in Campaign: clearing the freshness stamp
+// closes admission even while IsLeader still describes that unfinished lifecycle.
+func (l *leaderElection) invalidateRenew() {
+	l.renewMu.Lock()
+	l.lastRenew = time.Time{}
 	l.renewMu.Unlock()
 }
 
