@@ -1623,3 +1623,16 @@ TestThreePeerTrustTransitionAndRollback，对准备文档的双 CA 过渡和逆�
 
 包括最终撤销检查的 endpoint 全包单轮 race 通过（89352，82.011 秒），
 相关 vet/diff 通过，执行链终态 0。没有修改产品默认参数或放宽任何校验。
+
+## c7e2e0a9 镜像已完成独立身份审计
+
+image 35331815217 最终成功，包括发布验证和 dbaas 标签提升；probe
+35331815236 已成功。保存两项原日志并核对命名测试，未移用更早 backend CI。
+独立按 digest 拉取并重算 index SHA，执行 amd64 version、核对 OCI 标签、
+运行用户、Go build info 中 fork TiKV/grpc 依赖，执行 92640 终态 0。
+index 为 ab75be8a79d4c25a41f53dfefcdf359e04890cdf1050a5ff5ea78241fee4bc11；
+完整摘要、证据范围和清理记录见[候选镜像审计](peer_retirement_image_c7e2e0a9_cn.md)。
+
+审计容器与提取二进制已清理，未部署新镜像。两项旧 CI 均已终结，准备将
+后续本地工具、测试和现场准备记录推送以保存并触发新版本 CI；不将新作业
+尚未完成的状态表述成已通过，也不将镜像身份正确视作故障验收完成。
