@@ -108,3 +108,24 @@ sample-47 首次报告新 leader/任期 125。以下毫秒值由原始十进制�
 建立两个独立 port-forward；故障后的调用在建立隧道阶段被剩余预算终止。
 预先建立并持续校验精确 Pod 的诊断通道可以减少观测开销，但不能替代
 同进程身份校验、mTLS 正/反向证明或实际降主栈，也不能单独证明接管更快。
+
+### 释放读取的确定性路径检查
+
+当前依赖为 client-go v0.36.2。其 `LeaderElector.Run` 在 `renew` 返回后
+才执行 defer 的 `OnStoppedLeading`；`renew` 在返回前执行 `release`。
+`release` 从 `context.Background()` 派生一个 `RenewDeadline` 超时上下文，
+先 `Lock.Get` 再尝试释放。因此该读取不继承 Campaign 取消，可能等待后端
+超时后才进入本项目的清理、初始化 join 及 `onTermRetired` 通知。
+
+新增 `TestCampaignReleaseReadDelaysRetirementBoundary` 用上下文标记区分
+正常 acquire/renew 与 release 的读取，并通过通道阻塞后者。20 次 race
+运行通过（1.117 秒）：取消 Campaign 后，独立释放读取仍未取消，清理及
+peer 退任回调均尚未执行；解除读取阻塞后两者才完成。此测试刻画现有路径，
+不把延迟行为定义为生产验收标准，也不证明现场实际在此等待了多久。
+同一工作树的 `go test -race -count=1 ./pkg/server/service/leader` 整包通过
+（2.878 秒）。
+
+现场 RenewDeadline 为 25 秒，所以不能忽略这条独立读取路径；但不能
+把配置上限写成已测得的额外 25 秒。后续修复若调整释放顺序，必须保留
+先停止本任期工作、join 初始化及清理、再允许可信 peer 释放精确旧任期
+的安全边界，并重新验证正常退出与接管。此轮只添加路径测试，未改选主行为。
