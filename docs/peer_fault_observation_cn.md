@@ -224,3 +224,31 @@ StatefulSet 仍 generation 56、原完整 spec、3/3 Ready。这里的 restore
 证书证据和 receipt 保留。该结果仍不覆盖 protected 模式的实际 rollout
 与采栈，更不是原 30 秒故障验收；最新镜像 CI 35349468415 仍运行时未
 推送新提交，避免取消它。
+
+## 新提交 CI 与完整执行器只读接入
+
+旧镜像作业 35349468415 随后成功，但同源码 `7fa4a6aa` 的探针作业
+35349468426 保留失败，不能将镜像构建成功视为该提交所有门禁通过。
+旧作业终态确认后，已推送 `da303fdbd460ee42f3aa158fac27c396faf6b58f`，
+由 push 自动触发（没有额外 workflow_dispatch）：
+
+- 镜像构建 35352626418。
+- 探针回归 35352626497。
+- 后端协议集成 35352626422。
+
+三项均已观测到 in_progress，尚未据此认定通过。新提交包含 Watch
+回放进度修复，需要自己的后端和探针结果，不能套用旧提交的成功记录。
+
+同时在 owner
+`/root/.local/state/kubebrain/diagnostic-driver-noop.cc35oAeZ` 冻结相同源码，
+通过完整 `run-peer-trust-expand.sh` 的 diagnostics/restore 路径做现场
+空操作接入验证。专用 kubectl 包装器只允许 get、rollout status、
+port-forward，拒绝所有写命令；因此即使意外产生补丁也无法写入集群。
+一次性脚本 90453 终态 0，before/admitted/after/final 的 patch 均为空，
+没有 patch-result 或 recovery；真实证书预检、三个成员的 disabled
+诊断验证、最终完整 spec 与 Pod 状态比较全部通过。
+
+现场仍 generation 56、原完整 spec、3/3 Ready；证据摘要通过校验，
+18584/18585 均无监听。三个临时二进制副本已删除并保留哈希，源码与
+私有证据保留。这里只验证完整执行器的只读空操作路径，尚未验证实际
+诊断启用、滚动更新和恢复，更未证明原 30 秒故障门限。
