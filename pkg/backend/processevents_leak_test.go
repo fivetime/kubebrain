@@ -20,6 +20,7 @@ import (
 	"time"
 
 	proto "github.com/kubewharf/kubebrain-client/api/v2rpc"
+	"github.com/stretchr/testify/require"
 )
 
 // TestProcessEventsExitsOnCancelWhenConsumerStopped reproduces the goroutine
@@ -52,4 +53,37 @@ func TestProcessEventsExitsOnCancelWhenConsumerStopped(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("processEvents leaked: did not exit after ctx cancel while the consumer was stopped and out was full")
 	}
+}
+
+// A subscriber is attached before cache/history replay. Its live queue can
+// therefore contain an older marker than the replay already delivered.
+func TestProcessEventsDropsProgressBeforeReplayFloor(t *testing.T) {
+	s, closer := newTestSuites(t, memKvStorage)
+	defer closer()
+	b := s.backend.(*backend)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	in := make(chan []*proto.Event, 5)
+	out := make(chan []*proto.Event, 5)
+	in <- NewProgressMarker(32) // queued before replay through revision 33
+	in <- NewProgressMarker(33) // equal watermark is safe
+	in <- []*proto.Event{{Revision: 34, Kv: &proto.KeyValue{Key: []byte("/registry/a"), Revision: 34}}}
+	in <- NewProgressMarker(34)
+	in <- NewProgressMarker(33) // preserve genuine live regression for RPC checks
+	close(in)
+	done := make(chan struct{})
+	go func() {
+		b.processEvents(ctx, cancel, out, in, "/registry/", 34)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("processEvents did not finish")
+	}
+	var revisions []uint64
+	for batch := range out {
+		revisions = append(revisions, batch[0].Revision)
+	}
+	require.Equal(t, []uint64{33, 34, 34, 33}, revisions)
 }

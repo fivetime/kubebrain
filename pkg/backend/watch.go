@@ -536,10 +536,16 @@ func (b *backend) processEvents(ctx context.Context, cancel context.CancelFunc, 
 				return
 			}
 			if IsProgressMarker(events) {
-				// In-band progress marker (nil Kv): forward verbatim so it is
-				// neither prefix/revision-filtered nor allocation-touched
-				// (filterEvents would deref event.Kv.Key). It advances a quiet
-				// watch's progress downstream without carrying any event.
+				// We subscribe before cache/history replay, so queued markers may
+				// predate the replay already delivered to out. Just as duplicate
+				// live events are filtered below, discard markers older than that
+				// fixed floor. An equal watermark is safe. Do not advance this
+				// floor with live events: genuine live-stream regressions must
+				// still reach the RPC integrity checks rather than be concealed.
+				if revision > 0 && events[0].Revision < revision-1 {
+					continue
+				}
+				// Markers have nil Kv; never pass them to filterEvents.
 				select {
 				case out <- events:
 				case <-ctx.Done():
