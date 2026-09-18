@@ -55,6 +55,22 @@ func TestLocalProtocolIncludesAbsentAuthCommitConflict(t *testing.T) {
 	require.Contains(t, text, `"$test_name" == `+name+` ]]; then protocol_mode=2pc; fi`)
 }
 
+func TestLocalProtocolIncludesPrivateElectionRelease(t *testing.T) {
+	source, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
+	require.NoError(t, err)
+	text := string(source)
+	require.Contains(t, text, `go test "${race[@]}" -c -o "$evidence/election.test" ./pkg/backend/election`)
+	start := strings.Index(text, "\ntest_name=TestRealTiKVRetiredRelease\n")
+	end := strings.Index(text, "\necho 'LOCAL_PROTOCOL_TESTS_PASSED")
+	require.Greater(t, start, 0)
+	require.Greater(t, end, start)
+	entry := text[start:end]
+	require.Contains(t, entry, `KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID="$cluster_id"`)
+	require.Contains(t, entry, `KUBEBRAIN_TIKV_PROTOCOL_MODE=2pc`)
+	require.Contains(t, entry, `130s "$evidence/election.test"`)
+	require.Contains(t, entry, `verify_case_result "$case_result" "$test_name" "$evidence/$test_name.log"`)
+}
+
 func TestLocalProtocolExplicitSubnetReservation(t *testing.T) {
 	source, err := os.ReadFile("../hack/backend-integration/run-real-local.sh")
 	require.NoError(t, err)
@@ -210,8 +226,10 @@ func TestLocalProtocolCleanupOwnershipAndFailures(t *testing.T) {
 		t.Run(tc.name+"/exit-"+tc.initial, func(t *testing.T) {
 			dir := t.TempDir()
 			binary := filepath.Join(dir, "protocol.test")
+			electionBinary := filepath.Join(dir, "election.test")
 			unrelated := filepath.Join(dir, "preserve.txt")
 			require.NoError(t, os.WriteFile(binary, []byte("owned executable"), 0o600))
+			require.NoError(t, os.WriteFile(electionBinary, []byte("owned election executable"), 0o600))
 			require.NoError(t, os.WriteFile(unrelated, []byte("preserve evidence"), 0o600))
 			if tc.name == "symlink-binary" {
 				require.NoError(t, os.Remove(binary))
@@ -257,6 +275,7 @@ func TestLocalProtocolCleanupOwnershipAndFailures(t *testing.T) {
 			} else {
 				require.NoFileExists(t, binary)
 			}
+			require.NoFileExists(t, electionBinary)
 			retained, readErr := os.ReadFile(unrelated)
 			require.NoError(t, readErr)
 			require.Equal(t, "preserve evidence", string(retained))

@@ -39,7 +39,7 @@ for phase in pd tikv; do
     --filter "label=io.kubebrain.local-protocol-owner=$owner" --format '{{.ID}}')"
   networks="$(timeout 30s /usr/bin/docker --host unix:///var/run/docker.sock network ls \
     --filter "label=io.kubebrain.local-protocol-owner=$owner" --format '{{.ID}}')"
-  [[ -z "$containers" && -z "$networks" && ! -e "$evidence/protocol.test" ]] || {
+  [[ -z "$containers" && -z "$networks" && ! -e "$evidence/protocol.test" && ! -e "$evidence/election.test" ]] || {
     echo "interrupted fixture cleanup incomplete: $evidence" >&2; exit 1
   }
   printf 'LOCAL_PROTOCOL_INTERRUPTION_PASSED phase=%s exit=143 resources_absent=true evidence=%s\n' "$phase" "$evidence"

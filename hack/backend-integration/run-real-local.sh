@@ -62,6 +62,9 @@ cleanup() {
   if [[ -f "$evidence/protocol.test" && ! -L "$evidence/protocol.test" ]]; then
     rm -- "$evidence/protocol.test" || failed=1
   fi
+  if [[ -f "$evidence/election.test" && ! -L "$evidence/election.test" ]]; then
+    rm -- "$evidence/election.test" || failed=1
+  fi
   printf 'LOCAL_PROTOCOL_END result=%s cleanup_failed=%s evidence=%s\n' "$result" "$failed" "$evidence" >&"$report_fd"
   if [[ "$failed" != 0 ]]; then exit 1; fi
   exit "$result"
@@ -73,6 +76,7 @@ printf 'LOCAL_PROTOCOL_START evidence=%s owner=%s\n' "$evidence" "$owner"
 export GOFLAGS='' GOWORK=off GOTOOLCHAIN=go1.26.8
 cd "$root_dir"
 timeout --signal=TERM --kill-after=10s 300s go test "${race[@]}" -c -o "$evidence/protocol.test" ./pkg/storage/tikv
+timeout --signal=TERM --kill-after=10s 300s go test "${race[@]}" -c -o "$evidence/election.test" ./pkg/backend/election
 for image in "$pd_image" "$tikv_image"; do
   docker_local image inspect "$image" >/dev/null # never pull a mutable tag
 done
@@ -185,4 +189,14 @@ for test_name in TestRealTiKVAsyncProcessGuardedResponseLoss TestRealTiKVAsyncEx
     -test.run="^$test_name$" -test.v -test.count=1 -test.timeout=120s > "$evidence/$test_name.log" 2>&1 || case_result=$?
   verify_case_result "$case_result" "$test_name" "$evidence/$test_name.log"
 done
+# Separate package keeps private election primitives private. Use the same
+# disposable cluster, a fresh prefix, and production-default 2PC.
+test_name=TestRealTiKVRetiredRelease
+nonce="$(openssl rand -hex 16)"
+case_result=0
+KUBEBRAIN_TIKV_PROTOCOL_PD="$pd_endpoint" KUBEBRAIN_TIKV_PROTOCOL_CLUSTER_ID="$cluster_id" \
+  KUBEBRAIN_TIKV_PROTOCOL_PREFIX="kubebrain/protocol-smoke/$nonce/" KUBEBRAIN_TIKV_PROTOCOL_MODE=2pc \
+  timeout --signal=TERM --kill-after=10s 130s "$evidence/election.test" \
+  -test.run="^$test_name$" -test.v -test.count=1 -test.timeout=120s > "$evidence/$test_name.log" 2>&1 || case_result=$?
+verify_case_result "$case_result" "$test_name" "$evidence/$test_name.log"
 echo 'LOCAL_PROTOCOL_TESTS_PASSED acceptance=false'

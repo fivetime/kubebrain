@@ -86,8 +86,12 @@ jobs:
       - name: Verify leadership freshness regressions
         run: |
           set -euo pipefail
+          go vet ./pkg/backend/election
+          go test -race -count=1 -timeout=3m -v ./pkg/backend/election
           go vet ./pkg/server/service/leader
           go test -race -count=1 -timeout=3m -v ./pkg/server/service/leader
+          go vet ./pkg/server
+          go test -race -count=1 -timeout=3m -v ./pkg/server
           go vet ./cmd/option
           go test -race -count=1 -timeout=3m -v ./cmd/option
       - name: Verify follower proxy regressions

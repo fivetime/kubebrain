@@ -177,6 +177,11 @@ type leaderElection struct {
 	onPreparingLeading func()
 	// onStoppedLeading is called when a LeaderElector client stops leading
 	onStoppedLeading func()
+	// onTermRetired is an internal, optional post-join boundary. It runs only
+	// for an acquired elector, synchronously before another elector is created.
+	// It must honor ctx (which may already be canceled). This is not durable
+	// release confirmation or authentication for a remote release request.
+	onTermRetired func(context.Context)
 	// leader indicates whether this instance is leader (1 = leader). It is written
 	// by the leader-election callbacks and read by IsLeader() from every RPC
 	// goroutine, so it is accessed atomically (#60/#68).
@@ -372,11 +377,12 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 		acquired := make(chan struct{})
 		started := make(chan struct{})
 		finished := make(chan struct{})
+		renewal := &renewalTerm{leader: l}
 		var acquireOnce sync.Once
 		elector, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 			Lock: &renewStampingLock{
-				Interface: l.resourceLock, onRenew: l.stampRenew, onRecord: l.observeLeadershipRecordRaw,
-				onRelease:  l.invalidateRenew,
+				Interface: l.resourceLock, onRenew: renewal.renew, onRecord: l.observeLeadershipRecordRaw,
+				onRelease:  renewal.retire,
 				onMutation: func() { acquireOnce.Do(func() { close(acquired) }) },
 			},
 			ReleaseOnCancel: true,
@@ -403,6 +409,9 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 						cancel()
 						return
 					}
+					if leadingCtx.Err() != nil {
+						return
+					}
 					// Publish the new epoch without refreshing lastRenew. Only a
 					// successful durable lock mutation establishes freshness;
 					// initialization may outlast RenewDeadline while renewal fails.
@@ -415,15 +424,10 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 					l.onStartedLeading(leadingCtx)
 				},
 				OnStoppedLeading: func() {
+					// Close this term's freshness notifications before lifecycle
+					// cleanup drains in-flight in-memory lease publications.
+					renewal.retire()
 					atomic.StoreInt32(&l.leader, 0)
-					l.onStoppedLeading()
-					leaderAddr := l.GetLeaderInfo()
-					l.metricCli.EmitCounter("leader.election.lost", 1, metrics.Tag("addr", leaderAddr))
-					if ctx.Err() != nil {
-						klog.Info("leader election stopped by context cancellation")
-					} else {
-						klog.Warning("leadership lost; retrying election in the same process")
-					}
 					// client-go starts OnStartedLeading in a goroutine and does
 					// not join it. Drain this term before Campaign can construct
 					// the next elector, otherwise lease/event/count initialization
@@ -436,6 +440,18 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 						// Run also calls OnStoppedLeading when acquisition was
 						// canceled before success; no callback exists to drain.
 					}
+					// Initialization may finish an already-started operation after
+					// cancellation and publish state. Final cleanup must happen
+					// AFTER it joins, while freshness stays irreversibly retired.
+					atomic.StoreInt32(&l.leader, 0)
+					l.onStoppedLeading()
+					leaderAddr := l.GetLeaderInfo()
+					l.metricCli.EmitCounter("leader.election.lost", 1, metrics.Tag("addr", leaderAddr))
+					if ctx.Err() != nil {
+						klog.Info("leader election stopped by context cancellation")
+					} else {
+						klog.Warning("leadership lost; retrying election in the same process")
+					}
 				},
 			},
 		})
@@ -445,7 +461,17 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 			return
 		}
 		elector.Run(runCtx)
+		// Retire even when release failed before reaching the mutation callback.
+		// Run has joined this term's lifecycle callback before the next term starts.
+		renewal.retire()
 		cancel()
+		if l.onTermRetired != nil {
+			select {
+			case <-acquired:
+				l.onTermRetired(ctx)
+			default:
+			}
+		}
 		if ctx.Err() != nil {
 			return
 		}

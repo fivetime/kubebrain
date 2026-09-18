@@ -697,7 +697,15 @@ func (s *server) onPreparingLeading() {
 func (s *server) runServingInitializationStage(ctx context.Context, stage string, initialize func(context.Context) error) bool {
 	started := time.Now()
 	for {
+		if ctx.Err() != nil {
+			return false
+		}
 		err := initialize(ctx)
+		// Storage may have completed successfully while cancellation raced its
+		// acknowledgement. Do not advance startup for an already retired term.
+		if ctx.Err() != nil {
+			return false
+		}
 		if err == nil {
 			duration := time.Since(started)
 			if s.metricCli != nil {
@@ -804,6 +812,9 @@ func (s *server) onStartedLeading(ctx context.Context) {
 			return err
 		}},
 	) {
+		return
+	}
+	if ctx.Err() != nil {
 		return
 	}
 	s.healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
