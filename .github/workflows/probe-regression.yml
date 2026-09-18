@@ -15,6 +15,7 @@ name: Rollout probe regression
       - 'hack/dev/create-apiserver-test-pki.sh'
       - 'pkg/**'
       - 'cmd/option/**'
+      - 'deploy/test-cluster/**'
       - 'go.mod'
       - 'go.sum'
       - 'build/workflow_test.go'
@@ -90,6 +91,8 @@ jobs:
           set -euo pipefail
           go vet ./pkg/endpoint ./pkg/transportidentity
           go test -race -count=1 -timeout=3m -v ./pkg/endpoint ./pkg/transportidentity
+          go vet ./deploy/test-cluster
+          go test -race -count=1 -timeout=2m -v ./deploy/test-cluster
       - name: Verify leadership freshness regressions
         run: |
           set -euo pipefail

@@ -1566,3 +1566,23 @@ symlink。CI 路径与命令测试步骤已新增且契约测试通过。
 尚未导入 Kubernetes；后续必须保证每 Pod 只能读取自己的 key，不能将
 整个 bundle 挂入所有 Pod。当前 c7e2e0a9 两项 CI 仍在运行，本轮不推送；
 尚需证书信任过渡/回退、按精确镜像部署及真实 TiKV 原门限验收。
+
+## 成员挂载片段与信任过渡准备
+
+新增 [隔离挂载片段](../deploy/test-cluster/peer-retirement-mounts.patch.json)
+及[专用集群迁移与恢复准备](peer_retirement_cluster_transition_cn.md)。片段
+只将 peer Secret 条目按 Pod 名分目录，并以只读 subPathExpr 挂载本成员目录，
+不含 CA 私钥，不启用实验参数、不修改镜像或其他卷。Secret 子路径不会自动
+接收更新，因此明确采用版本化材料与受控重启；未把此方案描述成在线轮换。
+
+新测试通过 Kubernetes StrategicMergePatch 合并真实仓库 StatefulSet，
+与只允许修改 peer Secret/挂载的完整预期对象比较，锁定原 args/image、
+client/info TLS、资源与存储等不变；并校验 metadata.name 注入 POD_NAME、
+无额外容器或完整根目录挂载、token 自动挂载关闭。定向包三轮 race/vet/diff
+通过（53162，1.167 秒）；新增部署目录 CI 路径/检查及对应契约后，build 与
+部署包单轮 race 通过（22637，2.566/1.097 秒），相关 vet/diff 通过。
+
+文档区分旧证书双 CA 过渡、独立新证书、启用协议、移除旧 CA 及逆向恢复。
+离线片段没有 UID/resourceVersion 前置条件，禁止直接用它代替现场捕获与
+受控执行器。运行时挂载隔离、信任过渡与故障验收尚缺实证；未创建 Secret、
+未 server dry-run、未修改集群。c7e2e0a9 两项 CI 仍在运行，本轮不推送。

@@ -1,0 +1,45 @@
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "containers": [
+          {
+            "name": "kubebrain",
+            "volumeMounts": [
+              {
+                "name": "peer-tls",
+                "mountPath": "/etc/kubebrain/peer-tls",
+                "readOnly": true,
+                "subPathExpr": "$(POD_NAME)"
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "name": "peer-tls",
+            "secret": {
+              "secretName": "kubebrain-local-peer-retirement-v1",
+              "defaultMode": 288,
+              "optional": false,
+              "items": [
+                {"key": "kubebrain-local-0.tls.crt", "path": "kubebrain-local-0/tls.crt"},
+                {"key": "kubebrain-local-0.tls.key", "path": "kubebrain-local-0/tls.key"},
+                {"key": "kubebrain-local-0.ca.crt", "path": "kubebrain-local-0/ca.crt"},
+                {"key": "kubebrain-local-0.policy.json", "path": "kubebrain-local-0/policy.json"},
+                {"key": "kubebrain-local-1.tls.crt", "path": "kubebrain-local-1/tls.crt"},
+                {"key": "kubebrain-local-1.tls.key", "path": "kubebrain-local-1/tls.key"},
+                {"key": "kubebrain-local-1.ca.crt", "path": "kubebrain-local-1/ca.crt"},
+                {"key": "kubebrain-local-1.policy.json", "path": "kubebrain-local-1/policy.json"},
+                {"key": "kubebrain-local-2.tls.crt", "path": "kubebrain-local-2/tls.crt"},
+                {"key": "kubebrain-local-2.tls.key", "path": "kubebrain-local-2/tls.key"},
+                {"key": "kubebrain-local-2.ca.crt", "path": "kubebrain-local-2/ca.crt"},
+                {"key": "kubebrain-local-2.policy.json", "path": "kubebrain-local-2/policy.json"}
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}
