@@ -19,3 +19,26 @@ UID/运行标识、相同 Pod 名称和命名空间、完整 spec、IP、运行�
 规则已接入仓库版[受保护采栈会话工具](protected_stack_session_cn.md)，
 但尚未通过新的真实实验。本轮已冻结的私有脚本和失败记录不修改；
 新实验驱动接入必须重新冻结工具并验收，不能追溯改判本轮结果。
+
+## 后续：端点采集也必须使用进程身份规则
+
+新 attempt `fault-2ad-recheck.HegMKL6X/deploy-execute.Pcc4VKVk` 已通过原流
+响应、降主等待栈消失和键/租约检查，但在撤销隔离后的端点观察失败。
+`endpoint.7az7R6au` 前后只有应用容器 Ready 从 false 变为 true，
+UID/spec/IP、容器 ID/镜像、重启次数、启动时间不变；旧端点采集脚本
+仍比较整个 `containerStatuses`，退出 1。故障清理退出 0。该实验仍
+记为失败，不以响应在 28.698617070 秒返回替代完整流程结果。
+
+新增 `deploy/test-cluster/capture-local-cilium-endpoint.sh OWNER POD`，
+将这段只读采集纳入仓库，应用和 Cilium agent 的前后身份检查均使用
+同一个 jq 规则。工具限定现有专用测试集群及固定 namespace/StatefulSet
+UID，OWNER 必须为调用用户所有的真实 0700 目录，POD 限定
+`kubebrain-local-[012]`；不是通用生产探针。未来调用者必须将脚本及
+`same-pod-process.jq` 纳入冻结清单，使用新 owner 重新验收。
+
+仍检查初始 Cilium agent Ready、endpoint ready、Pod/CEP/agent 对应
+关系、CEP UID/identity/networking 稳定；忽略健康标志不代表允许换
+进程或换端点。12 个完整脚本模拟场景的 race 测试通过，重复三次
+通过（28.357 秒），实际保存 Pod 对的只读身份规则复核也通过。
+测试不证明真实隔离或修复后的新实验成功。当前已消费 owner 的冻结
+脚本未修改；完整恢复结果另外记录，不能仅凭故障清理成功推断已恢复。
