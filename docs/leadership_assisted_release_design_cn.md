@@ -1416,3 +1416,31 @@ transportidentity、cmd/option 全包单轮 race 分别通过（75380，
 本地参考 etcd 的 server/embed/serve.go 中普通 HTTP ReadHeaderTimeout
 也是五分钟；本轮更严格限制仅用于显式实验 peer，不修改公共 etcd 客户端
 端点的兼容性配置。没有集群部署、推送或重跑 CI。
+
+## 显式 CLI 策略入口
+
+增加 `--experimental-peer-retirement-config`，默认空值保持关闭。配置格式、
+约束与部署边界见[实验配置说明](experimental_peer_retirement_config_cn.md)。
+只读普通文件，最大 64 KiB，允许投影符号链接，非阻塞打开排除 FIFO。
+先逐 token 拒绝重复键/过深嵌套和尾随输入，再按精确八字段解析；检查固定
+目标、pin、预算与数量限制。文件解析错误不回显输入。三个预算即使使用
+相同 duration 字符串也必须独立赋值，不允许缺省或零预算。
+
+参数层要求严格 peer mTLS、本机 identity 存在于 pin 表、远端列表不包含
+本机 holder。Validate 和 Run 都读取，Run 在创建 storage client 前重读；
+每次先清除旧策略，读失败不回退缓存。运行后策略不热加载，TLS 文件重载
+仍为独立机制。后端真实 scope 与本机 TLS key/pin 的最终验证仍由既有
+server 构造器执行，不能用文件语法通过代替这些检查。
+
+定向三轮 race（58299）通过：endpoint 1.167 秒、cmd/option 1.208 秒。
+包含重复/转义同名键、嵌套重复、未知/大小写错误字段、尾随值、null、
+预算越界、明文/带路径 URL、共享 key、未知 holder、超大文件、过深结构、
+非法 UTF-8、符号链接、FIFO/目录/设备/缺失文件；参数绑定测试检查默认关闭、
+拒绝明文与混合模式、缺失本机 pin、成功加载后文件失效的拒绝，以及绕过
+Validate 时 Run 仍在访问 storage 前返回错误。未声称已通过完整二进制部署。
+
+全包单轮 race（52120）通过：cmd/option 1.236 秒、endpoint 53.905 秒、
+server 51.261 秒、transportidentity 1.028 秒；相关 vet/diff 通过，执行链
+终态 0。收尾时旧提交镜像作业 35328959280 进入 Verify published test image，
+仍为 in_progress；未推送、重复触发或部署。用户已有验收状态文档改动保持
+未暂存，未将其混入本轮提交。

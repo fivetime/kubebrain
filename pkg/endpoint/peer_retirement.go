@@ -12,7 +12,7 @@ import (
 
 // PeerRetirementOptions deliberately contains no TLS callbacks or credential
 // objects. The experimental transports use the peer listener's file policy.
-// No CLI enables this mode yet; nil remains the ordinary endpoint behavior.
+// The CLI requires an explicit policy file; nil is ordinary endpoint behavior.
 type PeerRetirementOptions struct {
 	Scope                                   string
 	HolderPins                              map[string][]string

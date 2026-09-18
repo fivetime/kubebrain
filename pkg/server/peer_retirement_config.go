@@ -15,8 +15,8 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
 
-// PeerRetirementConfig is an explicit, experimental opt-in. There is no CLI
-// enablement or automatic default. Operators must provision distinct holder keys
+// PeerRetirementConfig is an explicit, experimental opt-in, with no automatic
+// default. Operators must provision distinct holder keys
 // and approve the exact backend scope. Lease continuity and production fault
 // acceptance remain required before enabling this in a deployment.
 type PeerRetirementConfig struct {

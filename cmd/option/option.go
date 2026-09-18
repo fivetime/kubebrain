@@ -43,7 +43,8 @@ import (
 )
 
 type KubeBrainOption struct {
-	epsConf *endpoint.Config
+	epsConf                  *endpoint.Config
+	peerRetirementConfigFile string
 
 	// key prefix
 	Prefix string
@@ -197,6 +198,7 @@ func NewOptions() *KubeBrainOption {
 
 // AddFlags adds flags to fs and binds them to options.
 func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
+	fs.StringVar(&o.peerRetirementConfigFile, "experimental-peer-retirement-config", "", "Startup-only JSON peer retirement policy; disabled when empty. Requires distinct member keys and strict peer mTLS. Experimental, not production accepted.")
 	// parse flags
 	fs.IntVar(&o.epsConf.Port, "port", o.epsConf.Port, "the port kubebrain listen on for client")
 	fs.IntVar(&o.epsConf.PeerPort, "peer-port", o.epsConf.PeerPort, "the port kubebrain listen on for peer communication")
@@ -311,6 +313,9 @@ func (o *KubeBrainOption) AddFlags(fs *pflag.FlagSet) {
 
 // Validate checks the option before running
 func (o *KubeBrainOption) Validate() error {
+	if err := o.loadPeerRetirementConfig(); err != nil {
+		return err
+	}
 	err := o.epsConf.Validate()
 	if err != nil {
 		return err
@@ -449,6 +454,9 @@ func (o *KubeBrainOption) buildIdentity() (string, error) {
 
 // Run runs the storage engine
 func (o *KubeBrainOption) Run(ctx context.Context) (retErr error) {
+	if err := o.loadPeerRetirementConfig(); err != nil {
+		return err
+	}
 	if err := backend.ValidateRangeStreamSpillDir(o.rangeStreamSpillDir); err != nil {
 		return err
 	}

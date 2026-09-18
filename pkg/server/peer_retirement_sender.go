@@ -24,7 +24,7 @@ var errPeerRetirementUnconfirmed = errors.New("peer retirement release unconfirm
 // be invoked only at the post-join irreversible retirement boundary, never as a
 // way to evict a still-active holder. Neither failure nor success reactivates
 // that term. Only the explicit opt-in server wires it into Campaign; the normal
-// constructor and command-line deployment remain disabled.
+// constructor and command-line defaults remain disabled.
 type peerRetirementSender struct {
 	instance, holder string
 	endpoints        []string
