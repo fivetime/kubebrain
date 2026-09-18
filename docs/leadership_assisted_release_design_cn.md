@@ -576,3 +576,37 @@ IsLeader=false、freshness=false 且父 context 仍有效，再通过发送端�
 秒），三个包 vet 与 diff 检查通过。缺少条件和 shutdown 取消的适配器路径
 亦确认没有发送请求。测试未创建集群资源或编译输出文件；本轮先本地提交，
 不推送取消仍在运行的旧源码镜像任务。
+
+## 显式实验构造入口：默认关闭，peer-only
+
+新增 `NewServerWithPeerRetirement` 和 `PeerRetirementConfig`，先完成配置
+校验，再创建后台服务。普通 `NewServer` 仍不配置回调或路由；当前 CLI/部署
+清单也没有启用选项。显式构造路径要求批准的 scope、至少两个独立 holder
+密钥、HTTPS 同伴地址、独立发送 TLS 配置及非零资源预算。本机发送证书的
+SPKI 必须属于本地 resource lock 身份，不能拿普通客户端或其他 holder 的
+证书启动。策略、目标及证书字节在准备阶段独立保存。
+
+实验路径在同一 server 构造中安装 post-join 回调，并只将固定版本路由加入
+`GetPeerHttpHandlers`。client/info handler 集合均无此路由。无论路由如何
+注册，handler 自身仍要求已验证的 TLS 身份。此构造 API 不创建 listener，
+调用者仍须提供验证客户端证书的 peer TLS、连接准入和头部/握手时间限制；
+不能把 handler 的 body deadline 误认为整个 listener 的资源防护已完成。
+
+测试覆盖错误 scope、跨 holder/共享 key、缺少本机成员、plaintext、零预算、
+单成员策略拒绝；无效配置使用只提供 GetResourceLock 的后端桩，任何进一步
+构造操作都会失败，以验证校验顺序。有效配置修改原 map/URL/证书后，已准备
+协议仍保持独立。实际 server 构造测试进入受控 prevalidation，确认 peer-only
+路由及关闭；该 fixture 模拟已有 leader 的加入节点，并不做租约切换。
+
+初始“完全没有选主记录、prevalidation 阻塞”的关闭测试三次失败：原有
+EnsureVoluntaryRelease 等待至 5 秒后返回 deadline exceeded（34707）。本轮
+没有修改这个退出策略，也没有声称为空库启动后退出已通过；将入口/路由测试
+明确改为已有选主记录的加入节点后，三轮 race 通过（74200，1.354 秒）。
+这个初始状态的退出可用性差距应独立复现、评估，不得被实验功能测试覆盖。
+
+新入口仍属于明确标记的实验 API，未加入生产命令行或部署。实际租约连续性、
+独立 holder 证书部署与原 30 秒故障验收仍未完成，不能作为生产就绪结论。
+
+最终回归（74685）成功：server/leader/election race 五轮分别为
+14.230/9.364/5.620 秒；endpoint/option/build race 一轮分别为
+15.701/1.243/2.678 秒，相关 vet 与 diff 检查通过。没有集群变更。

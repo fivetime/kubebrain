@@ -81,8 +81,8 @@ func (r *resourceLock) ownershipSnapshot() (retiredOwnership, bool) {
 
 // releaseRetiredOwnership deliberately ignores this receiver's cached lastVal
 // and ownership token. A delayed request must never release a later acquisition.
-// The scoped exported adapter delegates here, but no network route is enabled
-// yet. Errors, including an uncertain commit, do not authorize reactivation
+// The scoped exported adapter delegates here; the ordinary server does not
+// enable the network route. Errors, including uncertain commit, do not authorize reactivation
 // of the old holder. A replay fails its original preconditions without changing
 // newer ownership; it is not reported as an independently confirmed success.
 func (r *resourceLock) releaseRetiredOwnership(parent context.Context, claim retiredOwnership) error {

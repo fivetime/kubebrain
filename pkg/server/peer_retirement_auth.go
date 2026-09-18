@@ -11,8 +11,8 @@ import (
 
 var errPeerRetirementUnauthorized = errors.New("peer retirement unauthorized")
 
-// peerRetirementAuthorizer is deliberately internal and not registered on any
-// transport. TLS CA membership alone does not authorize a holder's retirement.
+// peerRetirementAuthorizer is internal to the opt-in peer transport. TLS CA
+// membership alone does not authorize a holder's retirement.
 // Each configured holder must have distinct SHA-256 SPKI pins; multiple pins
 // for ONE holder permit key rotation without granting another holder authority.
 // Configuration must come from the instance operator, never the request.

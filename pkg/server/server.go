@@ -104,7 +104,8 @@ type server struct {
 	backend        backend.Backend
 	genericAlarms  func(context.Context) ([]*etcdserverpb.AlarmMember, error)
 
-	config Config
+	config     Config
+	retirement *peerRetirementProtocol
 
 	cancel                context.CancelFunc
 	campaignCancel        context.CancelFunc
@@ -334,6 +335,10 @@ func (s *server) RegisterPeerTransportDrain(drain func()) {
 
 // NewServer returns the server
 func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.Metrics, config Config) Server {
+	return newServer(ctx, backend, metricCli, config, nil)
+}
+
+func newServer(ctx context.Context, backend backend.Backend, metricCli metrics.Metrics, config Config, retirement *peerRetirementProtocol) Server {
 	runCtx, cancel := context.WithCancel(ctx)
 	campaignCtx, campaignCancel := context.WithCancel(runCtx)
 	s := &server{
@@ -342,6 +347,7 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 		metricCli:          metricCli,
 		backend:            backend,
 		config:             config,
+		retirement:         retirement,
 		cancel:             cancel,
 		campaignCancel:     campaignCancel,
 		campaignDone:       make(chan struct{}),
@@ -352,10 +358,14 @@ func NewServer(ctx context.Context, backend backend.Backend, metricCli metrics.M
 	}
 	// leader election callbacks are methods on s; s.etcdServer is assigned below
 	// (before Campaign runs) and read by onStartedLeading.
-	election := leader.NewLeaderElection(
-		backend, metricCli, s.onPreparingLeading, s.onStartedLeading, s.onStoppedLeading,
-		config.getLeaderConfig(),
-	)
+	var election leader.LeaderElection
+	if retirement == nil {
+		election = leader.NewLeaderElection(backend, metricCli, s.onPreparingLeading,
+			s.onStartedLeading, s.onStoppedLeading, config.getLeaderConfig())
+	} else {
+		election = leader.NewLeaderElectionWithRetirement(backend, metricCli, s.onPreparingLeading,
+			s.onStartedLeading, s.onStoppedLeading, config.getLeaderConfig(), retirement.onTermRetired)
+	}
 	// Wire the write fence: the backend re-checks this leadership epoch/freshness
 	// immediately before every data commit, so a deposed leader's in-flight write
 	// is rejected instead of committed-yet-unwatched (FINDING #39).
@@ -923,6 +933,9 @@ func (s *server) GetPeerHttpHandlers() map[string]http.Handler {
 		for path, handler := range s.etcdServer.GetPeerHttpHandlers() {
 			handlers[path] = handler
 		}
+	}
+	if s.retirement != nil {
+		handlers[peerRetirementPath] = s.retirement.handler
 	}
 	return handlers
 }

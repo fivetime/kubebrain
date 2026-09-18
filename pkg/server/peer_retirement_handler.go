@@ -11,7 +11,7 @@ import (
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
 
-// peerRetirementHandler is intentionally not registered yet. The release
+// peerRetirementHandler is registered only by the explicit opt-in server. The release
 // callback MUST be bound to the authorizer's instance/keyspace by construction,
 // perform only the exact conditional release, and honor context cancellation.
 // It must never reactivate the retired holder, even after an uncertain commit.
