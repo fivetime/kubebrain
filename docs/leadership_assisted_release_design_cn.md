@@ -1603,4 +1603,5 @@ Patch server dry-run 通过；API 返回候选 generation 39，但复查实际�
 generation 38、3/3 Ready。
 
 这不替代真实独立证书的信任过渡、完整配置启动、scope 绑定、TiKV 故障或
-原 30 秒验收。两项 c7e2e0a9 CI 仍在运行；本轮仅保存验证记录，不推送。
+原 30 秒验收。收尾复查 c7e2e0a9 probe 35331815236 已成功，image
+35331815217 仍在运行；本轮仅保存验证记录，不推送。
