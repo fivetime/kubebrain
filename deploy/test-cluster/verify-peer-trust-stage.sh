@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# First-phase driver hook only. Receipt and paths must be operator-audited.
+# Adjacent trust-phase verifier. Receipt and paths must be operator-audited.
 set -euo pipefail
 umask 077
 [[ $# == 5 && ( $1 == expand || $1 == restore ) && ( $2 == preflight || $2 == after ) ]] || exit 2
 mode=$1; phase=$2; evidence=$3; kubeconfig=$4; context=$5
 [[ $evidence == /* && $kubeconfig == /* && -n $context ]]
 receipt=$evidence/receipt.json
-jq -e '.phase == null or .phase == "roots"' "$receipt" >/dev/null
+jq -e '.phase == null or .phase == "roots" or .phase == "members"' "$receipt" >/dev/null
+trust_phase=$(jq -r '.phase // "roots"' "$receipt")
 out=$evidence/verify-$phase
 mkdir -m 700 "$out" "$out/original" "$out/expanded"
 setting() { jq -er --arg key "$1" '.verification[$key]|select(type=="string" and length>0)' "$receipt"; }
@@ -29,6 +30,36 @@ done
 for i in 0 1 2; do
  bash "$out/material-verifier.sh" "$out/original" "$out/expanded" "$bundle/$sts-$i" "$peer_dns" > "$out/material-$i.log" 2>&1
 done
+if [[ $trust_phase == members ]]; then
+ scope=$(setting retirement_scope)
+ [[ $scope =~ ^retirement-v1:[a-f0-9]{64}$ ]]
+ jq -e --arg sts "$sts" '.member_secret.immutable==true and
+  (.member_secret.data|keys)==([range(0;3) as $i|["tls.crt","tls.key","ca.crt","policy.json"][] as $f|"\($sts)-\($i).\($f)"]|sort)' "$receipt" >/dev/null
+ pins=()
+ for i in 0 1 2; do
+  member=$sts-$i
+  mkdir -m 700 "$out/$member"
+  for file in ca.crt tls.crt tls.key policy.json; do
+   jq -er --arg key "$member.$file" '.member_secret.data[$key]|select(type=="string" and length>0)' "$receipt" | base64 -d > "$out/$member/$file"
+   if [[ $file == ca.crt ]]; then cmp -s "$out/$member/$file" "$out/expanded/ca.crt"
+   else cmp -s "$out/$member/$file" "$bundle/$member/$file"; fi
+  done
+  openssl verify -no-CApath -no-CAstore -purpose sslserver -verify_hostname "$member.$peer_dns" \
+   -CAfile "$out/expanded/ca.crt" "$out/$member/tls.crt" > "$out/member-hostname-$i.log"
+  pins+=("$(openssl x509 -in "$out/$member/tls.crt" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | cut -d ' ' -f1)")
+ done
+ [[ ${pins[0]} != "${pins[1]}" && ${pins[0]} != "${pins[2]}" && ${pins[1]} != "${pins[2]}" ]]
+ jq -n --arg sts "$sts" --arg dns "$peer_dns" --arg p0 "${pins[0]}" --arg p1 "${pins[1]}" --arg p2 "${pins[2]}" \
+  '[$p0,$p1,$p2] as $p|[range(0;3) as $i|{key:"\($sts)-\($i).\($dns):3380",value:[$p[$i]]}]|from_entries' > "$out/expected-pins.json"
+ for i in 0 1 2; do
+  holder=$sts-$i.$peer_dns:3380
+  jq -e --arg scope "$scope" --arg local "$holder" --slurpfile pins "$out/expected-pins.json" '
+   .scope==$scope and .holder_pins==$pins[0] and
+   .endpoint_holders==($pins[0]|keys|map(select(.!=$local)|{key:("https://"+.),value:.})|from_entries) and
+   .read_budget=="1s" and .operation_budget=="1s" and .send_budget=="1s" and .concurrency==2 and .requests_per_second==4 and
+   (keys)==["concurrency","endpoint_holders","holder_pins","operation_budget","read_budget","requests_per_second","scope","send_budget"]' "$out/$sts-$i/policy.json" >/dev/null
+ done
+fi
 openssl x509 -in "$client_tls/probe.crt" -noout -checkend 3600 > "$out/client-expiry.log"
 openssl verify -no-CApath -no-CAstore -purpose sslclient -CAfile "$client_tls/ca.crt" "$client_tls/probe.crt" > "$out/client-chain.log"
 cmp -s <(openssl x509 -in "$client_tls/probe.crt" -pubkey -noout | openssl pkey -pubin -outform DER) \
@@ -36,7 +67,7 @@ cmp -s <(openssl x509 -in "$client_tls/probe.crt" -pubkey -noout | openssl pkey 
 # Recovery preflight intentionally does not require a currently healthy service.
 if [[ $phase == preflight ]]; then echo FIRST_TRUST_MATERIAL_PREFLIGHT_OK; exit 0; fi
 expected=$out/original
-if [[ $mode == expand ]]; then expected=$out/expanded; fi
+if [[ $mode == expand || $trust_phase == members ]]; then expected=$out/expanded; fi
 k=(kubectl --kubeconfig="$kubeconfig" --context="$context" --request-timeout=15s -n "$namespace")
 pids=(); keys=(); values=(); attempted=()
 rpc() {
@@ -77,9 +108,10 @@ forward() {
  done
  [[ $ready == true ]]
 }
-pin=$(openssl x509 -in "$out/original/tls.crt" -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | base64 -w0)
 for i in 0 1 2; do
  pod=$sts-$i; port=$((18880+i))
+ if [[ $trust_phase == members && $mode == expand ]]; then expected=$out/$pod; fi
+ pin=$(openssl x509 -in "$expected/tls.crt" -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | base64 -w0)
  timeout --kill-after=2s 20s "${k[@]}" get pod "$pod" -o json > "$out/pod-$i-before.json"
  jq -e --arg pod "$pod" --slurpfile pods "$evidence/after/pods.json" --slurpfile receipt "$receipt" '
  . as $live | any($pods[0].items[];.metadata.name==$pod and .metadata.uid==$live.metadata.uid and .spec==$live.spec) and
@@ -91,9 +123,21 @@ for i in 0 1 2; do
   actual=$(awk -v path="/etc/kubebrain/peer-tls/$file" '$2==path {print $1}' "$out/mounted-$i.txt")
   [[ $actual == "$(sha256sum "$expected/$file" | cut -d ' ' -f1)" ]]
  done
+ if [[ $trust_phase == members && $mode == expand ]]; then
+  jq -e 'any(.spec.containers[]; .name=="kubebrain" and any(.volumeMounts[];.name=="peer-tls" and .mountPath=="/etc/kubebrain/peer-tls" and .subPathExpr=="$(POD_NAME)" and .readOnly==true))' "$out/pod-$i-before.json" >/dev/null
+  timeout --kill-after=2s 20s "${k[@]}" exec "$pod" -c kubebrain -- sha256sum /etc/kubebrain/peer-tls/policy.json > "$out/policy-$i.txt"
+  [[ $(cut -d ' ' -f1 "$out/policy-$i.txt") == "$(sha256sum "$expected/policy.json" | cut -d ' ' -f1)" ]]
+  timeout --kill-after=2s 20s "${k[@]}" exec "$pod" -c kubebrain -- /bin/sh -ec '
+   d=/etc/kubebrain/peer-tls
+   test "$(ls -A "$d" | wc -l)" -eq 4
+   for f in ca.crt tls.crt tls.key policy.json; do test -r "$d/$f"; test ! -w "$d/$f"; done
+   test ! -e "$d/ca.key"
+   for member in "$@"; do test ! -e "$d/$member"; test ! -e "$d/../$member"; done
+  ' check "$sts-0" "$sts-1" "$sts-2" > "$out/isolation-$i.log" 2>&1
+ fi
  forward "$pod" "$port" 3380
  c=(curl --silent --show-error --http1.1 --max-time 5 --noproxy '*' --resolve "$peer_dns:$port:127.0.0.1" \
-  --cacert "$out/original/ca.crt" --pinnedpubkey "sha256//$pin")
+  --cacert "$expected/ca.crt" --pinnedpubkey "sha256//$pin")
  for identity in old new old-after; do
   cert_dir=$out/original
   if [[ $identity == new ]]; then cert_dir=$bundle/$pod; fi
@@ -101,7 +145,7 @@ for i in 0 1 2; do
   "${c[@]}" --cert "$cert_dir/tls.crt" --key "$cert_dir/tls.key" --output "$out/peer-$i-$identity.body" --write-out '%{http_code}' \
    "https://$peer_dns:$port/__peer_trust_runtime_check__" > "$out/peer-$i-$identity.status" 2> "$out/peer-$i-$identity.stderr" || rc=$?
   printf '%s\n' "$rc" > "$out/peer-$i-$identity.exit"
-  if [[ $identity == new && $mode == restore ]]; then
+  if [[ $identity == new && $mode == restore && $trust_phase == roots ]]; then
    [[ ( $rc == 35 || $rc == 56 ) && $(<"$out/peer-$i-$identity.status") == 000 ]]
    grep -Eqi 'alert.*(unknown ca|bad certificate|certificate required)|alert number (48|42|116)' "$out/peer-$i-$identity.stderr"
   else

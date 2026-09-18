@@ -448,8 +448,8 @@ members/expand 只接受已完成双 CA 的共享旧叶证书配置，或同一�
 密钥、根变化、额外 CA key、缺策略、可变 Secret、身份和配置漂移，以及
 生成计划后的 UID/RV/spec 并发变化。成员定向测试三轮 race 通过（4.552s）。
 
-当前现场执行器和阶段 VERIFIER **仍显式只接受 roots**，members 输入在
-执行器创建尝试目录或访问 API 前即被拒绝；VERIFIER 也拒绝该阶段。必须
+此计划器提交时现场执行器和阶段 VERIFIER 只接受 roots，members 输入在
+执行器创建尝试目录或访问 API 前即被拒绝；后续 VERIFIER 扩展见下节。必须
 先扩展实际 Secret 重新读取、成员材料／服务端 pin／隔离挂载验证及对应
 回退路径，才能解除这一限制。第二阶段尚未在集群执行，当前仍是恢复后
 generation 40 的原配置。
@@ -458,3 +458,43 @@ generation 40 的原配置。
 通过（62.304s，执行 31661 终态 0），vet、两个 Bash 入口的语法和 diff 检查
 通过。02786d91 的 probe run 35337650907 已终态 success，image run
 35337650967 仍在构建；这些 CI 不覆盖本次新增成员计划器。
+
+## 第二阶段材料与运行时校验分支
+
+阶段 VERIFIER 现支持 members 的 expand/restore，但现场执行器仍保持
+roots-only 拒绝检查，**没有开放第二阶段更新**。members 准入额外要求
+verification.retirement_scope、不可变 member_secret 及精确十二个条目。
+逐项解码后与审核 bundle 的 cert/key/policy 文件比较，CA 必须字节匹配
+双根集合；验证成员独立 DNS、真实证书 SPKI 三者互异。这样不能用空行
+等不同 PEM 编码掩盖同一密钥。预期 holder/pin 表从证书公钥现场计算，
+策略必须匹配明确 scope、三个精确 host:3380 身份、排除自身的两个 HTTPS
+目标，以及本次生成器固定的 1s/1s/1s、并发 2、速率 4 参数。
+
+这是专用实验的生成材料契约，不代替产品配置加载器的完整严格 JSON
+解析，也不单独证明 scope 等于实际后端构造结果；receipt/bundle 必须
+来自受信审核目录，后端运行时 scope 绑定仍由产品入口完成。此阶段只
+随挂载提供策略文件，不添加启用实验功能的参数。
+
+members/expand 的运行时分支按当前成员选取服务端证书 pin 和双 CA，而
+非继续固定原共享叶证书；除了三份 TLS 文件，还校验 policy.json 哈希、
+Pod subPathExpr、目录恰有四文件且只读、无 CA key 或其他成员可见路径。
+members/restore 则验证共享旧叶证书＋双 CA，两种模式都要求旧、新、旧
+客户端连接成功；只有 roots/restore 才要求新身份被拒绝。相同的三成员
+读写/条件清理与 Pod 稳定性检查继续执行。
+
+自动准入测试使用同一新 CA 签发的三个不同成员，覆盖两个模式成功、
+不同 PEM 字节但重复 SPKI、错误根、Secret/bundle 不符、额外条目，以及
+同步篡改 bundle/Secret 后的错误 policy pin/scope/自目标/预算拒绝。每个
+测试都断言 preflight 不访问 API；恢复准入不依赖故障实例已 Ready。
+
+真实离线材料在 `member-preflight.wSUj6rJV` 中通过两个模式的 preflight，
+执行 37570 终态 0。随后以当前原单 CA 配置分别尝试两个 after 校验，均
+在首个挂载哈希不匹配处退出 1，尚未启动转发或写入测试键；执行 12863
+终态 0 表示预期拒绝成立，**不表示第二阶段运行时正向通过**。校验用
+receipt 标记 verification_only，所引用旧阶段 Secret 已删除、新成员
+Secret 未创建，禁止用它进行部署。没有修改集群配置、证书或数据卷。
+
+最终本地完整 `go test -race -count=1 -timeout=2m ./deploy/test-cluster`
+通过（77.619s，执行 78607 终态 0），vet、Bash 语法及 diff 检查通过。
+第二阶段正向运行时、实际成员证书滚动与失败恢复仍需在执行器扩展并
+完成其回归测试后验证，不以本次离线或负向结果替代。

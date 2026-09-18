@@ -17,10 +17,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func trustMaterialFixture(t *testing.T, root string, shortLife, wrongPurpose, reuseKey bool) {
+func trustMaterialFixture(t *testing.T, root string, shortLife, wrongPurpose, reuseKey bool) (*x509.Certificate, *ecdsa.PrivateKey) {
 	t.Helper()
 	now := time.Now()
 	var originalKey *ecdsa.PrivateKey
+	var memberCA *x509.Certificate
+	var memberCAKey *ecdsa.PrivateKey
 	for i, name := range []string{"original", "member"} {
 		dir := filepath.Join(root, name)
 		require.NoError(t, os.Mkdir(dir, 0700))
@@ -29,6 +31,11 @@ func trustMaterialFixture(t *testing.T, root string, shortLife, wrongPurpose, re
 		ca := &x509.Certificate{SerialNumber: big.NewInt(int64(i + 1)), Subject: pkix.Name{CommonName: name}, NotBefore: now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
 		caDER, err := x509.CreateCertificate(rand.Reader, ca, ca, &key.PublicKey, key)
 		require.NoError(t, err)
+		if name == "member" {
+			memberCA, err = x509.ParseCertificate(caDER)
+			require.NoError(t, err)
+			memberCAKey = key
+		}
 		leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		require.NoError(t, err)
 		if name == "original" {
@@ -66,6 +73,7 @@ func trustMaterialFixture(t *testing.T, root string, shortLife, wrongPurpose, re
 		}
 		require.NoError(t, os.WriteFile(filepath.Join(root, "expanded", file), data, 0600))
 	}
+	return memberCA, memberCAKey
 }
 
 func TestPeerTrustMaterialCheck(t *testing.T) {
