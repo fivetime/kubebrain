@@ -57,6 +57,66 @@ func TestExpiredLeaseRenewStopsWithLeadershipTerm(t *testing.T) {
 	}
 }
 
+func TestExpiredLeaseRenewStopsBeforeDelayedDemotionCallback(t *testing.T) {
+	for _, change := range []string{"freshness", "epoch"} {
+		t.Run(change, func(t *testing.T) {
+			s, closeFn := newTestRPCServer(t)
+			defer closeFn()
+			const id int64 = 78331
+			_, err := s.LeaseGrant(context.Background(), &etcdserverpb.LeaseGrantRequest{ID: id, TTL: 300})
+			require.NoError(t, err)
+			var fresh atomic.Bool
+			fresh.Store(true)
+			var epoch atomic.Uint64
+			epoch.Store(7)
+			s.peers = testPeerService{
+				isLeaderFn: func() bool { return true }, // Stopped-leading callback is delayed.
+				epochFn:    func() (uint64, bool) { return epoch.Load(), fresh.Load() },
+			}
+			term, endTerm := context.WithCancel(context.Background())
+			defer endTerm()
+			s.leaseMu.Lock()
+			st := s.leases[id]
+			st.timer.Stop()
+			st.deadline = time.Now().Add(-time.Second)
+			s.leaseTermCtx = term
+			s.leaseMu.Unlock()
+			ctx, cancel := context.WithCancel(context.Background())
+			unlocked := make(chan struct{})
+			done := make(chan error, 1)
+			joined := make(chan struct{})
+			go func() {
+				defer close(joined)
+				_, err := s.refreshLeaseHoldingLocks(ctx, id, 7, func() {}, func() {}, nil, func() { close(unlocked) })
+				done <- err
+			}()
+			defer func() { cancel(); <-joined }()
+			select {
+			case <-unlocked:
+			case <-time.After(time.Second):
+				t.Fatal("renewal did not reach expired wait")
+			}
+			if change == "freshness" {
+				fresh.Store(false)
+			} else {
+				epoch.Add(1)
+			}
+			select {
+			case err := <-done:
+				require.ErrorIs(t, err, errLeaseDemotedDuringRenew)
+			case <-time.After(time.Second):
+				t.Fatal("expired renewal waited for delayed lifecycle cancellation")
+			}
+			require.NoError(t, term.Err(), "test must not cancel the leadership lifecycle")
+			select {
+			case <-st.revoked:
+				t.Fatal("fencing must not pretend durable revocation completed")
+			default:
+			}
+		})
+	}
+}
+
 func TestExpiredLeaseKeepAliveRoutesAfterTermEnds(t *testing.T) {
 	for _, proxy := range []bool{false, true} {
 		name := "reject"

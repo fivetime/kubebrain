@@ -1634,13 +1634,26 @@ func (m *leaseManager) refreshLeaseHoldingLocks(
 		}
 		m.leaseMu.Unlock()
 		unlock()
-		select {
-		case <-revoked:
-			return 0, leaseNotFound(id)
-		case <-termDone:
-			return 0, errLeaseDemotedDuringRenew
-		case <-ctx.Done():
-			return 0, ctx.Err()
+		// client-go may spend another RenewDeadline releasing its lock before
+		// canceling the leading context. Do not retain an expired waiter while
+		// that best-effort storage operation stalls: the local freshness/epoch
+		// fence already proves this lifecycle cannot safely serve the request.
+		// This never closes revoked or mutates the shared election record.
+		freshness := time.NewTicker(100 * time.Millisecond)
+		defer freshness.Stop()
+		for {
+			select {
+			case <-revoked:
+				return 0, leaseNotFound(id)
+			case <-termDone:
+				return 0, errLeaseDemotedDuringRenew
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-freshness.C:
+				if current, fresh := m.srv.peers.EpochAndLeadingFresh(); !fresh || current != epoch {
+					return 0, errLeaseDemotedDuringRenew
+				}
+			}
 		}
 	}
 	checkpointed := st.remainingTTL > 0

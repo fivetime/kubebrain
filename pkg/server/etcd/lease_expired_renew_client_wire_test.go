@@ -30,14 +30,40 @@ import (
 )
 
 func TestClientExpiredLeaseKeepAliveOnceRoutesAfterTermEnds(t *testing.T) {
+	testClientExpiredLeaseKeepAliveOnceRoutes(t, false)
+}
+
+func TestClientExpiredLeaseKeepAliveOnceRoutesBeforeDelayedDemotionCallback(t *testing.T) {
+	testClientExpiredLeaseKeepAliveOnceRoutes(t, true)
+}
+
+type countedExpiredRenewStream struct {
+	grpc.ServerStream
+	messages *atomic.Int32
+}
+
+func (s countedExpiredRenewStream) RecvMsg(message any) error {
+	err := s.ServerStream.RecvMsg(message)
+	if err == nil {
+		s.messages.Add(1)
+	}
+	return err
+}
+
+func testClientExpiredLeaseKeepAliveOnceRoutes(t *testing.T, delayedCallback bool) {
+	t.Helper()
 	s, closeFn := newTestRPCServer(t)
 	defer closeFn()
 	var leading atomic.Bool
 	leading.Store(true)
 	var forwarded atomic.Int32
 	var keepAliveStreams atomic.Int32
+	var keepAliveMessages atomic.Int32
 	header := proxiedResponseHeader(s, int64(s.backend.GetCurrentRevision()))
-	s.peers = testPeerService{isLeaderFn: leading.Load, proxyEnabled: true,
+	epoch, fresh := s.peers.EpochAndLeadingFresh()
+	require.True(t, fresh)
+	s.peers = testPeerService{isLeaderFn: func() bool { return delayedCallback || leading.Load() }, proxyEnabled: true,
+		epochFn: func() (uint64, bool) { return epoch, leading.Load() },
 		leaseKeepAliveFn: func(_ context.Context, req *etcdserverpb.LeaseKeepAliveRequest) (*etcdserverpb.LeaseKeepAliveResponse, error) {
 			forwarded.Add(1)
 			return &etcdserverpb.LeaseKeepAliveResponse{Header: header, ID: req.ID, TTL: 37}, nil
@@ -47,6 +73,7 @@ func TestClientExpiredLeaseKeepAliveOnceRoutesAfterTermEnds(t *testing.T) {
 		func(srv any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 			if info.FullMethod == "/etcdserverpb.Lease/LeaseKeepAlive" {
 				keepAliveStreams.Add(1)
+				stream = countedExpiredRenewStream{ServerStream: stream, messages: &keepAliveMessages}
 			}
 			return handler(srv, stream)
 		}))
@@ -96,7 +123,9 @@ func TestClientExpiredLeaseKeepAliveOnceRoutesAfterTermEnds(t *testing.T) {
 		t.Fatal("client renewal did not enter expired wait")
 	}
 	leading.Store(false)
-	endTerm()
+	if !delayedCallback {
+		endTerm()
+	}
 	select {
 	case got := <-done:
 		require.NoError(t, got.err)
@@ -107,9 +136,14 @@ func TestClientExpiredLeaseKeepAliveOnceRoutesAfterTermEnds(t *testing.T) {
 		// KeepAliveOnce retries failed streams internally. Success must come
 		// from the original pending stream, not a fresh RPC after demotion.
 		require.Equal(t, int32(1), keepAliveStreams.Load(), "renewal must survive on its original RPC stream")
+		require.Equal(t, int32(1), keepAliveMessages.Load(), "client must not resend the consumed request")
 		requireClientLeaseHeaderWellFormed(t, got.response.ResponseHeader)
 	case <-time.After(time.Second):
 		t.Fatal("official client renewal remained blocked after term ended")
+	}
+	if delayedCallback {
+		require.NoError(t, term.Err(), "routing must not depend on lifecycle cancellation")
+		require.True(t, s.peers.IsLeader(), "stopped-leading callback must remain delayed")
 	}
 	select {
 	case <-st.revoked:

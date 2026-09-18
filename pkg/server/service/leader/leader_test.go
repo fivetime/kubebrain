@@ -259,6 +259,28 @@ func TestHasLeaderUsesLocalObservationTimeInsteadOfWriterClock(t *testing.T) {
 		"a writer clock ahead of the observer must not extend require-leader availability")
 }
 
+func TestObservedLeaderUsesRecordedLeaseDuration(t *testing.T) {
+	election := &leaderElection{leaseDuration: 8 * time.Second}
+	record := resourcelock.LeaderElectionRecord{
+		HolderIdentity:       "peer",
+		LeaseDurationSeconds: 30,
+		// Writer time must not shorten the observer's safety window.
+		RenewTime: metav1.NewTime(time.Now().Add(-time.Hour)),
+	}
+	raw, err := json.Marshal(record)
+	require.NoError(t, err)
+	before := time.Now()
+	election.observeLeadershipRecordRaw(record, raw)
+	after := time.Now()
+	deadline := election.leaderValidUntil
+	require.False(t, deadline.Before(before.Add(30*time.Second)),
+		"a shorter local configuration must not pre-expire the holder's recorded lease")
+	require.False(t, deadline.After(after.Add(30*time.Second)))
+	election.observeLeadershipRecordRaw(record, raw)
+	require.Equal(t, deadline, election.leaderValidUntil,
+		"repeated status observations must not move the expiration deadline")
+}
+
 func TestHasLeaderDoesNotRenewUnchangedRawRecord(t *testing.T) {
 	lock := &campaignLock{
 		record: resourcelock.LeaderElectionRecord{HolderIdentity: "peer"},
