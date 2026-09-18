@@ -182,6 +182,11 @@ type leaderElection struct {
 	// It must honor ctx (which may already be canceled). This is not durable
 	// release confirmation or authentication for a remote release request.
 	onTermRetired func(context.Context, election.OwnershipCondition, bool)
+	// Enabled only by the explicit retirement constructor with a scoped backend
+	// capability. Release this exact frozen term after lifecycle join, rather
+	// than letting client-go block cleanup on its Background-based release Get.
+	retiredReleaser election.RetiredOwnershipReleaser
+	retirementScope string
 	// leader indicates whether this instance is leader (1 = leader). It is written
 	// by the leader-election callbacks and read by IsLeader() from every RPC
 	// goroutine, so it is accessed atomically (#60/#68).
@@ -394,7 +399,7 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 				onRelease:     renewal.retire,
 				onMutation:    func() { acquireOnce.Do(func() { close(acquired) }) },
 			},
-			ReleaseOnCancel: true,
+			ReleaseOnCancel: l.retiredReleaser == nil,
 			LeaseDuration:   l.leaseDuration,
 			RenewDeadline:   l.renewDeadline,
 			RetryPeriod:     l.retryPeriod,
@@ -478,6 +483,16 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 			select {
 			case <-acquired:
 				condition, available := renewal.retiredCondition()
+				if l.retiredReleaser != nil && available {
+					// Local release is best-effort, including during shutdown. Its
+					// independent budget is one retry period, not another full
+					// RenewDeadline ahead of the healthy peer notification. An
+					// uncertain result never reactivates this term or retries a
+					// newly read holder; the peer receives the same frozen claim.
+					releaseCtx, releaseCancel := context.WithTimeout(context.Background(), l.retryPeriod)
+					_ = l.retiredReleaser.ReleaseRetiredOwnership(releaseCtx, l.retirementScope, condition)
+					releaseCancel()
+				}
 				l.onTermRetired(ctx, condition, available)
 			default:
 			}
