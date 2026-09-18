@@ -38,3 +38,31 @@ term/租约结果，并有独立恢复和清理路径。新镜像需要新的源
 
 本轮定向 race 三轮通过（4.532s），相关 Go 包 vet、Bash 语法及 diff
 检查通过。没有修改已结束的旧实验，也没有执行新的现场故障。
+
+## 真实 mTLS Status 请求适配器与只读验证
+
+`successor-status-request.sh` 实现上述回调，使用环境变量
+`KB_SUCCESSOR_STATUS_CONFIG` 和 `KB_SUCCESSOR_STATUS_CONFIG_SHA256` 绑定
+已审核配置。配置恰含 server_name、port、ca、cert、key 五项，后三项仅为
+绝对文件路径，不嵌入私钥；复制到每个样本目录并校验哈希后才发请求。
+端口范围 1–65535，连接始终通过 loopback port-forward，证书仍按原
+server_name/CA 校验。脚本不建立隧道，隧道生命周期由故障驱动管理。
+
+curl 首参数 --disable 禁用用户 .curlrc；禁止环境代理、重定向和重试，
+请求及连接超时均为传入的剩余预算，响应上限 64KiB，仅 HTTP 200 成功。
+保留 HTTP 状态及原始响应，错误不转换成空成功对象。回调配置或请求
+路径变化须生成新的输入记录，不能复用旧 claim。
+
+2026-09-18，在原固定镜像实例的 kubebrain-local-0 上完成真实只读 smoke：
+owner `/root/.local/state/kubebrain/successor-status-smoke.4z33QWbw`，执行
+41217 终态 0。一次基线请求之后，用实际 cluster/member/leader/term
+开启独立 30 秒观测；未安装策略、未写业务数据、未创建租约或 KeepAlive。
+保存 86 次成功状态响应，leader 均未变化，观测器按期退出 1，未生成
+successor-sample。这是预期的**无接管负例**，不是故障验收成功。
+Pod UID/spec/容器状态前后相同，端口 18990 的转发已退出；原响应、时间、
+配置路径、脚本与 SHA-256 证据保存在 owner，凭据内容未输出或入仓库。
+
+适配器与观测器定向 race 通过（2.506s），vet/语法/diff 检查通过。
+另外核对已审计候选 02786d91 的 lease.go，过期等待 select 位于 1645 行，
+而旧 3e6f3b15 绑定的是 1637；下一轮须先验证实际运行栈与精确源码，不能
+仅更换源码 SHA 后复用旧断言。完整故障驱动接入和原请求验收仍未完成。
