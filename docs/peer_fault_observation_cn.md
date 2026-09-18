@@ -272,3 +272,10 @@ select/首个 case 的确切位置，避免仅靠合成栈样例掩盖产品源�
 revokec、demotec 和 stopC，KeepAlive 在 Renew 前构造 revision header。
 本轮未修改租约产品逻辑，也未用源码比较替代停机、原始 stream 连续性
 或真实 TiKV 故障验证。三项 da303fdb CI 仍在运行，未重复触发或取消。
+
+后续终态：`da303fdbd460ee42f3aa158fac27c396faf6b58f` 的后端协议集成
+35352626422 已成功。已核对步骤而非只看总状态：后端 race、夹具契约、
+固定 PD/TiKV 镜像拉取、真实协议普通/race 测试及中断启动清理均成功。
+这证明该作业覆盖的本地容器协议测试，不证明专用集群故障门限。记录时
+探针 35352626497 和镜像 35352626418 仍在运行；本地完整
+`go test -race -count=1 ./hack/production` 的会话 90010 也仍未终结。
