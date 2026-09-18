@@ -1,7 +1,10 @@
-# Offline planner for ONLY original <-> old-leaf/dual-CA. No API calls.
+# Offline planner for adjacent trust phases only. No API calls.
 # Invoke jq -er -f peer-trust-expand-plan.jq (output is encoded JSON text).
 # Input: baseline, current, namespace, namespace_uid, original_secret,
 # expanded_secret, live_original_secret, live_expanded_secret, mode.
+# Optional phase="members" additionally requires member_secret/live_member_secret.
+# Default phase="roots": original <-> shared-old-leaf/dual-CA.
+# Members phase: shared-old-leaf/dual-CA <-> distinct-member-leaves/dual-CA.
 # Secret inputs contain private data: pipe from restricted files, never log them.
 # The caller must independently verify X.509 roots/purposes/expiry, authenticate
 # receipts, recheck namespace/Secret identities before patch, and bound rollout.
@@ -25,6 +28,7 @@ def same_secret($saved; $live):
 
 . as $in |
 need(.mode == "expand" or .mode == "restore"; "unsupported phase") |
+need(.phase == null or .phase == "roots" or .phase == "members"; "unsupported trust phase") |
 need((.namespace_uid | nonempty) and .namespace.kind == "Namespace" and
      .namespace.metadata.uid == .namespace_uid and (.namespace | active);
      "namespace identity changed") |
@@ -63,9 +67,45 @@ need($volumes[0].value.secret.secretName == .original_secret.metadata.name and
      $base.spec.replicas == 3 and $base.spec.updateStrategy.type == "RollingUpdate";
      "baseline is not original three-member nonexperimental layout") |
 ($base.spec | .template.spec.volumes[$index].secret.secretName = $in.expanded_secret.metadata.name) as $expanded |
-need($live.spec == $base.spec or $live.spec == $expanded;
-     "unknown spec: refusing drift or rollback from a later trust phase") |
-(if .mode == "expand" then $expanded else $base.spec end) as $desired |
+(if (.phase // "roots") == "members" then
+  need(same_secret(.member_secret; .live_member_secret) and .member_secret.immutable == true and
+       .member_secret.metadata.namespace == $base.metadata.namespace and
+       .member_secret.metadata.name != .original_secret.metadata.name and
+       .member_secret.metadata.name != .expanded_secret.metadata.name and
+       .member_secret.metadata.uid != .original_secret.metadata.uid and
+       .member_secret.metadata.uid != .expanded_secret.metadata.uid;
+       "member Secret receipt changed") |
+  [range(0;3) | "\($base.metadata.name)-\(.)"] as $members |
+  [ $members[] as $member | ["tls.crt","tls.key","ca.crt","policy.json"][] as $file |
+    {key:"\($member).\($file)",path:"\($member)/\($file)"} ] as $items |
+  need((.member_secret.data | keys) == ($items | map(.key) | sort) and
+       all(.member_secret.data[]; nonempty) and
+       all($members[]; . as $member |
+           $in.member_secret.data["\($member).ca.crt"] == $in.expanded_secret.data["ca.crt"] and
+           $in.member_secret.data["\($member).tls.crt"] != $in.original_secret.data["tls.crt"] and
+           $in.member_secret.data["\($member).tls.key"] != $in.original_secret.data["tls.key"]) and
+       ([$members[] as $m | $in.member_secret.data["\($m).tls.crt"]] | unique | length) == 3 and
+       ([$members[] as $m | $in.member_secret.data["\($m).tls.key"]] | unique | length) == 3;
+       "member layout, unchanged dual roots or distinct material violated") |
+  [$base.spec.template.spec.containers[0].volumeMounts | to_entries[] | select(.value.name == "peer-tls")] as $mounts |
+  [$base.spec.template.spec.containers[0].env[] | select(.name == "POD_NAME")] as $env |
+  need(($mounts | length) == 1 and $mounts[0].value.mountPath == "/etc/kubebrain/peer-tls" and
+       $mounts[0].value.readOnly == true and ($mounts[0].value.subPath // "") == "" and
+       ($mounts[0].value.subPathExpr // "") == "" and
+       ($base.spec.template.spec.initContainers // [] | length) == 0 and
+       ($base.spec.template.spec.ephemeralContainers // [] | length) == 0 and
+       ($env | length) == 1 and ($env[0].value // "") == "" and
+       $env[0].valueFrom.fieldRef.fieldPath == "metadata.name" and
+       ($base.spec.updateStrategy.rollingUpdate.partition // 0) == 0;
+       "member mount isolation prerequisites missing") |
+  ($expanded |
+   .template.spec.volumes[$index].secret = {secretName:$in.member_secret.metadata.name,defaultMode:288,optional:false,items:$items} |
+   .template.spec.containers[0].volumeMounts[$mounts[0].key].subPathExpr = "$(POD_NAME)") as $member_spec |
+  {from:$expanded,to:$member_spec}
+ else {from:$base.spec,to:$expanded} end) as $transition |
+need($live.spec == $transition.from or $live.spec == $transition.to;
+     "unknown spec: refusing drift or nonadjacent trust transition") |
+(if .mode == "expand" then $transition.to else $transition.from end) as $desired |
 if $live.spec == $desired then []
 else
   # Restoration must remain possible after a failed first-stage rollout.
@@ -77,9 +117,13 @@ else
        "expansion requires fully observed ready baseline") |
   [{op:"test",path:"/metadata/uid",value:$live.metadata.uid},
    {op:"test",path:"/metadata/resourceVersion",value:$live.metadata.resourceVersion},
-   {op:"test",path:"/spec",value:$live.spec},
-   {op:"replace",path:"/spec/template/spec/volumes/\($index)/secret/secretName",
-    value:$desired.template.spec.volumes[$index].secret.secretName}]
+   {op:"test",path:"/spec",value:$live.spec}] +
+  (if (.phase // "roots") == "members" then
+    [{op:"replace",path:"/spec/template",value:$desired.template}]
+   else
+    [{op:"replace",path:"/spec/template/spec/volumes/\($index)/secret/secretName",
+      value:$desired.template.spec.volumes[$index].secret.secretName}]
+   end)
 end |
 # Kubernetes' json-patch v4 compares raw scalar encodings. Match Go's default
 # HTML-safe JSON encoder for existing command strings such as "sleep && curl".

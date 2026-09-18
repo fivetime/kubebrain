@@ -14,7 +14,7 @@ import (
 )
 
 func TestPeerTrustStagePreflightRejectsUnverifiedInputs(t *testing.T) {
-	for _, scenario := range []string{"valid-expand", "valid-restore", "changed-verifier", "changed-root", "changed-key", "wrong-client-key", "wrong-client-root", "insecure-baseline", "wrong-mode"} {
+	for _, scenario := range []string{"valid-expand", "valid-restore", "changed-verifier", "changed-root", "changed-key", "wrong-client-key", "wrong-client-root", "insecure-baseline", "wrong-mode", "unsupported-members-phase"} {
 		t.Run(scenario, func(t *testing.T) {
 			dir := t.TempDir()
 			trustMaterialFixture(t, dir, false, false, false)
@@ -50,6 +50,8 @@ func TestPeerTrustStagePreflightRejectsUnverifiedInputs(t *testing.T) {
 			receipt["verification"] = map[string]any{"bundle_dir": bundle, "client_tls_dir": client, "material_verifier": checker, "material_verifier_sha256": hex.EncodeToString(digest[:]), "peer_dns": "peer.test", "client_dns": "client.test", "cluster_id": "42"}
 			mode := "expand"
 			switch scenario {
+			case "unsupported-members-phase":
+				receipt["phase"] = "members"
 			case "valid-restore":
 				mode = "restore"
 			case "wrong-mode":

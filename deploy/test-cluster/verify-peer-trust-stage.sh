@@ -6,6 +6,7 @@ umask 077
 mode=$1; phase=$2; evidence=$3; kubeconfig=$4; context=$5
 [[ $evidence == /* && $kubeconfig == /* && -n $context ]]
 receipt=$evidence/receipt.json
+jq -e '.phase == null or .phase == "roots"' "$receipt" >/dev/null
 out=$evidence/verify-$phase
 mkdir -m 700 "$out" "$out/original" "$out/expanded"
 setting() { jq -er --arg key "$1" '.verification[$key]|select(type=="string" and length>0)' "$receipt"; }

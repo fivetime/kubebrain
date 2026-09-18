@@ -10,6 +10,9 @@ mode=$2; receipt=$3; digest=$4; out=$5; kubeconfig=$6; context=$7; verifier=$8
 [[ $receipt == /* && $out == /* && $kubeconfig == /* && $verifier == /* && -n $context && $digest =~ ^[a-f0-9]{64}$ ]]
 [[ -f $receipt && -f $kubeconfig && -f $verifier ]]
 [[ $(sha256sum "$receipt" | cut -d ' ' -f 1) == "$digest" ]]
+# Member-phase planning exists, but this driver/hook still implements roots only.
+# Reject rather than trust caller-supplied stale live_member_secret snapshots.
+jq -e '.phase == null or .phase == "roots"' "$receipt" >/dev/null
 source_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # Exclusive output directory is also the execution claim. Never reuse an attempt.
 mkdir -m 700 -- "$out"

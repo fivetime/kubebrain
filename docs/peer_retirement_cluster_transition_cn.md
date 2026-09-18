@@ -419,3 +419,42 @@ expand/restore 的各阶段资源和运行时校验、cleanup 的目标与前置
 证据、verified.json。源脚本、两阶段校验及清理 SHA-256 清单均复核通过。
 这次证明第一阶段真实信任扩展及恢复，不证明滚动过程零中断、公共长流
 连续性、独立服务端成员证书迁移、交接协议、原 30 秒故障门限或生产就绪。
+
+## 第二阶段相邻转换计划器
+
+同一离线计划器新增显式 `phase: "members"`，默认仍为 `roots`，后者输出
+与第一阶段兼容。members 输入额外提供实际 member_secret 收据及实时
+live_member_secret；baseline 仍为原完整 spec，expanded_secret 仍为共享
+旧叶证书＋双 CA。这样三个状态都从同一可信原始 spec 确定性派生，不允许
+以任意当前配置充当“可回退基线”。
+
+members/expand 只接受已完成双 CA 的共享旧叶证书配置，或同一派生的独立
+成员配置；变更前要求三个副本均 Ready/current。members/restore 只恢复到
+共享旧叶证书＋双 CA，失败滚动时不要求 Ready。roots/restore 明确拒绝从
+独立成员配置直接跳到原单 CA。所有更新仍带 UID/RV/完整 spec test，成员
+切换仅改变经现有挂载片段限定的 peer 卷和 subPathExpr，不修改镜像、参数、
+数据卷、资源或其他 TLS 配置，也不启用实验协议。
+
+成员 Secret 必须不可变、与两个旧 Secret 身份不同且 UID/RV/data 与实时
+对象匹配；必须恰好包含三个成员各四个条目。每份 CA 字节必须保持同一
+双根集合，cert/key 不得沿用旧共享值或在成员间重复。规划器不解析 PEM
+或策略 JSON，编码不同但语义相同的 key 仍需真正的 SPKI/证书及策略校验
+拒绝，不能把字符串检查当作密码学身份保证。挂载前置条件包括唯一 peer
+挂载、只读原路径、POD_NAME 来自 metadata.name、无 init/临时容器、无
+旧子路径和无 rolling partition，避免派生出扩大 key 暴露面的布局。
+
+测试将生成补丁实际应用于完整 StatefulSet，再与既有 StrategicMergePatch
+片段的结果逐字段比较；覆盖正向、幂等、未就绪回退、禁止跳阶段、重复
+密钥、根变化、额外 CA key、缺策略、可变 Secret、身份和配置漂移，以及
+生成计划后的 UID/RV/spec 并发变化。成员定向测试三轮 race 通过（4.552s）。
+
+当前现场执行器和阶段 VERIFIER **仍显式只接受 roots**，members 输入在
+执行器创建尝试目录或访问 API 前即被拒绝；VERIFIER 也拒绝该阶段。必须
+先扩展实际 Secret 重新读取、成员材料／服务端 pin／隔离挂载验证及对应
+回退路径，才能解除这一限制。第二阶段尚未在集群执行，当前仍是恢复后
+generation 40 的原配置。
+
+完整本地包测试 `go test -race -count=1 -timeout=2m ./deploy/test-cluster`
+通过（62.304s，执行 31661 终态 0），vet、两个 Bash 入口的语法和 diff 检查
+通过。02786d91 的 probe run 35337650907 已终态 success，image run
+35337650967 仍在构建；这些 CI 不覆盖本次新增成员计划器。

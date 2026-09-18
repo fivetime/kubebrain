@@ -162,3 +162,26 @@ if [[ $SCENARIO == verify-failure && $1 == expand && $2 == after ]]; then exit 1
 		})
 	}
 }
+
+func TestPeerTrustRootsDriverRejectsMemberPhaseBeforeAPIAccess(t *testing.T) {
+	dir := t.TempDir()
+	in := memberTrustInput(t)
+	data, err := json.Marshal(in)
+	require.NoError(t, err)
+	receipt := filepath.Join(dir, "receipt.json")
+	require.NoError(t, os.WriteFile(receipt, data, 0600))
+	sum := sha256.Sum256(data)
+	kubeconfig := filepath.Join(dir, "kubeconfig")
+	verifier := filepath.Join(dir, "verifier.sh")
+	require.NoError(t, os.WriteFile(kubeconfig, []byte("unused"), 0600))
+	require.NoError(t, os.WriteFile(verifier, []byte("exit 99\n"), 0600))
+	marker := filepath.Join(dir, "unexpected-api")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "kubectl"), []byte("#!/bin/sh\ntouch \"$UNEXPECTED_API\"\nexit 77\n"), 0700))
+	out := filepath.Join(dir, "attempt")
+	cmd := exec.Command("bash", "run-peer-trust-expand.sh", "--execute", "expand", receipt, hex.EncodeToString(sum[:]), out, kubeconfig, "test", verifier)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "UNEXPECTED_API="+marker)
+	output, err := cmd.CombinedOutput()
+	require.Error(t, err, string(output))
+	require.NoDirExists(t, out, "unsupported phase must fail before claiming an execution")
+	require.NoFileExists(t, marker)
+}
