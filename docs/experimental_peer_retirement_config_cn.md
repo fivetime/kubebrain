@@ -85,3 +85,36 @@ scope 和输入，cluster ID 用十进制字符串保存，避免 uint64 被 JSO
 `/ks-<keyspace>` 后才传给 backend；不要把未追加的 prefix、用户键前缀、
 etcd 兼容层的合成 cluster ID 或 Kubernetes namespace UID 当作输入。
 上线时 server 构造器仍会与实际 resource lock scope 比较，不匹配则拒绝。
+
+## 专用测试集群的离线 PKI 准备
+
+`hack/production/cmd/peer-retirement-test-pki` 是一次性测试材料生成器，
+不是生产 CA、Kubernetes controller 或自动部署脚本。七个参数必须全部指定：
+
+```sh
+go run ./hack/production/cmd/peer-retirement-test-pki \
+  --output-dir=/private/new-peer-bundle \
+  --peer-service=peer.test.svc \
+  --members=member-0,member-1 \
+  --storage-cluster-id=42 --keyspace=tenant --election-prefix=/test \
+  --peer-port=3380
+```
+
+以上为示例参数，不能直接用于现有集群。输出目录须不存在，父目录由操作者
+可信控制；拒绝覆盖既有目录或 symlink。所有目录 0700、文件 0600。根目录
+保存测试 CA cert/key；每个成员目录只含其 tls.crt、tls.key、ca.crt、policy.json。
+成员 key 分别随机生成，SAN 包含该成员的 `<member>.<peer-service>` 和公共
+peer service 名称，支持 serverAuth/clientAuth，策略 pin 对应真实叶证书
+SPKI。CA 有效期 72 小时，叶证书 24 小时；部署前须重新检查剩余时间。
+
+策略使用 scope 共用编码函数，包含全体公共 pin，但远端映射排除本机。
+候选预算固定为 read/operation/send 各 1 秒、并发 2、每秒 4 请求；这些不是
+性能验收结论或自动推荐的生产配置。生成失败不清理部分证据，也不重用旧
+目录；最后写 COMPLETE 标记，表示本次流程完成，不表示断电持久化证明。
+
+私钥不得进入 Git、CI 日志或普通测试文档，CA 私钥不得挂载进工作负载。
+每个 Pod 只应获得自己的成员目录，不能直接挂载完整 bundle，使一个成员
+获得其他 holder 的身份。若使用 subPath/subPathExpr 隔离目录，不能同时
+声称 Secret 更新会自动投影到该挂载；必须明确重启策略或另行设计热轮换。
+从旧共享 CA/证书迁移还需准备信任过渡、精确回退和独立验收，工具不处理
+这些流程，也不创建 Secret/ConfigMap 或修改 StatefulSet。

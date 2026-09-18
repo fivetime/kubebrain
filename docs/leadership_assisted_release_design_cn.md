@@ -1539,3 +1539,30 @@ election/命令/build 单轮 race 通过（28254，2.141/1.083/2.609 秒），ba
 scope 绑定定向三轮 race 通过（1.377 秒），相关 vet/diff 通过，执行链终态 0。
 命令 CI 路径和测试步骤已加并由工作流契约锁定，但当前运行中的 c7e2e0a9
 CI 不包含这些新增检查。本轮不推送、不取消现有 CI。
+
+## 离线独立成员 PKI 与配置已准备
+
+新增 peer-retirement-test-pki 命令，生成独立 ECDSA P-256 成员密钥及双用途
+证书，复用 scope 编码，生成符合正式配置解析器的每成员 JSON。只接受明确
+输入、2–17 个不同 DNS label 成员、合法 service DNS 与端口、有效 cluster ID
+及 prefix、可信父目录下新的绝对目录；不覆盖已有路径、不请求网络权限，
+不开启任何集群功能。证书/密钥和策略只在仓库外生成。
+
+首轮三次测试（80933）因测试对 time.Local 与证书解码 time.UTC 做结构比较
+失败，时刻本身相同；将测试时钟统一 UTC 后，PKI/scope/build 三轮 race
+通过（88197，1.158/1.088/5.555 秒），相关 vet/diff 通过。验证了每成员 key
+不同、双用途信任链、正确/错误 DNS、叶证书 24 小时到期、scope/pin/远端
+映射、目录与文件权限、独占写入保留旧 CA、无效输入不生成目录、拒绝
+symlink。CI 路径与命令测试步骤已新增且契约测试通过。
+
+本机实际生成 owner 为
+`/root/.local/state/kubebrain/peer-retirement-preparation.QjFVoLV6/`，bundle
+目录含三个 kubebrain-local 成员及各自策略；命令 11844 终态 0。成员 DNS
+沿用现有 StatefulSet peer service 和 Pod 名，scope 使用上一节已核对的
+候选值。三份证书均经 OpenSSL sslserver/sslclient 用途验证成功，叶证书
+到期为 2026-09-19 10:06:01 UTC。owner 权限 0700、CA key 0600，未输出
+私钥内容、未入仓库。COMPLETE 已存在，但不是集群接入成功证明。
+
+尚未导入 Kubernetes；后续必须保证每 Pod 只能读取自己的 key，不能将
+整个 bundle 挂入所有 Pod。当前 c7e2e0a9 两项 CI 仍在运行，本轮不推送；
+尚需证书信任过渡/回退、按精确镜像部署及真实 TiKV 原门限验收。
