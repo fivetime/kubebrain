@@ -65,6 +65,22 @@ roots 逆序恢复全部 0，Secret cleanup 0。`restoration-check.FdKj56L2`
 确认原完整配置和 3/3 Ready，两个临时 Secret、自有策略及故障标签
 均不存在。原失败退出码保留，凭据和原始栈仅保存在私有证据目录。
 
-本轮临时 scratch 卷和编译产物尚待按归属核验后回收。不得仅凭
-Released 状态批量删卷；所有实验前基线卷继续保护。后续需完整检查
-故障阶段身份比较的使用范围，再以新 owner、新工具冻结及原门限验收。
+本轮临时 scratch 卷已按归属核验并回收 42 个。只读核验记录为
+`scratch-cleanup.k3PJpdGr`，执行记录为 `scratch-cleanup.NhIIU4PQ`，
+两者退出 0。清理前同一批工具的 12 个归属/CSI 标识测试及 6 个控制器
+测试通过。逐卷重新检查历史归属、Released、无引用/挂载、独占 CSI
+标识，并以 UID/RV/spec/phase 前置条件更新回收策略；全部基线及非
+目标卷 UID/spec 保留，命名空间已有 Pod 的 UID/spec/containerStatuses
+未变化。最终本地盘卷为 12 Bound、50 Released，临时卷数据不可恢复。
+多出的六个 Released 属于实验前基线保护集合，不删除。
+
+编译产物已按记录摘要和 inode 核验并确认未被进程使用后清理。本 owner
+删除 43 个二进制路径，前一轮 owner 删除 94 个，合计 137 个（含测试
+及验证器副本）。执行记录 `/root/.local/state/kubebrain/compiled-cleanup.LTHqec1t`
+退出 0，`plan.tsv`、`plan.sha256` 和 `removed.sha256` 保存逐路径证据。
+源码、脚本、证书、日志及原始实验记录保留；二进制可从冻结源码重编译。
+旧构建摘要中这些已退役路径将不再通过文件存在性检查，不是重启已消费
+实验的理由。
+
+后续需完整检查故障阶段身份比较的使用范围，再以新 owner、新工具冻结
+及原门限验收。
