@@ -434,3 +434,28 @@ generation/observedGeneration 58、3 Ready，未执行任何策略写入。
 下一步仍是新 owner 的完整受控升级/逆序恢复、临时 PV 生命周期和
 admission/hash 清单接入；HOLD 保留。这些离线通过不代替真实原门限
 故障验收，也不构成整体生产就绪结论。
+
+### 完整升级与逆序恢复编排
+
+新 owner 的 execute.sh 已串联 roots/members/protocol/diagnostics 四个
+升级阶段、原流故障驱动及四个逆序恢复阶段；诊断 receipt 从候选协议
+阶段的真实完整 spec 派生，原子落盘。启动时重新校验原 generation 58、
+12 Bound/32 Released 保护集合以及实际挂载健康客户端证书。候选仍
+为已审核 da303fdb，不能把本地工具源码提交当作新产品镜像。
+
+工具从 26260231 的 Git archive 冻结，包含 d39cd7ac 的 protected-stack
+改动；四份探针/UID 删除工具在私有 owner/bin 编译成功（25432），
+Go 1.26.8、trimpath，摘要已保存校验。它们暂为待执行实验保留，未在
+仓库生成编译残留。成员证书 2026-09-19 10:06:01 UTC 到期，本次检查
+余量超过两小时，正式执行前仍须重查。
+
+recover.sh 在必要时先恢复诊断，再用真实相邻阶段 planner 判断当前
+完整 spec；恢复失败保留原错误并返回最终 70。8 个离线场景通过
+（94329，终态 0），覆盖各阶段、诊断已恢复、两类恢复失败和未知漂移，
+断言精确逆序调用及成功后的原完整 spec。模拟 API/rollout 边界，不
+宣称这些是现场恢复证据。前两次测试因模拟器数组路径/文件复制错误
+失败，日志保留；修正后通过，未将其描述为产品缺陷。
+
+现场仍为 58/58/3。本轮没有创建 Secret、滚动升级或注入故障。
+前向 wrapper 的完整离线验证、PV/Secret 清理与最终 admission/hash
+清单尚待接入，HOLD 仍在，不能直接执行新 wrapper。
