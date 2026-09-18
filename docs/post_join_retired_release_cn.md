@@ -39,6 +39,11 @@ RenewDeadline、RetryPeriod 配置和原 30 秒验收门限均未修改。
 - 成功、超时、不确定提交、同名新任期、缺失凭据五类场景重复 20 次通过
   （24.519 秒）。补充正常退出及构造器启用条件后重复通过（25.174 秒）；
   进一步断言新任期确实提交后，最终 20 次重复通过（25.136 秒）。
+- 提交 `534d3cbf` 的完整扩展回归
+  `go test -race -count=1 -timeout=15m ./pkg/server ./pkg/server/service/leader ./pkg/backend/election`
+  通过（45.832 / 4.142 / 2.100 秒），不是只选取退任用例。三个包的
+  `go vet` 全部通过。日志、退出码和源码摘要保存在本机私有目录
+  `/root/.local/state/kubebrain/post-join-release.IMrV5aGw/`。
 
 测试中使用真实内存事务/CAS 与受控超时，不等于真实 TiKV 分区验收。
 当前在跑的 785fb973 CI 只包含响应任期修复，**不包含本修复**。本修复仍需
