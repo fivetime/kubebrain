@@ -32,6 +32,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
+	"google.golang.org/grpc/credentials"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -414,6 +415,10 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 
 	klog.InfoS("try to conn to new leader", "leaderIdentity", curLeader)
 	tlsConfigs, tlsErr := e.dialTLSConfigsForEndpoint(curLeader)
+	peerCredentials, credentialErr := e.credentialsForEndpoint(curLeader)
+	if credentialErr != nil {
+		tlsErr = credentialErr
+	}
 	if tlsErr != nil {
 		e.lock.Lock()
 		e.err = status.Error(codes.Unavailable, "peer endpoint TLS identity unavailable")
@@ -434,6 +439,9 @@ func (e *etcdProxy) updateClientContext(ctx context.Context) {
 			// overwrites tls.Config.ServerName. The proxy connects to a leader Pod
 			// IP, so preserve the configured stable service DNS identity explicitly.
 			dialOptions = append(dialOptions, grpc.WithAuthority(tlsConfig.ServerName))
+		}
+		if peerCredentials != nil {
+			dialOptions = append(dialOptions, grpc.WithTransportCredentials(peerCredentials), grpc.WithAuthority(peerCredentials.Info().ServerName))
 		}
 		client, err := clientv3.New(clientv3.Config{
 			Endpoints:   []string{dialEndpoint},
@@ -565,6 +573,23 @@ func (e *etcdProxy) dialTLSConfigsForEndpoint(endpoint string) ([]*tls.Config, e
 		return []*tls.Config{config}, nil
 	}
 	return e.dialTLSConfigs(), nil
+}
+
+func (e *etcdProxy) credentialsForEndpoint(endpoint string) (credentials.TransportCredentials, error) {
+	provider, ok := e.election.(interface {
+		ProxyCredentialsForEndpoint(string) (credentials.TransportCredentials, error)
+	})
+	if !ok {
+		return nil, nil
+	}
+	credential, err := provider.ProxyCredentialsForEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	if credential == nil || e.allowInsecure || credential.Info().SecurityProtocol != "tls" || credential.Info().ServerName == "" {
+		return nil, errors.New("invalid endpoint-bound peer credentials")
+	}
+	return credential, nil
 }
 
 func (e *etcdProxy) hasClient() bool {

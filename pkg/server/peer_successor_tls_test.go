@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,6 +49,24 @@ func TestSuccessorProxyTLSBindsExactEndpoint(t *testing.T) {
 			_, err = d.proxyTLS(base, "https://unconfigured.invalid")
 			require.Error(t, err)
 			_, err = d.proxyTLS(nil, peer.URL)
+			require.Error(t, err)
+			d.proxySource = &handshakeMaterialSource{material: transportidentity.ClientCredentialMaterial{Roots: pool, Certificate: certs[0]}}
+			view := &successorCredentialRoutingView{discovery: d}
+			credential, err := view.ProxyCredentialsForEndpoint(peer.URL)
+			require.NoError(t, err)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			raw, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
+			require.NoError(t, err)
+			reloaded, _, err := credential.ClientHandshake(ctx, "127.0.0.1", raw)
+			if mode == "correct" {
+				require.NoError(t, err)
+				require.NoError(t, reloaded.Close())
+			} else {
+				require.Error(t, err)
+				require.Nil(t, reloaded)
+			}
+			_, err = view.ProxyCredentialsForEndpoint("https://unconfigured.invalid")
 			require.Error(t, err)
 		})
 	}

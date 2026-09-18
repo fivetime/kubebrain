@@ -7,7 +7,50 @@ import (
 
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 )
+
+type endpointCredentialView struct {
+	leader.LeaderElection
+	value credentials.TransportCredentials
+	err   error
+}
+
+func (v endpointCredentialView) ProxyCredentialsForEndpoint(string) (credentials.TransportCredentials, error) {
+	return v.value, v.err
+}
+
+func TestEndpointCredentialsNeverFallBack(t *testing.T) {
+	for _, mode := range []string{"valid", "provider error", "nil", "plaintext", "empty authority", "fallback"} {
+		t.Run(mode, func(t *testing.T) {
+			var value credentials.TransportCredentials = credentials.NewTLS(&tls.Config{ServerName: "peer.invalid"})
+			var failure error
+			switch mode {
+			case "provider error":
+				failure = errors.New("unavailable")
+			case "nil":
+				value = nil
+			case "plaintext":
+				value = insecure.NewCredentials()
+			case "empty authority":
+				value = credentials.NewTLS(&tls.Config{})
+			}
+			e := &etcdProxy{election: endpointCredentialView{value: value, err: failure}, allowInsecure: mode == "fallback"}
+			actual, err := e.credentialsForEndpoint("https://peer.invalid")
+			if mode == "valid" {
+				require.NoError(t, err)
+				require.Same(t, value, actual)
+			} else {
+				require.Error(t, err)
+				require.Nil(t, actual)
+			}
+		})
+	}
+	value, err := (&etcdProxy{}).credentialsForEndpoint("legacy")
+	require.NoError(t, err)
+	require.Nil(t, value)
+}
 
 type endpointTLSView struct {
 	leader.LeaderElection

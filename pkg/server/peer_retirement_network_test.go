@@ -17,6 +17,7 @@ import (
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
@@ -54,6 +55,16 @@ func TestPeerRetirementPendingExpiredStreamDuringStorageFailure(t *testing.T) {
 	runRetirementNetworkHandoff(t, true, true)
 }
 
+func TestPeerRetirementPendingStreamWithReloadedProxyCredentials(t *testing.T) {
+	runRetirementNetworkHandoff(t, true, true, true)
+}
+
+type networkCredentialSource func(context.Context) (transportidentity.ClientCredentialMaterial, error)
+
+func (f networkCredentialSource) LoadClientCredentialMaterial(ctx context.Context) (transportidentity.ClientCredentialMaterial, error) {
+	return f(ctx)
+}
+
 type retirementCountedStream struct {
 	grpc.ServerStream
 	messages *atomic.Int32
@@ -67,8 +78,12 @@ func (s retirementCountedStream) RecvMsg(message any) error {
 	return err
 }
 
-func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool) {
+func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...bool) {
 	pool, certs := retirementTestCertificates(t)
+	var credentialLoads atomic.Int32
+	if len(reload) > 0 && reload[0] {
+		defer func() { require.Positive(t, credentialLoads.Load(), "proxy must actually use the material source") }()
+	}
 	var servers [2]atomic.Pointer[server]
 	var peerRPC [2]atomic.Pointer[grpc.Server]
 	var peerRenewals [2]atomic.Int32
@@ -155,6 +170,12 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool) {
 			serverConfig.RenewDeadline = 4 * time.Second
 			serverConfig.EnableEtcdProxy = true
 			serverConfig.ProxyTLS = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool, Certificates: []tls.Certificate{certs[i]}}
+			if len(reload) > 0 && reload[0] {
+				config.ProxyCredentialSource = networkCredentialSource(func(context.Context) (transportidentity.ClientCredentialMaterial, error) {
+					credentialLoads.Add(1)
+					return transportidentity.ClientCredentialMaterial{Roots: pool.Clone(), Certificate: certs[i]}, nil
+				})
+			}
 		}
 		var s Server
 		if enabled {

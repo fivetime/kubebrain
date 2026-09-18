@@ -24,9 +24,12 @@ type PeerRetirementConfig struct {
 	// Requires SuccessorHolders. TLS remains mandatory for startup validation;
 	// this source does not configure the independent gRPC proxy TLS transport.
 	ControlCredentialSource transportidentity.ClientCredentialSource
-	Scope                   string
-	HolderPins              map[string][]string
-	PeerURLs                []string
+	// ProxyCredentialSource reloads material at each gRPC connection handshake.
+	// Requires SuccessorHolders; existing connections are not yet revalidated.
+	ProxyCredentialSource transportidentity.ClientCredentialSource
+	Scope                 string
+	HolderPins            map[string][]string
+	PeerURLs              []string
 	// SuccessorHolders optionally enables read-only discovery for forwarding.
 	// Keys are exact canonical peer base URLs; values are configured holders.
 	SuccessorHolders                        map[string]string
@@ -77,6 +80,12 @@ func preparePeerRetirement(lock resourcelock.Interface, config PeerRetirementCon
 		if protocol.discovery == nil || protocol.discovery.useCredentialSource(config.ControlCredentialSource) != nil {
 			return nil, invalid
 		}
+	}
+	if config.ProxyCredentialSource != nil {
+		if protocol.discovery == nil {
+			return nil, invalid
+		}
+		protocol.discovery.proxySource = config.ProxyCredentialSource
 	}
 	return protocol, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"github.com/kubewharf/kubebrain/pkg/transportidentity"
 	"net/http"
 	"strings"
 	"time"
@@ -24,11 +25,12 @@ var errPeerSuccessorUnavailable = errors.New("peer successor unavailable")
 // admission and backend fencing must still validate every forwarded operation.
 // Registration and connector use require explicit SuccessorHolders opt-in.
 type peerSuccessorDiscovery struct {
-	sender  *peerRetirementSender
-	auth    *peerRetirementAuthorizer
-	targets []peerSuccessorTarget
-	slot    chan struct{}
-	rate    *rate.Limiter
+	proxySource transportidentity.ClientCredentialSource
+	sender      *peerRetirementSender
+	auth        *peerRetirementAuthorizer
+	targets     []peerSuccessorTarget
+	slot        chan struct{}
+	rate        *rate.Limiter
 }
 
 type peerSuccessorTarget struct{ endpoint, holder string }

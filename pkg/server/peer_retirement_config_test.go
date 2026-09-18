@@ -59,10 +59,12 @@ func TestPeerRetirementConfigurationBindsLocalCredentials(t *testing.T) {
 			PeerURLs: []string{"https://peer.invalid:3380"}, TLS: &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{certs[0]}},
 			ReadBudget: time.Second, OperationBudget: time.Second, SendBudget: time.Second, Concurrency: 2, RequestsPerSecond: 10}
 	}
-	for _, name := range []string{"scope", "shared key", "missing local", "wrong local cert", "wrong signing key", "plaintext", "zero budget", "one member", "unknown successor", "self successor", "missing successor", "source without targets"} {
+	for _, name := range []string{"scope", "shared key", "missing local", "wrong local cert", "wrong signing key", "plaintext", "zero budget", "one member", "unknown successor", "self successor", "missing successor", "source without targets", "proxy source without targets"} {
 		t.Run(name, func(t *testing.T) {
 			config := makeConfig()
 			switch name {
+			case "proxy source without targets":
+				config.ProxyCredentialSource = &handshakeMaterialSource{}
 			case "source without targets":
 				config.ControlCredentialSource = &handshakeMaterialSource{}
 			case "unknown successor":
@@ -117,11 +119,13 @@ func TestPeerRetirementConfigurationBindsLocalCredentials(t *testing.T) {
 	reloadConfig := makeConfig()
 	reloadConfig.SuccessorHolders = map[string]string{"https://peer.invalid:3380": "helper"}
 	reloadConfig.ControlCredentialSource = &handshakeMaterialSource{}
+	reloadConfig.ProxyCredentialSource = &handshakeMaterialSource{}
 	reloaded, err := preparePeerRetirement(lock, reloadConfig)
 	require.NoError(t, err)
 	transport, ok := reloaded.sender.client.Transport.(*reloadedPeerHTTP)
 	require.True(t, ok)
 	require.Same(t, reloadConfig.ControlCredentialSource, transport.source)
+	require.Same(t, reloadConfig.ProxyCredentialSource, reloaded.discovery.proxySource)
 	reloadConfig.SuccessorHolders["https://peer.invalid:3380"] = "other"
 	require.Equal(t, "helper", transport.targets["https://peer.invalid:3380"+peerRetirementPath])
 }

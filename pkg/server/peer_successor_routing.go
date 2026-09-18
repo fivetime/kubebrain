@@ -3,11 +3,42 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"net/url"
 	"sync"
 	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/server/service/leader"
+	"google.golang.org/grpc/credentials"
 )
+
+// Only the explicit dynamic proxy mode implements this provider. The embedded
+// routing view retains election semantics and static endpoint validation.
+type successorCredentialRoutingView struct {
+	*successorRoutingView
+	discovery *peerSuccessorDiscovery
+}
+
+func (v *successorCredentialRoutingView) ProxyCredentialsForEndpoint(endpoint string) (credentials.TransportCredentials, error) {
+	d := v.discovery
+	if d == nil || d.proxySource == nil || d.sender == nil || d.auth == nil {
+		return nil, errPeerSuccessorUnavailable
+	}
+	holder := ""
+	if endpoint == d.sender.holder {
+		holder = d.sender.holder
+	}
+	for _, target := range d.targets {
+		if target.endpoint == endpoint {
+			holder = target.holder
+			break
+		}
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || len(d.auth.holders[holder]) == 0 {
+		return nil, errPeerSuccessorUnavailable
+	}
+	return &reloadedPeerGRPC{source: d.proxySource, auth: d.auth, local: d.sender.holder, remote: holder, hostname: u.Hostname(), budget: d.sender.budget}, nil
+}
 
 // successorRoutingView is passed ONLY to the proxy connector. All other users
 // retain the original election, including Campaign and backend write fencing.
