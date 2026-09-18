@@ -1269,3 +1269,33 @@ Run 的清理改为在构造器之前注册，校验失败也取消上下文并�
 （44106，16.704/48.119/1.030/1.236 秒），随后相关 vet/diff 通过。
 镜像 35326113519 最后检查仍 in_progress，probe 35326113607 的 Watch
 失败未被远端重验；Watch 修复和本轮接入均未推送或部署。
+
+## 真实 Endpoint 启动和控制路由隔离
+
+新增 TestExperimentalPeerEndpointStartsAndIsolatesControlRoutes，使用带非零
+cluster ID 的 memkv 后端、真实单节点选举、文件证书和 Endpoint.Run，实际
+启动 client/peer/info TCP 监听器，而不是只直接调用构造器或 handler。
+分别覆盖普通复用监听器与启用 GRPCMaxConnectionAge 的 native gRPC 模式；
+控制探针明确使用 HTTP/1（native 模式 HTTP/2 由 gRPC 接管）。
+
+等待 peer successor 返回 204，证明服务端完成初始化并接受固定 scope/holder
+且具有可信 TLS 身份的请求；同 CA/SAN 但未授权 pin 的客户端收到 403，
+没有客户端证书时 TLS 握手失败。peer retirement 在通过认证后对空 ownership
+condition 返回 400，不触发后台释放。两个控制路径在 client 和 info 端口
+均为 404，不能借助客户端入口调用成员控制协议。临时证书和监听器按测试
+生命周期回收，不使用集群凭据。
+
+首次执行的路由断言都通过，但 Close 返回“等待自愿交接 successor 超时”
+导致测试失败（1181，5.310 秒）。这个单节点夹具没有可用 successor，
+不能要求生产交接策略虚报成功；后续明确断言 context.DeadlineExceeded
+并等待 Run 退出，没有改变产品关闭逻辑、忽略所有错误或声称优雅交接成功。
+成功交接仍由双服务端测试及后续真实双 Endpoint/集群实验分别覆盖。
+两种模式三轮 race 通过（69714，32.110 秒），其中尚未加入最后的 retirement
+空条件 400 断言。该测试保留启用代理，没有为了绕过关闭失败禁用代理。
+
+原 e994f2c3 镜像 CI 35326113519 已成功，probe 35326113607 仍是已记录的
+Watch 断言失败；不把镜像成功当作该源码回归通过，也未进行镜像部署。
+
+最终代码（含 peer retirement 400 断言）的 endpoint/server/cmd-option
+完整单轮 race 通过（82459，26.038/48.877/1.219 秒），随后相关 vet/diff
+通过。本轮仍未覆盖两个真实 Endpoint 之间的证书轮换或原 TiKV 故障门限。
