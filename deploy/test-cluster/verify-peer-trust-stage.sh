@@ -196,14 +196,19 @@ for i in 0 1 2; do
    [[ $rc == 0 && $(<"$out/peer-$i-$identity.status") == 404 ]]
   fi
  done
+ forward "$pod" "$((18890+i))" 3379
+ rpc "$((18890+i))" maintenance/status '{}' "$out/status-$i.json"
  if [[ $trust_phase == protocol ]]; then
+  # Pod readiness includes proxy-capable followers. Successor discovery is
+  # available only from the fresh serving leader, not every Ready Pod.
+  role=$(jq -er 'if .header.member_id==.leader then "leader" else "follower" end' "$out/status-$i.json")
   forward "$pod" "$port" 3380 "$port-control"
   peer_pid=${pids[-1]}
   if [[ $mode == expand ]]; then
    sender=$sts-$(((i+1)%3))
    "$out/control-probe" --endpoint="https://127.0.0.1:$port" --server-name="$peer_dns" --server-pin="${pins[$i]}" \
     --cacert="$expected/ca.crt" --cert="$out/$sender/tls.crt" --key="$out/$sender/tls.key" \
-    --scope="$scope" --sender="$sender.$peer_dns:3380" --receiver="$pod.$peer_dns:3380" > "$out/control-$i.log" 2>&1
+    --scope="$scope" --sender="$sender.$peer_dns:3380" --receiver="$pod.$peer_dns:3380" --receiver-role="$role" > "$out/control-$i.log" 2>&1
   else
    for route in retirement successor; do
     "${c[@]}" --cert "$expected/tls.crt" --key "$expected/tls.key" --request POST \
@@ -216,8 +221,6 @@ for i in 0 1 2; do
   wait "$peer_pid" 2>/dev/null || true
   unset 'pids[-1]'
  fi
- forward "$pod" "$((18890+i))" 3379
- rpc "$((18890+i))" maintenance/status '{}' "$out/status-$i.json"
 done
 jq -se 'all(.[];(.header.member_id|type=="string" and test("^[1-9][0-9]*$")) and (.leader|type=="string" and test("^[1-9][0-9]*$"))) and
  ([.[].header.member_id]|unique|length)==3 and ([.[].leader]|unique|length)==1 and any(.[];.header.member_id==.leader)' "$out"/status-?.json >/dev/null

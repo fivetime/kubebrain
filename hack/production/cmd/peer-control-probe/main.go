@@ -21,7 +21,7 @@ import (
 
 type config struct {
 	endpoint, serverName, serverPin, ca, cert, key string
-	scope, sender, receiver                        string
+	scope, sender, receiver, receiverRole          string
 }
 
 func (c config) validate() error {
@@ -36,6 +36,9 @@ func (c config) validate() error {
 	}
 	if c.sender == c.receiver {
 		return errors.New("probe requires different sender and receiver identities")
+	}
+	if c.receiverRole != "leader" && c.receiverRole != "follower" {
+		return errors.New("explicit receiver-role leader or follower required from independent member status")
 	}
 	pin, err := hex.DecodeString(c.serverPin)
 	if err != nil || len(pin) != sha256.Size {
@@ -98,6 +101,9 @@ func probe(ctx context.Context, client *http.Client, c config) error {
 		}
 		if path == "/internal/successor/v1" {
 			checks[2].status = http.StatusNoContent
+			if c.receiverRole == "follower" {
+				checks[2].status = http.StatusServiceUnavailable
+			}
 		}
 		for i, check := range checks {
 			// Intentionally no body or Content-Type: a valid OwnershipCondition
@@ -140,6 +146,7 @@ func main() {
 	flag.StringVar(&c.scope, "scope", "", "independently verified backend scope")
 	flag.StringVar(&c.sender, "sender", "", "sender holder identity")
 	flag.StringVar(&c.receiver, "receiver", "", "receiver holder identity")
+	flag.StringVar(&c.receiverRole, "receiver-role", "", "leader or follower, independently observed from member status")
 	flag.Parse()
 	client, err := newClient(c)
 	if err == nil {

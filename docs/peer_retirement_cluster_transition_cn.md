@@ -1,7 +1,8 @@
 # 专用集群 peer 身份迁移与恢复准备
 
-状态：双 CA 和独立成员证书阶段均已现场验证并恢复。第二轮原恢复校验
-失败，修复探测通道后独立复验通过，失败记录保留；实验交接协议尚未启用。
+状态：双 CA 和独立成员证书阶段均已现场验证并恢复。首次协议部署校验
+因探针错误地要求 follower 返回 leader 就绪响应而失败；该瞬间角色证据
+不完整，失败结论保留。原镜像与完整配置已恢复，实验协议当前关闭。
 本页不表示新镜像或原 30 秒故障验收已经通过。
 目标仅为 kubebrain-dbaas-test/kubebrain-local，
 不涉及旧 Ceph 实例、TiKV/PD 数据卷或 TopoLVM VG 初始化。
@@ -40,8 +41,9 @@ CA 验证。只接受无路径/query/userinfo/fragment 的 HTTPS origin，不使
 环境代理、不跟随重定向、不自动重试；每请求 5 秒、整体 20 秒。
 
 每个接收成员执行六个空 POST：successor 和 retirement 路由各检查错误
-scope、发送 key 冒充接收 holder（均应 403），再检查正确身份。successor
-须 204，且响应 scope/holder 各恰好一份并精确匹配；retirement 须 400。
+scope、发送 key 冒充接收 holder（均应 403），再检查正确身份。按独立
+maintenance/status 观测的角色，leader 的 successor 须 204，且响应
+scope/holder 各恰好一份并精确匹配；follower 须 503。retirement 须 400。
 所有响应要求空 body 和 no-store。**探针不发送 Content-Type 或任何
 OwnershipCondition，因此不执行有效的退休/CAS 请求。**探测结果不是
 交接成功、写入兼容性或原 30 秒故障恢复证据，也不能取代部署前后普通
@@ -109,6 +111,60 @@ before/admitted/fresh/after/final 抓取时重新读取成员 Secret；规划器
 通过（8.057s）；加强成员/凭据/SPKI 参数断言后的全包
 `go test -race -count=1 ./deploy/test-cluster` 通过（80.633s），vet、
 Bash 语法和 diff 检查通过。本轮仅修改工具与测试，没有变更集群。
+
+## 首次真实协议部署：角色探测预期错误，验收失败
+
+2026-09-18，owner 为
+`/root/.local/state/kubebrain/peer-retirement-preparation.QjFVoLV6/live-protocol.dCPnLfH4`。
+现场重新确认 generation 44 原完整 spec、3/3 Ready、原 Secret UID/数据，
+本地 PV 12 Bound/14 Released；读取实际 PD cluster ID
+7686251028133611667，并以原 keyspace/election-prefix 重新计算相同 scope。
+叶证书有效至 2026-09-19 10:06:01 UTC。冻结的执行器源码为 `85e74bc0`，
+使用[已审计 02786d91 镜像](peer_retirement_image_02786d91_cn.md)，不等待或
+冒用后续尚在运行的 CI。私钥只在权限受限 owner 和集群 Secret 中。
+
+roots-expand 和 members-expand 现场通过（generation 45、46），包括
+实际材料、TLS、隔离挂载、三成员读写及条件清理。protocol-expand
+滚动到 generation 47、三个候选副本 Ready，但首个成员的控制探针在
+正确身份 successor 请求返回 503 时失败；阶段 exit-code=1。这不是
+30 秒故障实验，也不能记为协议验收通过。失败发生于普通业务 fixture
+写入之前，没有提交有效退休条件。
+
+定位发现探针原先错误地要求每个 Ready Pod 的 successor 均返回 204。
+`pkg/server/server.go` 的路由注册明确要求 fresh leader 且 leaderServing、
+非 draining；follower 返回 503 是产品既有契约。失败瞬间没有保存该成员
+的 maintenance/status，不能追溯断言它当时一定是 follower，也不能用
+修复后的成功回写本次结果。新的校验先读取各成员状态，显式传
+`--receiver-role=leader|follower`；仍要求三个不同 member ID、一致 leader
+且该 leader 为其中之一，不能把三个 503 都当作成功。
+
+角色矩阵测试要求 leader/503、follower/204 都失败，匹配角色才继续退休
+接口的空请求检查。模拟完整校验进一步核对传给探针的实际角色；未改变
+产品 successor 行为、选举时限或原故障门限。恢复结果和清理见后续记录。
+
+### 恢复与清理终态
+
+原执行 16035 终态 1；protocol-expand 的相邻恢复终态 0，generation 48
+恢复原固定镜像、关闭实验参数，保持成员双 CA；外层恢复依次通过成员
+恢复和根信任恢复，generation 49、50。最终原完整 spec 一致、3/3 Ready，
+TLS 以及三成员读写/条件清理复验通过。原始失败不改写为成功。
+
+清理执行 45092 终态 0：从本轮五个中间阶段实际 Pod→PVC owner UID→PV
+claim UID 链选择 30 个非 baseline 临时卷，逐个核对 Released/Retain、
+完整 spec、无引用后，以 UID/resourceVersion/spec/phase 前置补丁回收。
+已删除这些临时卷及其数据，并按 UID/resourceVersion 删除本轮两份
+不可变 Secret；私钥材料仍仅保留于受限本机证据目录，不入仓库。
+
+所有 baseline PV 的 UID/spec 保留；本地盘最终 12 Bound/20 Released，
+其中本轮滚动置换的原六个临时卷仍属于受保护集合，没有批量删除 Released
+卷。旧 KubeBrain 和两套 PD/TiKV 的 Pod UID/容器状态不变，恢复后的本地
+KubeBrain 镜像摘要与 baseline 一致。七份临时编译工具及其复制件已删除，
+摘要保存在 removed-binaries.sha256；所有探测 port-forward 均已退出。
+
+角色修复的探针 race 通过（1.646s），相关编排回归通过（11.939s），
+全包部署工具 race 通过（81.996s），vet/diff 检查通过。源码及清理证据
+校验和复核通过。**修复后的探针尚未在集群重验，原 30 秒故障门限仍未
+验收，本轮不是协议生产就绪结论。**
 
 ## 成员私钥挂载
 

@@ -36,7 +36,7 @@ func probeFixture(t *testing.T, handler http.Handler) config {
 	require.NoError(t, os.WriteFile(crtPath, crtPEM, 0600))
 	require.NoError(t, os.WriteFile(keyPath, keyPEM, 0600))
 	pin := sha256.Sum256(s.Certificate().RawSubjectPublicKeyInfo)
-	return config{endpoint: s.URL, serverName: "example.com", serverPin: hex.EncodeToString(pin[:]), ca: crtPath, cert: crtPath, key: keyPath, scope: "retirement-v1:test", sender: "sender:3380", receiver: "receiver:3380"}
+	return config{endpoint: s.URL, serverName: "example.com", serverPin: hex.EncodeToString(pin[:]), ca: crtPath, cert: crtPath, key: keyPath, scope: "retirement-v1:test", sender: "sender:3380", receiver: "receiver:3380", receiverRole: "leader"}
 }
 
 func contractHandler(t *testing.T, mutate func(http.Header), calls *atomic.Int32) http.Handler {
@@ -80,6 +80,47 @@ func TestProbeUsesSixEmptyAuthenticatedRequestsWithoutRetirement(t *testing.T) {
 	defer client.CloseIdleConnections()
 	require.NoError(t, probe(context.Background(), client, c))
 	require.EqualValues(t, 6, calls.Load())
+}
+
+type followerResponse struct{ http.ResponseWriter }
+
+func (w followerResponse) WriteHeader(code int) {
+	if code == http.StatusNoContent {
+		w.Header().Del("X-Kubebrain-Successor-Scope")
+		w.Header().Del("X-Kubebrain-Successor-Holder")
+		code = http.StatusServiceUnavailable
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func TestProbeSuccessorStatusMustMatchIndependentlyObservedRole(t *testing.T) {
+	for _, expected := range []string{"leader", "follower"} {
+		for _, actual := range []string{"leader", "follower"} {
+			t.Run(expected+"/"+actual, func(t *testing.T) {
+				var calls atomic.Int32
+				handler := contractHandler(t, nil, &calls)
+				c := probeFixture(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if actual == "follower" {
+						handler.ServeHTTP(followerResponse{w}, r)
+					} else {
+						handler.ServeHTTP(w, r)
+					}
+				}))
+				c.receiverRole = expected
+				client, err := newClient(c)
+				require.NoError(t, err)
+				defer client.CloseIdleConnections()
+				err = probe(context.Background(), client, c)
+				if expected == actual {
+					require.NoError(t, err)
+					require.EqualValues(t, 6, calls.Load())
+				} else {
+					require.Error(t, err, "503 must not be accepted as serving leader proof")
+					require.EqualValues(t, 3, calls.Load())
+				}
+			})
+		}
+	}
 }
 
 func TestProbeRejectsWrongOrDuplicateSuccessorIdentity(t *testing.T) {
@@ -164,7 +205,7 @@ func TestProbeRejectsRedirectUnexpectedStatusBodyAndCancellation(t *testing.T) {
 }
 
 func TestProbeRejectsAmbiguousInputsBeforeNetwork(t *testing.T) {
-	c := config{endpoint: "https://127.0.0.1:3380", serverName: "peer.test", serverPin: hex.EncodeToString(make([]byte, 32)), scope: "scope", sender: "sender", receiver: "receiver"}
+	c := config{endpoint: "https://127.0.0.1:3380", serverName: "peer.test", serverPin: hex.EncodeToString(make([]byte, 32)), scope: "scope", sender: "sender", receiver: "receiver", receiverRole: "leader"}
 	for _, endpoint := range []string{"http://peer", "https://peer/", "https://peer?", "https://peer?x=1", "https://user@peer", "https://peer#fragment"} {
 		copy := c
 		copy.endpoint = endpoint

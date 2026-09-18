@@ -55,13 +55,18 @@ func TestPeerProtocolRuntimeVerifierOrchestration(t *testing.T) {
 			probe := []byte(`#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$FIXTURE/control-calls"
-[[ $# == 9 ]]
+[[ $# == 10 ]]
 [[ $1 == --endpoint=https://127.0.0.1:1888? && $2 == --server-name=peer.test && $3 == --server-pin=* ]]
 [[ $4 == --cacert="$FIXTURE/verify-after/kubebrain-local-"*/ca.crt ]]
 [[ $5 == --cert="$FIXTURE/verify-after/kubebrain-local-"*/tls.crt && $6 == --key="$FIXTURE/verify-after/kubebrain-local-"*/tls.key ]]
 [[ $7 == --scope=retirement-v1:* && $8 == --sender=* ]]
 [[ $9 == --receiver=* && ${8#--sender=} != ${9#--receiver=} ]]
 receiver=${9#--receiver=}
+if [[ $receiver == kubebrain-local-0.peer.test:3380 ]]; then
+ [[ ${10} == --receiver-role=leader ]]
+else
+ [[ ${10} == --receiver-role=follower ]]
+fi
 for i in 0 1 2; do
  if [[ $receiver == kubebrain-local-$i.peer.test:3380 ]]; then
   sender=kubebrain-local-$(((i+1)%3))
