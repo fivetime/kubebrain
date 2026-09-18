@@ -25,7 +25,7 @@ type PeerRetirementConfig struct {
 	// this source does not configure the independent gRPC proxy TLS transport.
 	ControlCredentialSource transportidentity.ClientCredentialSource
 	// ProxyCredentialSource reloads material at each gRPC connection handshake.
-	// Requires SuccessorHolders; existing connections are not yet revalidated.
+	// Requires SuccessorHolders; finite connection lifetime forces reloading.
 	ProxyCredentialSource transportidentity.ClientCredentialSource
 	Scope                 string
 	HolderPins            map[string][]string

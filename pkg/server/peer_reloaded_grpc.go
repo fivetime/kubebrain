@@ -10,8 +10,8 @@ import (
 )
 
 // reloadedPeerGRPC is client-only and bound to one operator-selected member.
-// Reconnects load new material; established connections are not revalidated by
-// this adapter. Callers must implement a separate connection retirement policy.
+// Reconnects load new material. A finite connection lifetime forces idle and
+// active transports to reconnect; it does not make revocation instantaneous.
 type reloadedPeerGRPC struct {
 	source                  transportidentity.ClientCredentialSource
 	auth                    *peerRetirementAuthorizer
@@ -37,6 +37,7 @@ func (c *reloadedPeerGRPC) ClientHandshake(parent context.Context, authority str
 	}
 	ctx, cancel := context.WithTimeout(parent, c.budget)
 	defer cancel()
+	until := time.Now().Add(peerCredentialMaxConnectionAge)
 	config, err := reloadedPeerTLSConfig(ctx, c.source, c.auth, c.local, c.remote, c.hostname, []string{"h2"})
 	if err != nil {
 		return nil, nil, errPeerCredentialVerification
@@ -52,8 +53,24 @@ func (c *reloadedPeerGRPC) ClientHandshake(parent context.Context, authority str
 		_ = conn.Close()
 		return nil, nil, errPeerCredentialVerification
 	}
+	// Do not keep a verified certificate past its known validity, even when
+	// its remaining lifetime is shorter than the normal reload interval.
+	for _, chain := range state.State.VerifiedChains {
+		for _, cert := range chain {
+			if cert.NotAfter.Before(until) {
+				until = cert.NotAfter
+			}
+		}
+	}
+	if leaf := config.Certificates[0].Leaf; leaf.NotAfter.Before(until) {
+		until = leaf.NotAfter
+	}
+	if !time.Now().Before(until) {
+		_ = conn.Close()
+		return nil, nil, errPeerCredentialVerification
+	}
 	failed = false
-	return conn, info, nil
+	return boundCredentialConnection(conn, until), info, nil
 }
 
 func (c *reloadedPeerGRPC) ServerHandshake(raw net.Conn) (net.Conn, credentials.AuthInfo, error) {
