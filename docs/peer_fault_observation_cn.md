@@ -121,3 +121,17 @@ pprof 鉴权。下一步必须把诊断阶段纳入完整故障驱动的恢复�
 
 完整 `go test -count=1 ./deploy/test-cluster` 通过（75.939s），vet 和 diff
 检查通过。所有验证均未持久化诊断配置。
+
+## 实际 info listener 的 mTLS 回归
+
+新增 `TestInfoDiagnosticListenerRequiresMTLSAndExplicitPprof`，运行真实
+`runMetricsServer`、root listener 和安全传输封装，而非仅调用 HTTP mux。
+分别覆盖 pprof 开关：合法 CA 客户端在开启时获得有界 debug=2 栈响应，
+关闭时为 404；无证书、不可信 CA 证书、错误服务端 DNS 和明文连接都
+不能得到 HTTP profile 响应，之后合法客户端仍可访问。
+
+首轮失败来自测试夹具复用证书目录：辅助函数固定写 tls.crt/tls.key，
+客户端材料覆盖了动态读取的服务端材料。改为每个身份独立目录后，三轮
+race 通过（1.599s）。没有据此修改产品 TLS 策略或放宽验证。
+此测试使用真实 TLS socket 但无 TiKV 后端，不代替集群健康探针、证书
+挂载或生产诊断权限验收；现场捕获及故障驱动仍需接入。
