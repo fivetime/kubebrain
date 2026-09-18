@@ -1,8 +1,8 @@
 # 专用集群 peer 身份迁移与恢复准备
 
-状态：双 CA 和独立成员证书阶段均已现场验证并恢复。首次协议部署校验
-因探针错误地要求 follower 返回 leader 就绪响应而失败；该瞬间角色证据
-不完整，失败结论保留。原镜像与完整配置已恢复，实验协议当前关闭。
+状态：修复角色探针后的新一轮现场启用/恢复六阶段已通过，原镜像与完整
+配置已恢复，实验协议当前关闭。首次协议部署的失败记录仍保留；新一轮
+通过不代表原 30 秒故障门限或生产就绪验收通过。
 本页不表示新镜像或原 30 秒故障验收已经通过。
 目标仅为 kubebrain-dbaas-test/kubebrain-local，
 不涉及旧 Ceph 实例、TiKV/PD 数据卷或 TopoLVM VG 初始化。
@@ -165,6 +165,53 @@ KubeBrain 镜像摘要与 baseline 一致。七份临时编译工具及其复制
 全包部署工具 race 通过（81.996s），vet/diff 检查通过。源码及清理证据
 校验和复核通过。**修复后的探针尚未在集群重验，原 30 秒故障门限仍未
 验收，本轮不是协议生产就绪结论。**
+
+## 角色修复后的现场六阶段复验通过
+
+2026-09-18，新 owner 为
+`/root/.local/state/kubebrain/peer-retirement-preparation.QjFVoLV6/protocol-recheck.vPY3j4Of`，
+不复用上轮执行 claim。冻结工具源码 `6be989ef`，产品仍是精确源码
+02786d91 的已审计固定镜像；不把工具提交尚在运行的 CI 写成通过。
+新建 `kb-peer-old-dual-vpy3j4of` 和 `kb-peer-members-dual-vpy3j4of` 两份
+不可变 Secret，材料预检及 server dry-run 后才逐阶段变更。
+
+基线 generation 50、原完整 spec、三个 Ready 副本及本地 PV
+12 Bound/20 Released 重新核对；实际 PD cluster ID 和原 keyspace/prefix
+重新记录，scope 与候选策略一致，证书剩余有效期超过四小时。执行 53703
+终态 0，六个阶段各自 exit-code=0：
+
+| 阶段 | generation | 已验证范围 |
+| --- | --- | --- |
+| roots-expand | 51 | 原叶证书、双 CA、普通三成员读写 |
+| members-expand | 52 | 独立 SPKI、四文件隔离挂载、双 CA、普通读写 |
+| protocol-expand | 53 | 固定候选镜像/源码、实验参数、控制接口鉴权及普通读写 |
+| protocol-restore | 54 | 原镜像、关闭实验参数，保留成员双 CA，控制路由 404 |
+| members-restore | 55 | 原共享叶证书、双 CA、普通读写 |
+| roots-restore | 56 | 原单 CA、完整原 spec、旧客户端成功/新 CA 客户端拒绝 |
+
+协议阶段逐成员 maintenance/status 保存角色：member 3358157933 与
+2176893298 为 follower，1543124563 为 leader，三者观测一致。三个
+控制探针均成功：错误 scope 和冒充接收 holder 被拒绝，leader 给出
+匹配 scope/holder 的 204，follower 为 503，正确身份的空退休请求为 400。
+探针没有提交有效 OwnershipCondition，不以此声称真实退休 CAS 已验证。
+
+每个阶段仍完成三次条件写入、九次跨成员线性读取、按值条件删除、九次
+缺失检查及最终 Pod 身份/容器状态复核。协议恢复后两个控制路由在三个
+成员均返回 404。最终 generation 56、3/3 Ready、完整 spec 等于基线。
+
+本次证明真实独立 TiKV/PD 后端上的协议配置接入、控制接口和普通转发，
+以及相邻恢复可执行；**没有注入存储隔离故障，没有证明原 KeepAlive
+请求跨故障恢复或原 30 秒门限，也不是连续流、节点断电或长期 soak 验收**。
+原失败保留，后续故障实验必须使用新 owner、实际 Pod 身份及当前源码
+对应的等待栈校验，不可重用旧 3e6f3b15 故障脚本的绑定。
+
+清理执行 99292 终态 0：五个中间阶段各六个临时卷，以 Pod/PVC/PV UID
+链确认归属后逐个回收，共 30 个；两份本轮 Secret 在无引用检查后按
+UID/resourceVersion 删除。全部 baseline PV UID/spec 保留，最终本地
+12 Bound/26 Released（包含本轮被置换、但仍保护的原六个临时卷）。
+旧实例及两套 PD/TiKV 的 Pod UID/容器状态不变，本地实例恢复后的镜像
+摘要与基线一致。七份临时编译工具及复制件已删除并保留摘要，所有
+port-forward 已退出，源码和清理证据 SHA-256 复核通过。
 
 ## 成员私钥挂载
 
