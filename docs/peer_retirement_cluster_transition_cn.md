@@ -30,6 +30,35 @@ Secret 身份约束下推导已隔离的成员双 CA 布局，只允许改变镜
 `git diff --check` 通过。覆盖只改镜像/参数、未就绪恢复、禁止跳阶段、
 摘要格式、Secret 重建和补丁并发冲突；这些仍不是现场协议验收。
 
+## 不提交退休条件的控制接口探针
+
+`hack/production/cmd/peer-control-probe` 用于后续 protocol 阶段的独立检查，
+尚未接入现场执行器。必须提供 HTTPS origin、证书 DNS 名、接收成员 SPKI、
+可信 CA 文件、发送成员证书/私钥路径，以及独立核对的 scope 和双方 holder。
+支持通过 loopback port-forward 访问，证书仍按显式 DNS 校验，不允许跳过
+CA 验证。只接受无路径/query/userinfo/fragment 的 HTTPS origin，不使用
+环境代理、不跟随重定向、不自动重试；每请求 5 秒、整体 20 秒。
+
+每个接收成员执行六个空 POST：successor 和 retirement 路由各检查错误
+scope、发送 key 冒充接收 holder（均应 403），再检查正确身份。successor
+须 204，且响应 scope/holder 各恰好一份并精确匹配；retirement 须 400。
+所有响应要求空 body 和 no-store。**探针不发送 Content-Type 或任何
+OwnershipCondition，因此不执行有效的退休/CAS 请求。**探测结果不是
+交接成功、写入兼容性或原 30 秒故障恢复证据，也不能取代部署前后普通
+读写和证书挂载检查。
+
+探针测试使用真实 TLS socket 检查服务端 CA/DNS/SPKI、客户端证书发送、
+六次空请求、错误/重复响应身份、重定向、意外状态/body 及取消。测试
+服务端的客户端鉴权使用 RequireAnyClientCert，仅验证探针发送证书；
+产品的 CA/SPKI 授权由真实 Endpoint/handler 测试覆盖。handler 增加
+HTTP/1 与 HTTP/2 的空条件和无 Content-Type 探针回归，断言释放回调
+调用次数为零，避免把模拟服务端当成产品无写入保证。
+
+真实 Endpoint 的两种 peer listener 模式进一步验证：同一合法成员 key
+携带错误 scope、冒充接收 holder，对两个控制路由均得到 403。该测试
+使用 memkv，不宣称已在 TiKV 集群执行探针。新增探针 race、真实 handler
+race、Endpoint race 均通过，Endpoint 最终运行 11.568s；探针 vet 通过。
+
 ## 成员私钥挂载
 
 [挂载片段](../deploy/test-cluster/peer-retirement-mounts.patch.json) 是战略合并

@@ -107,19 +107,22 @@ func runExperimentalPeerEndpointRoutes(t *testing.T, aging bool) {
 		return c
 	}
 	valid := client(&certificates[1])
-	request := func(c *http.Client, base, path string) (int, error) {
+	requestIdentity := func(c *http.Client, base, path, instance, holder string) (int, error) {
 		r, err := http.NewRequest(http.MethodPost, base+path, nil)
 		if err != nil {
 			return 0, err
 		}
-		r.Header.Set("X-Kubebrain-Retirement-Instance", scope)
-		r.Header.Set("X-Kubebrain-Retirement-Holder", "remote")
+		r.Header.Set("X-Kubebrain-Retirement-Instance", instance)
+		r.Header.Set("X-Kubebrain-Retirement-Holder", holder)
 		response, err := c.Do(r)
 		if err != nil {
 			return 0, err
 		}
 		defer response.Body.Close()
 		return response.StatusCode, nil
+	}
+	request := func(c *http.Client, base, path string) (int, error) {
+		return requestIdentity(c, base, path, scope, "remote")
 	}
 	require.Eventually(t, func() bool {
 		code, err := request(valid, self, "/internal/successor/v1")
@@ -134,7 +137,13 @@ func runExperimentalPeerEndpointRoutes(t *testing.T, aging bool) {
 	_, err = request(client(nil), self, "/internal/successor/v1")
 	require.Error(t, err, "missing client certificate must fail TLS")
 	for _, path := range []string{"/internal/retirement/v1", "/internal/successor/v1"} {
-		code, err := request(valid, fmt.Sprintf("https://127.0.0.1:%d", clientPort), path)
+		code, err := requestIdentity(valid, self, path, scope+":probe-wrong-scope", "remote")
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, code, "verified member must not cross backend scope")
+		code, err = requestIdentity(valid, self, path, scope, self)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, code, "remote member key must not impersonate receiver")
+		code, err = request(valid, fmt.Sprintf("https://127.0.0.1:%d", clientPort), path)
 		require.NoError(t, err)
 		require.Equal(t, http.StatusNotFound, code)
 		code, err = request(valid, fmt.Sprintf("http://127.0.0.1:%d", infoPort), path)

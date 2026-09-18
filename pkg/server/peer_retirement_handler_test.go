@@ -64,7 +64,7 @@ func retirementHandlerRequest(t *testing.T, url string, body io.Reader) *http.Re
 func TestPeerRetirementHandlerTLSAndOutcome(t *testing.T) {
 	auth, pool, certs, payload, _ := retirementHandlerFixture(t)
 	for _, h2 := range []bool{false, true} {
-		for _, mode := range []string{"success", "unauthorized", "malformed", "backend error", "canceled backend"} {
+		for _, mode := range []string{"success", "unauthorized", "malformed", "empty condition", "deployment probe", "backend error", "canceled backend"} {
 			t.Run(fmt.Sprintf("h2=%v/%s", h2, mode), func(t *testing.T) {
 				var calls atomic.Int32
 				h, err := newPeerRetirementHandler(auth, func(ctx context.Context, c election.OwnershipCondition) error {
@@ -98,7 +98,14 @@ func TestPeerRetirementHandlerTLSAndOutcome(t *testing.T) {
 				if mode == "malformed" {
 					body = []byte(`{}`)
 				}
-				res, err := client.Do(retirementHandlerRequest(t, srv.URL, bytes.NewReader(body)))
+				if mode == "empty condition" || mode == "deployment probe" {
+					body = nil
+				}
+				request := retirementHandlerRequest(t, srv.URL, bytes.NewReader(body))
+				if mode == "deployment probe" {
+					request.Header.Del("Content-Type")
+				}
+				res, err := client.Do(request)
 				require.NoError(t, err)
 				defer res.Body.Close()
 				want := http.StatusNoContent
@@ -106,7 +113,7 @@ func TestPeerRetirementHandlerTLSAndOutcome(t *testing.T) {
 				switch mode {
 				case "unauthorized":
 					want, wantCalls = http.StatusForbidden, 0
-				case "malformed":
+				case "malformed", "empty condition", "deployment probe":
 					want, wantCalls = http.StatusBadRequest, 0
 				case "backend error", "canceled backend":
 					want = http.StatusServiceUnavailable
