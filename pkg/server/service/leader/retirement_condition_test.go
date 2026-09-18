@@ -7,12 +7,23 @@ import (
 	"time"
 
 	"github.com/golang/mock/gomock"
+	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
+
+type retirementConstructorBackend struct {
+	backend.Backend
+	lock resourcelock.Interface
+}
+
+func (b *retirementConstructorBackend) GetResourceLock() resourcelock.Interface { return b.lock }
+func (*retirementConstructorBackend) InitializeLeadershipRevision(context.Context, uint64) error {
+	return nil
+}
 
 func TestRetiredConditionCannotFollowLaterAcquisition(t *testing.T) {
 	kv := memkv.NewKvStorage()
@@ -64,14 +75,13 @@ func TestCampaignPublishesCapturedConditionAfterReleaseAndCleanup(t *testing.T) 
 		available, cleaned, leading bool
 	}
 	observed := make(chan observation, 1)
-	l := &leaderElection{backend: &revisionRecorder{}, resourceLock: lock, metricCli: m,
-		leaseDuration: time.Second, renewDeadline: 200 * time.Millisecond, retryPeriod: 10 * time.Millisecond,
-		onStartedLeading: func(ctx context.Context) { close(started); <-ctx.Done() },
-		onStoppedLeading: func() { cleaned.Store(true) },
-	}
-	l.onTermRetired = func(_ context.Context, condition election.OwnershipCondition, available bool) {
-		observed <- observation{condition, available, cleaned.Load(), l.IsLeader()}
-	}
+	var l LeaderElection
+	l = NewLeaderElectionWithRetirement(&retirementConstructorBackend{lock: lock}, m, nil,
+		func(ctx context.Context) { close(started); <-ctx.Done() }, func() { cleaned.Store(true) },
+		Config{LeaseDuration: time.Second, RenewDeadline: 200 * time.Millisecond, RetryPeriod: 10 * time.Millisecond},
+		func(_ context.Context, condition election.OwnershipCondition, available bool) {
+			observed <- observation{condition, available, cleaned.Load(), l.IsLeader()}
+		})
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { defer close(done); l.Campaign(ctx) }()
 	defer func() {

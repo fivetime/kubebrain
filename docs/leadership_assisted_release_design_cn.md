@@ -545,3 +545,34 @@ Campaign/peer-only listener 接线仍未完成。没有集群部署或原门限�
 独立复查本次 owner 的容器、网络及两个测试二进制均不存在，日志保留。
 只运行了该套件 race 版本；这不是 TLS-to-TiKV 跨节点验收。远端 CI 仍验证
 此前 `7d8b1724`，不覆盖本轮本地作用域改动。
+
+## 构造期退位回调与隔离链路联调
+
+新增 `NewLeaderElectionWithRetirement`，在 Campaign 启动前一次性安装
+post-join 回调，不提供运行中可变 setter。原构造函数及默认行为保持不变。
+回调仍同步发生在旧 elector、初始化和清理结束之后、下一次选举之前，使用
+冻结条件；available=false 禁止请求，shutdown context 已取消时不发送。
+发送端新增此回调的适配器，不创建后台重试队列，也没有任何失败后重新激活
+旧任期的路径。构造器文档明确要求回调尊重取消并限制自身耗时。
+
+新的跨包测试使用真实 Campaign、mTLS HTTP/2、存储作用域 handler 和 memkv
+条件事务：旧 holder 已获领导权后，仅令其锁的 Get/Update 返回 unavailable，
+健康同伴仍可访问同一存储。旧任期退位并 join 初始化、清理后，回调确认
+IsLeader=false、freshness=false 且父 context 仍有效，再通过发送端触发
+同伴提交释放。最终共享记录 holder 为空，旧后端隔离仍存在。初始化后端
+由测试桩提供修订初始化，没有真实 lease service，所以不是租约连续性证明。
+
+测试持久租期 30 秒，但本地 RenewDeadline 为 200 毫秒、RetryPeriod 为 10
+毫秒，用于快速观察生命周期顺序；生产/测试集群参数完全未改。这不是原
+30 秒故障门限的验收。生产 NewServer 尚未调用新构造器，listener 尚未注册
+该路由，仍须完成显式配置、各 holder 独立证书及真实租约连续性验证。
+
+远端 `7d8b1724` 的后端集成 run `35316598627` 已成功，日志核对普通/race
+两次 `TestRealTiKVRetiredRelease` 及 PD/TiKV 中断清理通过。日志摘要为
+`ad5f3f4af13dc4e7b1d0698276c037c9138c2e8cbe95f903ebd8cd4c16aad3d2`。
+这只验证已推送的旧源码，不覆盖本地作用域和构造期接线。
+
+本地最终 server/leader/election race 五轮通过（59769，13.760/9.618/5.512
+秒），三个包 vet 与 diff 检查通过。缺少条件和 shutdown 取消的适配器路径
+亦确认没有发送请求。测试未创建集群资源或编译输出文件；本轮先本地提交，
+不推送取消仍在运行的旧源码镜像任务。

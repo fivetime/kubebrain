@@ -30,6 +30,17 @@ type peerRetirementSender struct {
 	budget           time.Duration
 }
 
+// onTermRetired is the adapter for the leader constructor's post-join callback.
+// Missing snapshots and shutdown cancellation fall back without any request;
+// an unconfirmed release likewise leaves the old term irreversibly retired.
+// There is deliberately no goroutine, retry queue or reactivation callback.
+func (s *peerRetirementSender) onTermRetired(ctx context.Context, condition election.OwnershipCondition, available bool) {
+	if !available {
+		return
+	}
+	_ = s.send(ctx, condition)
+}
+
 func newPeerRetirementSender(instance, holder string, endpoints []string, credentials *tls.Config, budget time.Duration) (*peerRetirementSender, error) {
 	invalid := errors.New("invalid peer retirement sender configuration")
 	validIdentity := func(s string) bool {

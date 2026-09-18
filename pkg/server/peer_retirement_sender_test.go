@@ -45,6 +45,11 @@ func TestPeerRetirementSenderToAuthenticatedHandler(t *testing.T) {
 			credentials := &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{certs[0]}}
 			sender, err := newPeerRetirementSender("instance", "old", []string{srv.URL}, credentials, time.Second)
 			require.NoError(t, err)
+			sender.onTermRetired(context.Background(), condition, false)
+			canceled, cancel := context.WithCancel(context.Background())
+			cancel()
+			sender.onTermRetired(canceled, condition, true)
+			require.Zero(t, calls.Load(), "missing snapshot or shutdown must not send")
 			require.NoError(t, sender.send(context.Background(), condition))
 			require.Equal(t, int32(1), calls.Load())
 			if h2 {
