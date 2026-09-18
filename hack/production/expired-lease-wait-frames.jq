@@ -1,8 +1,11 @@
 # jq -Rs --arg source IMAGE_GIT_SHA --arg source_file_sha256 FROZEN_LEASE_GO_SHA
 # Classifies candidate frames only. Caller must establish complete HTTP capture,
 # Pod/container identity and one original pending RPC; this cannot identify a lease.
+# Source approval is not image/CI admission; those are separate caller gates.
 def approved:
  {"02786d91ff406fe50d72e9baebdf2963b74b702c":
+   {line:1645,sha256:"3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"},
+  "da303fdbd460ee42f3aa158fac27c396faf6b58f":
    {line:1645,sha256:"3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"}};
 (approved[$source] // error("unapproved image source for wait-site classification")) as $binding |
 if $binding.sha256 != $source_file_sha256 then

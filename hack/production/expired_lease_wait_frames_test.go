@@ -1,11 +1,15 @@
 package production_test
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
-	"github.com/stretchr/testify/require"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestExpiredLeaseWaitFramesRequireReviewedSourceAndExactTopWaitSite(t *testing.T) {
@@ -18,6 +22,8 @@ func TestExpiredLeaseWaitFramesRequireReviewedSourceAndExactTopWaitSite(t *testi
 		fail                     bool
 	}{
 		{"matching", frame, source, hash, 1, false},
+		{"reviewed new source", frame, "da303fdbd460ee42f3aa158fac27c396faf6b58f", hash, 1, false},
+		{"new source wrong file", frame, "da303fdbd460ee42f3aa158fac27c396faf6b58f", strings.Repeat("b", 64), 0, true},
 		{"waiting duration", strings.Replace(frame, "[select]", "[select, 1 minutes]", 1), source, hash, 1, false},
 		{"unknown source", frame, strings.Repeat("a", 40), hash, 0, true},
 		{"wrong file", frame, source, strings.Repeat("b", 64), 0, true},
@@ -43,9 +49,22 @@ func TestExpiredLeaseWaitFramesRequireReviewedSourceAndExactTopWaitSite(t *testi
 			require.NoError(t, json.Unmarshal(output, &frames))
 			require.Len(t, frames, test.count)
 			for _, f := range frames {
-				require.Equal(t, source, f["source"])
+				require.Equal(t, test.sha, f["source"])
 				require.Equal(t, hash, f["source_file_sha256"])
 			}
 		})
 	}
+}
+
+// A product change must consciously re-review this classifier; passing synthetic
+// stack fixtures alone must not let the actual wait site silently drift.
+func TestExpiredLeaseWaitBindingMatchesCheckedOutSource(t *testing.T) {
+	data, err := os.ReadFile("../../pkg/server/etcd/lease.go")
+	require.NoError(t, err)
+	sum := sha256.Sum256(data)
+	require.Equal(t, "3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88", hex.EncodeToString(sum[:]))
+	lines := strings.Split(string(data), "\n")
+	require.Greater(t, len(lines), 1645)
+	require.Equal(t, "select {", strings.TrimSpace(lines[1644]))
+	require.Equal(t, "case <-revoked:", strings.TrimSpace(lines[1645]))
 }
