@@ -68,6 +68,26 @@ RenewDeadline、RetryPeriod 配置和原 30 秒验收门限均未修改。
 冻结工具源码与镜像源码，不能声称在跑的 CI 已测试这一后续工具变更。
 分类器绑定本身不批准镜像、Pod 身份、原 RPC 身份或现场故障验收。
 
+### 候选发布与预拉取结果（2026-09-18）
+
+上述候选的 image 35370904081、probe 35370904212、backend 35370925211
+已全部成功，完整源码 SHA 均一致；前文“仍在运行”为此前状态。
+发布日志中的 index 与重新读取的原始 index 字节摘要一致：
+
+- index：`sha256:f2cfb61dbe27956566245ebce1ba43df203c925d3fde545d2f9c9f1e6d360794`
+- amd64：`sha256:8b4e35654ed93bc4ce10ec3866721606515c5aa9002729fcf3aff56593c65a0f`
+- arm64：`sha256:fd9622c419557844f25b0fe0a4db5274579752fcdc6a78966b5df8261378f126`
+
+两个平台配置均绑定完整候选源码及非 root 用户。本机按 amd64 固定摘要、
+无网络只读容器执行 version，确认 TiKV、完整 Git SHA 和 linux/amd64。
+私有证据位于 `fault-2ad79751.N8nMZWbk/image-observation.6PBBBMDn`。
+
+三个 worker 的隔离预拉取与即时核验成功，临时 Job/Pod 随后按本轮
+UID 凭据清理并确认不存在（主流程与清理退出码均为 0）。证据目录为
+同一 owner 下 `prepull-execute.4X2llmj8`。原 StatefulSet 完整 spec/UID
+未变、3/3 Ready；没有部署候选镜像或注入故障。预拉取成功只证明当时
+镜像可用，不保证缓存永久保留，也不是后续部署的有效在场凭据。
+
 ## 隔离与恢复分阶段回归
 
 后续本地测试进一步保留原有隔离期间断言，再恢复旧入口的存储访问，
