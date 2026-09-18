@@ -498,3 +498,29 @@ Secret 未创建，禁止用它进行部署。没有修改集群配置、证书�
 通过（77.619s，执行 78607 终态 0），vet、Bash 语法及 diff 检查通过。
 第二阶段正向运行时、实际成员证书滚动与失败恢复仍需在执行器扩展并
 完成其回归测试后验证，不以本次离线或负向结果替代。
+
+## 第二阶段执行器实时读取与恢复回归
+
+执行器现接受显式 members 阶段，默认 roots 保持兼容。成员 Secret 名从
+已绑定摘要的收据取得，但其实际内容必须在 before、admitted、fresh、after、
+final 各阶段重新读 API；调用方夹带的 live_member_secret 字段会被实时
+结果覆盖，不能用历史快照冒充当前身份。计划器按 UID/RV/data 校验后才
+允许更新；恢复也保持原 phase，不把成员阶段错误降级为单 CA 恢复。
+
+roots 和 members 两阶段均覆盖成功、准入失败、已在目标状态时的准入失败、
+API 冲突、更新已应用但响应丢失、spec 漂移、rollout 失败/模拟超时和功能
+校验失败。成员阶段另测 Secret 在第一次读取或 server dry-run 后被重建，
+均拒绝持久化更新，即使收据保留一份看似正确的 live_member_secret。正常
+路径断言至少五次实际 Secret 读取；恢复成功断言精确回到双根共享证书
+spec，且不能等于原单 CA baseline。外部 spec 漂移仍不覆盖、不强删 Pod。
+
+模拟命令、目录、环境和子进程完全隔离的场景现并行运行，未删减断言或
+放宽原超时。定向两阶段执行器 race 测试通过（18.722s）；这仍是模拟执行，
+不证明真实 kubelet、成员证书或故障可用性已验收。现场第二阶段尚未执行，
+需要新建真实不可变 Secret、绑定新 UID 收据，并按 roots/expand → members/
+expand → members/restore → roots/restore 顺序验证和恢复。
+
+最终完整 `go test -race -count=1 -timeout=2m ./deploy/test-cluster` 通过
+（44.449s，执行 65692 终态 0），vet、Bash 语法与 diff 检查通过。上一版
+02786d91 的 image run 35337650967 已终态 success，probe 也已成功，后续
+推送不会取消仍在运行的这两项构建。该 CI 不包含本次执行器扩展。

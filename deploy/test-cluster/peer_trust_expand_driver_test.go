@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -30,6 +31,10 @@ case "$1" in
    sts) cat "$FIXTURE/current.json";;
    secret)
     if [[ $3 == kubebrain-local-peer-tls ]]; then jq '.original_secret' "$FIXTURE/receipt.json"
+    elif [[ $3 == peer-members-dual-test ]]; then
+     if [[ $SCENARIO == member-secret-drift || ( $SCENARIO == member-secret-after-dry-run && -f "$FIXTURE/dry-ran" ) ]]; then
+      jq '.member_secret|.metadata.uid="recreated"' "$FIXTURE/receipt.json"
+     else jq '.member_secret' "$FIXTURE/receipt.json"; fi
     else jq '.expanded_secret' "$FIXTURE/receipt.json"; fi;;
    pvc|pv) echo '{"items":[]}' ;;
    pods) jq '{items:[range(0;3) as $i | {
@@ -43,7 +48,7 @@ case "$1" in
   for arg in "$@"; do
    case "$arg" in --patch-file=*) patch=${arg#*=};; --dry-run=server) dry=true;; esac
   done
-  if [[ $dry == true ]]; then cat "$FIXTURE/current.json"; exit 0; fi
+  if [[ $dry == true ]]; then touch "$FIXTURE/dry-ran"; cat "$FIXTURE/current.json"; exit 0; fi
   if [[ $SCENARIO == conflict && ! -f "$FIXTURE/conflicted" ]]; then touch "$FIXTURE/conflicted"; exit 1; fi
   if [[ $SCENARIO == drift && ! -f "$FIXTURE/drifted" ]]; then
    touch "$FIXTURE/drifted"
@@ -60,7 +65,7 @@ case "$1" in
   if [[ $SCENARIO == lost-response && ! -f "$FIXTURE/response-lost" ]]; then touch "$FIXTURE/response-lost"; exit 124; fi
   cat "$FIXTURE/current.json";;
  rollout)
-  expanded=$(jq -r 'any(.spec.template.spec.volumes[];.name=="peer-tls" and .secret.secretName=="peer-old-dual-test")' "$FIXTURE/current.json")
+  expanded=$(jq -r --slurpfile receipt "$FIXTURE/receipt.json" '($receipt[0]|if .phase=="members" then .member_secret.metadata.name else .expanded_secret.metadata.name end) as $target | any(.spec.template.spec.volumes[];.name=="peer-tls" and .secret.secretName==$target)' "$FIXTURE/current.json")
   if [[ $SCENARIO == rollout-failure && $expanded == true ]]; then exit 1; fi
   if [[ $SCENARIO == rollout-timeout && $expanded == true ]]; then exit 124; fi
   ;;
@@ -69,8 +74,21 @@ esac
 `
 
 func TestPeerTrustExpansionDriverRecovery(t *testing.T) {
-	for _, scenario := range []string{"success", "preflight-failure", "resumed-preflight-failure", "conflict", "lost-response", "drift", "rollout-failure", "rollout-timeout", "verify-failure"} {
+	testPeerTrustDriverRecovery(t, false)
+}
+
+func TestPeerTrustMembersDriverRecovery(t *testing.T) {
+	testPeerTrustDriverRecovery(t, true)
+}
+
+func testPeerTrustDriverRecovery(t *testing.T, members bool) {
+	scenarios := []string{"success", "preflight-failure", "resumed-preflight-failure", "conflict", "lost-response", "drift", "rollout-failure", "rollout-timeout", "verify-failure"}
+	if members {
+		scenarios = append(scenarios, "member-secret-drift", "member-secret-after-dry-run")
+	}
+	for _, scenario := range scenarios {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel() // Each case has isolated mock commands, state and child env.
 			dir := t.TempDir()
 			write := func(name, content string, mode os.FileMode) string {
 				t.Helper()
@@ -79,6 +97,9 @@ func TestPeerTrustExpansionDriverRecovery(t *testing.T) {
 				return path
 			}
 			in := trustPlanInput(t)
+			if members {
+				in = memberTrustInput(t)
+			}
 			data, err := json.Marshal(in)
 			require.NoError(t, err)
 			receipt := write("receipt.json", string(data), 0600)
@@ -130,9 +151,13 @@ if [[ $SCENARIO == verify-failure && $1 == expand && $2 == after ]]; then exit 1
 			require.NoError(t, json.Unmarshal(after, &object))
 			switch scenario {
 			case "success":
-				require.Contains(t, string(after), "peer-old-dual-test")
+				if members {
+					require.Contains(t, string(after), "peer-members-dual-test")
+				} else {
+					require.Contains(t, string(after), "peer-old-dual-test")
+				}
 				require.NoFileExists(t, filepath.Join(out, "recovery-exit-code"))
-			case "preflight-failure":
+			case "preflight-failure", "member-secret-drift", "member-secret-after-dry-run":
 				require.Equal(t, in["current"], object)
 				require.NoFileExists(t, filepath.Join(out, "recovery-exit-code"))
 			case "drift":
@@ -142,6 +167,9 @@ if [[ $SCENARIO == verify-failure && $1 == expand && $2 == after ]]; then exit 1
 				require.NotEqual(t, "0\n", string(recovery))
 			default:
 				require.Equal(t, in["current"], object, "recovery must return exact original spec without declaring expansion success")
+				if members {
+					require.NotEqual(t, trustMap(in, "baseline")["spec"], object["spec"], "member recovery must retain dual roots")
+				}
 				recovery, err := os.ReadFile(filepath.Join(out, "recovery-exit-code"))
 				require.NoError(t, err)
 				require.Equal(t, "0\n", string(recovery))
@@ -150,6 +178,16 @@ if [[ $SCENARIO == verify-failure && $1 == expand && $2 == after ]]; then exit 1
 			require.NoError(t, err)
 			require.NotContains(t, string(calls), " delete ")
 			require.NotContains(t, string(calls), " create ")
+			if members && scenario == "success" {
+				require.GreaterOrEqual(t, strings.Count(string(calls), "get secret peer-members-dual-test "), 5, "refresh member Secret in every captured phase")
+			}
+			if strings.HasPrefix(scenario, "member-secret-") {
+				for _, call := range strings.Split(string(calls), "\n") {
+					if strings.Contains(call, " patch sts ") {
+						require.Contains(t, call, "--dry-run=server", "Secret drift must prevent persisted writes")
+					}
+				}
+			}
 			info, err := os.Stat(filepath.Join(out, "receipt.json"))
 			require.NoError(t, err)
 			require.Equal(t, os.FileMode(0600), info.Mode().Perm())
@@ -163,9 +201,10 @@ if [[ $SCENARIO == verify-failure && $1 == expand && $2 == after ]]; then exit 1
 	}
 }
 
-func TestPeerTrustRootsDriverRejectsMemberPhaseBeforeAPIAccess(t *testing.T) {
+func TestPeerTrustDriverRejectsUnknownPhaseBeforeAPIAccess(t *testing.T) {
 	dir := t.TempDir()
 	in := memberTrustInput(t)
+	in["phase"] = "unknown"
 	data, err := json.Marshal(in)
 	require.NoError(t, err)
 	receipt := filepath.Join(dir, "receipt.json")
