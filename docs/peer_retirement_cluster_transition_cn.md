@@ -221,3 +221,53 @@ manifest 中 `&&` 的 JSON 编码与 json-patch v4 标量比较不兼容；已�
 namespace/Secret 读取与 StatefulSet 更新不是跨对象原子事务；调用方仍须
 在写入前复核，限制外部变更、处理删除/重建和 rollout 失败，并验证运行
 Pod 实际材料。这个计划器及离线测试本身不构成有界执行器或迁移完成证明。
+
+## 第一阶段有界驱动与失败恢复
+
+`deploy/test-cluster/run-peer-trust-expand.sh` 将上述计划器接入专用集群操作，
+目前仅完成模拟场景验证，**尚未在集群执行**。它不创建 Secret、不删除卷，
+也不进入独立新叶证书或实验功能阶段。入口必须显式给出：
+
+```text
+bash deploy/test-cluster/run-peer-trust-expand.sh --execute \
+  expand|restore RECEIPT SHA256 NEW_OUTPUT_DIR KUBECONFIG CONTEXT VERIFIER
+```
+
+receipt 为计划器格式的已审核快照，内含敏感 Secret data；必须在仓库外受限
+目录准备，并绑定其 SHA-256。驱动拒绝重用输出目录，在其中以 0600 保存
+输入、驱动、计划器和校验脚本副本。每次尝试记录 exit-code，失败恢复另记
+recovery-exit-code；恢复成功不将原失败改成成功。
+
+读 API 和 patch 分别有 20 秒进程超时、15 秒请求超时；rollout 有 300 秒
+等待及 310 秒外层超时；校验脚本有 120 秒超时。驱动在 preflight、server
+dry-run 后重新读取 namespace、STS 和两个 Secret，通过计划器取得新的
+并发前置条件后才更新。前后均保存 Pod/PVC/PV 身份。rollout 后要求目标
+spec、三个 Ready/current 副本、Pod owner/revision、peer 卷、容器 image/
+args/mounts 匹配；功能校验后再检查配置与本实例 Pod 身份和状态未变。
+
+VERIFIER 必须是事前审核的独立 Bash 文件，接受五个位置参数：MODE、
+PHASE（preflight/after）、本次 EVIDENCE、KUBECONFIG、CONTEXT。它负责真实
+证书链/用途/有效期及收据审核，after 还须验证实际挂载材料和三成员正常
+读写。恢复 preflight 不得要求失败实例本身已 Ready，以免阻断回退。
+模拟测试中的空操作校验脚本仅为测试替身，禁止拿来做现场准入。
+
+扩展更新结果不确定、rollout 失败、超时或运行后校验失败时，驱动不重试
+扩展，而是在新 recovery 目录中读取当前身份，尝试一次受同样保护的恢复。
+发现外部 spec 漂移则拒绝覆盖并报告人工复核；恢复模式不会再次递归恢复。
+已处于第一阶段目标 spec 的恢复执行也必须做运行后校验，不能把空 patch
+当作恢复成功。驱动不会强删未就绪 Pod 来处理 StatefulSet 强制回退问题；
+若控制器未能自动回滚，在有界等待后保留失败证据，需按具体 Pod UID 另行
+审核处置，不盲删 Pod 或卷。
+
+模拟命令测试覆盖成功、写入前拒绝、已扩展实例准入失败、API 冲突、外部
+spec 漂移、更新已应用但响应丢失、rollout 失败/模拟超时和功能校验失败，验证恢复后的精确原 spec、
+原失败状态保留、漂移不覆盖、文件权限及同一尝试不可重跑。这些不是实际
+API 故障注入、kubelet/证书迁移或 30 秒服务恢复验收。现场仍需准备并审核
+具体 VERIFIER、Secret 实际创建收据、卷保护集合及实验后的精确清理流程。
+
+最终版本本地 `go test -race -count=1 -timeout=2m ./deploy/test-cluster`
+通过（52.499s，执行 24943 终态 0），`go vet ./deploy/test-cluster`、Bash
+语法与 diff 检查通过。未执行现场驱动，实例仍为原 generation 38。远端
+`dcca4197` 的 probe run 35334686727 已报告 success，image run 35334686689
+仍在 Verify published test image 阶段；不将这些旧源码 CI 状态视为本驱动
+的 CI 验证，也不在其运行期间推送取消构建。
