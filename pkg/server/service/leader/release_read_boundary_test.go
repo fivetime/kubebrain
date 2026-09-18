@@ -42,18 +42,23 @@ func (l *releaseReadBoundaryLock) Get(ctx context.Context) (*resourcelock.Leader
 // a backend read even after local cancellation. It does not reproduce TiKV or
 // prove the cause of any particular cluster failover.
 func TestCampaignReleaseReadDelaysRetirementBoundary(t *testing.T) {
+	t.Run("shutdown", func(t *testing.T) { testReleaseReadBoundary(t, true) })
+	t.Run("renewal_failure", func(t *testing.T) { testReleaseReadBoundary(t, false) })
+}
+
+func testReleaseReadBoundary(t *testing.T, shutdown bool) {
 	m := metricmock.NewMockMetrics(gomock.NewController(t))
 	m.EXPECT().EmitCounter(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
 	m.EXPECT().EmitGauge(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
 	lock := &releaseReadBoundaryLock{entered: make(chan context.Context, 1), resume: make(chan struct{})}
 	started, cleaned, retired, done := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), campaignContextMarker{}, true))
 	l := &leaderElection{backend: &revisionRecorder{}, resourceLock: lock, metricCli: m,
-		leaseDuration: 3 * time.Second, renewDeadline: time.Second, retryPeriod: 10 * time.Millisecond,
+		leaseDuration: time.Second, renewDeadline: 200 * time.Millisecond, retryPeriod: 10 * time.Millisecond,
 		onStartedLeading: func(ctx context.Context) { close(started); <-ctx.Done() },
 		onStoppedLeading: func() { close(cleaned) },
-		onTermRetired:    func(context.Context, election.OwnershipCondition, bool) { close(retired) },
+		onTermRetired:    func(context.Context, election.OwnershipCondition, bool) { close(retired); cancel() },
 	}
-	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), campaignContextMarker{}, true))
 	var once sync.Once
 	resume := func() { once.Do(func() { close(lock.resume) }) }
 	await := func(ch <-chan struct{}) {
@@ -67,10 +72,19 @@ func TestCampaignReleaseReadDelaysRetirementBoundary(t *testing.T) {
 	go func() { defer close(done); l.Campaign(ctx) }()
 	defer func() { cancel(); resume(); await(done) }()
 	await(started)
-	cancel()
+	if shutdown {
+		cancel()
+	} else {
+		lock.failUpdates.Store(true)
+	}
 	select {
 	case releaseCtx := <-lock.entered:
 		require.NoError(t, releaseCtx.Err(), "release read does not inherit campaign cancellation")
+		if !shutdown {
+			require.NoError(t, ctx.Err(), "renewal failure must not be simulated by shutdown")
+			_, fresh := l.EpochAndLeadingFresh()
+			require.False(t, fresh, "backend renewal failure must already fence local writes")
+		}
 		_, bounded := releaseCtx.Deadline()
 		require.True(t, bounded)
 	case <-time.After(3 * time.Second):

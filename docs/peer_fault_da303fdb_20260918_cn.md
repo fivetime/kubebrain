@@ -125,6 +125,12 @@ peer 退任回调均尚未执行；解除读取阻塞后两者才完成。此测
 同一工作树的 `go test -race -count=1 ./pkg/server/service/leader` 整包通过
 （2.878 秒）。
 
+随后将该测试扩展为 shutdown 与 renewal_failure 两种入口。后者只让锁
+续约失败，不取消 Campaign；在释放读取被阻塞时，Campaign 上下文仍有效，
+`EpochAndLeadingFresh` 已为 false，而清理/peer 通知尚未到达。两种入口
+共同在 `-race -count=20` 下通过（5.386 秒），证实此路径也适用于续约失败，
+而不只是正常退出。它仍不是 TiKV 断网时长的现场证明。
+
 现场 RenewDeadline 为 25 秒，所以不能忽略这条独立读取路径；但不能
 把配置上限写成已测得的额外 25 秒。后续修复若调整释放顺序，必须保留
 先停止本任期工作、join 初始化及清理、再允许可信 peer 释放精确旧任期
