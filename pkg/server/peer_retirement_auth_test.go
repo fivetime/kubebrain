@@ -19,13 +19,18 @@ import (
 )
 
 func retirementTestCertificates(t *testing.T) (*x509.CertPool, []tls.Certificate) {
+	pool, certificates, _, _ := retirementTestCertificatesAndIssuer(t)
+	return pool, certificates
+}
+
+func retirementTestCertificatesAndIssuer(t *testing.T) (*x509.CertPool, []tls.Certificate, *x509.Certificate, ed25519.PrivateKey) {
 	t.Helper()
 	now := time.Now()
 	pub, private, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	root := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test-ca"},
 		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour), IsCA: true, BasicConstraintsValid: true,
-		KeyUsage: x509.KeyUsageCertSign}
+		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageCRLSign}
 	der, err := x509.CreateCertificate(rand.Reader, root, root, pub, private)
 	require.NoError(t, err)
 	root, err = x509.ParseCertificate(der)
@@ -47,7 +52,7 @@ func retirementTestCertificates(t *testing.T) (*x509.CertPool, []tls.Certificate
 		require.NoError(t, err)
 		certificates = append(certificates, tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf})
 	}
-	return pool, certificates
+	return pool, certificates, root, private
 }
 
 func retirementTestPin(cert tls.Certificate) string {
