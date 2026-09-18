@@ -7,6 +7,7 @@ name: Rollout probe regression
       - 'hack/production/cmd/rollout-availability-probe/**'
       - 'hack/production/cmd/pod-log-capture/**'
       - 'hack/production/cmd/lease-term-probe/**'
+      - 'hack/production/cmd/info-diagnostic-probe/**'
       - 'hack/production/cmd/peer-retirement-scope/**'
       - 'hack/production/cmd/peer-retirement-test-pki/**'
       - 'hack/production/internal/**'
@@ -128,6 +129,11 @@ jobs:
           set -euo pipefail
           go vet ./hack/production/cmd/lease-term-probe
           go test -race -count=1 -timeout=2m -v ./hack/production/cmd/lease-term-probe
+      - name: Verify bounded authenticated info diagnostics
+        run: |
+          set -euo pipefail
+          go vet ./hack/production/cmd/info-diagnostic-probe
+          go test -race -count=1 -timeout=2m -v ./hack/production/cmd/info-diagnostic-probe
       - name: Race test all probe regressions
         run: |
           set -euo pipefail
