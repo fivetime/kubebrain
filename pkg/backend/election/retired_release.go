@@ -85,15 +85,9 @@ func (r *resourceLock) ownershipSnapshot() (retiredOwnership, bool) {
 // of the old holder. A replay fails its original preconditions without changing
 // newer ownership; it is not reported as an independently confirmed success.
 func (r *resourceLock) releaseRetiredOwnership(parent context.Context, claim retiredOwnership) error {
-	if claim.holder == "" || len(claim.record) == 0 || len(claim.record) > 64<<10 || len(claim.token) != 36 {
-		return errors.New("invalid retired ownership preconditions")
-	}
-	if _, err := uuid.ParseBytes(claim.token); err != nil {
-		return errors.New("invalid retired ownership token")
-	}
-	record, err := decodeLeaderElectionRecord(claim.record)
-	if err != nil || record.HolderIdentity != claim.holder || record.LeaderTransitions < 0 || record.LeaseDurationSeconds <= 0 {
-		return errors.New("invalid retired ownership record")
+	record, err := validateRetiredOwnership(claim)
+	if err != nil {
+		return err
 	}
 	now := metav1.NewTime(time.Now())
 	record.HolderIdentity = ""
@@ -122,4 +116,18 @@ func (r *resourceLock) releaseRetiredOwnership(parent context.Context, claim ret
 		batch.CAS(key, retiredToken, claim.token, 0)
 	}
 	return batch.Commit(ctx)
+}
+
+func validateRetiredOwnership(claim retiredOwnership) (resourcelock.LeaderElectionRecord, error) {
+	if claim.holder == "" || len(claim.record) == 0 || len(claim.record) > 64<<10 || len(claim.token) != 36 {
+		return resourcelock.LeaderElectionRecord{}, errors.New("invalid retired ownership preconditions")
+	}
+	if _, err := uuid.ParseBytes(claim.token); err != nil {
+		return resourcelock.LeaderElectionRecord{}, errors.New("invalid retired ownership token")
+	}
+	record, err := decodeLeaderElectionRecord(claim.record)
+	if err != nil || record.HolderIdentity != claim.holder || record.LeaderTransitions < 0 || record.LeaseDurationSeconds <= 0 {
+		return resourcelock.LeaderElectionRecord{}, errors.New("invalid retired ownership record")
+	}
+	return record, nil
 }
