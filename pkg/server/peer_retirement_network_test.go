@@ -323,7 +323,8 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 			require.NotNil(t, got.response.Header)
 			require.Equal(t, value.Header.ClusterId, got.response.Header.ClusterId)
 			require.Equal(t, ack.Header.MemberId, got.response.Header.MemberId, "public header identifies the original ingress member, even when forwarded")
-			require.GreaterOrEqual(t, got.response.Header.RaftTerm, ack.Header.RaftTerm)
+			require.GreaterOrEqual(t, got.response.Header.RaftTerm, value.Header.RaftTerm,
+				"isolated ingress must retain the verified successor term, not merely the old term")
 			require.Positive(t, peerRenewals[1].Load(), "successor peer must actually consume the forwarded renewal")
 			require.True(t, oldStore.failed.Load())
 			// Keep the original stream alive beyond the two-second routing hint
@@ -345,6 +346,9 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 				require.NoError(t, err)
 				require.Equal(t, grant.ID, response.ID)
 				require.Positive(t, response.TTL, "hint expiry must not lose the short lease")
+				require.NotNil(t, response.Header)
+				require.GreaterOrEqual(t, response.Header.RaftTerm, value.Header.RaftTerm,
+					"successor term must survive routing hint revalidation on the original stream")
 				continued++
 			}
 			require.Equal(t, int32(1), streamCount.Load())
