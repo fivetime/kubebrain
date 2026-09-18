@@ -144,31 +144,76 @@ func TestDisabledProfileRequires404ForBothIdentities(t *testing.T) {
 	require.EqualValues(t, 4, calls.Load())
 }
 
-func TestProbeRejectsUnsafeOrIncompleteResponses(t *testing.T) {
-	for _, scenario := range []string{"unprotected", "spoof-alert", "redirect", "oversize", "truncated", "wrong-pin", "wrong-name", "canceled"} {
-		t.Run(scenario, func(t *testing.T) {
-			auth := tls.RequireAndVerifyClientCert
-			if scenario == "unprotected" || scenario == "spoof-alert" {
-				auth = tls.NoClientCert
+// An intentionally isolated member may fail readiness while its info listener
+// remains healthy. Fault-time capture must not require backend availability;
+// rollout verification must continue to require it.
+func TestFaultStackCaptureDoesNotRequireReadiness(t *testing.T) {
+	for _, mode := range []string{"protected", "disabled", "protected-stack"} {
+		t.Run(mode, func(t *testing.T) {
+			var calls, ready atomic.Int32
+			base := handler(t, "protected", &calls)
+			c := fixture(t, tls.RequireAndVerifyClientCert, tls.VersionTLS13, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/ready" {
+					ready.Add(1)
+					http.Error(w, "backend isolated", http.StatusServiceUnavailable)
+					return
+				}
+				base.ServeHTTP(w, r)
+			}))
+			c.mode = mode
+			if mode == "disabled" {
+				c.stackOutput, c.anonymousEndpoint = "", ""
 			}
-			var calls atomic.Int32
-			c := fixture(t, auth, tls.VersionTLS13, handler(t, scenario, &calls))
-			if scenario == "wrong-pin" {
-				c.serverPin = strings.Repeat("0", 64)
+			var result bytes.Buffer
+			err := run(c, &result)
+			if mode != "protected-stack" {
+				require.ErrorContains(t, err, "authenticated /ready")
+				require.EqualValues(t, 1, ready.Load())
+				require.Empty(t, result.String())
+				return
 			}
-			if scenario == "wrong-name" {
-				c.serverName = "other.test"
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			if scenario == "canceled" {
-				cancel()
-			}
-			_, err := probe(ctx, c)
-			require.Error(t, err)
-			require.NoFileExists(t, c.stackOutput)
-			require.LessOrEqual(t, calls.Load(), int32(3), "no redirects or retries")
+			require.NoError(t, err)
+			require.Zero(t, ready.Load())
+			require.EqualValues(t, 2, calls.Load(), "ping and stack only; anonymous TLS cannot reach HTTP")
+			body, err := os.ReadFile(c.stackOutput)
+			require.NoError(t, err)
+			require.Equal(t, sampleStack, string(body))
+			var summary map[string]any
+			require.NoError(t, json.Unmarshal(result.Bytes(), &summary))
+			require.Equal(t, false, summary["readiness_checked"])
+			require.Equal(t, false, summary["fault_acceptance_proven"])
 		})
+	}
+}
+
+func TestProbeRejectsUnsafeOrIncompleteResponses(t *testing.T) {
+	for _, mode := range []string{"protected", "protected-stack"} {
+		for _, scenario := range []string{"unprotected", "spoof-alert", "redirect", "oversize", "truncated", "wrong-pin", "wrong-name", "canceled"} {
+			t.Run(mode+"/"+scenario, func(t *testing.T) {
+				auth := tls.RequireAndVerifyClientCert
+				if scenario == "unprotected" || scenario == "spoof-alert" {
+					auth = tls.NoClientCert
+				}
+				var calls atomic.Int32
+				c := fixture(t, auth, tls.VersionTLS13, handler(t, scenario, &calls))
+				c.mode = mode
+				if scenario == "wrong-pin" {
+					c.serverPin = strings.Repeat("0", 64)
+				}
+				if scenario == "wrong-name" {
+					c.serverName = "other.test"
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if scenario == "canceled" {
+					cancel()
+				}
+				_, err := probe(ctx, c)
+				require.Error(t, err)
+				require.NoFileExists(t, c.stackOutput)
+				require.LessOrEqual(t, calls.Load(), int32(3), "no redirects or retries")
+			})
+		}
 	}
 }
 

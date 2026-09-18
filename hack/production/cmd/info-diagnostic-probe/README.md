@@ -10,7 +10,7 @@ CA material, client keys, stack dumps and experiment receipts stay outside Git.
 
 Required flags: `--endpoint https://127.0.0.1:PORT`, `--server-name INFO_DNS`,
 `--server-spki-sha256 HEX`, `--cacert CA_FILE`, `--cert CLIENT_CERT`,
-`--key CLIENT_KEY`, and `--mode protected|disabled`.
+`--key CLIENT_KEY`, and `--mode protected|protected-stack|disabled`.
 
 - `protected` requires `--stack-output NEW_FILE` and `--anonymous-endpoint
   https://127.0.0.1:OTHER_PORT`, a separate tunnel to the **same** admitted Pod.
@@ -23,6 +23,14 @@ Required flags: `--endpoint https://127.0.0.1:PORT`, `--server-name INFO_DNS`,
   server chain/name/SPKI verification, an observed client-certificate request,
   and a remote TLS alert after an empty certificate. Timeout, EOF, refusal, HTTP
   error text, untrusted server and bad pin do not satisfy this check.
+- `protected-stack` is exclusively for fault-time observation when the admitted
+  member may be unready. It has the same stack output, independent tunnel, TLS,
+  `/ping`, anonymous rejection and bounded capture requirements as `protected`,
+  but does not call `/ready`. Its summary explicitly reports
+  `readiness_checked=false`. Do not use this mode for rollout admission or
+  restoration verification: those continue to require `/ready`. The caller must
+  bound the entire capture by the remaining original fault deadline; the probe's
+  25-second ceiling does not grant a new acceptance window.
 - `disabled` requires **no** stack-output and expects profile 404 for both the
   authenticated-capable and anonymous clients. This matches the original test
   baseline with pprof off and no info client-auth requirement, not every possible
@@ -40,7 +48,8 @@ the fault runner's responsibility.
 Stack output is exclusive-create, mode 0600, and never overwrites an existing
 file or symlink. A partial write/close failure returns nonzero and must not be
 treated as accepted evidence. Successful stdout JSON contains timestamps, stack
-length/hash and explicit `pod_identity_proven=false` / `fault_acceptance_proven=false`.
+length/hash, `readiness_checked`, and explicit
+`pod_identity_proven=false` / `fault_acceptance_proven=false`.
 The caller must also retain stderr and process exit status on failures.
 
 The real TLS socket tests cover TLS 1.2/1.3 with a verifying client CA, disabled

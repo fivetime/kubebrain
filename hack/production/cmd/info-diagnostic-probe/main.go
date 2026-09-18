@@ -30,6 +30,10 @@ type config struct {
 	endpoint, anonymousEndpoint, serverName, serverPin, ca, cert, key, mode, stackOutput string
 }
 
+func (c config) capturesStack() bool {
+	return c.mode == "protected" || c.mode == "protected-stack"
+}
+
 func validateOrigin(endpoint string) error {
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Scheme != "https" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" || u.Port() == "" {
@@ -45,7 +49,7 @@ func (c config) validate() error {
 	if err := validateOrigin(c.endpoint); err != nil {
 		return err
 	}
-	if c.mode == "protected" {
+	if c.capturesStack() {
 		if err := validateOrigin(c.anonymousEndpoint); err != nil {
 			return fmt.Errorf("anonymous endpoint: %w", err)
 		}
@@ -53,7 +57,7 @@ func (c config) validate() error {
 			return errors.New("protected mode requires an independent anonymous tunnel")
 		}
 	} else if c.anonymousEndpoint != "" {
-		return errors.New("anonymous-endpoint is only used in protected mode")
+		return errors.New("anonymous-endpoint is only used in protected capture modes")
 	}
 	if c.serverName == "" || strings.ContainsAny(c.serverName, " /\r\n\x00") {
 		return errors.New("explicit TLS server name required")
@@ -61,11 +65,11 @@ func (c config) validate() error {
 	if pin, err := hex.DecodeString(c.serverPin); err != nil || len(pin) != sha256.Size {
 		return errors.New("server pin must be SHA-256 SPKI hex")
 	}
-	if c.mode != "protected" && c.mode != "disabled" {
-		return errors.New("mode must be protected or disabled")
+	if !c.capturesStack() && c.mode != "disabled" {
+		return errors.New("mode must be protected, protected-stack or disabled")
 	}
-	if (c.mode == "protected") != (c.stackOutput != "") {
-		return errors.New("stack-output required only in protected mode")
+	if c.capturesStack() != (c.stackOutput != "") {
+		return errors.New("stack-output required only in protected capture modes")
 	}
 	return nil
 }
@@ -155,7 +159,13 @@ func probe(ctx context.Context, c config) ([]byte, error) {
 		return nil, err
 	}
 	defer good.CloseIdleConnections()
-	for _, path := range []string{"/ping", "/ready"} {
+	paths := []string{"/ping", "/ready"}
+	if c.mode == "protected-stack" {
+		// The caller intentionally isolates backend access during fault tests.
+		// Capture listener evidence without asserting application readiness.
+		paths = []string{"/ping"}
+	}
+	for _, path := range paths {
 		if _, err := request(ctx, good, c.endpoint, path, http.StatusOK, 4096); err != nil {
 			return nil, fmt.Errorf("authenticated %s: %w", path, err)
 		}
@@ -166,11 +176,11 @@ func probe(ctx context.Context, c config) ([]byte, error) {
 	}
 	defer anonymous.CloseIdleConnections()
 	anonymousEndpoint := c.endpoint
-	if c.mode == "protected" {
+	if c.capturesStack() {
 		anonymousEndpoint = c.anonymousEndpoint
 	}
 	_, err = request(ctx, anonymous, anonymousEndpoint, stackPath, http.StatusNotFound, 4096)
-	if c.mode == "protected" {
+	if c.capturesStack() {
 		// Connection refusal, timeout, EOF and local trust failures are not
 		// authentication proof. Require a verified server, its certificate
 		// request and its TLS alert after we supplied an empty certificate.
@@ -215,7 +225,7 @@ func run(c config, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if c.mode == "protected" {
+	if c.capturesStack() {
 		if err := saveStack(c.stackOutput, body); err != nil {
 			return err
 		}
@@ -226,6 +236,7 @@ func run(c config, output io.Writer) error {
 		"started": started, "completed": time.Now().UTC(),
 		"stack_bytes": len(body), "stack_sha256": hex.EncodeToString(sum[:]),
 		"pod_identity_proven": false, "fault_acceptance_proven": false,
+		"readiness_checked": c.mode != "protected-stack",
 	})
 }
 
@@ -238,8 +249,8 @@ func main() {
 	flag.StringVar(&c.ca, "cacert", "", "server CA PEM file")
 	flag.StringVar(&c.cert, "cert", "", "client certificate PEM file")
 	flag.StringVar(&c.key, "key", "", "client private key PEM file")
-	flag.StringVar(&c.mode, "mode", "", "protected or disabled")
-	flag.StringVar(&c.stackOutput, "stack-output", "", "new private stack file (protected only)")
+	flag.StringVar(&c.mode, "mode", "", "protected, protected-stack (fault-time capture without readiness), or disabled")
+	flag.StringVar(&c.stackOutput, "stack-output", "", "new private stack file (protected capture modes only)")
 	flag.Parse()
 	if flag.NArg() != 0 {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
