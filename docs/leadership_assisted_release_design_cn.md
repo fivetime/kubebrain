@@ -1476,3 +1476,34 @@ etcdproxy 5.458 秒、cmd/option 1.236 秒；相关 vet/diff 通过，执行链�
 另 cmd/build 普通单轮测试通过（41725，0.911/1.500 秒）。旧 CI 已终结，
 本轮修复提交后将累计本地提交推送 dbaas，让新 CI 验证包含 endpoint 步骤
 的完整新版本；这些本地通过记录不预先证明新 CI 或集群验收成功。
+
+## 出站证书轮换期间保持原公共 LeaseKeepAlive 流
+
+扩展 TestExperimentalEndpointPairReloadsProjectedClientCertificate：只在 leader
+端使用 750ms connection age / 250ms grace 促成 peer 重连，不给 follower
+的公共入口设置连接老化。原来两端都老化的设置会同时触发公共客户端重连，
+不适合证明原公共流持续可用。这仍是测试用传输配置，不改集群选举参数或
+原 30 秒验收门限。
+
+通过独立 grpc.NewClient 和生成的 LeaseClient 建立且只建立一次公共
+LeaseKeepAlive stream，不安装 clientv3 的 stream retry interceptor。
+三秒租约先完成一次续租，然后原子切换 follower 的出站 cert/key 投影目录，
+等待 leader 实际校验到新证书 serial 299；继续使用原 stream，每秒续租，
+持续超过原始 TTL，检查响应 ID 一致和 TTL 正值。还通过该租约绑定一个键，
+持续续租后从 leader 检查键和租约 ID，最后 Revoke 并检查关联键删除。
+
+首轮未加关联键检查的 race 通过（81910，14.786 秒）。这里保留的是公共
+客户端流；现有代理每条续租消息各建一个有界内部流，并非证明同一条内部
+gRPC 流跨连接关闭存活。本项也没有模拟某个续租请求在轮换瞬间已阻塞于
+远端，因此不代替 pending-request 故障、撤销旧 key/CA、真实 TiKV 故障或
+原 30 秒门限。固定身份映射预授权新 key，没有放宽 TLS/pin 校验。
+
+远端 c7e2e0a9 的 image 35331815217、probe 35331815236 已从 queued 转为
+in_progress，分别处于 Go security checks setup、Go setup；本轮没有重复
+触发或推送来取消它们。尚未部署本轮代码。
+
+带关联键检查的定向三轮 race 通过（8238，42.434 秒），随后 endpoint 与
+etcdproxy 全包单轮 race 通过（68.088/5.453 秒），vet/diff 通过，执行链
+终态 0。最后补充显式断言实际 granted TTL 为三秒、TimeToLive 的 GrantedTTL
+一致，防止将请求 TTL 误当作实际 TTL；该最终版本定向 race 再通过（33823，
+14.942 秒）。CI 两项仍在运行，本轮只本地提交测试与记录。

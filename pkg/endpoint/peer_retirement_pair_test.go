@@ -20,8 +20,10 @@ import (
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 // Each Endpoint owns its backend but not the shared test storage lifetime.
@@ -123,8 +125,12 @@ func runExperimentalEndpointPair(t *testing.T, rotate, filePolicy bool) {
 		if rotate {
 			// Exercise real connection aging rather than resetting the proxy or
 			// restarting either Endpoint to force credential reload.
-			config.GRPCMaxConnectionAge = 750 * time.Millisecond
-			config.GRPCMaxConnectionAgeGrace = 250 * time.Millisecond
+			// Age the leader's peer transport, not the follower's public ingress.
+			// This isolates internal credential rotation from client reconnection.
+			if i == 0 {
+				config.GRPCMaxConnectionAge = 750 * time.Millisecond
+				config.GRPCMaxConnectionAgeGrace = 250 * time.Millisecond
+			}
 			if i == 1 {
 				config.PeerSecurityConfig.ClientCertFile = filepath.Join(activeLink, "tls.crt")
 				config.PeerSecurityConfig.ClientKeyFile = filepath.Join(activeLink, "tls.key")
@@ -198,12 +204,63 @@ func runExperimentalEndpointPair(t *testing.T, rotate, filePolicy bool) {
 	require.Equal(t, "through-pinned-peer", string(got.Kvs[0].Value))
 	require.Equal(t, put.Header.Revision, got.Kvs[0].ModRevision)
 	if rotate {
+		// Use a raw generated client with no clientv3 stream retry interceptor.
+		// Exactly one public stream must survive all internal reconnections.
+		leaseConn, err := grpc.NewClient(fmt.Sprintf("127.0.0.1:%d", clientPorts[1]), grpc.WithAuthority("peer.test"),
+			grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{RootCAs: roots, Certificates: []tls.Certificate{certificates[0]}, ServerName: "peer.test"})))
+		require.NoError(t, err)
+		defer leaseConn.Close()
+		leaseClient := etcdserverpb.NewLeaseClient(leaseConn)
+		streamCtx, stopStream := context.WithTimeout(context.Background(), 12*time.Second)
+		defer stopStream()
+		grant, err := leaseClient.LeaseGrant(streamCtx, &etcdserverpb.LeaseGrantRequest{TTL: 3})
+		require.NoError(t, err)
+		require.Equal(t, int64(3), grant.TTL, "the observation window must exceed the actual granted TTL")
+		_, err = clients[1].Put(streamCtx, "/endpoint-pair/leased-across-rotation", "retained", clientv3.WithLease(clientv3.LeaseID(grant.ID)))
+		require.NoError(t, err)
+		stream, err := leaseClient.LeaseKeepAlive(streamCtx)
+		require.NoError(t, err)
+		renew := func() {
+			require.NoError(t, stream.Send(&etcdserverpb.LeaseKeepAliveRequest{ID: grant.ID}))
+			response, err := stream.Recv()
+			require.NoError(t, err, "the original public stream must remain usable")
+			require.Equal(t, grant.ID, response.ID)
+			require.Positive(t, response.TTL)
+		}
+		renew()
 		require.Positive(t, oldHandshakes.Load(), "leader must observe the original follower certificate")
 		require.Zero(t, rotatedHandshakes.Load())
 		require.NoError(t, os.Symlink(rotatedDir, activeLink+".next"))
 		require.NoError(t, os.Rename(activeLink+".next", activeLink))
 		require.Eventually(t, func() bool { return rotatedHandshakes.Load() > 0 }, 8*time.Second, 20*time.Millisecond,
 			"leader must observe the rotated certificate on a new peer handshake")
+		// Continue beyond the original granted TTL, ruling out success merely
+		// because the lease was still alive from the pre-rotation renewal.
+		for i := 0; i < 4; i++ {
+			renew()
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-timer.C:
+			case <-streamCtx.Done():
+				timer.Stop()
+				t.Fatal(streamCtx.Err())
+			}
+		}
+		renew()
+		ttl, err := leaseClient.LeaseTimeToLive(streamCtx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grant.ID})
+		require.NoError(t, err)
+		require.Positive(t, ttl.TTL)
+		require.Equal(t, grant.TTL, ttl.GrantedTTL)
+		leased, err := clients[0].Get(streamCtx, "/endpoint-pair/leased-across-rotation")
+		require.NoError(t, err)
+		require.Len(t, leased.Kvs, 1)
+		require.Equal(t, grant.ID, leased.Kvs[0].Lease)
+		require.Equal(t, "retained", string(leased.Kvs[0].Value))
+		_, err = leaseClient.LeaseRevoke(streamCtx, &etcdserverpb.LeaseRevokeRequest{ID: grant.ID})
+		require.NoError(t, err)
+		leased, err = clients[0].Get(streamCtx, "/endpoint-pair/leased-across-rotation")
+		require.NoError(t, err)
+		require.Empty(t, leased.Kvs)
 		postCtx, finish := context.WithTimeout(context.Background(), 5*time.Second)
 		defer finish()
 		put, err := clients[1].Put(postCtx, "/endpoint-pair/after-rotation", "new-credential")
