@@ -208,3 +208,19 @@ protected 模式现在强制独立 anonymous-endpoint：负向 TLS alert 可能
 探针失败、实际健康命令失败及 Pod 被替换。首轮失败是 mock 转发命令
 将端口取为第五参数而非第四参数，已修复夹具并确认失败场景到达相应
 检查点；没有因此放宽运行条件。真实 TLS 探针更新后 race 通过（1.948s）。
+
+随后完整 race：部署工具 93.495s、诊断探针 1.952s、工作流契约 2.568s，
+全部通过，vet/bash -n/diff 检查通过。
+
+冻结提交 `d60cc418` 做三个成员的 restore 模式只读烟测，owner 为
+`/root/.local/state/kubebrain/diagnostic-verifier-smoke.PYqiLb34`；一次性
+run.sh 63277 终态 0。真实预检和三成员验证均通过：各成员健康、带证书
+及匿名 profile 请求都为 404，前后 Pod UID/spec/containerStatuses 不变，
+StatefulSet 仍 generation 56、原完整 spec、3/3 Ready。这里的 restore
+只是验证回调的模式，没有执行恢复补丁或 rollout。
+
+证据摘要验证成功；两个本地端口均无残留监听，三个临时探针二进制
+（主副本、预检副本、运行验证副本）已删除并保留哈希。私有源码、日志、
+证书证据和 receipt 保留。该结果仍不覆盖 protected 模式的实际 rollout
+与采栈，更不是原 30 秒故障验收；最新镜像 CI 35349468415 仍运行时未
+推送新提交，避免取消它。
