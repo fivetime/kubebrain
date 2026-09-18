@@ -706,3 +706,32 @@ RenewDeadline 500 毫秒、RetryPeriod 50 毫秒，未改集群原 30/25/0.5 秒
 mTLS，接棒后的公开 RPC 保持 ClusterId、改变 MemberId 并提升 RaftTerm。
 测试清理关闭客户端、TCP/gRPC/HTTP listener、server 及 backend 工作线程，
 没有创建集群资源。本轮本地提交，不推送取消仍在运行的 8a667c24 构建。
+
+## 将接棒测试的故障扩大到旧节点存储接口
+
+完整 server 网络测试现不再只拒绝选主锁 Get/Update，而在旧 backend 下安装
+显式存储故障夹具：拒绝读、时间戳、分区查询、扫描、迭代器推进、删除及
+批次提交；不暴露 UnwrapKvStorage，避免可选能力发现绕过故障。元数据查询
+和资源关闭仍允许，已越过检查的在途调用不保证被取消。新节点共享同一
+memkv，但不经过旧节点故障夹具；接棒成功时仍断言旧节点故障保持启用。
+
+初版夹具直接从 Commit 返回错误，遗漏 memkv 从 BeginBatchWrite 起持有
+的互斥锁释放，导致回归 96842 在 120 秒超时（leader/election 自身通过）。
+这是测试夹具错误，不能作为产品失联结果。修正为在底层批次最先注册
+Atomic 拒绝回调，通过实际 Commit 的中止路径释放锁，阻止后续回调及
+暂存写入生效。独立用例覆盖故障前已创建的批次、已打开的迭代器、九个
+拒绝点、回调未执行，以及恢复读取后原值未变。
+
+修正后定向 race 通过（56074，4.045 秒）；server/leader/election 五轮
+race 通过（72894，28.712/9.448/5.595 秒），随后 vet 和 diff 检查通过。
+启用实验入口的真实 mTLS 接棒与默认关闭对照均保留。仍是 memkv 接口
+故障，不是真实 TiKV 网络隔离，不覆盖原挂起 KeepAlive 流或原 30 秒门限。
+本轮未改变产品默认行为、集群配置或部署镜像。
+
+另核实远端 `8a667c24ee995e475a3607c4b7c9333293e1b8aa` 的 backend
+CI `35319131334` attempt 1 成功。日志中两次
+`TestRealTiKVRetiredRelease` 通过，两次协议运行均为 result=0、
+cleanup_failed=0，PD/TiKV 启动中断清理均记录 resources_absent=true。
+日志保存在私有目录 `retirement-storage-fault.9yvOvymf/backend-8a667c24.log`，
+SHA-256 为 `dc4103c442e1e32ee2124fb059d843265d1e1312a8665b2740a10398b2bd2af9`。
+这不覆盖该 SHA 之后的本地修改；镜像和 probe CI 本轮检查时仍在运行。

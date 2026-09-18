@@ -19,24 +19,7 @@ import (
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"k8s.io/client-go/tools/leaderelection/resourcelock"
 )
-
-type retirementNetworkLock struct{ retirementPartitionedLock }
-
-func (l *retirementNetworkLock) RetirementScope() string {
-	return l.Interface.(election.RetiredOwnershipReleaser).RetirementScope()
-}
-func (l *retirementNetworkLock) ReleaseRetiredOwnership(ctx context.Context, scope string, c election.OwnershipCondition) error {
-	return l.Interface.(election.RetiredOwnershipReleaser).ReleaseRetiredOwnership(ctx, scope, c)
-}
-
-type retirementNetworkBackend struct {
-	backend.Backend
-	lock resourcelock.Interface
-}
-
-func (b *retirementNetworkBackend) GetResourceLock() resourcelock.Interface { return b.lock }
 
 func retirementPublicGRPC(t *testing.T, s Server, pool *x509.CertPool, certificates []tls.Certificate) *grpc.ClientConn {
 	t.Helper()
@@ -58,8 +41,8 @@ func retirementPublicGRPC(t *testing.T, s Server, pool *x509.CertPool, certifica
 }
 
 // Full server startup/cleanup/reload and real public gRPC + peer HTTP2 mTLS.
-// The fault denies ONLY old election-lock Get/Update: it is NOT a full backend
-// partition and NOT the original thirty-second availability gate.
+// The fault rejects new storage-interface calls and commits on the old node;
+// it is not a real TiKV network partition or the original availability gate.
 func TestPeerRetirementFullServerNetworkLeaseHandoff(t *testing.T) {
 	t.Run("enabled", func(t *testing.T) { runRetirementNetworkHandoff(t, true) })
 	t.Run("default-disabled", func(t *testing.T) { runRetirementNetworkHandoff(t, false) })
@@ -95,19 +78,23 @@ func runRetirementNetworkHandoff(t *testing.T, enabled bool) {
 		urls[i] = peer.URL
 	}
 	store := retirementStorageFixture{memkv.NewKvStorage(), 42}
+	oldStore := &retirementFaultStorage{base: store}
 	metrics := metricmock.NewMinimalMetrics(gomock.NewController(t))
 	bases := make([]backend.Backend, 2)
 	for i := range bases {
-		bases[i] = backend.NewBackend(store, backend.Config{Prefix: "/network-retirement", Keyspace: "tenant", Identity: urls[i], EnableEtcdCompatibility: true}, metrics)
+		if i == 0 {
+			bases[i] = backend.NewBackend(oldStore, backend.Config{Prefix: "/network-retirement", Keyspace: "tenant", Identity: urls[i], EnableEtcdCompatibility: true}, metrics)
+		} else {
+			bases[i] = backend.NewBackend(store, backend.Config{Prefix: "/network-retirement", Keyspace: "tenant", Identity: urls[i], EnableEtcdCompatibility: true}, metrics)
+		}
 		b := bases[i]
 		t.Cleanup(func() { require.NoError(t, b.(interface{ Close() error }).Close()) })
 	}
-	oldLock := &retirementNetworkLock{retirementPartitionedLock: retirementPartitionedLock{Interface: bases[0].GetResourceLock()}}
-	oldBackend := &retirementNetworkBackend{Backend: bases[0], lock: oldLock}
+	scope := bases[0].GetResourceLock().(election.RetiredOwnershipReleaser).RetirementScope()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(func() {
 		cancel()
-		oldLock.partitioned.Store(false)
+		oldStore.failed.Store(false)
 		for i := range servers {
 			if s := servers[i].Load(); s != nil {
 				require.NoError(t, s.Close())
@@ -116,7 +103,7 @@ func runRetirementNetworkHandoff(t *testing.T, enabled bool) {
 	})
 	pins := map[string][]string{urls[0]: {retirementTestPin(certs[0])}, urls[1]: {retirementTestPin(certs[1])}}
 	start := func(i int, b backend.Backend) *server {
-		config := PeerRetirementConfig{Scope: oldLock.RetirementScope(), HolderPins: pins, PeerURLs: []string{urls[1-i]},
+		config := PeerRetirementConfig{Scope: scope, HolderPins: pins, PeerURLs: []string{urls[1-i]},
 			TLS: &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{certs[i]}}, ReadBudget: time.Second,
 			OperationBudget: time.Second, SendBudget: time.Second, Concurrency: 2, RequestsPerSecond: 10}
 		serverConfig := Config{LeaseDuration: 30 * time.Second, RenewDeadline: 500 * time.Millisecond, RetryPeriod: 50 * time.Millisecond}
@@ -132,7 +119,7 @@ func runRetirementNetworkHandoff(t *testing.T, enabled bool) {
 		servers[i].Store(concrete)
 		return concrete
 	}
-	old := start(0, oldBackend)
+	old := start(0, bases[0])
 	require.Eventually(t, old.requestPathReady, 5*time.Second, 10*time.Millisecond)
 	oldClient := retirementPublicGRPC(t, old, pool, certs)
 	rpcCtx, rpcCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -155,11 +142,12 @@ func runRetirementNetworkHandoff(t *testing.T, enabled bool) {
 	oldTerm := old.leaderElection.CurrentLeadershipTerm()
 	next := start(1, bases[1])
 	require.Eventually(t, func() bool { return next.leaderElection.GetLeaderInfo() == urls[0] }, 3*time.Second, 10*time.Millisecond)
-	oldLock.partitioned.Store(true)
+	oldStore.failed.Store(true)
 	if !enabled {
 		require.Never(t, next.requestPathReady, 2*time.Second, 10*time.Millisecond,
 			"ordinary constructor must not bypass the still-valid 30-second record")
 		require.Zero(t, requests.Load(), "default must not send retirement requests")
+		require.Positive(t, oldStore.rejected.Load())
 		record, _, err := bases[1].GetResourceLock().Get(rpcCtx)
 		require.NoError(t, err)
 		require.Equal(t, urls[0], record.HolderIdentity)
@@ -167,6 +155,8 @@ func runRetirementNetworkHandoff(t *testing.T, enabled bool) {
 	}
 	require.Eventually(t, next.requestPathReady, 5*time.Second, 10*time.Millisecond)
 	require.Positive(t, requests.Load())
+	require.Positive(t, oldStore.rejected.Load(), "storage fault must actually reject old-node calls")
+	require.True(t, oldStore.failed.Load(), "handoff must not depend on restoring old storage access")
 	require.True(t, authenticatedHTTP2.Load(), "release request must actually traverse verified HTTP/2 mTLS")
 	require.False(t, old.leaderElection.IsLeader())
 	require.Greater(t, next.leaderElection.CurrentLeadershipTerm(), oldTerm)
