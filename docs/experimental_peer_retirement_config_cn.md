@@ -35,6 +35,8 @@
 - 本机 holder 必须有 pin。endpoint_holders 只列远端，禁止指向本机 holder，
   必须使用精确 HTTPS base URL，不带路径、用户信息、查询或片段。不同成员
   的配置文件因此不同，不可共享一个包含本机条目的全量远端表。
+  转发凭据映射同时接受该配置 URL 及其精确 `host:port` 拼写，以兼容 CLI
+  选举记录；后者仍强制 TLS，不接受显式 `http://`、未知地址或 DNS 别名推断。
 - 2–17 个 holder，每个 1–8 个 pin，1–16 个远端。pin 是证书公钥 SPKI 的
   SHA-256，而非证书整体摘要、CN 或 IP。重复 pin、跨 holder 共用 key 均拒绝；
   轮换时可提前给同一 holder 配置不同 key 的多个 pin。

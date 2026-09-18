@@ -1444,3 +1444,35 @@ server 51.261 秒、transportidentity 1.028 秒；相关 vet/diff 通过，执�
 终态 0。收尾时旧提交镜像作业 35328959280 进入 Verify published test image，
 仍为 in_progress；未推送、重复触发或部署。用户已有验收状态文档改动保持
 未暂存，未将其混入本轮提交。
+
+## CLI 成员 identity 与 HTTPS 固定目标的实际接入修复
+
+新增 TestExperimentalEndpointPairUsesFilePolicyWithCLIIdentities：不再把
+HTTPS URL 当作选举 identity，而采用 CLI 的 host:port；两个 Endpoint 的
+策略均先写入 JSON，再通过正式文件解析器读取，保留实际 listener、mTLS、
+follower Status、Put/leader Get 及 revision 校验。旧实现红测（11722，
+19.253 秒）在 follower 可用性等待失败：静态和动态凭据提供器只匹配 URL，
+不能匹配正常 CLI 写入选举记录的 host:port。这说明原 URL 身份夹具的成功
+不能作为 CLI 已能工作的一致证据。
+
+统一静态/动态凭据目标解析，只接受已配置 HTTPS URL 或其完全相同的 Host
+部分，仍绑定该目标的 holder pin；本机仅接受已配置的本机 identity。
+不执行 DNS、端口省略或任意 URL 归一化，不把显式 http:// 升级为 HTTPS。
+未知地址仍失败，不回退 CA-only 或明文。真实转发使用自定义 TLS credentials，
+因此 host:port 形式不是允许明文连接。
+
+新的文件策略双端点 race 三轮通过（95970，28.737 秒）。IPv4/DNS 格式、
+IPv6 字面量及本机身份的映射测试同时覆盖静态和动态提供器，拒绝明文 URL、
+尾斜线、查询参数、未知目标、前导空格、dns resolver URL；相关三轮 race
+通过（48032，1.380 秒）。此夹具仍使用共享 memkv，不是完整 CLI 二进制
+或 TiKV 故障验收，且保留既有关闭时等待 successor 的语义限制。
+
+远端旧提交 16f9fa1a 的 image 35328959280 与 probe 35328959294 均已成功。
+已核对 image 的构建、推送、发布镜像校验步骤成功；它们不覆盖之后本地
+提交，亦未据此部署旧镜像。
+
+完整单轮 race（88211）通过：endpoint 64.363 秒、server 51.148 秒、
+etcdproxy 5.458 秒、cmd/option 1.236 秒；相关 vet/diff 通过，执行链终态 0。
+另 cmd/build 普通单轮测试通过（41725，0.911/1.500 秒）。旧 CI 已终结，
+本轮修复提交后将累计本地提交推送 dbaas，让新 CI 验证包含 endpoint 步骤
+的完整新版本；这些本地通过记录不预先证明新 CI 或集群验收成功。

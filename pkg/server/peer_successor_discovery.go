@@ -5,7 +5,9 @@ import (
 	"crypto/tls"
 	"errors"
 	"github.com/kubewharf/kubebrain/pkg/transportidentity"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -42,17 +44,8 @@ func (d *peerSuccessorDiscovery) proxyTLS(base *tls.Config, endpoint string) (*t
 	if d == nil || base == nil || base.InsecureSkipVerify || base.VerifyConnection != nil || base.VerifyPeerCertificate != nil {
 		return nil, errPeerSuccessorUnavailable
 	}
-	holder := ""
-	if endpoint == d.sender.holder {
-		holder = d.sender.holder
-	}
-	for _, target := range d.targets {
-		if target.endpoint == endpoint {
-			holder = target.holder
-			break
-		}
-	}
-	if holder == "" || len(d.auth.holders[holder]) == 0 {
+	_, holder, err := d.resolveProxyEndpoint(endpoint)
+	if err != nil {
 		return nil, errPeerSuccessorUnavailable
 	}
 	config := base.Clone()
@@ -60,6 +53,32 @@ func (d *peerSuccessorDiscovery) proxyTLS(base *tls.Config, endpoint string) (*t
 		return d.auth.authorizeVerifiedCertificate(&state, d.auth.instance, holder, time.Now())
 	}
 	return config, nil
+}
+
+// The CLI election identity is host:port while authenticated discovery returns
+// an HTTPS URL. Accept only the exact Host spelling of an operator-pinned URL,
+// never arbitrary normalization, a redirect, or an explicit plaintext scheme.
+func (d *peerSuccessorDiscovery) resolveProxyEndpoint(endpoint string) (*url.URL, string, error) {
+	if d == nil || d.sender == nil || d.auth == nil {
+		return nil, "", errPeerSuccessorUnavailable
+	}
+	for _, target := range d.targets {
+		u, err := url.Parse(target.endpoint)
+		if err == nil && u.Scheme == "https" && u.Hostname() != "" && (endpoint == target.endpoint || endpoint == u.Host) && len(d.auth.holders[target.holder]) > 0 {
+			return u, target.holder, nil
+		}
+	}
+	if endpoint == d.sender.holder && len(d.auth.holders[endpoint]) > 0 {
+		address := endpoint
+		if host, port, err := net.SplitHostPort(endpoint); err == nil && host != "" && port != "" {
+			address = "https://" + endpoint
+		}
+		u, err := url.Parse(address)
+		if err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && !u.ForceQuery && u.Fragment == "" {
+			return u, endpoint, nil
+		}
+	}
+	return nil, "", errPeerSuccessorUnavailable
 }
 
 // endpointHolders is operator configuration, not a redirect or response body.

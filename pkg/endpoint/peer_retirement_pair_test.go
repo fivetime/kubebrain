@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,14 +30,18 @@ type sharedPeerEndpointStorage struct{ peerEndpointStorage }
 func (sharedPeerEndpointStorage) Close() error { return nil }
 
 func TestExperimentalEndpointPairForwardsThroughDynamicPeerCredentials(t *testing.T) {
-	runExperimentalEndpointPair(t, false)
+	runExperimentalEndpointPair(t, false, false)
 }
 
 func TestExperimentalEndpointPairReloadsProjectedClientCertificate(t *testing.T) {
-	runExperimentalEndpointPair(t, true)
+	runExperimentalEndpointPair(t, true, false)
 }
 
-func runExperimentalEndpointPair(t *testing.T, rotate bool) {
+func TestExperimentalEndpointPairUsesFilePolicyWithCLIIdentities(t *testing.T) {
+	runExperimentalEndpointPair(t, false, true)
+}
+
+func runExperimentalEndpointPair(t *testing.T, rotate, filePolicy bool) {
 	ca := newRotationCA(t)
 	caFile := filepath.Join(t.TempDir(), "ca.pem")
 	writeRotationCA(t, caFile, ca)
@@ -53,13 +58,17 @@ func runExperimentalEndpointPair(t *testing.T, rotate bool) {
 		}
 	}
 	var clientPorts, peerPorts [2]int
-	var urls [2]string
+	var urls, holders [2]string
 	var paths [2][2]string
 	var certificates [2]tls.Certificate
 	pins := make(map[string][]string)
 	for i := range urls {
 		clientPorts[i], peerPorts[i] = port(), port()
 		urls[i] = fmt.Sprintf("https://127.0.0.1:%d", peerPorts[i])
+		holders[i] = urls[i]
+		if filePolicy {
+			holders[i] = fmt.Sprintf("127.0.0.1:%d", peerPorts[i])
+		}
 		cert, key := writeRotationCertificate(t, t.TempDir(), fmt.Sprintf("member-%d", i), ca, int64(200+i), "peer.test")
 		paths[i] = [2]string{cert, key}
 		var err error
@@ -69,7 +78,7 @@ func runExperimentalEndpointPair(t *testing.T, rotate bool) {
 		require.NoError(t, err)
 		require.Empty(t, leaf.IPAddresses, "IP dialing must exercise the dynamic source's ServerName policy")
 		hash := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
-		pins[urls[i]] = []string{hex.EncodeToString(hash[:])}
+		pins[holders[i]] = []string{hex.EncodeToString(hash[:])}
 	}
 	var activeLink, rotatedDir string
 	var oldHandshakes, rotatedHandshakes atomic.Int32
@@ -81,7 +90,7 @@ func runExperimentalEndpointPair(t *testing.T, rotate bool) {
 		leaf, err := x509.ParseCertificate(certificate.Certificate[0])
 		require.NoError(t, err)
 		hash := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
-		pins[urls[1]] = append(pins[urls[1]], hex.EncodeToString(hash[:]))
+		pins[holders[1]] = append(pins[holders[1]], hex.EncodeToString(hash[:]))
 		activeLink = filepath.Join(t.TempDir(), "active")
 		require.NoError(t, os.Symlink(filepath.Dir(paths[1][0]), activeLink))
 	}
@@ -90,15 +99,27 @@ func runExperimentalEndpointPair(t *testing.T, rotate bool) {
 	metrics := metricmock.NewMinimalMetrics(gomock.NewController(t))
 	var clients [2]*clientv3.Client
 	for i := range urls {
-		b := backend.NewBackend(sharedPeerEndpointStorage{peerEndpointStorage{storage}}, backend.Config{Prefix: "/endpoint-pair", Identity: urls[i], EnableEtcdCompatibility: true}, metrics)
+		b := backend.NewBackend(sharedPeerEndpointStorage{peerEndpointStorage{storage}}, backend.Config{Prefix: "/endpoint-pair", Identity: holders[i], EnableEtcdCompatibility: true}, metrics)
 		security := func() *SecurityConfig {
 			return &SecurityConfig{CertFile: paths[i][0], KeyFile: paths[i][1], CA: caFile, ClientAuth: true, ServerName: "peer.test"}
 		}
 		config := &Config{Port: clientPorts[i], PeerPort: peerPorts[i], ClientSecurityConfig: security(), PeerSecurityConfig: security(), InfoSecurityConfig: &SecurityConfig{},
 			EnableEtcdCompatibility: true, LeaseDuration: 3 * time.Second, RenewDeadline: 2 * time.Second, RetryPeriod: 100 * time.Millisecond,
 			ExperimentalPeerRetirement: &PeerRetirementOptions{Scope: b.GetResourceLock().(election.RetiredOwnershipReleaser).RetirementScope(),
-				HolderPins: pins, EndpointHolders: map[string]string{urls[1-i]: urls[1-i]}, ReadBudget: time.Second,
+				HolderPins: pins, EndpointHolders: map[string]string{urls[1-i]: holders[1-i]}, ReadBudget: time.Second,
 				OperationBudget: time.Second, SendBudget: time.Second, Concurrency: 2, RequestsPerSecond: 100}}
+		if filePolicy {
+			policy := config.ExperimentalPeerRetirement
+			data, err := json.Marshal(map[string]any{
+				"scope": policy.Scope, "holder_pins": policy.HolderPins, "endpoint_holders": policy.EndpointHolders,
+				"read_budget": "1s", "operation_budget": "1s", "send_budget": "1s", "concurrency": 2, "requests_per_second": 100,
+			})
+			require.NoError(t, err)
+			path := filepath.Join(t.TempDir(), "policy.json")
+			require.NoError(t, os.WriteFile(path, data, 0600))
+			config.ExperimentalPeerRetirement, err = LoadPeerRetirementOptions(path)
+			require.NoError(t, err)
+		}
 		if rotate {
 			// Exercise real connection aging rather than resetting the proxy or
 			// restarting either Endpoint to force credential reload.

@@ -82,3 +82,39 @@ func TestSuccessorRoutingViewRequiresEndpointTLS(t *testing.T) {
 	_, err = view.ProxyTLSForEndpoint("https://unknown.invalid")
 	require.ErrorIs(t, err, errPeerSuccessorUnavailable)
 }
+
+func TestSuccessorProxyAcceptsOnlyConfiguredCLIAddress(t *testing.T) {
+	pool, certs := retirementTestCertificates(t)
+	base := &tls.Config{RootCAs: pool, Certificates: []tls.Certificate{certs[0]}}
+	for _, host := range []string{"peer.test:3380", "[::1]:3380"} {
+		t.Run(host, func(t *testing.T) {
+			address := "https://" + host
+			auth, err := newPeerRetirementAuthorizer("scope", map[string][]string{"local:3380": {retirementTestPin(certs[0])}, host: {retirementTestPin(certs[1])}})
+			require.NoError(t, err)
+			sender, err := newPeerRetirementSender("scope", "local:3380", []string{address}, base, time.Second)
+			require.NoError(t, err)
+			d, err := newPeerSuccessorDiscovery(sender, auth, map[string]string{address: host})
+			require.NoError(t, err)
+			d.proxySource = &handshakeMaterialSource{material: transportidentity.ClientCredentialMaterial{Roots: pool, Certificate: certs[0]}}
+			view := &successorCredentialRoutingView{discovery: d}
+			for _, endpoint := range []string{address, host, "local:3380"} {
+				bound, err := d.proxyTLS(base, endpoint)
+				require.NoError(t, err)
+				require.NotNil(t, bound.VerifyConnection)
+				credential, err := view.ProxyCredentialsForEndpoint(endpoint)
+				require.NoError(t, err)
+				want := host
+				if endpoint == "local:3380" {
+					want = endpoint
+				}
+				require.Equal(t, want, credential.(*reloadedPeerGRPC).remote)
+			}
+			for _, endpoint := range []string{"http://" + host, address + "/", address + "?x=1", "other:3380", "https://other:3380", " " + host, "dns:///" + host} {
+				_, err := d.proxyTLS(base, endpoint)
+				require.Error(t, err, endpoint)
+				_, err = view.ProxyCredentialsForEndpoint(endpoint)
+				require.Error(t, err, endpoint)
+			}
+		})
+	}
+}

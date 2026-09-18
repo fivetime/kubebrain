@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"crypto/tls"
-	"net/url"
 	"sync"
 	"time"
 
@@ -23,18 +22,8 @@ func (v *successorCredentialRoutingView) ProxyCredentialsForEndpoint(endpoint st
 	if d == nil || d.proxySource == nil || d.sender == nil || d.auth == nil {
 		return nil, errPeerSuccessorUnavailable
 	}
-	holder := ""
-	if endpoint == d.sender.holder {
-		holder = d.sender.holder
-	}
-	for _, target := range d.targets {
-		if target.endpoint == endpoint {
-			holder = target.holder
-			break
-		}
-	}
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Scheme != "https" || u.Hostname() == "" || len(d.auth.holders[holder]) == 0 {
+	u, holder, err := d.resolveProxyEndpoint(endpoint)
+	if err != nil {
 		return nil, errPeerSuccessorUnavailable
 	}
 	return &reloadedPeerGRPC{source: d.proxySource, auth: d.auth, local: d.sender.holder, remote: holder, hostname: u.Hostname(), budget: d.sender.budget}, nil
