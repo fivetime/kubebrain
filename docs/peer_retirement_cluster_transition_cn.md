@@ -1,7 +1,8 @@
 # 专用集群 peer 身份迁移与恢复准备
 
-状态：第一阶段“旧叶证书＋双 CA”已在现场扩展、验证并恢复；独立新叶证书
-和实验交接协议尚未部署。本页不表示新镜像或原 30 秒故障验收已经通过。
+状态：双 CA 和独立成员证书阶段均已现场验证并恢复。第二轮原恢复校验
+失败，修复探测通道后独立复验通过，失败记录保留；实验交接协议尚未启用。
+本页不表示新镜像或原 30 秒故障验收已经通过。
 目标仅为 kubebrain-dbaas-test/kubebrain-local，
 不涉及旧 Ceph 实例、TiKV/PD 数据卷或 TopoLVM VG 初始化。
 
@@ -524,3 +525,56 @@ expand → members/restore → roots/restore 顺序验证和恢复。
 （44.449s，执行 65692 终态 0），vet、Bash 语法与 diff 检查通过。上一版
 02786d91 的 image run 35337650967 已终态 success，probe 也已成功，后续
 推送不会取消仍在运行的这两项构建。该 CI 不包含本次执行器扩展。
+
+## 独立成员证书现场迁移与恢复复验（2026-09-18）
+
+私有 owner `live-members.xer1LrHN` 从实际 generation 40 的原完整配置捕获
+新快照，冻结 7129d23c 的执行器、计划器和校验器。原固定镜像、选举参数、
+默认 2PC、PD/TiKV 后端不变，未使用 CI 中的新镜像或启用实验协议。
+创建两个不可变版本化 Secret：`kb-peer-old-dual-xer1lrhn`（UID
+`dcb77d7f-6d98-4b22-9e41-98576cb85d62`）和 `kb-peer-members-dual-xer1lrhn`
+（UID `b271df6d-35a2-4693-9a50-44999342a9f1`），实际 UID/RV 绑定进收据。
+
+前三阶段成功：generation 41 完成双 CA 扩展；generation 42 切换三个
+独立成员叶证书，验证实际服务端各自 SPKI pin、四文件只读子目录、policy
+哈希、没有 CA key 或其他成员可见路径；generation 43 恢复共享旧叶证书，
+仍保留双 CA。每阶段均通过旧/新/旧独立 TLS 连接及三成员三写九读、条件
+清理和不存在确认。当前镜像实际支持这次成员证书迁移，不只是离线演练。
+
+第四阶段的滚动完成，generation 44 已恢复原完整 spec、三个 Ready/current
+副本，但原 after 校验退出 1，外层恢复尝试的校验也退出 1。主执行 94926
+因此终态 **1**，不能写成四阶段原运行全部成功。证据显示：新 CA 身份已
+收到正确 unknown-ca TLS alert，紧接着 kubectl port-forward 因该连接的
+reset 报 lost connection to pod 并退出；随后旧身份复查得到 curl 7、本机
+端口拒绝连接，而不是服务端拒绝旧证书。Pod 未重启，配置已恢复。
+
+新增回归测试确定性模拟负向 TLS 探测终止整个转发进程：旧实现不能到达
+随后的业务探针（执行 89353 失败）。修正为旧、新、旧三次独立 TLS 探测
+各用一个独立转发进程，每次记录并回收其退出状态、保留单独日志；只对
+仍在运行的子任务发终止信号，避免对已退出进程的陈旧 PID 操作。该测试
+三轮 race 通过（8.650s）。这不是重试业务 RPC，也不改动原 30 秒公共流
+故障探针、选举参数或任何验收阈值。
+
+随后在全新的 postflight 中以修正后的校验器复验，执行 81402 终态 0：
+恢复计划为空，未再次更新 StatefulSet 或重建 Pod；原完整 spec、generation
+44、三 Ready/current、三个旧 CA 信任边界、三成员实际写读清理全部通过。
+原 roots-restore、recovery 和主运行的失败记录未覆盖，verified.json 明确
+分别记录 original_run_exit=1 与 restoration_postflight_exit=0。
+
+清理以独立复验成功及前三阶段完整归属链为依据，精确处理 18 个中间
+scratch PV。逐个检查阶段 Pod → PVC owner → PV claimRef、排除全部初始
+保护集合、Released/Retain/完整 spec、无现存使用者后，用 UID/RV/spec/
+phase 前置检查改成 Delete 并等待删除。两个 Secret 在当前工作负载无引用
+后按 UID/RV 删除。清理执行 63617 终态 0；临时卷数据不可恢复，证书材料
+仍有仓库外私有备份。临时 uid-delete 编译文件已精确移除，摘要保留。
+
+所有原 PV UID/spec 保留，本地 StorageClass 最终 12 Bound、14 Released；
+增加的六个 Released 是本轮开始时已有的临时卷，按保护策略保留。PD/TiKV、
+旧后端和旧 KubeBrain Pod 身份/容器状态未变，恢复后三个实例实际 imageID
+与基线一致。所有本机转发端口已关闭，源脚本、成功阶段、独立复验和清理
+摘要均复核。最终代码完整 race 测试通过（47.478s，执行 67861 终态 0），
+vet、Bash 语法、diff 检查通过。
+
+这证明真实独立成员证书迁移及最终恢复；不证明原运行零失败、滚动期间
+公共长流连续性、实验交接协议、原 30 秒故障门限或整体生产就绪。后续
+仍需将精确审核的新镜像及实验协议接入已验证的成员身份部署路径。

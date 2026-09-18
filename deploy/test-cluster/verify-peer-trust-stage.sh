@@ -89,7 +89,10 @@ finish() {
  for i in "${attempted[@]}"; do
   if ! remove_key "$i"; then rc=1; echo "FIXTURE_CLEANUP_REQUIRES_REVIEW index=$i" >&2; fi
  done
- for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; done
+ for pid in "${pids[@]}"; do
+  if jobs -pr | grep -qx "$pid"; then kill "$pid" 2>/dev/null || true; fi
+  wait "$pid" 2>/dev/null || true
+ done
  printf '%s\n' "$rc" > "$out/exit-code"
  exit "$rc"
 }
@@ -97,13 +100,13 @@ trap finish EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 forward() {
- local pod=$1 local_port=$2 remote_port=$3 ready=false
+ local pod=$1 local_port=$2 remote_port=$3 label=${4:-$2} ready=false
  [[ -z $(ss -H -ltn "( sport = :$local_port )") ]]
- "${k[@]}" port-forward --address=127.0.0.1 "pod/$pod" "$local_port:$remote_port" > "$out/forward-$local_port.log" 2>&1 &
+ "${k[@]}" port-forward --address=127.0.0.1 "pod/$pod" "$local_port:$remote_port" > "$out/forward-$label.log" 2>&1 &
  pids+=("$!")
  for n in {1..50}; do
   kill -0 "${pids[-1]}"
-  if grep -q "Forwarding from 127.0.0.1:$local_port" "$out/forward-$local_port.log"; then ready=true; break; fi
+  if grep -q "Forwarding from 127.0.0.1:$local_port" "$out/forward-$label.log"; then ready=true; break; fi
   sleep 0.1
  done
  [[ $ready == true ]]
@@ -135,16 +138,24 @@ for i in 0 1 2; do
    for member in "$@"; do test ! -e "$d/$member"; test ! -e "$d/../$member"; done
   ' check "$sts-0" "$sts-1" "$sts-2" > "$out/isolation-$i.log" 2>&1
  fi
- forward "$pod" "$port" 3380
  c=(curl --silent --show-error --http1.1 --max-time 5 --noproxy '*' --resolve "$peer_dns:$port:127.0.0.1" \
   --cacert "$expected/ca.crt" --pinnedpubkey "sha256//$pin")
  for identity in old new old-after; do
+  # A TLS alert/reset may terminate kubectl's entire port-forward session.
+  # These are independent TLS probes, not a continuity test or RPC retry.
+  forward "$pod" "$port" 3380 "$port-$identity"
+  peer_pid=${pids[-1]}
   cert_dir=$out/original
   if [[ $identity == new ]]; then cert_dir=$bundle/$pod; fi
   rc=0
   "${c[@]}" --cert "$cert_dir/tls.crt" --key "$cert_dir/tls.key" --output "$out/peer-$i-$identity.body" --write-out '%{http_code}' \
    "https://$peer_dns:$port/__peer_trust_runtime_check__" > "$out/peer-$i-$identity.status" 2> "$out/peer-$i-$identity.stderr" || rc=$?
   printf '%s\n' "$rc" > "$out/peer-$i-$identity.exit"
+  if jobs -pr | grep -qx "$peer_pid"; then kill "$peer_pid" 2>/dev/null || true; fi
+  forward_rc=0
+  wait "$peer_pid" 2>/dev/null || forward_rc=$?
+  printf '%s\n' "$forward_rc" > "$out/peer-$i-$identity-forward.exit"
+  unset 'pids[-1]'
   if [[ $identity == new && $mode == restore && $trust_phase == roots ]]; then
    [[ ( $rc == 35 || $rc == 56 ) && $(<"$out/peer-$i-$identity.status") == 000 ]]
    grep -Eqi 'alert.*(unknown ca|bad certificate|certificate required)|alert number (48|42|116)' "$out/peer-$i-$identity.stderr"
