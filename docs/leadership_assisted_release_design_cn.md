@@ -1205,3 +1205,31 @@ RPC，已经准入的写入可能结果不确定，不增加自动重放。既�
 “此证书寿命计时器恰在真实事务提交后触发”的专项故障用例，不能将既有
 不重放测试当作该组合场景的完整证明。镜像 35326113519、回归 35326113607
 最后检查仍 in_progress，当前本地修改未推送或部署。
+
+## 连接信任到期时已准入事务的结果不确定性
+
+新增 TestCredentialExpiryDoesNotReplayAdmittedProxyTxn，经真实 etcdproxy、
+client/v3、gRPC/mTLS、逐目标动态凭据和连接寿命计时器执行。服务端先增加
+副作用计数，再阻塞响应；分别覆盖响应头尚未发送与已发送的时刻。首份本机
+证书短期到期触发连接关闭，后续加载返回另一个仍有效且预先授权的本机证书，
+因此重连可以成功，不能靠永久断连让“不重放”断言侥幸通过。
+
+原 Txn 返回错误且调用方 deadline 尚未结束，副作用恰好一次；重新 Ready
+后仍为一次。随后显式提交一个新 Txn 成功，累计副作用为二，证明新请求
+通路恢复而原请求没有自动重放。三轮 race 通过（73972，25.116 秒）；
+最终 server/etcdproxy 完整单轮 race 通过（12570，52.966/5.461 秒），
+相关 vet/diff 通过。初稿因 EtcdProxy 接口未暴露 Close 编译失败，改为
+显式检查具体对象的 Close 能力后再验证，未改生产接口。
+
+副作用计数是“已经执行但响应丢失”的模型，不是 TiKV 事务落盘证据，
+也不证明无损轮换或 exactly-once。原请求结果仍可能不确定；应用侧不能
+把该错误当作未提交证明。真实 TiKV/PD 提交后断连与 Kubernetes 长流验收
+仍开放。
+
+远端 e994f2c3 的 probe CI 35326113607 已失败：Watch race 分组中的
+TestWatchInvalidCreateAutomaticIDAndUnknownCancelKeepStreamAlive 在
+watch_test.go:975 的响应头 revision 断言得到 0，预期为 seed revision 2。
+后续领导权/代理阶段 skipped，不能宣称本批远端回归通过。镜像 35326113519
+仍运行。失败日志保存在私有 credential-expiry-txn.FXNmj6Yf/probe-failure.log，
+SHA-256 cf595a8f038079f19aaa3e3d16c75867d052002eca61b12134435c806d63a2f0。
+正在单独复现此 Watch 失败；未归因于 Runner，也未放宽断言或重复触发 CI。
