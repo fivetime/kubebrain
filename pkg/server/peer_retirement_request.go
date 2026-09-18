@@ -26,23 +26,9 @@ func readPeerRetirementCondition(r *http.Request, auth *peerRetirementAuthorizer
 	invalid := func() (election.OwnershipCondition, error) {
 		return election.OwnershipCondition{}, errPeerRetirementRequest
 	}
-	if r == nil || r.Method != http.MethodPost || r.Body == nil || r.Context().Err() != nil {
-		return invalid()
-	}
-	identity := func(name string) (string, bool) {
-		values := r.Header.Values(name)
-		if len(values) != 1 || len(values[0]) == 0 || len(values[0]) > 4096 || strings.TrimSpace(values[0]) != values[0] {
-			return "", false
-		}
-		return values[0], true
-	}
-	instance, okInstance := identity(retirementInstanceHeader)
-	holder, okHolder := identity(retirementHolderHeader)
-	if !okInstance || !okHolder {
-		return invalid()
-	}
-	if err := auth.authorize(r.TLS, instance, holder, time.Now()); err != nil {
-		return election.OwnershipCondition{}, errPeerRetirementUnauthorized
+	holder, err := authorizePeerRetirementRequest(r, auth)
+	if err != nil {
+		return election.OwnershipCondition{}, err
 	}
 	types := r.Header.Values("Content-Type")
 	if len(types) != 1 || types[0] != "application/json" || len(r.Header.Values("Content-Encoding")) != 0 || r.ContentLength > election.MaxOwnershipConditionBytes {
@@ -57,4 +43,28 @@ func readPeerRetirementCondition(r *http.Request, auth *peerRetirementAuthorizer
 		return invalid()
 	}
 	return condition, nil
+}
+
+// Split out authentication so an invalid peer cannot consume the handler's
+// authenticated request rate budget. No body reads occur here.
+func authorizePeerRetirementRequest(r *http.Request, auth *peerRetirementAuthorizer) (string, error) {
+	if r == nil || r.Method != http.MethodPost || r.Body == nil || r.Context().Err() != nil {
+		return "", errPeerRetirementRequest
+	}
+	identity := func(name string) (string, bool) {
+		values := r.Header.Values(name)
+		if len(values) != 1 || len(values[0]) == 0 || len(values[0]) > 4096 || strings.TrimSpace(values[0]) != values[0] {
+			return "", false
+		}
+		return values[0], true
+	}
+	instance, okInstance := identity(retirementInstanceHeader)
+	holder, okHolder := identity(retirementHolderHeader)
+	if !okInstance || !okHolder {
+		return "", errPeerRetirementRequest
+	}
+	if err := auth.authorize(r.TLS, instance, holder, time.Now()); err != nil {
+		return "", errPeerRetirementUnauthorized
+	}
+	return holder, nil
 }

@@ -425,3 +425,54 @@ election/leader 完整 race 五轮通过（11512，7.101/4.991/9.511 秒），ve
 状态。暂不推送该整合提交，以免取消仍在构建的 `d5b20ef6` 镜像任务。
 本地提交不改变功能状态：仍无网络接口注册、发送端接入、实际远程释放或
 跨节点连续性验收，不能声称完整协议已经实现。
+
+本地整合提交 `14e635b3a9aa4aa5ca68db2bcdc454181074336d` 随后完成更广的
+`go test -race -count=1 -timeout=5m ./pkg/backend/... ./pkg/server ./pkg/endpoint ./build`
+回归，所有包通过（96918，后端主包 91.990 秒、endpoint 15.716 秒），对应
+backend/server/endpoint vet 与 diff 检查也通过。该提交仍未推送；远端 CI
+验证对象继续是 `d5b20ef6`，不能混用两者的验证范围。
+
+## 固定 d5b20ef6 制品审计完成
+
+上述三条 CI 均已成功，镜像任务为
+[35313121706](https://github.com/fivetime/kubebrain/actions/runs/35313121706)，
+均为固定源码 attempt 1。独立审计使用该提交的归档，而不是后续本地工作树；
+检查版本、OCI 源码标签、Go 版本、TiKV fork/grpc 依赖与非 root 身份。
+
+- index：`sha256:53b0e2d2a28bd27ed8517f17cb4928ff0426e1082f342b31b7156c3f76643601`
+- amd64：`sha256:451e3c70a6a20e3d1e7effc6eb653225865786524af2b745ac912bdf2e302191`
+- arm64：`sha256:5c1361985df507285995ee40cddf678d2fd4c35e05d60249516831040da7ac32`
+
+只实际执行 amd64 的 version 命令，arm64 仅检查索引身份。证据位于私有
+`release-d5b20ef6.Jgg0uUsV/image-evidence.TU3liS9I/verified.json`；审计进程句柄
+已不存在，原终端输出丢失，复核了成功收据的生成顺序、清理日志以及所属容器/
+提取二进制确已不存在。没有重复审计、重启 CI 或部署；这不覆盖本地 14e635b3
+及后续 handler，也不代表原 30 秒验收通过。
+
+## 有界接收 handler：尚未注册或连接后端
+
+内部 `peerRetirementHandler` 组合既有授权、消息解析与注入的释放回调。设置
+socket/stream 读取和响应写入截止时间，不支持 deadline 的包装器拒绝请求；
+参照 [Go ResponseController 文档](https://pkg.go.dev/net/http#ResponseController.SetReadDeadline)
+并核对本机标准库实现。HTTP/1 关闭本次连接，避免拒绝后继续排空慢请求体。
+身份检查发生在消息读取和速率额度消耗之前；认证后的请求另受固定容量并发槽
+及令牌桶速率限制，不排队等待空槽。
+
+后端回调带独立 context 预算，同步执行并在返回后再次检查取消；错误或超时
+只返回无正文 503，不能反射令牌或存储错误，也不声称事务未提交。回调若不
+响应取消，继续占用原并发槽，不能靠启动后台 goroutine 假装请求已被终止。
+因此仍须验证真实后端遵守预算。TLS 握手、HTTP 头读取及连接总数的限制属于
+实际 listener 接线要求，不能把这个 handler 说成已经限制了整个服务器。
+
+当前仍无 endpoint 注册、发送端或实际远程释放。后续构造必须把 auth 的实例
+身份与精确后端 keyspace 绑定，不能接受请求指定存储地址；也仍须完成租约
+连续性、版本回退和原 30 秒真实故障验收。
+
+验证：真实 mTLS 的 HTTP/1.1 与 HTTP/2 正常请求、同 CA 未授权 key、畸形条件、
+后端错误、取消后返回 nil 均符合预期；两个协议的未完成请求体由服务端读取
+deadline 截断。并发槽、速率额度、未授权不消耗额度和隐藏 deadline 支持的
+拒绝路径均覆盖。取消后仍阻塞的回调保留并发槽，最终返回 nil 仍得到 503。
+临时移除读取 deadline 后，两项真实慢请求测试均如期失败（37724）；恢复后
+最终 server/election/leader race 五轮通过（60161，9.478/4.818/9.291 秒），
+三个包 vet 与 diff 检查通过。首次编译曾因比较含切片的条件结构失败，已改为
+比较编码结果；不将失败阶段计作通过。本轮只有本地代码测试，没有集群变更。
