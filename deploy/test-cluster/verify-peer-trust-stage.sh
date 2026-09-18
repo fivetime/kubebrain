@@ -6,7 +6,7 @@ umask 077
 mode=$1; phase=$2; evidence=$3; kubeconfig=$4; context=$5
 [[ $evidence == /* && $kubeconfig == /* && -n $context ]]
 receipt=$evidence/receipt.json
-jq -e '.phase == null or .phase == "roots" or .phase == "members"' "$receipt" >/dev/null
+jq -e '.phase == null or .phase == "roots" or .phase == "members" or .phase == "protocol"' "$receipt" >/dev/null
 trust_phase=$(jq -r '.phase // "roots"' "$receipt")
 out=$evidence/verify-$phase
 mkdir -m 700 "$out" "$out/original" "$out/expanded"
@@ -30,7 +30,7 @@ done
 for i in 0 1 2; do
  bash "$out/material-verifier.sh" "$out/original" "$out/expanded" "$bundle/$sts-$i" "$peer_dns" > "$out/material-$i.log" 2>&1
 done
-if [[ $trust_phase == members ]]; then
+if [[ $trust_phase == members || $trust_phase == protocol ]]; then
  scope=$(setting retirement_scope)
  [[ $scope =~ ^retirement-v1:[a-f0-9]{64}$ ]]
  jq -e --arg sts "$sts" '.member_secret.immutable==true and
@@ -60,6 +60,23 @@ if [[ $trust_phase == members ]]; then
    (keys)==["concurrency","endpoint_holders","holder_pins","operation_budget","read_budget","requests_per_second","scope","send_budget"]' "$out/$sts-$i/policy.json" >/dev/null
  done
 fi
+if [[ $trust_phase == protocol ]]; then
+ # These hashes bind operator-reviewed artifacts, not self-authenticating CI
+ # attestations. The caller must audit provenance before signing the receipt.
+ audit=$(setting image_audit); audit_hash=$(setting image_audit_sha256)
+ probe=$(setting control_probe); probe_hash=$(setting control_probe_sha256)
+ [[ $audit == /* && $probe == /* && $audit_hash =~ ^[a-f0-9]{64}$ && $probe_hash =~ ^[a-f0-9]{64}$ ]]
+ [[ -f $audit && ! -L $audit && -f $probe && ! -L $probe && -x $probe ]]
+ [[ $(sha256sum "$audit" | cut -d ' ' -f1) == "$audit_hash" && $(sha256sum "$probe" | cut -d ' ' -f1) == "$probe_hash" ]]
+ cp "$audit" "$out/image-audit.json"
+ cp "$probe" "$out/control-probe"
+ chmod 700 "$out/control-probe"
+ [[ $(sha256sum "$out/image-audit.json" | cut -d ' ' -f1) == "$audit_hash" && $(sha256sum "$out/control-probe" | cut -d ' ' -f1) == "$probe_hash" ]]
+ jq -e --slurpfile receipt "$receipt" '.scope=="published_image_identity_only" and .executed_platform=="linux/amd64" and
+  .image==$receipt[0].candidate_image and (.image|test("^ghcr.io/fivetime/kubebrain@sha256:[0-9a-f]{64}$")) and
+  (.source|type=="string" and test("^[0-9a-f]{40}$")) and (.amd64_digest|test("^sha256:[0-9a-f]{64}$")) and
+  (.image_ci|type=="number" and .>0) and (.probe_ci|type=="number" and .>0)' "$out/image-audit.json" >/dev/null
+fi
 openssl x509 -in "$client_tls/probe.crt" -noout -checkend 3600 > "$out/client-expiry.log"
 openssl verify -no-CApath -no-CAstore -purpose sslclient -CAfile "$client_tls/ca.crt" "$client_tls/probe.crt" > "$out/client-chain.log"
 cmp -s <(openssl x509 -in "$client_tls/probe.crt" -pubkey -noout | openssl pkey -pubin -outform DER) \
@@ -67,7 +84,7 @@ cmp -s <(openssl x509 -in "$client_tls/probe.crt" -pubkey -noout | openssl pkey 
 # Recovery preflight intentionally does not require a currently healthy service.
 if [[ $phase == preflight ]]; then echo FIRST_TRUST_MATERIAL_PREFLIGHT_OK; exit 0; fi
 expected=$out/original
-if [[ $mode == expand || $trust_phase == members ]]; then expected=$out/expanded; fi
+if [[ $mode == expand || $trust_phase == members || $trust_phase == protocol ]]; then expected=$out/expanded; fi
 k=(kubectl --kubeconfig="$kubeconfig" --context="$context" --request-timeout=15s -n "$namespace")
 pids=(); keys=(); values=(); attempted=()
 rpc() {
@@ -113,7 +130,7 @@ forward() {
 }
 for i in 0 1 2; do
  pod=$sts-$i; port=$((18880+i))
- if [[ $trust_phase == members && $mode == expand ]]; then expected=$out/$pod; fi
+ if [[ ( $trust_phase == members && $mode == expand ) || $trust_phase == protocol ]]; then expected=$out/$pod; fi
  pin=$(openssl x509 -in "$expected/tls.crt" -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | base64 -w0)
  timeout --kill-after=2s 20s "${k[@]}" get pod "$pod" -o json > "$out/pod-$i-before.json"
  jq -e --arg pod "$pod" --slurpfile pods "$evidence/after/pods.json" --slurpfile receipt "$receipt" '
@@ -126,7 +143,7 @@ for i in 0 1 2; do
   actual=$(awk -v path="/etc/kubebrain/peer-tls/$file" '$2==path {print $1}' "$out/mounted-$i.txt")
   [[ $actual == "$(sha256sum "$expected/$file" | cut -d ' ' -f1)" ]]
  done
- if [[ $trust_phase == members && $mode == expand ]]; then
+ if [[ ( $trust_phase == members && $mode == expand ) || $trust_phase == protocol ]]; then
   jq -e 'any(.spec.containers[]; .name=="kubebrain" and any(.volumeMounts[];.name=="peer-tls" and .mountPath=="/etc/kubebrain/peer-tls" and .subPathExpr=="$(POD_NAME)" and .readOnly==true))' "$out/pod-$i-before.json" >/dev/null
   timeout --kill-after=2s 20s "${k[@]}" exec "$pod" -c kubebrain -- sha256sum /etc/kubebrain/peer-tls/policy.json > "$out/policy-$i.txt"
   [[ $(cut -d ' ' -f1 "$out/policy-$i.txt") == "$(sha256sum "$expected/policy.json" | cut -d ' ' -f1)" ]]
@@ -137,6 +154,22 @@ for i in 0 1 2; do
    test ! -e "$d/ca.key"
    for member in "$@"; do test ! -e "$d/$member"; test ! -e "$d/../$member"; done
   ' check "$sts-0" "$sts-1" "$sts-2" > "$out/isolation-$i.log" 2>&1
+ fi
+ if [[ $trust_phase == protocol ]]; then
+  jq -e --arg mode "$mode" --slurpfile receipt "$receipt" --slurpfile audit "$out/image-audit.json" '
+   [.spec.containers[]|select(.name=="kubebrain")] as $c |
+   ($c|length)==1 and
+   (if $mode=="expand" then
+     $c[0].image==$audit[0].image and
+     ([$c[0].args[]|select(startswith("--experimental-peer-retirement-config"))])==["--experimental-peer-retirement-config=/etc/kubebrain/peer-tls/policy.json"] and
+     any(.status.containerStatuses[]; .name=="kubebrain" and
+       (.imageID==$audit[0].image or .imageID==("ghcr.io/fivetime/kubebrain@"+$audit[0].amd64_digest)))
+    else $c[0].image==$receipt[0].baseline.spec.template.spec.containers[0].image and
+     all($c[0].args[];startswith("--experimental-peer-retirement-config")|not) end)' "$out/pod-$i-before.json" >/dev/null
+  if [[ $mode == expand ]]; then
+   timeout --kill-after=2s 20s "${k[@]}" exec "$pod" -c kubebrain -- /usr/local/bin/kube-brain version > "$out/version-$i.log"
+   grep '^Git SHA:' "$out/version-$i.log" | grep -F "$(jq -er '.source' "$out/image-audit.json")" >/dev/null
+  fi
  fi
  c=(curl --silent --show-error --http1.1 --max-time 5 --noproxy '*' --resolve "$peer_dns:$port:127.0.0.1" \
   --cacert "$expected/ca.crt" --pinnedpubkey "sha256//$pin")
@@ -163,6 +196,26 @@ for i in 0 1 2; do
    [[ $rc == 0 && $(<"$out/peer-$i-$identity.status") == 404 ]]
   fi
  done
+ if [[ $trust_phase == protocol ]]; then
+  forward "$pod" "$port" 3380 "$port-control"
+  peer_pid=${pids[-1]}
+  if [[ $mode == expand ]]; then
+   sender=$sts-$(((i+1)%3))
+   "$out/control-probe" --endpoint="https://127.0.0.1:$port" --server-name="$peer_dns" --server-pin="${pins[$i]}" \
+    --cacert="$expected/ca.crt" --cert="$out/$sender/tls.crt" --key="$out/$sender/tls.key" \
+    --scope="$scope" --sender="$sender.$peer_dns:3380" --receiver="$pod.$peer_dns:3380" > "$out/control-$i.log" 2>&1
+  else
+   for route in retirement successor; do
+    "${c[@]}" --cert "$expected/tls.crt" --key "$expected/tls.key" --request POST \
+     --output "$out/disabled-$i-$route.body" --write-out '%{http_code}' \
+     "https://$peer_dns:$port/internal/$route/v1" > "$out/disabled-$i-$route.status"
+    [[ $(<"$out/disabled-$i-$route.status") == 404 ]]
+   done
+  fi
+  if jobs -pr | grep -qx "$peer_pid"; then kill "$peer_pid" 2>/dev/null || true; fi
+  wait "$peer_pid" 2>/dev/null || true
+  unset 'pids[-1]'
+ fi
  forward "$pod" "$((18890+i))" 3379
  rpc "$((18890+i))" maintenance/status '{}' "$out/status-$i.json"
 done

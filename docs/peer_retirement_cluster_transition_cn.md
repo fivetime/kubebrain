@@ -59,6 +59,33 @@ HTTP/1 与 HTTP/2 的空条件和无 Content-Type 探针回归，断言释放回
 使用 memkv，不宣称已在 TiKV 集群执行探针。新增探针 race、真实 handler
 race、Endpoint race 均通过，Endpoint 最终运行 11.568s；探针 vet 通过。
 
+## 协议阶段校验器接入（尚未开放执行器）
+
+`verify-peer-trust-stage.sh` 已识别 protocol：expand 和 restore 都使用
+独立成员叶证书、双 CA 和四文件隔离挂载，不在 restore 时错误地期待旧
+共享叶证书。沿用普通三成员读写、条件清理及运行前后 Pod 身份检查。
+
+额外的 receipt.verification 输入是 `image_audit`、`image_audit_sha256`、
+`control_probe`、`control_probe_sha256`。预检核对普通非 symlink 文件、
+哈希和复制后的哈希，要求探针可执行；审计记录中的固定镜像须等于
+candidate_image，包含精确源码 SHA、amd64 摘要和镜像/探针 CI ID。
+**哈希和 JSON 字段只能绑定已经人工审计的文件，不是 CI 成功或供应链
+真实性证明。**预检不执行探针，不访问集群。
+
+after/expand 分支核对 Pod 镜像及运行时 index/amd64 摘要、唯一实验参数，
+并执行 version 核对源码 SHA；逐个接收成员用下一成员的独立凭据运行
+控制探针。after/restore 分支要求原镜像、无实验参数，并检查两个控制
+路由为 404。控制检查之后仍必须通过普通 I/O 和最终 Pod 状态检查。
+
+新增预检回归覆盖两种方向、审计/探针被修改、镜像或源码不符、缺少 CI
+字段、symlink 和不可执行探针，检查没有 API 调用或探针执行。运行时
+protocol 分支尚未获得现场或完整故障注入驱动证据；执行器仍拒绝此阶段，
+不能把这一接入记录写成已部署或完成原故障门限。
+
+本轮协议/成员预检及执行器拒绝用例 race 通过（30.174s），完整
+`go test -count=1 ./deploy/test-cluster` 通过（59.048s），vet、Bash 语法
+和 diff 检查通过。未修改集群，未启用协议执行器。
+
 ## 成员私钥挂载
 
 [挂载片段](../deploy/test-cluster/peer-retirement-mounts.patch.json) 是战略合并
