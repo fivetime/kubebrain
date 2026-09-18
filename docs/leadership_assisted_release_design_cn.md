@@ -648,3 +648,14 @@ checkpoint 清理、选主窗口扩展测试 race 三轮通过（42427，2.491 �
 具体测试日志已独立核对成功（88847），证据为私有目录
 `release-7d8b1724.7vFpQLN1/ci-evidence.sJZwBH2V/verified.json`。
 独立镜像审计已开始，完成结果须另记，不能从 CI 成功推定镜像身份或部署验收。
+
+该独立审计随后成功（22345，`PUBLISHED_IMAGE_IDENTITY_VERIFIED`、终态 0）：
+
+- index：`sha256:09dda71afd7066f3fa9fca175f34d6bde494aad97b0b96a2f7c7f866637a2eb7`
+- amd64：`sha256:432c81cbffe675affa4910af47ef8b7480c7d4c1e7c10210cfe68ed23b866a31`
+- arm64：`sha256:992d6c8a146fbc406216799a247cf11c29fffe176e75b141cdad0eb7b5eb84ee`
+
+使用固定 7d8b1724 归档检查版本/OCI 标签、非 root 身份、Go/TiKV fork/grpc
+依赖；仅实际执行 amd64 version，arm64 只验证索引身份。证据为私有目录
+`release-7d8b1724.7vFpQLN1/image-evidence.7tVsszDm/verified.json`，所属容器
+及提取二进制独立复查已不存在。无集群部署，不覆盖后续本地四个提交。
