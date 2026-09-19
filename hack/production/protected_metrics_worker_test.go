@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,8 +18,100 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
+	"github.com/kubewharf/kubebrain/hack/production/internal/retirementmetrics"
 	"github.com/stretchr/testify/require"
 )
+
+func TestProtectedMetricsWorkerRealSessionArtifacts(t *testing.T) {
+	library, err := filepath.Abs("protected-stack-session.sh")
+	require.NoError(t, err)
+	owner := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
+	probe := strings.Replace(metricsProbeFixture(), `printf 'x 1\n' > "$2"`, `value=0
+if [[ -e $stack_owner/baseline-written ]]; then value=1; else touch "$stack_owner/baseline-written"; fi
+printf '# TYPE leader_retirement_peer_result counter\nleader_retirement_peer_result{cluster="test",outcome="confirmed"} %s\n' "$value" > "$2"`, 1)
+	require.NotEqual(t, metricsProbeFixture(), probe)
+	require.NoError(t, os.WriteFile(filepath.Join(owner, "bin", "info-diagnostic-probe"), []byte(probe), 0700))
+	// Reuse only the Kubernetes/transport fixtures, not the session exercise.
+	setup, _, ok := strings.Cut(stackSessionFixture, "trap stack_session_close EXIT")
+	require.True(t, ok)
+	setup += `
+sha256sum "$stack_library_dir/protected-metrics-worker.sh" >> "$stack_owner/tools.sha256"
+export stack_kubeconfig stack_context stack_namespace stack_namespace_uid stack_sts stack_sts_uid stack_tls stack_server_name
+export -f kubectl timeout ss openssl
+unset stack_info_port stack_anonymous_port
+exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
+`
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "bash", "-c", setup, "test", library, owner, "success")
+	processgroup.Configure(cmd)
+	cmd.WaitDelay = time.Second
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	stdin, err := cmd.StdinPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			cancel()
+			_ = cmd.Wait()
+		}
+	})
+	reader := bufio.NewReader(stdout)
+	line, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	ready := strings.Split(strings.TrimSuffix(line, "\n"), "\t")
+	require.Len(t, ready, 3)
+	require.Equal(t, "READY", ready[0])
+	require.Equal(t, owner, filepath.Dir(ready[1]))
+	require.Equal(t, owner, filepath.Dir(ready[2]))
+	raw, err := os.ReadFile(filepath.Join(owner, "diagnostic-spec.json"))
+	require.NoError(t, err)
+	var spec map[string]any
+	require.NoError(t, json.Unmarshal(raw, &spec))
+	canonical, err := json.Marshal(spec)
+	require.NoError(t, err)
+	hash := sha256.Sum256(canonical)
+	binding := retirementmetrics.CaptureBinding{NamespaceUID: "ns-uid", StatefulSetUID: "sts-uid", PodUID: "pod-uid", SpecSHA256: hex.EncodeToString(hash[:]), Cluster: "test"}
+	before, err := retirementmetrics.LoadCapture(ready[2], binding)
+	require.NoError(t, err)
+	origin := time.Now().UnixNano()
+	_, err = fmt.Fprintf(stdin, "%d\n", origin)
+	require.NoError(t, err)
+	require.NoError(t, stdin.Close())
+	rest, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, cmd.Wait(), stderr.String())
+	require.NoError(t, ctx.Err())
+	captured := strings.Split(strings.TrimSuffix(string(rest), "\n"), "\t")
+	require.Len(t, captured, 3)
+	require.Equal(t, "CAPTURED", captured[0])
+	after, err := retirementmetrics.LoadCapture(captured[1], binding)
+	require.NoError(t, err)
+	delta, err := retirementmetrics.SampleDelta(before, after, retirementmetrics.Key{Stage: "peer", Outcome: "confirmed"})
+	require.NoError(t, err)
+	require.Equal(t, float64(1), delta)
+	input, err := os.ReadFile(filepath.Join(captured[2], "input.tsv"))
+	require.NoError(t, err)
+	require.Equal(t, fmt.Sprintf("%d\t0\n", origin), string(input))
+	check, err := exec.Command("sha256sum", "-c", filepath.Join(captured[2], "evidence.sha256")).CombinedOutput()
+	require.NoError(t, err, string(check))
+	complete, err := os.ReadFile(filepath.Join(captured[2], "COMPLETE"))
+	require.NoError(t, err)
+	require.Equal(t, "SCHEDULE_COMPLETE_NOT_FAULT_ACCEPTANCE\n", string(complete))
+	receipt, err := os.ReadFile(filepath.Join(ready[1], "exit-code"))
+	require.NoError(t, err)
+	require.Equal(t, "0\n", string(receipt))
+	pids, err := os.ReadFile(filepath.Join(owner, "pids"))
+	require.NoError(t, err)
+	require.Len(t, strings.Fields(string(pids)), 3)
+	for _, pid := range strings.Fields(string(pids)) {
+		require.Error(t, exec.Command("kill", "-0", pid).Run(), "forward survived worker exit")
+	}
+}
 
 func TestProtectedMetricsWorkerHandshakeAndCleanup(t *testing.T) {
 	worker, err := os.ReadFile("protected-metrics-worker.sh")

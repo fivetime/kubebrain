@@ -225,6 +225,20 @@ diff-check 通过。未修改集群、未重跑故障验收；指标语义和同
 
 #### 候选 3f64735d 探针 CI 失败：采集测试缺少运行时工具
 
+worker 增加真实会话库集成测试：仅复用 Kubernetes/转发/探针夹具，
+启动实际独立入口与 session 库；父进程收到 READY 后先由 LoadCapture
+核验基线，再交付原始故障起点，验证 CAPTURED 的产物、调度摘要清单和
+完成标记、worker 退出码，并计算合成事件 0→1 的差值。退出后 auth、
+原匿名及重建匿名三个转发 PID 均已不存在。最终 worker 三轮 race 通过
+（16.885s），vet/diff-check 通过。这不是实际 TLS/Kubernetes/TiKV 故障
+实验，控制进程的多 worker 协调与恢复集成仍待完成。
+
+候选 `03d27d3881297984aef0b93e770a46f567a22cf4` 的后端协议 CI
+`35430808015` 已成功。run/job API、完整日志和已验证摘要保存于
+`backend-ci-35430808015-terminal.lqvidOKf`。探针 `35430808031` 与镜像
+`35430807890` 仍运行，不能称三项 CI 全绿；本机后续 owner/worker 改动
+不在该候选的验证范围。本轮未推送或部署。
+
 新增独立进程入口 `protected-metrics-worker.sh`：自有转发与退出清理，
 完成基线后发送 READY，再从 stdin 接收一个有长度/时间限制的故障起点，
 执行一次原截止时间内的定时采集，输出 CAPTURED 并保存退出码。工具
