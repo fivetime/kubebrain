@@ -171,6 +171,7 @@ func LoadCapture(dir string, expected CaptureBinding) (Sample, error) {
 	trace := bytes.Split(bytes.TrimSuffix(files["timing.tsv"], []byte("\n")), []byte("\n"))
 	if len(trace) == 14 {
 		stages = append(stages, "rearm-anonymous")
+		sample.captureRearmed = true
 	}
 	if len(trace) != 2*len(stages) {
 		return bad()
@@ -192,6 +193,9 @@ func LoadCapture(dir string, expected CaptureBinding) (Sample, error) {
 				return bad()
 			}
 			current := time.Unix(seconds, micros*1000)
+			if i == 0 && j == 0 {
+				sample.captureStarted = current
+			}
 			if !previous.IsZero() && current.Before(previous) {
 				return bad()
 			}
@@ -201,6 +205,7 @@ func LoadCapture(dir string, expected CaptureBinding) (Sample, error) {
 			previous = current
 		}
 	}
+	sample.captureCompleted = previous
 	return sample, nil
 }
 

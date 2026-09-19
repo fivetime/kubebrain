@@ -102,7 +102,7 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 			c := result.Captured
 			ready := []string{"READY", result.Ready.Worker, result.Ready.Baseline}
 			captured := []string{"CAPTURED", c.Capture, c.Schedule}
-			after, err := retirementmetrics.LoadCapture(captured[1], binding)
+			after, err := retirementmetrics.LoadScheduledCapture(captured[2], captured[1], binding, fault, 0)
 			require.NoError(t, err)
 			delta, err := retirementmetrics.SampleDelta(before, after, retirementmetrics.Key{Stage: "peer", Outcome: "confirmed"})
 			require.NoError(t, err)

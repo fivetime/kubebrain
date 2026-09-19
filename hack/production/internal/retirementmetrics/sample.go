@@ -15,11 +15,13 @@ import (
 // capture manifest, COMPLETE, and Kubernetes process identity before and after
 // the probe. Hashes detect mismatched artifacts, not a forged capture bundle.
 type Sample struct {
-	counters           Counters
-	durations          map[Key]*durationHistogram
-	process            Process
-	started, completed time.Time
-	captureIdentity    string
+	counters                         Counters
+	durations                        map[Key]*durationHistogram
+	process                          Process
+	started, completed               time.Time
+	captureIdentity                  string
+	captureStarted, captureCompleted time.Time
+	captureRearmed                   bool
 }
 
 type probeSummary struct {
