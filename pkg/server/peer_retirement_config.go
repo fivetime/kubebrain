@@ -125,6 +125,7 @@ func NewServerWithPeerRetirement(ctx context.Context, b backend.Backend, metricC
 		config.ProxyTLS = tlsConfig
 	}
 	protocol.sender.metricCli = metricCli
+	initPeerRetirementMetrics(metricCli)
 	return newServer(ctx, b, metricCli, config, protocol), nil
 }
 

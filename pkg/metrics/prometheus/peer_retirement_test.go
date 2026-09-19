@@ -71,3 +71,47 @@ func TestLocalRetirementMetricsExportScopeAndUnits(t *testing.T) {
 		}
 	}
 }
+
+func TestRetirementZeroBaselineDoesNotInventEventsOrReset(t *testing.T) {
+	registry := prom.NewRegistry()
+	oldRegisterer, oldGather := registerer, gather
+	registerer, gather = registry, registry
+	t.Cleanup(func() { registerer, gather = oldRegisterer, oldGather })
+	m := NewMetrics()
+	registrar := m.(metrics.HistogramRegistrar)
+	tag := metrics.Tag("outcome", "confirmed")
+	for _, stage := range []string{"local", "peer"} {
+		name := "leader.retirement." + stage
+		require.NoError(t, m.EmitCounter(name+".result", 0, tag))
+		require.NoError(t, registrar.RegisterHistogram(name+".duration.seconds", tag))
+	}
+	families, err := registry.Gather()
+	require.NoError(t, err)
+	require.Len(t, families, 4)
+	for _, family := range families {
+		require.Len(t, family.Metric, 1)
+		if family.Metric[0].Counter != nil {
+			require.Zero(t, family.Metric[0].GetCounter().GetValue())
+		} else {
+			require.Zero(t, family.Metric[0].GetHistogram().GetSampleCount())
+			require.Zero(t, family.Metric[0].GetHistogram().GetSampleSum())
+		}
+	}
+	for _, stage := range []string{"local", "peer"} {
+		name := "leader.retirement." + stage
+		require.NoError(t, m.EmitCounter(name+".result", 1, tag))
+		require.NoError(t, m.EmitHistogram(name+".duration.seconds", 0.25, tag))
+		require.NoError(t, m.EmitCounter(name+".result", 0, tag))
+		require.NoError(t, registrar.RegisterHistogram(name+".duration.seconds", tag))
+	}
+	families, err = registry.Gather()
+	require.NoError(t, err)
+	for _, family := range families {
+		if family.Metric[0].Counter != nil {
+			require.Equal(t, float64(1), family.Metric[0].GetCounter().GetValue())
+		} else {
+			require.EqualValues(t, 1, family.Metric[0].GetHistogram().GetSampleCount())
+			require.Equal(t, 0.25, family.Metric[0].GetHistogram().GetSampleSum())
+		}
+	}
+}

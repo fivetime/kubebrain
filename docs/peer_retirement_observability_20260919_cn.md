@@ -219,6 +219,27 @@ diff-check 通过。未修改集群、未重跑故障验收；指标语义和同
 
 #### 离线采集目录加载与命令
 
+后续补充 CLI 真正入口的子进程测试：完整的合成采集包前后计数 2→5，
+核对退出码 0 和唯一成功 JSON（delta=3，三项 readiness/latency/acceptance
+结论仍为 false）；基线缺失、回退、进程变化、倒序、重叠、篡改、不完整、
+错误准入均核对退出码 1 且 stdout 为空。三轮 race 通过（4.885s），vet
+通过。这覆盖命令入口，不把合成产物称为真实集群证据。
+
+另修复首次退休事件前无法取得计数基线的问题：显式 opt-in 的
+`NewServerWithPeerRetirement` 在全部配置验证后、启动 campaign 前注册
+local/peer 共八个有限 outcome 的零值 counter；可选 HistogramRegistrar
+仅注册空 histogram，绝不 Observe(0)。重复初始化仅 Add(0)，不重置已有
+计数或发明事件。普通 NewServer 路径不变，指标注册错误不改变退休协议。
+离线工具仍拒绝缺失序列：旧镜像或采集缺项不能追溯补零。
+
+本地 etcd 对照：`/root/etcd/server/etcdserver/metrics.go` 的 init 注册
+leaderChanges 等 collector；这里采用启动时可观察的基线原则，但退休
+指标是 KubeBrain 自有协议诊断，不等于 etcd Raft 指标语义。
+PeerRetirement/退休服务器构造 race 通过（59.389s），Prometheus 包三轮
+race 通过（1.161s），相关 vet 通过。当前运行的候选 `3f64735d` CI
+`35429292114` / `35429292124` 不包含这些后续改动；暂不推送以免取消
+正在运行的任务。未部署，仍须新源码 CI 与镜像验证后才可用于实验。
+
 新增 `retirementmetrics.LoadCapture` 与
 `hack/production/cmd/retirement-metrics-delta`（使用方式和限制见其 README）。
 加载器核对 COMPLETE、八个固定文件、原绝对路径清单及哈希；使用独立准入
