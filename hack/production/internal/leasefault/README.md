@@ -283,6 +283,17 @@ withdrawal/protocol failures and unconverged identity. They do not establish rea
 worker teardown or Cilium recovery. This entry point does not yet supply the full
 preparation/fault-gate controller or prove the original 30-second acceptance.
 
+At source `6af298e5`, local race regression passed for `leasefault` (6.750s),
+`metricsworker` (10.787s), and `build` (2.583s). The complete
+`go test -race -count=1 -timeout=2m ./deploy/test-cluster` also passed (97.143s)
+without increasing its timeout. These are local results, not CI/image admission
+or a live fault outcome. Source inspection still finds preparation/recovery and
+prepared-child/metrics composition in tests only, with no complete runnable fault
+coordinator. Integration must supply exclusive ownership, admitted authenticated
+clients and observer bindings, preserve the original probe and single fault clock,
+then join all workers before independent recovery. A missing CREATE receipt remains
+an explicit reconciliation case, not permission to adopt a policy by name.
+
 `RunRecoveryObserver` provides a bounded subprocess adapter for independently
 admitted read-only observation scripts. It uses the caller's existing recovery
 deadline, explicit environment, process-group cancellation and bounded combined
