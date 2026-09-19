@@ -19,6 +19,15 @@ import (
 // No retry, shell interpolation, deadline extension or acceptance inference is
 // performed here. This adapter does not authenticate scripts or their evidence.
 func RunFaultCommand(ctx context.Context, spec Command, origin time.Time) error {
+	if err := validateFaultBudget(ctx, origin); err != nil {
+		return err
+	}
+	deadline, _ := ctx.Deadline()
+	ns := origin.UnixNano()
+	return runFaultCommand(ctx, spec, ns, deadline)
+}
+
+func validateFaultBudget(ctx context.Context, origin time.Time) error {
 	if ctx == nil {
 		return errors.New("fault command requires context")
 	}
@@ -31,6 +40,10 @@ func RunFaultCommand(ctx context.Context, spec Command, origin time.Time) error 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	return nil
+}
+
+func runFaultCommand(ctx context.Context, spec Command, ns int64, deadline time.Time) error {
 	if spec.Stderr == nil {
 		return errors.New("fault command requires private evidence log")
 	}
