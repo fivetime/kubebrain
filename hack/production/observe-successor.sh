@@ -4,9 +4,22 @@
 # authenticated Status request without retries and write its raw JSON response.
 set -euo pipefail
 umask 077
+check_callback() {
+ [[ $1 == /* && -f $1 && ! -L $1 && -x $1 ]] || {
+  echo 'successor callback must be an absolute executable regular non-symlink file' >&2
+  return 1
+ }
+}
+# Admission-only check: call before deployment/fault mutation. Never invoke the
+# callback here, and recheck at observation time to catch subsequent mode drift.
+if [[ $# == 2 && $1 == --check-callback ]]; then
+ check_callback "$2"
+ exit
+fi
 [[ $# == 7 ]] || exit 2
 out=$1; start=$2; cluster=$3; observer=$4; old_holder=$5; old_term=$6; callback=$7
-[[ $out == /* && $callback == /* && -f $callback && ! -L $callback && -x $callback ]]
+[[ $out == /* ]]
+check_callback "$callback"
 [[ $start =~ ^[1-9][0-9]{18}$ && $start < 9223372006854775807 ]]
 for identity in "$cluster" "$observer" "$old_holder" "$old_term"; do
  [[ $identity =~ ^[1-9][0-9]{0,19}$ ]]

@@ -109,3 +109,41 @@ printf '{"header":{"cluster_id":"%s","member_id":"%s","raft_term":%s},"leader":"
 		})
 	}
 }
+
+func TestSuccessorCallbackAdmissionChecksModeWithoutRunning(t *testing.T) {
+	for _, scenario := range []string{"executable", "mode-lost", "missing", "symlink", "directory", "relative"} {
+		t.Run(scenario, func(t *testing.T) {
+			dir := t.TempDir()
+			callback := filepath.Join(dir, "callback")
+			marker := filepath.Join(dir, "invoked")
+			require.NoError(t, os.WriteFile(callback, []byte("#!/bin/sh\ntouch '"+marker+"'\n"), 0700))
+			switch scenario {
+			case "mode-lost":
+				require.NoError(t, os.Chmod(callback, 0600))
+			case "missing":
+				callback += ".missing"
+			case "symlink":
+				link := filepath.Join(dir, "link")
+				require.NoError(t, os.Symlink(callback, link))
+				callback = link
+			case "directory":
+				callback = dir
+			case "relative":
+				callback = "observe-successor.sh"
+			}
+			output, err := exec.Command("bash", "observe-successor.sh", "--check-callback", callback).CombinedOutput()
+			if scenario == "executable" {
+				require.NoError(t, err, string(output))
+			} else {
+				require.Error(t, err, string(output))
+			}
+			require.NoFileExists(t, marker)
+			if scenario == "mode-lost" {
+				out := filepath.Join(dir, "observations")
+				output, err = exec.Command("bash", "observe-successor.sh", out, strconv.FormatInt(time.Now().UnixNano(), 10), "42", "7", "5", "1", callback).CombinedOutput()
+				require.Error(t, err, string(output))
+				require.NoDirExists(t, out, "runtime check must still fail before observation")
+			}
+		})
+	}
+}
