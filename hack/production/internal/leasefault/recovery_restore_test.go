@@ -77,6 +77,13 @@ func (c *restoreConnection) Invoke(ctx context.Context, method string, args, rep
 		if c.mode == "revoke-error" {
 			return errors.New("ambiguous revoke failure")
 		}
+		if c.mode == "false-not-found" {
+			return rpctypes.ErrGRPCLeaseNotFound
+		}
+		if c.mode == "ack-without-revoke" {
+			reply.(*pb.LeaseRevokeResponse).Header = h
+			return nil
+		}
 		c.lease = false
 		if c.mode == "expired-concurrently" {
 			return rpctypes.ErrGRPCLeaseNotFound
@@ -89,7 +96,7 @@ func (c *restoreConnection) Invoke(ctx context.Context, method string, args, rep
 }
 
 func TestRestoreProtocolBoundedOwnedWrites(t *testing.T) {
-	for _, mode := range []string{"success", "expired-concurrently", "already-restored", "no-intent", "denied", "deny-before-write", "unrelated-alarm", "unrelated-key", "key-new-owner", "alarm-error", "revoke-error"} {
+	for _, mode := range []string{"success", "expired-concurrently", "already-restored", "no-intent", "denied", "deny-before-write", "deny-second-write", "deny-final-check", "unrelated-alarm", "unrelated-key", "key-new-owner", "alarm-error", "revoke-error", "false-not-found", "ack-without-revoke"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
@@ -103,7 +110,8 @@ func TestRestoreProtocolBoundedOwnedWrites(t *testing.T) {
 			admissions := 0
 			err := RestoreProtocol(ctx, dir, plan, conn, func(context.Context) error {
 				admissions++
-				if mode == "denied" || (mode == "deny-before-write" && admissions == 2) {
+				if mode == "denied" || (mode == "deny-before-write" && admissions == 2) ||
+					(mode == "deny-second-write" && admissions == 3) || (mode == "deny-final-check" && admissions == 4) {
 					return errors.New("admission denied")
 				}
 				return nil
@@ -114,9 +122,9 @@ func TestRestoreProtocolBoundedOwnedWrites(t *testing.T) {
 				require.Error(t, err)
 			}
 			switch mode {
-			case "success", "expired-concurrently", "revoke-error":
+			case "success", "expired-concurrently", "revoke-error", "false-not-found", "ack-without-revoke", "deny-final-check":
 				require.Equal(t, []string{"alarm", "lease"}, conn.writes)
-			case "alarm-error":
+			case "alarm-error", "deny-second-write":
 				require.Equal(t, []string{"alarm"}, conn.writes)
 			default:
 				require.Empty(t, conn.writes)
@@ -127,6 +135,10 @@ func TestRestoreProtocolBoundedOwnedWrites(t *testing.T) {
 			}
 			if mode == "no-intent" || mode == "denied" {
 				require.Zero(t, conn.calls)
+			}
+			if mode == "false-not-found" || mode == "ack-without-revoke" {
+				require.Equal(t, 7, conn.calls) // Final TTL read, no retry or success from the write result.
+				require.ErrorContains(t, err, "recovery lease remains")
 			}
 		})
 	}
