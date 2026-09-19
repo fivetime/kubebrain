@@ -10,6 +10,8 @@ def approved:
   "2ad79751ebc35291ed8caac144a6e73442b927a6":
    {line:1645,sha256:"3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"},
   "e3914449b57ab6e211ece94cb88fd3318acb2970":
+   {line:1645,sha256:"3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"},
+  "71bddd9a6de10723157ae5526797146e6a221407":
    {line:1645,sha256:"3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"}};
 (approved[$source] // error("unapproved image source for wait-site classification")) as $binding |
 if $binding.sha256 != $source_file_sha256 then
