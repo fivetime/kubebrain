@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/leasefault"
 	"github.com/stretchr/testify/require"
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"google.golang.org/grpc"
@@ -63,6 +65,8 @@ func TestProbeOriginalStream(t *testing.T) {
 				response: &pb.LeaseKeepAliveResponse{Header: header, ID: 33, TTL: 3}}
 			wantStreams := int32(1)
 			switch name {
+			case "success":
+				s.response.Header = &pb.ResponseHeader{ClusterId: 11, MemberId: 22, Revision: 3, RaftTerm: 5}
 			case "unavailable":
 				s.streamErr = status.Error(codes.Unavailable, "injected stream termination")
 			case "deadline":
@@ -116,6 +120,20 @@ func TestProbeOriginalStream(t *testing.T) {
 			if name == "success" {
 				require.NoError(t, err)
 				require.Contains(t, output.String(), `"phase":"response"`)
+				// Validate the actual encoder's format. This post-hoc synthetic
+				// origin is NOT evidence of real fault timing or successor election.
+				decoder := json.NewDecoder(bytes.NewReader(output.Bytes()))
+				var before, sent struct {
+					At time.Time `json:"at"`
+				}
+				require.NoError(t, decoder.Decode(&before))
+				require.NoError(t, decoder.Decode(&sent))
+				validated, err := leasefault.ValidateOriginalResponse(output.Bytes(), leasefault.Binding{
+					LeaseID: 33, ClusterID: 11, InitialMemberID: 22, InitialTerm: 4, SuccessorTerm: 5,
+					Origin: sent.At.Add(time.Nanosecond),
+				})
+				require.NoError(t, err)
+				require.Equal(t, int64(3), validated.TTL)
 			} else {
 				require.Error(t, err)
 				require.NotContains(t, output.String(), `"phase":"response"`)

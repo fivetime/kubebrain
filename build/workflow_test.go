@@ -142,6 +142,8 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	require.Contains(t, workflow.On["push"].Paths, "hack/production/cmd/lease-term-probe/**")
 	require.Contains(t, commands, "go vet ./hack/production/cmd/lease-term-probe\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/cmd/lease-term-probe\n")
+	require.Contains(t, commands, "go vet ./hack/production/internal/leasefault\n")
+	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/internal/leasefault\n")
 	require.Contains(t, workflow.On["push"].Paths, "hack/production/cmd/info-diagnostic-probe/**")
 	require.Contains(t, commands, "go vet ./hack/production/cmd/info-diagnostic-probe\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/cmd/info-diagnostic-probe\n")
