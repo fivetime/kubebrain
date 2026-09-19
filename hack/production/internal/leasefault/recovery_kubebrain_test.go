@@ -2,12 +2,18 @@ package leasefault
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/golang/mock/gomock"
+	"github.com/kubewharf/kubebrain/hack/production/internal/metricsworker"
 	"github.com/kubewharf/kubebrain/pkg/backend"
 	"github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	serveretcd "github.com/kubewharf/kubebrain/pkg/server/etcd"
@@ -38,12 +44,13 @@ func (recoveryPeer) SyncReadRevision(context.Context) error { return nil }
 func (recoveryPeer) Ready() error                           { return nil }
 
 func TestRestoreProtocolKubeBrainGRPC(t *testing.T) {
-	t.Run("live", func(t *testing.T) { testRestoreProtocolKubeBrainGRPC(t, false, false) })
-	t.Run("expired-retained", func(t *testing.T) { testRestoreProtocolKubeBrainGRPC(t, true, false) })
-	t.Run("foreign-key", func(t *testing.T) { testRestoreProtocolKubeBrainGRPC(t, false, true) })
+	for _, mode := range []string{"live", "expired-retained", "foreign-key", "child-timeout"} {
+		t.Run(mode, func(t *testing.T) { testRestoreProtocolKubeBrainGRPC(t, mode) })
+	}
 }
 
-func testRestoreProtocolKubeBrainGRPC(t *testing.T, expired, foreignKey bool) {
+func testRestoreProtocolKubeBrainGRPC(t *testing.T, mode string) {
+	expired, foreignKey := mode == "expired-retained", mode == "foreign-key"
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)
 	b := backend.NewBackend(memkv.NewKvStorage(), backend.Config{Identity: "recovery-test", EnableEtcdCompatibility: true}, metrics)
@@ -93,6 +100,56 @@ func testRestoreProtocolKubeBrainGRPC(t *testing.T, expired, foreignKey bool) {
 	require.Error(t, VerifyProtocolRecovery(ctx, plan, conn))
 	// Kubernetes admission is intentionally synthetic: this fixture has no cluster.
 	admit := func(context.Context) error { return nil }
+	if mode == "child-timeout" {
+		log, err := os.OpenFile(filepath.Join(dir, "child.stderr"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		require.NoError(t, err)
+		defer log.Close()
+		pidPath := filepath.Join(dir, "child.pid")
+		spec := metricsworker.Command{Executable: "/bin/bash", Stderr: log, Args: []string{"-c", `
+set -eu
+printf '%s\n' "$BASHPID" > "$1"
+printf 'FAULT_READY\n'
+IFS= read -r origin
+while :; do /bin/sleep 1; done
+`, "recovery-timeout-fixture", pidPath}}
+		var expiredCtx context.Context
+		err = metricsworker.WithPreparedFault(ctx, spec, func(runCtx context.Context, inject func(context.Context, time.Time) error) error {
+			origin := time.Now()
+			faultCtx, stop := context.WithDeadline(runCtx, origin.Add(100*time.Millisecond))
+			defer stop()
+			expiredCtx = faultCtx
+			return inject(faultCtx, origin)
+		})
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.NotNil(t, expiredCtx)
+		pidData, err := os.ReadFile(pidPath)
+		require.NoError(t, err)
+		pid, err := strconv.Atoi(strings.TrimSpace(string(pidData)))
+		require.NoError(t, err)
+		require.Positive(t, pid)
+		// Only the direct child's join is exercised; this is not cluster or
+		// escaped-descendant admission. Protocol setup above ran in the parent.
+		admit = func(context.Context) error {
+			if err := syscall.Kill(pid, 0); err != syscall.ESRCH {
+				return fmt.Errorf("fixture child not reaped: %v", err)
+			}
+			return nil
+		}
+		require.NoError(t, admit(ctx))
+		require.ErrorIs(t, RestoreProtocol(expiredCtx, dir, plan, conn, admit), context.DeadlineExceeded)
+		alarms, err := maintenance.Alarm(ctx, &pb.AlarmRequest{Action: pb.AlarmRequest_GET})
+		require.NoError(t, err)
+		require.Len(t, alarms.Alarms, 1)
+		ttl, err := lease.LeaseTimeToLive(ctx, &pb.LeaseTimeToLiveRequest{ID: plan.LeaseID, Keys: true})
+		require.NoError(t, err)
+		require.Equal(t, grantTTL, ttl.GrantedTTL)
+		require.Equal(t, [][]byte{[]byte(plan.Key)}, ttl.Keys)
+		// Fresh recovery budget is separate from the failed fault deadline;
+		// successful cleanup must never turn that failed attempt into a pass.
+		recoveryCtx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stop()
+		ctx = recoveryCtx
+	}
 	if foreignKey {
 		require.ErrorContains(t, RestoreProtocol(ctx, dir, plan, conn, admit), "unrelated key")
 		alarms, err := maintenance.Alarm(ctx, &pb.AlarmRequest{Action: pb.AlarmRequest_GET})

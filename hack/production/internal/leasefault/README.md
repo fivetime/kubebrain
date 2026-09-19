@@ -83,7 +83,7 @@ an additional in-memory gRPC server checks protobuf round trips at full-width ID
 and distinguishes revoked leases from expired-but-retained leases. It uses only
 an in-memory listener, not cluster transport or TLS. Live Kubernetes identity,
 network restoration and process joins remain external prerequisites. The driver
-has not yet connected this verifier or implemented the separate recovery writes.
+has not yet connected this verifier or the separate recovery writes below.
 
 `RestoreProtocol` now provides the protocol write phase, still not wired to a
 driver or used on a cluster. It requires a saved matching intent, bounded recovery
@@ -109,3 +109,14 @@ admission are fixed fixtures; this is not TiKV, TLS, network-fault or cluster pr
 The same real-service fixture also attaches an unrelated key to the lease and
 checks that restore refuses before disarming: the CORRUPT alarm, fixture key,
 unrelated key value and both lease attachments remain intact.
+
+The `child-timeout` case composes `WithPreparedFault` with this real-service
+fixture: after protocol setup in the parent, a real Bash child misses its fault
+deadline and is killed and reaped. Recovery using the expired fault context is
+rejected, with the alarm and lease attachment still present. A separate bounded
+recovery context then restores and verifies the service; every admission callback
+checks that the direct child is gone. This does not move protocol setup into the
+child, simulate a network fault, prove escaped descendants are gone, or convert
+the timed-out attempt into acceptance success. Three race runs of the real-service
+cases passed (11.423s); package vet and diff checks also passed. The complete real
+cluster coordinator remains outstanding.
