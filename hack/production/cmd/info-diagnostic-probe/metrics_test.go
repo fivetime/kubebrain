@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -118,5 +120,77 @@ func TestMetricsOutputCannotChangeOtherModes(t *testing.T) {
 		}
 		// protected-metrics must reject a simultaneous stack output too.
 		require.Error(t, c.validate())
+	}
+}
+
+func TestProtectedMetricsFailureDoesNotProduceSuccess(t *testing.T) {
+	for _, scenario := range []string{"cancel-in-body", "deadline-in-body", "trace-failure", "missing-directory", "summary-failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			bodyStarted := make(chan struct{}, 1)
+			c := fixture(t, tls.RequireAndVerifyClientCert, tls.VersionTLS13, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/ping" {
+					_, _ = io.WriteString(w, "ok")
+					return
+				}
+				if r.URL.Path != "/metrics" {
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(404)
+					return
+				}
+				if scenario == "cancel-in-body" || scenario == "deadline-in-body" {
+					bodyStarted <- struct{}{}
+					_, _ = io.WriteString(w, "x ")
+					w.(http.Flusher).Flush()
+					if scenario == "cancel-in-body" {
+						cancel()
+					}
+					<-r.Context().Done()
+					return
+				}
+				_, _ = io.WriteString(w, "x 1\n")
+			}))
+			c.mode, c.stackOutput = "protected-metrics", ""
+			c.metricsOutput = filepath.Join(t.TempDir(), "metrics.txt")
+			var summary bytes.Buffer
+			var err error
+			switch scenario {
+			case "cancel-in-body", "deadline-in-body":
+				if scenario == "deadline-in-body" {
+					var stop context.CancelFunc
+					ctx, stop = context.WithTimeout(ctx, time.Second)
+					defer stop()
+				}
+				var body []byte
+				body, err = probeWithDiagnostics(ctx, c, io.Discard)
+				require.Empty(t, body)
+				require.NotEmpty(t, bodyStarted, "must reach metrics response, not fail during TLS setup")
+				if scenario == "cancel-in-body" {
+					require.ErrorIs(t, err, context.Canceled)
+				} else {
+					require.ErrorIs(t, err, context.DeadlineExceeded)
+				}
+			case "trace-failure":
+				err = runWithDiagnostics(c, &summary, &timingFailureWriter{})
+			case "missing-directory":
+				c.metricsOutput = filepath.Join(t.TempDir(), "absent", "metrics.txt")
+				err = run(c, &summary)
+			case "summary-failure":
+				err = run(c, &timingFailureWriter{})
+			}
+			require.Error(t, err)
+			require.Empty(t, summary.String())
+			if scenario == "summary-failure" {
+				// Raw bytes may remain after final summary output fails. The
+				// caller must require both exit success and a bound summary.
+				body, readErr := os.ReadFile(c.metricsOutput)
+				require.NoError(t, readErr)
+				require.Equal(t, "x 1\n", string(body))
+			} else {
+				_, statErr := os.Stat(c.metricsOutput)
+				require.True(t, os.IsNotExist(statErr))
+			}
+		})
 	}
 }
