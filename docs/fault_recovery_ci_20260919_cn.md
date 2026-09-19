@@ -162,3 +162,16 @@ race 回归通过（5.027s），metricsworker 回归通过（缓存），build �
 再次全包运行仍在 120 秒超时，已推进到 PeerTrustStagePreflight。
 该调整只证明局部执行时间改善，不证明全包门限已满足；还需完整耗时
 分析，不能将诊断运行或定向结果冒充 CI 全包通过。
+
+### 全包累计耗时修复后通过原门限
+
+仅用于诊断的 5 分钟上限运行在 132.785s 通过；JSON 时间线保存在
+`/root/.local/state/kubebrain/test-cluster-full-timing.IBiVY2OU/events.jsonl`。
+此结果本身不算原门限通过。时间线显示策略观察约 19s、成员密码身份
+预检约 16s、协议制品预检约 14s，未发现单项挂死。
+
+审核这些用例均使用独立临时目录、证书与子进程环境后，三组均调整为
+最多 4 个用例并行，保留所有断言。随后重新执行原命令
+`go test -race -count=1 -timeout=2m ./deploy/test-cluster`，97.549s 通过；
+vet 和 diff 检查通过。CI 超时配置和真实故障原 30 秒门限均未修改。
+这解除了后续代码推送前的本地全包验证问题，不代表真实故障验收完成。

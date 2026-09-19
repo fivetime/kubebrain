@@ -14,8 +14,12 @@ import (
 )
 
 func TestPeerProtocolPreflightBindsAuditedArtifactsWithoutExecutingThem(t *testing.T) {
+	slots := make(chan struct{}, 4)
 	for _, scenario := range []string{"expand", "restore", "changed-audit", "changed-probe", "wrong-image", "wrong-source", "missing-ci", "symlink", "not-executable"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel() // Fixtures are private; repository scripts are read-only.
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			dir := t.TempDir()
 			in := memberStageFixture(t, dir, false)
 			in["phase"] = "protocol"

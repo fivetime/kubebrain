@@ -16,6 +16,7 @@ import (
 )
 
 func TestLocalPolicyObserverAndRecoveryWait(t *testing.T) {
+	slots := make(chan struct{}, 4)
 	observer, err := filepath.Abs("observe-local-policy-state.sh")
 	require.NoError(t, err)
 	waiter, err := filepath.Abs("../../hack/production/wait-policy-absence.sh")
@@ -33,9 +34,9 @@ func TestLocalPolicyObserverAndRecoveryWait(t *testing.T) {
 		{"wait-cancel", 124},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if strings.HasPrefix(tc.name, "unlabelled-") {
-				t.Parallel() // Independent temp directory and per-command environment.
-			}
+			t.Parallel() // Independent temp directory and per-command environment.
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
 			bin := filepath.Join(dir, "bin")

@@ -105,8 +105,12 @@ func memberStageFixture(t *testing.T, dir string, reuseKey bool) map[string]any 
 }
 
 func TestPeerTrustMembersPreflightBindsCryptographicIdentities(t *testing.T) {
+	slots := make(chan struct{}, 4)
 	for _, scenario := range []string{"expand", "restore", "reused-spki", "wrong-ca", "wrong-policy-pin", "wrong-policy-scope", "self-target", "wrong-budget", "mismatched-secret", "extra-file"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel() // Each case owns its certificates, receipt and mock API.
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			dir := t.TempDir()
 			receipt := memberStageFixture(t, dir, scenario == "reused-spki")
 			data := trustMap(receipt, "member_secret", "data")
