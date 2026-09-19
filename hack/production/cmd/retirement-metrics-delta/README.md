@@ -132,3 +132,10 @@ caller must still supervise filesystem stalls and all processes. These callbacks
 do not choose the original clock, inject faults, join workers or prove successor,
 drop, stack or whole-fault acceptance. They are concrete metric hooks, not a
 complete real-cluster experiment driver. Tests use synthetic capture artifacts.
+
+A supervisor integration test runs actual Bash children through READY, original
+clock dispatch, CAPTURED, EXIT-trap receipts and process reaping, then invokes
+these callbacks. It covers success, nonzero child exit, missing exit receipt and
+below-minimum delta, and checks the child has been reaped before completion
+validation. Its synthetic historical captures and no-op injection validate
+ordering only, not actual sample timing, escaped descendants or cluster faults.
