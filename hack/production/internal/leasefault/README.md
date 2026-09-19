@@ -271,3 +271,15 @@ to check ordering, exact conditional writes, failed joins, cross-owner plans,
 withdrawal/protocol failures and unconverged identity. They do not establish real
 worker teardown or Cilium recovery. This entry point does not yet supply the full
 preparation/fault-gate controller or prove the original 30-second acceptance.
+
+`RunRecoveryObserver` provides a bounded subprocess adapter for independently
+admitted read-only observation scripts. It uses the caller's existing recovery
+deadline, explicit environment, process-group cancellation and bounded combined
+output. Exit 75 returns `ErrObservationPending`; all other nonzero exits are fatal,
+and cancellation/output-limit errors cannot become pending. It performs no retries
+and does not infer packet connectivity or acceptance from exit 0. Tests cover
+matched/pending/fatal states, explicit environment isolation, output overflow and
+deadline cancellation with direct-child reaping. Callers must still bind scripts
+and arguments to admitted identities, persist output privately, and account for
+descendants that escape the process group. This adapter does not itself connect
+the cluster-specific hooks or execute a fault experiment.
