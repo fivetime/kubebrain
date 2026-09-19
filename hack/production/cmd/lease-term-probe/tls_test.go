@@ -52,7 +52,7 @@ func (s *disconnectLease) LeaseKeepAlive(stream pb.Lease_LeaseKeepAliveServer) e
 }
 
 func TestRunOverMutualTLS(t *testing.T) {
-	for _, mode := range []string{"success", "wrong-server-name", "disconnect"} {
+	for _, mode := range []string{"success", "wait-expiry", "wrong-server-name", "disconnect"} {
 		t.Run(mode, func(t *testing.T) {
 			caFile, certFile, keyFile, serverTLS := probeTestTLS(t)
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -63,6 +63,11 @@ func TestRunOverMutualTLS(t *testing.T) {
 			fixture := &fixture{header: header,
 				ttl:      &pb.LeaseTimeToLiveResponse{Header: header, ID: 33, TTL: -2, GrantedTTL: 3, Keys: [][]byte{[]byte("owned")}},
 				response: &pb.LeaseKeepAliveResponse{Header: header, ID: 33, TTL: 3}}
+			if mode == "wait-expiry" {
+				fixture.ttlSequence = []*pb.LeaseTimeToLiveResponse{
+					{Header: header, ID: 33, TTL: 1, GrantedTTL: 3, Keys: [][]byte{[]byte("owned")}}, fixture.ttl,
+				}
+			}
 			pb.RegisterMaintenanceServer(gs, fixture)
 			if mode == "disconnect" {
 				pb.RegisterLeaseServer(gs, &disconnectLease{fixture: fixture, stop: gs.Stop})
@@ -80,8 +85,11 @@ func TestRunOverMutualTLS(t *testing.T) {
 				"--cert=" + certFile, "--key=" + keyFile, "--tls-server-name=" + serverName,
 				"--cluster-id=11", "--member-id=22", "--lease-id=33", "--leased-key=owned", "--duration=3s"}
 			var output bytes.Buffer
+			if mode == "wait-expiry" {
+				args = append(args, "--wait-for-expiry")
+			}
 			err = run(context.Background(), args, &output)
-			if mode == "success" {
+			if mode == "success" || mode == "wait-expiry" {
 				require.NoError(t, err)
 				require.Contains(t, output.String(), `"phase":"response"`)
 			} else {
@@ -89,6 +97,9 @@ func TestRunOverMutualTLS(t *testing.T) {
 				require.NotContains(t, output.String(), `"phase":"response"`)
 			}
 			require.Equal(t, int32(1), counted.accepted.Load(), "must never establish a replacement TCP connection")
+			if mode == "wait-expiry" {
+				require.Equal(t, int32(2), fixture.ttlReads.Load())
+			}
 			wantStreams := int32(1)
 			if mode == "wrong-server-name" {
 				wantStreams = 0

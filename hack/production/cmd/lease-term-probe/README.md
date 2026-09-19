@@ -40,6 +40,21 @@ The tool never prints certificate/key contents. Its output does contain lease
 and member identifiers; retain it with the experiment evidence. No sample command
 here authorizes fault injection against an arbitrary endpoint.
 
+With explicit `--wait-for-expiry`, the probe polls TTL every 200ms until the
+retained owned lease becomes negative, using the same connection and original
+whole-probe deadline. It never retries an RPC error and never renews during the
+wait. Every sample must retain the initial cluster/member/term, positive unchanged
+granted TTL, and exactly the single owned key; disappearance, foreign attachments
+or identity drift fail immediately. Both modes now require that sole attachment.
+Default mode still rejects an unexpired lease immediately.
+
+Polling emits no additional stdout events: only after expiry does the existing
+three-event original-stream protocol begin, with one renewal request. The parent
+must still independently prove the original request is blocked before allowing
+the fault clock and activation. The expiry wait is preparation, not a fresh
+30-second fault window or fault acceptance. CLI mTLS tests verify that polling
+and the renewal use one TCP connection; these remain synthetic RPC fixtures.
+
 Local tests use synthetic services over bufconn and loopback TCP/mTLS. The latter
 exercise the CLI, mandatory client certificates, rejection of a wrong server
 name, and connection loss without a replacement connection. They do not use real

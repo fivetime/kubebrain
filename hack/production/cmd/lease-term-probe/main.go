@@ -43,6 +43,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 	member := f.Uint64("member-id", 0, "expected current leader member ID")
 	ownedKey := f.String("leased-key", "", "expected key attached to owned lease")
 	duration := f.Duration("duration", 2*time.Minute, "whole probe deadline, at most 10m")
+	waitExpiry := f.Bool("wait-for-expiry", false, "poll the owned retained lease before the single renewal, within the same connection/deadline")
 	if err := f.Parse(args); err != nil {
 		return err
 	}
@@ -69,7 +70,7 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 		return err
 	}
 	defer conn.Close()
-	if err := probe(ctx, conn, *id, *cluster, *member, *ownedKey, out); err != nil {
+	if err := probeWithExpiryWait(ctx, conn, *id, *cluster, *member, *ownedKey, out, *waitExpiry); err != nil {
 		return err
 	}
 	if dials.Load() != 1 {
@@ -79,6 +80,15 @@ func run(ctx context.Context, args []string, out io.Writer) error {
 }
 
 func probe(ctx context.Context, conn grpc.ClientConnInterface, id int64, cluster, member uint64, key string, out io.Writer) error {
+	return probeWithExpiryWait(ctx, conn, id, cluster, member, key, out, false)
+}
+
+func probeWithExpiryWait(ctx context.Context, conn grpc.ClientConnInterface, id int64, cluster, member uint64, key string, out io.Writer, waitExpiry bool) error {
+	if waitExpiry {
+		if _, ok := ctx.Deadline(); !ok {
+			return errors.New("expiry wait requires an existing probe deadline")
+		}
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	status, err := pb.NewMaintenanceClient(conn).Status(ctx, &pb.StatusRequest{})
@@ -90,16 +100,37 @@ func probe(ctx context.Context, conn grpc.ClientConnInterface, id int64, cluster
 		return errors.New("preflight cluster/member/leader mismatch")
 	}
 	lease := pb.NewLeaseClient(conn)
-	ttl, err := lease.LeaseTimeToLive(ctx, &pb.LeaseTimeToLiveRequest{ID: id, Keys: true})
-	if err != nil {
-		return fmt.Errorf("expiry preflight: %w", err)
-	}
-	found := false
-	for _, attached := range ttl.Keys {
-		found = found || string(attached) == key
-	}
-	if ttl.ID != id || ttl.TTL >= 0 || ttl.GrantedTTL <= 0 || !found || ttl.GetHeader().GetClusterId() != cluster || ttl.GetHeader().GetMemberId() != member || ttl.GetHeader().GetRaftTerm() != term {
-		return errors.New("preflight requires expired retained lease with expected attachment and cluster")
+	var ttl *pb.LeaseTimeToLiveResponse
+	var granted int64
+	for {
+		ttl, err = lease.LeaseTimeToLive(ctx, &pb.LeaseTimeToLiveRequest{ID: id, Keys: true})
+		if err != nil {
+			return fmt.Errorf("expiry preflight: %w", err)
+		}
+		if ttl.GetID() != id || ttl.GetGrantedTTL() <= 0 || len(ttl.Keys) != 1 || string(ttl.Keys[0]) != key || ttl.GetHeader().GetClusterId() != cluster || ttl.GetHeader().GetMemberId() != member || ttl.GetHeader().GetRaftTerm() != term {
+			return errors.New("preflight requires retained lease with sole owned attachment and matching cluster/member/term")
+		}
+		if granted != 0 && ttl.GrantedTTL != granted {
+			return errors.New("lease grant changed during expiry wait")
+		}
+		granted = ttl.GrantedTTL
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if ttl.TTL < 0 {
+			break
+		}
+		if !waitExpiry {
+			return errors.New("preflight requires expired retained lease")
+		}
+		// Read-only polling is not an RPC-error retry or a replacement renewal.
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 	enc := json.NewEncoder(out)
 	if err := enc.Encode(map[string]any{"phase": "expired_preflight", "at": time.Now().UTC(), "lease_id": id, "ttl": ttl.TTL, "member_id": member, "raft_term": term, "cluster_id": cluster}); err != nil {

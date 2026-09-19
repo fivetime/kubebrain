@@ -24,18 +24,31 @@ import (
 type fixture struct {
 	pb.UnimplementedLeaseServer
 	pb.UnimplementedMaintenanceServer
-	header    *pb.ResponseHeader
-	ttl       *pb.LeaseTimeToLiveResponse
-	response  *pb.LeaseKeepAliveResponse
-	streamErr error
-	block     bool
-	streams   atomic.Int32
+	header           *pb.ResponseHeader
+	ttl              *pb.LeaseTimeToLiveResponse
+	response         *pb.LeaseKeepAliveResponse
+	streamErr        error
+	block            bool
+	streams          atomic.Int32
+	ttlReads         atomic.Int32
+	ttlSequence      []*pb.LeaseTimeToLiveResponse
+	secondTTLFailure error
 }
 
 func (s *fixture) Status(context.Context, *pb.StatusRequest) (*pb.StatusResponse, error) {
 	return &pb.StatusResponse{Header: s.header, Leader: 22}, nil
 }
 func (s *fixture) LeaseTimeToLive(context.Context, *pb.LeaseTimeToLiveRequest) (*pb.LeaseTimeToLiveResponse, error) {
+	i := int(s.ttlReads.Add(1)) - 1
+	if i == 1 && s.secondTTLFailure != nil {
+		return nil, s.secondTTLFailure
+	}
+	if len(s.ttlSequence) > 0 {
+		if i >= len(s.ttlSequence) {
+			i = len(s.ttlSequence) - 1
+		}
+		return s.ttlSequence[i], nil
+	}
 	return s.ttl, nil
 }
 func (s *fixture) LeaseKeepAlive(stream pb.Lease_LeaseKeepAliveServer) error {
@@ -57,7 +70,7 @@ func (s *fixture) LeaseKeepAlive(stream pb.Lease_LeaseKeepAliveServer) error {
 }
 
 func TestProbeOriginalStream(t *testing.T) {
-	for _, name := range []string{"success", "unavailable", "deadline", "wrong-cluster", "changed-member", "changed-term", "zero-term", "live-lease", "missing-lease", "wrong-key", "wrong-response", "output-failure"} {
+	for _, name := range []string{"success", "unavailable", "deadline", "wrong-cluster", "changed-member", "changed-term", "zero-term", "live-lease", "missing-lease", "wrong-key", "extra-key", "wrong-response", "output-failure"} {
 		t.Run(name, func(t *testing.T) {
 			header := &pb.ResponseHeader{ClusterId: 11, MemberId: 22, Revision: 3, RaftTerm: 4}
 			s := &fixture{header: header,
@@ -88,6 +101,9 @@ func TestProbeOriginalStream(t *testing.T) {
 				wantStreams = 0
 			case "missing-lease":
 				s.ttl.GrantedTTL = 0
+				wantStreams = 0
+			case "extra-key":
+				s.ttl.Keys = append(s.ttl.Keys, []byte("foreign"))
 				wantStreams = 0
 			case "wrong-key":
 				s.ttl.Keys = nil
