@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
@@ -25,11 +24,8 @@ import (
 	"github.com/kubewharf/kubebrain/hack/production/internal/leasefault"
 	"github.com/kubewharf/kubebrain/hack/production/internal/planinput"
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
-	"go.etcd.io/etcd/client/pkg/v3/transport"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/tools/clientcmd"
 	strictjson "sigs.k8s.io/json"
 )
 
@@ -148,35 +144,11 @@ func (p plan) verifyFiles(ctx context.Context) error {
 }
 
 func clients(p plan) (dynamic.Interface, *grpc.ClientConn, error) {
-	data, err := readFile(testKubeconfig, true, 1<<20)
-	if err != nil {
-		return nil, nil, err
-	}
-	raw, err := clientcmd.Load(data)
-	if err != nil {
-		return nil, nil, err
-	}
-	cfg, err := clientcmd.NewNonInteractiveClientConfig(*raw, testContext, &clientcmd.ConfigOverrides{}, nil).ClientConfig()
-	if err != nil {
-		return nil, nil, err
-	}
-	if cfg.Host != p.APIServer || cfg.Insecure || cfg.ExecProvider != nil || cfg.AuthProvider != nil || cfg.Proxy != nil || len(cfg.CAData) == 0 || len(cfg.CertData) == 0 || len(cfg.KeyData) == 0 || cfg.CAFile != "" || cfg.CertFile != "" || cfg.KeyFile != "" || cfg.BearerToken != "" || cfg.BearerTokenFile != "" || cfg.Username != "" || cfg.Password != "" {
-		return nil, nil, errors.New("require pinned direct mTLS admin configuration without plugins/proxy")
-	}
-	cfg.Timeout = 15 * time.Second
-	cfg.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
-	cfg.QPS = 20
-	cfg.Burst = 40
-	client, err := leasefault.NewDynamicClient(cfg)
-	if err != nil {
-		return nil, nil, err
-	}
-	tlsConfig, err := (transport.TLSInfo{TrustedCAFile: p.CA, CertFile: p.Certificate, KeyFile: p.Key, ServerName: p.ServerName}).ClientConfig()
-	if err != nil {
-		return nil, nil, err
-	}
-	conn, err := grpc.NewClient("passthrough:///"+p.Endpoint, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)), grpc.WithDisableRetry(), grpc.WithNoProxy())
-	return client, conn, err
+	return leasefault.NewFaultConnections(leasefault.ConnectionPlan{
+		Kubeconfig: testKubeconfig, Context: testContext, APIServer: p.APIServer,
+		Endpoint: p.Endpoint, ServerName: p.ServerName, CA: p.CA,
+		Certificate: p.Certificate, Key: p.Key, Files: p.Files,
+	})
 }
 
 func retain(dir, stage string, output []byte, observed error) error {
