@@ -15,7 +15,9 @@ same_process() {
 out=$(mktemp -d "$owner/endpoint.XXXXXXXX")
 echo "EVIDENCE=$out"
 trap 'printf "%s\n" "$?" > "$out/capture.exit"' EXIT
-k=(timeout --kill-after=1s 20s kubectl --kubeconfig=/root/.kube/kubebrain-test-10.32.32.66.conf --context=kubebrain-test-10.32.32.66 --request-timeout=15s)
+trap 'exit 143' TERM
+trap 'exit 130' INT
+k=(timeout --foreground --kill-after=1s 20s kubectl --kubeconfig=/root/.kube/kubebrain-test-10.32.32.66.conf --context=kubebrain-test-10.32.32.66 --request-timeout=15s)
 "${k[@]}" get namespace kubebrain-dbaas-test -o json > "$out/namespace.json"
 jq -e '.metadata.uid=="6c57c242-912b-41bb-9020-f4fdb3225ef3" and .metadata.deletionTimestamp==null' "$out/namespace.json" >/dev/null
 "${k[@]}" -n kubebrain-dbaas-test get pod "$pod" -o json > "$out/pod.json"
