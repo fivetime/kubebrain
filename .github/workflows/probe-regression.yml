@@ -19,6 +19,8 @@ name: Rollout probe regression
       - 'hack/production/same-pod-process.jq'
       - 'hack/production/fault-policy-delete-plan.jq'
       - 'hack/production/fault_policy_delete_plan_test.go'
+      - 'hack/production/fault-label-restore-plan.jq'
+      - 'hack/production/fault_label_restore_plan_test.go'
       - 'hack/production/cmd/peer-retirement-scope/**'
       - 'hack/production/cmd/peer-retirement-test-pki/**'
       - 'hack/production/internal/**'
@@ -159,6 +161,7 @@ jobs:
           go test -race -count=1 -timeout=2m -v ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta
           go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|MetricsSchedule|MetricsWorker|SessionHashVerificationHonorsFaultDeadline)'
           go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestFaultPolicyDeletePlan$'
+          go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestFaultLabelRestorePlan$'
       - name: Race test all probe regressions
         run: |
           set -euo pipefail

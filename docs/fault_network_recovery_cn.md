@@ -29,5 +29,25 @@ jq -e -f hack/production/fault-policy-delete-plan.jq < admitted-observations.jso
 输入来源和文件完整性仍由独占恢复控制器保证；jq 不提供认证，也不
 替代严格原始 JSON 读取。当前测试只覆盖计划构造，不执行删除。
 外层尚须持久化预留回执、核对集群身份、等待策略消失、独立观察
-Cilium enforcement 恢复，再进行协议恢复和标签撤回。标签删除的
-UID/RV/nonce 条件及标签收敛检查仍待迁移；完整驱动尚未接入。
+Cilium enforcement 恢复，再进行协议恢复和标签撤回；完整驱动尚未接入。
+
+## 标签恢复计划
+
+`hack/production/fault-label-restore-plan.jq` 生成标签专用 JSON Patch，
+输入包含 binding、namespace、expected（变更前真实 Pod）、current
+（当前 Pod）、policies（完整的命名空间 CiliumNetworkPolicyList）。
+binding 含 namespace、namespaceUID、name（Pod）、uid（Pod）、nonce
+及 policyName。身份信息必须来自独立准入，不能由待修改对象反推。
+
+原 Pod 必须没有 fault-owner 标签，当前 Pod 的 UID/命名空间/名称必须
+匹配且不在删除中。策略列表不能分页未完成，不能仍含本次策略名称，
+也不能有 spec/specs 引用该 nonce。验证在返回“标签已不存在”的空
+补丁前同样执行。标签属于其他 owner 时拒绝，不会覆盖或移除。
+
+非空补丁依次 test UID、resourceVersion、当前标签 nonce，然后只
+remove `/metadata/labels/kubebrain.io~1fault-owner`，保留其他标签。
+它不发送 PATCH，也不证明数据面规则或 Cilium identity 收敛。外层
+仍必须持有独占恢复职责，先完成协议恢复和网络检查，提交补丁后
+复查 API 状态及实际 identity 收敛，不能把空补丁当作完整恢复证明。
+
+两个计划的合成输入回归均纳入 probe CI，并由 workflow 契约测试锁定。
