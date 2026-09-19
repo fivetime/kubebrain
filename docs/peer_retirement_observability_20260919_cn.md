@@ -217,6 +217,16 @@ diff-check 通过。未修改集群、未重跑故障验收；指标语义和同
 
 ### 取消和写入失败边界回归
 
+新增离线校验库 `hack/production/internal/retirementmetrics`：仅解释
+local/peer result counter，校验类型、唯一 outcome 标签、阶段对应的
+有限 outcome 集、有限非负整数及 float64 精确计数范围。拒绝重复序列
+和显式样本时间戳。缺失序列保持缺失，首次出现不能假定零基线。
+差值接口要求前后非空且一致的 Pod UID/container ID/startedAt/restartCount，
+拒绝计数回退。身份须由采集器的 Kubernetes 核验结果提供，而非指标标签。
+三轮 race 和 vet 通过。该库尚未接入真实采样驱动，未校验 histogram、
+采样顺序和文件证据绑定；不改变原始探针的 `metric_semantics_proven=false`，
+不把局部计数差值当作切换成功或完整延迟解释。
+
 新增故障模式测试验证 metrics 响应体传输中取消/截止；明确断言已经
 进入响应体阶段，并检查对应 context 错误，避免把 TLS 阶段失败当作
 响应取消覆盖。另验证时序输出失败、目标目录不存在、最终摘要输出
