@@ -234,3 +234,23 @@ Cilium endpoints. Callers still need phase-specific worker-join, endpoint and
 dataplane checks. Fake-client tests cover identities, controller relationship,
 label phases/collisions, incomplete lists, changed versions and lost ownership;
 the complete coordinator is not yet wired to this helper.
+
+`PrepareNetworkLabel` and `RestoreNetworkLabel` connect live identity admission to
+conditional Pod PATCH requests. Both retain the actual reservation receipt and
+recheck it before writes. Preparation requires the exact inactive reservation and
+no other namespace CNP referencing the active nonce; it adds only the owner label
+while preserving other labels, guarded by Pod UID/resourceVersion tests. Restore
+requires a complete policy list with neither the recorded policy nor any other
+CNP referencing that nonce, then tests UID/version/owner and removes only the
+owner label. Even an already absent label requires admission and policy checks.
+Both verify the final label state with fresh identity reads, without write retries.
+
+The admission callback must hold exclusive ownership. Preparation additionally
+requires stale Cilium endpoint checks; restoration requires joined workers and
+completed dataplane/protocol recovery. These conditions are caller obligations,
+not inferred from a successful API request. Label absence does not prove Cilium
+identity convergence. Fake-client lifecycle tests apply the actual JSON Patch,
+exercise absent label maps, preserve unrelated labels, reject concurrent versions,
+wrong/active/missing reservation, policy remnants/references, pagination, foreign
+labels and unconfirmed protocol recovery. The complete cluster coordinator and
+original 30-second real fault acceptance remain outstanding.
