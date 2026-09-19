@@ -38,11 +38,12 @@ func (recoveryPeer) SyncReadRevision(context.Context) error { return nil }
 func (recoveryPeer) Ready() error                           { return nil }
 
 func TestRestoreProtocolKubeBrainGRPC(t *testing.T) {
-	t.Run("live", func(t *testing.T) { testRestoreProtocolKubeBrainGRPC(t, false) })
-	t.Run("expired-retained", func(t *testing.T) { testRestoreProtocolKubeBrainGRPC(t, true) })
+	t.Run("live", func(t *testing.T) { testRestoreProtocolKubeBrainGRPC(t, false, false) })
+	t.Run("expired-retained", func(t *testing.T) { testRestoreProtocolKubeBrainGRPC(t, true, false) })
+	t.Run("foreign-key", func(t *testing.T) { testRestoreProtocolKubeBrainGRPC(t, false, true) })
 }
 
-func testRestoreProtocolKubeBrainGRPC(t *testing.T, expired bool) {
+func testRestoreProtocolKubeBrainGRPC(t *testing.T, expired, foreignKey bool) {
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)
 	b := backend.NewBackend(memkv.NewKvStorage(), backend.Config{Identity: "recovery-test", EnableEtcdCompatibility: true}, metrics)
@@ -77,6 +78,10 @@ func testRestoreProtocolKubeBrainGRPC(t *testing.T, expired bool) {
 	require.NoError(t, err)
 	_, err = kv.Put(ctx, &pb.PutRequest{Key: []byte(plan.Key), Value: []byte("fixture"), Lease: plan.LeaseID})
 	require.NoError(t, err)
+	if foreignKey {
+		_, err = kv.Put(ctx, &pb.PutRequest{Key: []byte("/business/not-owned"), Value: []byte("preserve"), Lease: plan.LeaseID})
+		require.NoError(t, err)
+	}
 	_, err = maintenance.Alarm(ctx, &pb.AlarmRequest{Action: pb.AlarmRequest_ACTIVATE, MemberID: plan.AlarmMemberID, Alarm: pb.AlarmType_CORRUPT})
 	require.NoError(t, err)
 	if expired {
@@ -88,6 +93,24 @@ func testRestoreProtocolKubeBrainGRPC(t *testing.T, expired bool) {
 	require.Error(t, VerifyProtocolRecovery(ctx, plan, conn))
 	// Kubernetes admission is intentionally synthetic: this fixture has no cluster.
 	admit := func(context.Context) error { return nil }
+	if foreignKey {
+		require.ErrorContains(t, RestoreProtocol(ctx, dir, plan, conn, admit), "unrelated key")
+		alarms, err := maintenance.Alarm(ctx, &pb.AlarmRequest{Action: pb.AlarmRequest_GET})
+		require.NoError(t, err)
+		require.Len(t, alarms.Alarms, 1)
+		require.Equal(t, plan.AlarmMemberID, alarms.Alarms[0].MemberID)
+		require.Equal(t, pb.AlarmType_CORRUPT, alarms.Alarms[0].Alarm)
+		for _, key := range []string{plan.Key, "/business/not-owned"} {
+			response, err := kv.Range(ctx, &pb.RangeRequest{Key: []byte(key)})
+			require.NoError(t, err)
+			require.Len(t, response.Kvs, 1)
+			require.Equal(t, plan.LeaseID, response.Kvs[0].Lease)
+			if key == "/business/not-owned" {
+				require.Equal(t, []byte("preserve"), response.Kvs[0].Value)
+			}
+		}
+		return
+	}
 	require.NoError(t, RestoreProtocol(ctx, dir, plan, conn, admit))
 	require.NoError(t, VerifyProtocolRecovery(ctx, plan, conn))
 	// Already-recovered state must not require another fixture or record overwrite.

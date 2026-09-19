@@ -106,3 +106,6 @@ restore and already-restored behavior for both live and expired-but-retained
 leases. The expiry case waits for an observed negative TTL with retained key and
 positive granted TTL, not a synthetic response. Peer leadership and Kubernetes
 admission are fixed fixtures; this is not TiKV, TLS, network-fault or cluster proof.
+The same real-service fixture also attaches an unrelated key to the lease and
+checks that restore refuses before disarming: the CORRUPT alarm, fixture key,
+unrelated key value and both lease attachments remain intact.
