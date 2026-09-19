@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/retirementmetrics"
 	"github.com/stretchr/testify/require"
 )
 
@@ -106,6 +107,21 @@ func TestProtectedMetricsCapture(t *testing.T) {
 			require.NotContains(t, summary, "stack_bytes")
 			require.Equal(t, true, summary["metrics_text_syntax_validated"])
 			require.EqualValues(t, len(body), summary["metrics_bytes"])
+			// Exercise the actual probe summary contract, not just a handcrafted
+			// JSON fixture. Process identity here is synthetic, not Kubernetes proof.
+			process := retirementmetrics.Process{PodUID: "fixture-pod", ContainerID: "fixture-container", StartedAt: "fixture-start"}
+			before, err := retirementmetrics.NewSample(data, output.Bytes(), process)
+			require.NoError(t, err)
+			c.metricsOutput = filepath.Join(t.TempDir(), "metrics.txt")
+			output.Reset()
+			require.NoError(t, run(c, &output))
+			data, err = os.ReadFile(c.metricsOutput)
+			require.NoError(t, err)
+			after, err := retirementmetrics.NewSample(data, output.Bytes(), process)
+			require.NoError(t, err)
+			delta, err := retirementmetrics.SampleDelta(before, after, retirementmetrics.Key{Stage: "peer", Outcome: "confirmed"})
+			require.NoError(t, err)
+			require.Zero(t, delta)
 		})
 	}
 }
