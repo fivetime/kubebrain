@@ -2,6 +2,21 @@
 
 ## 最新 CI 核验（2026-09-19）
 
+候选 `c04e59c0289f9666bac5a9b040c31b8db2d9aa7a` 探针 CI
+`35441571766` 已成功结束，API/jobs/完整日志归档至私有目录
+`probe-ci-35441571766-terminal.Zxs8irzO`，源码 SHA、所有作业成功
+终态及 SHA-256 均核对通过。镜像 `35441571752` 仍在运行，未重跑。
+该 CI 不覆盖后续本地 CLI 提交 `0988024d`，未部署新镜像。
+
+使用已退役 `fault-peer-budget.mjraWKki/deploy-execute.z3z8kYNU`
+保存的真实 probe.jsonl 对新 CLI 做只读离线兼容核验。绑定来自
+grant.json、successor/input.json 和独立健康观察者 sample-47/status.json
+中的十进制字符串，未从待验证响应推导身份/后继任期。命令成功输出
+fault_to_response_ns="29974426963"、ttl="10"、raft_term="268"，
+并明确 fault_acceptance_proven=false。这与原始响应 29.974426963 秒
+一致；原 driver 的 run.exit=124 及完整 30 秒验收失败结论不变。
+未执行旧驱动、未修改旧证据、未写集群；它不是新实验或恢复证明。
+
 候选 c04e59c0 的镜像 `35441571752` 与探针 `35441571766` 本轮
 API 查询均仍为 in_progress，未重跑或部署。等待期间补充仓库内
 `lease-fault-response` 命令行入口，供后续真实 shell 驱动调用严格
