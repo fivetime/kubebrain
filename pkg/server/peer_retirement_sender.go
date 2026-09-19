@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 )
 
 const peerRetirementPath = "/internal/retirement/v1"
@@ -30,6 +31,7 @@ type peerRetirementSender struct {
 	endpoints        []string
 	client           *http.Client
 	budget           time.Duration
+	metricCli        metrics.Metrics // set before Campaign starts; never mutated afterward
 }
 
 // onTermRetired is the adapter for the leader constructor's post-join callback.
@@ -37,10 +39,32 @@ type peerRetirementSender struct {
 // an unconfirmed release likewise leaves the old term irreversibly retired.
 // There is deliberately no goroutine, retry queue or reactivation callback.
 func (s *peerRetirementSender) onTermRetired(ctx context.Context, condition election.OwnershipCondition, available bool) {
+	if s == nil {
+		return
+	}
+	started := time.Now()
+	outcome := "missing_condition"
+	defer func() {
+		if s.metricCli != nil {
+			// Fixed labels only: never expose holders, peer URLs, scope, claims,
+			// tokens or transport errors. Confirmation is the sender's bounded
+			// HTTP acknowledgement, not proof of successor readiness.
+			tag := metrics.Tag("outcome", outcome)
+			_ = s.metricCli.EmitCounter("leader.retirement.peer.result", 1, tag)
+			_ = s.metricCli.EmitHistogram("leader.retirement.peer.duration.seconds", time.Since(started).Seconds(), tag)
+		}
+	}()
 	if !available {
 		return
 	}
-	_ = s.send(ctx, condition)
+	if ctx != nil && ctx.Err() != nil {
+		outcome = "canceled_before_send"
+		return
+	}
+	outcome = "unconfirmed"
+	if s.send(ctx, condition) == nil {
+		outcome = "confirmed"
+	}
 }
 
 func newPeerRetirementSender(instance, holder string, endpoints []string, credentials *tls.Config, budget time.Duration) (*peerRetirementSender, error) {

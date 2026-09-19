@@ -320,6 +320,12 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 }
 
 func metricHelp(name string) string {
+	if formatName(name) == "leader_retirement_peer_result" {
+		return "Post-join peer retirement callback outcomes. Confirmed means bounded HTTP acknowledgement, not successor readiness. No endpoint or ownership labels."
+	}
+	if formatName(name) == "leader_retirement_peer_duration_seconds" {
+		return "Post-join peer retirement callback duration in seconds, including skipped callbacks; excludes lifecycle join and local release. Not total failover latency or successor readiness."
+	}
 	if strings.HasPrefix(formatName(name), "write_batch_prewrite_slowest_successful_rpc_") {
 		return "Slowest successful Prewrite RPC selected per synchronous batch, including async/1PC attempts; late calls excluded. Successful requests count retries, samples records raw detail presence, duration histograms require valid raw WriteDetail and use seconds. Missing/invalid details never become zero durations. RPC and server stages overlap; never add them. Not a proven transaction critical path; success labels the batch outcome."
 	}
