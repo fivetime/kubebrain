@@ -210,3 +210,13 @@ These tests inspect request preconditions, not server-side enforcement. API abse
 does not establish Cilium withdrawal: the complete coordinator must join workers
 before calling this function, then verify dataplane recovery before restoring
 protocol state and finally the Pod label. That wiring remains incomplete.
+
+`TestNetworkLifecycleHTTP` joins ReserveNetwork, ActivateNetwork and
+RemoveNetworkPolicy through the actual dynamic client's HTTP transport. The
+fixture applies the JSON Patch, advances the resourceVersion past uint64 maximum,
+and requires DELETE to carry that fresh string plus the original CREATE UID.
+Both normal activation and an applied PATCH returning HTTP 500 recover with an
+independent context after cancellation; a repeat absence check sends no DELETE.
+The original receipt remains intact. This verifies component composition and
+ambiguous-response handling, not real API admission, Cilium withdrawal, worker
+joining, protocol/label restoration or the complete 30-second acceptance gate.

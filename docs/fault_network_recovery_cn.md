@@ -85,3 +85,20 @@ remove `/metadata/labels/kubebrain.io~1fault-owner`，保留其他标签。
 该传输回归纳入 probe CI。它不调用真实集群，也不模拟 API 服务器
 实际执行前置条件，不能证明策略已消失或 Cilium 数据面已恢复。
 完整驱动仍需负责可信输入、独占恢复、准入及删除后的独立观察。
+
+## Go 执行衔接与不确定响应回归
+
+`internal/leasefault.RemoveNetworkPolicy` 已补充 API 删除执行：加载真实
+预留回执，核对当前 UID 与完整激活/预留 spec，删除前重查回执及实时准入，
+使用 UID 和当前 resourceVersion 双前置条件，最后 GET 确认 NotFound。
+缺失回执、对象替换、冲突或删除后仍存在均不能视为恢复成功。
+
+`TestNetworkLifecycleHTTP` 使用真实动态客户端串联预留、激活和删除。
+HTTP 测试服务实际应用 JSON Patch，并模拟“激活已生效但返回 500”；
+取消故障上下文后，独立恢复上下文仍能删除准确对象并确认缺席。
+资源版本超过 uint64 范围仍按原字符串进入删除请求。再次恢复只读确认
+缺席，不重复 DELETE，原始创建回执保留。
+
+此回归不等于真实 Kubernetes/Cilium 测试。完整控制器仍须连接独占职责、
+实时身份准入、worker join、Cilium 数据面撤销、协议恢复和标签恢复；
+原 30 秒完整验收尚未通过。不得因本地组件测试成功启动未准入实验。
