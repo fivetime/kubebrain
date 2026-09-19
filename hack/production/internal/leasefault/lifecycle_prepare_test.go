@@ -28,6 +28,7 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 		"lifecycle-evidence-fail", "lifecycle-clock-changed", "lifecycle-outcome-mismatch", "lifecycle-outcome-timeout",
 		"lifecycle-owner-lost",
 		"observer-matched", "observer-pending", "observer-input-before", "observer-input-during", "observer-retain-fail", "observer-owner-lost",
+		"nonce-matched", "nonce-pending", "nonce-input-before", "nonce-input-during", "nonce-retain-fail", "nonce-owner-lost", "nonce-owner-after",
 	} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -106,6 +107,10 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 			}
 			if mode == "owner-mismatch" {
 				prep.Protocol.Owner = "foreign"
+			}
+			if strings.HasPrefix(mode, "nonce-") {
+				testNoncePreparation(t, ctx, prep, mode)
+				return
 			}
 			if strings.HasPrefix(mode, "lifecycle-") {
 				client.PrependReactor("create", "configmaps", func(a ktesting.Action) (bool, runtime.Object, error) {

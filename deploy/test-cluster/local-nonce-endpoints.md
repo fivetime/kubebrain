@@ -1,9 +1,12 @@
 # Endpoint nonce snapshot validation
 
 `local-nonce-endpoints.jq` is a read-only snapshot classifier for fault preparation.
-`observe-local-nonces.sh` now collects its input with live identity checks. Neither
-is yet wired into `FaultPreparation.NoncesSafe`; the Go adapter must still check
-the live claim, pinned tools/inputs and its original bounded context.
+`observe-local-nonces.sh` collects its input with live identity checks.
+`leasefault.NetworkObserver.NoncesSafe` now adapts it to
+`FaultPreparation.NoncesSafe`, with fresh API identity/admission checks before and
+after, exact private Pod-input comparison and the unchanged caller deadline.
+The caller must supply live claim and pinned-tool/cluster admission plus durable
+result retention. No complete real fault CLI has yet been run with this adapter.
 
 Input contains independently admitted `expected_agents: [{uid,node}]`, collected
 `agents: [{uid,node,endpoints}]` (full `cilium-dbg endpoint list -o json` output per
@@ -76,3 +79,11 @@ verified. This fresh scan used unused diagnostic nonces `term-readonlycollector`
 and `reserved-readonlycollector`; it created no label/policy/claim and did not
 admit an actual fault attempt. The full lifecycle and real 30-second gate remain
 unverified.
+
+The Go adapter performs one attempt and retains its output/status, including on
+failure. Exit 75 is an error here, not an implicit retry. It requires no policy
+receipt because initial nonce admission must precede reservation CREATE. Tests
+wire it through `PrepareFault` using real KubeBrain/memkv RPCs, a simulated API
+and a boundary shell fixture; a successful preparation is explicitly recovered.
+Input drift, lost admission and retention failures cannot permit reservation.
+These tests do not replace the collector's Cilium tests or actual fault acceptance.
