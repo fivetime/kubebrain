@@ -148,7 +148,7 @@ stack_session_capture() {
  jq -e '.mode=="protected-stack" and .readiness_checked==false and .fault_acceptance_proven==false and .pod_identity_proven==false' "$stack_capture/probe.json" >/dev/null || return
  stack_session_stage snapshot-after stack_session_run "${stack_k[@]}" get pod "$stack_pod" -o json > "$stack_capture/pod-after.json" || return
  stack_session_stage identity-after stack_session_same_process "$stack_capture/pod-before.json" "$stack_capture/pod-after.json" || return
- sha256sum "$stack_capture"/*.json "$stack_capture/goroutines.txt" "$stack_capture/timing.tsv" > "$stack_capture/evidence.sha256" || return
+ sha256sum "$stack_capture"/*.json "$stack_capture/goroutines.txt" "$stack_capture/timing.tsv" "$stack_capture/probe.stderr" > "$stack_capture/evidence.sha256" || return
  stack_session_budget || return
  printf 'CAPTURE_COMPLETE_WITHIN_CALLER_BUDGET\n' > "$stack_capture/COMPLETE"
 }

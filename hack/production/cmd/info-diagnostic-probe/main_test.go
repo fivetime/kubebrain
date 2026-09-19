@@ -237,3 +237,115 @@ func TestClientTransportAndOriginConstraints(t *testing.T) {
 	require.NoError(t, os.Symlink(c.cert, path))
 	require.Error(t, saveStack(path, []byte("must-not-overwrite")))
 }
+
+func TestRequestTimingPreservesFailureAndPrivateOutput(t *testing.T) {
+	for _, scenario := range []string{"success", "canceled", "wrong-pin", "writer-failed", "writer-end-failed"} {
+		t.Run(scenario, func(t *testing.T) {
+			var calls atomic.Int32
+			c := fixture(t, tls.RequireAndVerifyClientCert, tls.VersionTLS13, handler(t, "protected", &calls))
+			c.mode = "protected-stack"
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if scenario == "canceled" {
+				cancel()
+			}
+			if scenario == "wrong-pin" {
+				c.serverPin = strings.Repeat("0", 64)
+			}
+			var trace bytes.Buffer
+			var writer io.Writer = &trace
+			if scenario == "writer-failed" {
+				writer = &timingFailureWriter{}
+			}
+			if scenario == "writer-end-failed" {
+				writer = &timingFailureWriter{remaining: 3}
+			}
+			body, err := probeWithDiagnostics(ctx, c, writer)
+			if scenario == "success" {
+				require.NoError(t, err)
+				require.Equal(t, sampleStack, string(body))
+			} else {
+				require.Error(t, err)
+				require.Empty(t, body)
+				if scenario == "writer-end-failed" {
+					require.EqualValues(t, 1, calls.Load(), "trace failure after anonymous denial must stop stack request")
+				} else {
+					require.Zero(t, calls.Load())
+				}
+			}
+			for _, private := range []string{c.endpoint, c.anonymousEndpoint, c.cert, c.key, c.serverPin, sampleStack} {
+				require.NotContains(t, trace.String(), private)
+			}
+			if strings.HasPrefix(scenario, "writer-") {
+				return
+			}
+			type timingEvent struct {
+				Phase   string `json:"phase"`
+				Event   string `json:"event"`
+				Outcome string `json:"outcome"`
+				Elapsed int64  `json:"elapsed_ns"`
+			}
+			var events []timingEvent
+			for _, line := range strings.Split(strings.TrimSpace(trace.String()), "\n") {
+				events = append(events, timingEvent{})
+				require.NoError(t, json.Unmarshal([]byte(line), &events[len(events)-1]))
+			}
+			want := 2
+			if scenario == "success" {
+				want = 6
+			}
+			for i, event := range events {
+				if i > 0 {
+					require.GreaterOrEqual(t, event.Elapsed, events[i-1].Elapsed)
+				}
+				if i%2 == 0 {
+					require.Equal(t, "start", event.Event)
+				} else {
+					require.Equal(t, "end", event.Event)
+				}
+			}
+			require.Len(t, events, want)
+			if scenario == "success" {
+				require.Equal(t, "anonymous-profile", events[3].Phase)
+				require.Equal(t, "request_error", events[3].Outcome, "TLS denial is expected")
+				require.Equal(t, "response_validated", events[5].Outcome)
+			} else {
+				require.Equal(t, "request_error", events[1].Outcome)
+			}
+		})
+	}
+}
+
+type timingFailureWriter struct{ remaining int }
+
+func TestRequestTimingSeparatesSummaryAndFailureEvidence(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		var calls atomic.Int32
+		c := fixture(t, tls.RequireAndVerifyClientCert, tls.VersionTLS13, handler(t, "protected", &calls))
+		c.mode = "protected-stack"
+		if fail {
+			c.serverPin = strings.Repeat("0", 64)
+		}
+		var output, diagnostics bytes.Buffer
+		err := runWithDiagnostics(c, &output, &diagnostics)
+		require.NotEmpty(t, diagnostics.String())
+		if fail {
+			require.Error(t, err)
+			require.Empty(t, output.String())
+			require.NoFileExists(t, c.stackOutput)
+			continue
+		}
+		require.NoError(t, err)
+		require.True(t, json.Valid(output.Bytes()), "stdout must remain one JSON summary")
+		require.NotContains(t, output.String(), "info_probe_request_timing")
+		require.FileExists(t, c.stackOutput)
+	}
+}
+
+func (w *timingFailureWriter) Write(p []byte) (int, error) {
+	if w.remaining == 0 {
+		return 0, io.ErrClosedPipe
+	}
+	w.remaining--
+	return len(p), nil
+}

@@ -154,6 +154,32 @@ func request(ctx context.Context, client *http.Client, endpoint, path string, st
 }
 
 func probe(ctx context.Context, c config) ([]byte, error) {
+	return probeWithDiagnostics(ctx, c, io.Discard)
+}
+
+func probeWithDiagnostics(ctx context.Context, c config, diagnostics io.Writer) ([]byte, error) {
+	origin := time.Now()
+	// Fixed phase names only: never log credentials, URLs, bodies or error text.
+	// Request errors include the expected anonymous TLS denial, not just failures.
+	trace := json.NewEncoder(diagnostics)
+	req := func(phase string, client *http.Client, endpoint, path string, status, limit int) ([]byte, error) {
+		emit := func(event, outcome string) error {
+			return trace.Encode(map[string]any{"scope": "info_probe_request_timing", "phase": phase,
+				"event": event, "outcome": outcome, "elapsed_ns": time.Since(origin).Nanoseconds()})
+		}
+		if err := emit("start", "pending"); err != nil {
+			return nil, errors.New("cannot write request timing start")
+		}
+		body, err := request(ctx, client, endpoint, path, status, limit)
+		outcome := "response_validated"
+		if err != nil {
+			outcome = "request_error"
+		}
+		if traceErr := emit("end", outcome); traceErr != nil {
+			return nil, errors.New("cannot write request timing end")
+		}
+		return body, err
+	}
 	good, _, err := newClient(c, true)
 	if err != nil {
 		return nil, err
@@ -166,7 +192,7 @@ func probe(ctx context.Context, c config) ([]byte, error) {
 		paths = []string{"/ping"}
 	}
 	for _, path := range paths {
-		if _, err := request(ctx, good, c.endpoint, path, http.StatusOK, 4096); err != nil {
+		if _, err := req("authenticated"+path, good, c.endpoint, path, http.StatusOK, 4096); err != nil {
 			return nil, fmt.Errorf("authenticated %s: %w", path, err)
 		}
 	}
@@ -179,7 +205,7 @@ func probe(ctx context.Context, c config) ([]byte, error) {
 	if c.capturesStack() {
 		anonymousEndpoint = c.anonymousEndpoint
 	}
-	_, err = request(ctx, anonymous, anonymousEndpoint, stackPath, http.StatusNotFound, 4096)
+	_, err = req("anonymous-profile", anonymous, anonymousEndpoint, stackPath, http.StatusNotFound, 4096)
 	if c.capturesStack() {
 		// Connection refusal, timeout, EOF and local trust failures are not
 		// authentication proof. Require a verified server, its certificate
@@ -194,10 +220,10 @@ func probe(ctx context.Context, c config) ([]byte, error) {
 		return nil, fmt.Errorf("anonymous disabled profile: %w", err)
 	}
 	if c.mode == "disabled" {
-		_, err := request(ctx, good, c.endpoint, stackPath, http.StatusNotFound, 4096)
+		_, err := req("authenticated-profile", good, c.endpoint, stackPath, http.StatusNotFound, 4096)
 		return nil, err
 	}
-	body, err := request(ctx, good, c.endpoint, stackPath, http.StatusOK, stackLimit)
+	body, err := req("authenticated-profile", good, c.endpoint, stackPath, http.StatusOK, stackLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -218,10 +244,14 @@ func saveStack(path string, body []byte) error {
 }
 
 func run(c config, output io.Writer) error {
+	return runWithDiagnostics(c, output, io.Discard)
+}
+
+func runWithDiagnostics(c config, output, diagnostics io.Writer) error {
 	started := time.Now().UTC()
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
-	body, err := probe(ctx, c)
+	body, err := probeWithDiagnostics(ctx, c, diagnostics)
 	if err != nil {
 		return err
 	}
@@ -256,7 +286,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "unexpected positional arguments")
 		os.Exit(2)
 	}
-	if err := run(c, os.Stdout); err != nil {
+	if err := runWithDiagnostics(c, os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
