@@ -162,3 +162,14 @@ SHA 匹配候选、Storage 为 TiKV。使用 `--rm`，退出后按精确镜像
 复查没有残留容器。日志及摘要保存于私有
 `corrected-candidate-ci.C6iAqJeq/runtime-image-audit.XtAaNhi6`。
 本机镜像缓存保留；未挂载测试集群凭据或访问集群，仍不构成集群准入。
+
+### 下一轮的本机准备（保持 HOLD）
+
+独立目录 `fault-peer-budget.mjraWKki` 从候选 `2fd00721` 生成源码
+归档和双源码树，未复用旧实验的证书、执行凭据或已消费状态。
+会话 35822 已退出 0，从该源码编译六个辅助工具（image-prepull、
+info-diagnostic-probe、lease-term-probe、peer-control-probe、
+peer-retirement-test-pki、uid-delete）；使用 `-mod=readonly`，编译
+前后源码与归档逐项比较通过，六个二进制摘要均已验证。编译器版本
+单独记录。本机准备没有创建实验 PKI 或运行时执行凭据，没有集群
+变更。HOLD 保持，尚需探针第二次尝试成功及全套新基线/准入核验。
