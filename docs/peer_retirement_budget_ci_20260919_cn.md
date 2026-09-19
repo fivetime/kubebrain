@@ -154,3 +154,11 @@ head_sha 仍为 `2fd00721b2c95e8dd7708b5d1e400a852873b6f7`。
 `65532:65532`。证据为私有 `corrected-candidate-ci.C6iAqJeq/registry-audit.y5TTDdIL`。
 这是独立元数据核验，不是本机执行二进制或集群拉取/准入证明。探针
 第二次尝试当前已开始运行，尚无成功终态。
+
+后续本机 amd64 子镜像执行核验通过（会话 49780 退出 0）：按上述
+不可变子摘要拉取，以禁网、只读根文件系统、cap-drop ALL、
+no-new-privileges 和资源限制运行 `kube-brain version`，输出源码
+SHA 匹配候选、Storage 为 TiKV。使用 `--rm`，退出后按精确镜像
+复查没有残留容器。日志及摘要保存于私有
+`corrected-candidate-ci.C6iAqJeq/runtime-image-audit.XtAaNhi6`。
+本机镜像缓存保留；未挂载测试集群凭据或访问集群，仍不构成集群准入。
