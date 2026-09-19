@@ -178,11 +178,16 @@ namespace、源 Pod 同进程和 StatefulSet 归属、目标 UID/IP、完整列�
 参数/脚本，持有独占职责，并通过 `RunRecoveryObserver` 等机制施加同一
 恢复截止时间、管理子进程和私有日志。
 
-固定顺序为策略撤销观察 → 原 Pod 到后端 TCP → 再次策略撤销观察。
+`absent-unlabelled` 阶段先执行同进程标签 identity 撤回观察：Pod 标签
+已删除但 endpoint identity 仍收敛中时返回 pending，不能直接进入严格的
+无标签策略观察而误报 fatal。其他 owner、进程漂移等错误仍失败。
+`absent` 阶段不增加该步骤，保留仍带本次标签时的检查要求。
+
+随后固定顺序为策略撤销观察 → 原 Pod 到后端 TCP → 再次策略撤销观察。
 三步全成功且输入校验和未变才发布组合证据；退出 75 原样保留为 pending，
 其他失败停止，不重试、不重置时钟、不执行任何恢复写操作。子观察器
 各自的证据路径保留在私有日志中。
 
-组合顺序回归使用子进程桩，覆盖前后 pending、TCP 失败、后置 fatal 和
+组合顺序回归使用子进程桩，覆盖 identity pending/fatal、前后 pending、TCP 失败、后置 fatal 和
 输入变化；TCP 观察器另有模拟 API 测试及前述真实只读基线。组合入口
 尚未用于新的真实故障恢复，不能将这些证据混称为完整控制器验收。

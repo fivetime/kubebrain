@@ -17,9 +17,14 @@ trap 'printf "%s\n" "$?" > "$out/observation.exit"' EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 sha256sum "$expected" "$targets" > "$out/inputs.sha256"
+# A withdrawn Pod label may not yet have reached the endpoint identity. Classify
+# that transition before the strict unlabelled policy observer (75 stays pending).
+if [[ $mode == absent-unlabelled ]]; then
+ bash "$here/observe-local-fault-label.sh" "$owner" absent "$expected" "${name#kb-}" > "$out/identity-before.log" 2>&1
+fi
 bash "$here/observe-local-policy-state.sh" "$owner" "$mode" "$uid" "$name" "$expected" > "$out/policy-before.log" 2>&1
 bash "$here/observe-local-backend-tcp.sh" "$owner" "$expected" "$targets" > "$out/tcp.log" 2>&1
 bash "$here/observe-local-policy-state.sh" "$owner" "$mode" "$uid" "$name" "$expected" > "$out/policy-after.log" 2>&1
 sha256sum -c "$out/inputs.sha256" > "$out/input-check.log"
-sha256sum "$out/inputs.sha256" "$out/policy-before.log" "$out/tcp.log" "$out/policy-after.log" > "$out/evidence.sha256"
+sha256sum "$out/inputs.sha256" "$out"/*.log > "$out/evidence.sha256"
 echo SAME_SOURCE_POLICY_ABSENT_AND_BACKEND_TCP_CONNECTED_NOT_PROTOCOL_HEALTH

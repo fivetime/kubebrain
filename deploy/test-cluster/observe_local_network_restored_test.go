@@ -17,7 +17,7 @@ import (
 func TestNetworkRestoredObserverOrder(t *testing.T) {
 	source, err := os.ReadFile("observe-local-network-restored.sh")
 	require.NoError(t, err)
-	for _, mode := range []string{"success", "pending-before", "tcp-fails", "pending-after", "fatal-after", "input-changed"} {
+	for _, mode := range []string{"success", "labelled-success", "pending-identity", "fatal-identity", "pending-before", "tcp-fails", "pending-after", "fatal-after", "input-changed"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel() // Each case owns its scripts, evidence and environment.
 			dir := t.TempDir()
@@ -27,7 +27,7 @@ func TestNetworkRestoredObserverOrder(t *testing.T) {
 			require.NoError(t, os.WriteFile(expected, []byte("{}"), 0600))
 			require.NoError(t, os.WriteFile(targets, []byte("[]"), 0600))
 			policy := `set -euo pipefail
-[[ $2 == absent-unlabelled && $3 == policy-uid && $4 == kb-term-test ]] || exit 99
+[[ $2 == "$OBSERVATION_MODE" && $3 == policy-uid && $4 == kb-term-test ]] || exit 99
 stage=before
 [[ ! -f "$1/policy-seen" ]] || stage=after
 touch "$1/policy-seen"
@@ -40,15 +40,26 @@ if [[ $SCENARIO == input-changed && $stage == after ]]; then printf changed >> "
 printf 'tcp\n' >> "$1/order"
 [[ $SCENARIO != tcp-fails ]] || exit 23
 `
+			identity := `set -euo pipefail
+[[ $2 == absent && $4 == term-test ]] || exit 99
+printf 'identity\n' >> "$1/order"
+[[ $SCENARIO != pending-identity ]] || exit 75
+[[ $SCENARIO != fatal-identity ]] || exit 65
+`
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "observe-local-fault-label.sh"), []byte(identity), 0600))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "observe-local-policy-state.sh"), []byte(policy), 0600))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "observe-local-backend-tcp.sh"), []byte(tcp), 0600))
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, "bash", filepath.Join(dir, "observe-local-network-restored.sh"), dir, "absent-unlabelled", "policy-uid", "kb-term-test", expected, targets)
-			cmd.Env = append(os.Environ(), "SCENARIO="+mode)
+			observationMode := "absent-unlabelled"
+			if mode == "labelled-success" {
+				observationMode = "absent"
+			}
+			cmd := exec.CommandContext(ctx, "bash", filepath.Join(dir, "observe-local-network-restored.sh"), dir, observationMode, "policy-uid", "kb-term-test", expected, targets)
+			cmd.Env = append(os.Environ(), "SCENARIO="+mode, "OBSERVATION_MODE="+observationMode)
 			output, err := cmd.CombinedOutput()
 			require.NoError(t, ctx.Err())
-			if mode == "success" {
+			if mode == "success" || mode == "labelled-success" {
 				require.NoError(t, err, string(output))
 			} else {
 				var exit *exec.ExitError
@@ -66,12 +77,18 @@ printf 'tcp\n' >> "$1/order"
 			if mode == "tcp-fails" {
 				want = "policy-before\ntcp\n"
 			}
+			if mode != "labelled-success" {
+				want = "identity\n" + want
+			}
+			if mode == "pending-identity" || mode == "fatal-identity" {
+				want = "identity\n"
+			}
 			require.Equal(t, want, string(order))
 			observations, err := filepath.Glob(filepath.Join(dir, "network-observation.*"))
 			require.NoError(t, err)
 			require.Len(t, observations, 1)
 			proof := filepath.Join(observations[0], "evidence.sha256")
-			if mode == "success" {
+			if mode == "success" || mode == "labelled-success" {
 				check := exec.Command("sha256sum", "-c", proof)
 				data, err := check.CombinedOutput()
 				require.NoError(t, err, string(data))
