@@ -85,7 +85,7 @@ CI 仍为失败；后续须使用整合后的候选重新验证，未启动新�
 以下 run 的 API head_sha 均独立核验与候选一致，各仅触发一次：
 
 - [镜像构建 35422204061](https://github.com/fivetime/kubebrain/actions/runs/35422204061)：push 触发，已成功完成。
-- [探针回归 35422204070](https://github.com/fivetime/kubebrain/actions/runs/35422204070)：push 触发，已失败。
+- [探针回归 35422204070](https://github.com/fivetime/kubebrain/actions/runs/35422204070)：首次尝试失败；第二次尝试已排队，详见下文。
 - [后端协议集成 35422215771](https://github.com/fivetime/kubebrain/actions/runs/35422215771)：手动触发，已成功完成。
 
 补充本地回归会话 94729 已终态退出 0（736.547 秒），使用精确 42 项
@@ -129,5 +129,14 @@ CI 失败，不证明其原因或已修复。未重触发 CI、放宽断言或�
 进一步按 CI 相同参数运行完整探针包：`go test -race -count=1
 -timeout=20m -v ./hack/production/cmd/rollout-availability-probe`。
 会话 20464，私有目录 `stream-refresh-full-probe.drl79mJW`；启动前
-已确认包源码与模块文件相对候选无差异，当前仍在运行。此检查覆盖
-相同包内前序测试影响，但即使通过也不能单独证明 CI 运行负载是根因。
+已确认包源码与模块文件相对候选无差异。现已终态退出 0，完整包通过
+（306.098 秒），其中并发认证刷新用例通过（49.41 秒）。摘要已复核。
+此检查覆盖相同包内前序测试影响，但不能单独证明 CI 运行负载是根因。
+
+在原用例三轮与完整包均通过、没有改动源码和门限的前提下，仅对
+失败的探针 run 执行一次 `gh run rerun 35422204070 --failed`。
+命令会话 33318 退出 0，独立 API 确认 run_attempt=2、状态 queued、
+head_sha 仍为 `2fd00721b2c95e8dd7708b5d1e400a852873b6f7`。
+镜像和后端 CI 未重跑；首次失败证据保留。第二次尝试是受控复验，
+不是已经修复的证明，也不采用反复重跑直到变绿的策略。等待该次终态，
+本轮未部署集群或推送另一个候选。
