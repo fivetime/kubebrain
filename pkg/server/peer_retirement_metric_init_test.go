@@ -1,7 +1,10 @@
 package server
 
 import (
+	"context"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -9,6 +12,62 @@ import (
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/stretchr/testify/require"
 )
+
+type retirementStartupSnapshot struct {
+	counters   map[string]interface{}
+	histograms map[string]int
+}
+
+type retirementStartupMetrics struct {
+	metrics.Metrics
+	mu       sync.Mutex
+	snapshot retirementStartupSnapshot
+}
+
+func (m *retirementStartupMetrics) EmitCounter(name string, value interface{}, tags ...metrics.T) error {
+	if strings.HasPrefix(name, "leader.retirement.") {
+		m.mu.Lock()
+		if len(tags) == 1 {
+			m.snapshot.counters[name+"/"+tags[0].Value] = value
+		}
+		m.mu.Unlock()
+	}
+	return m.Metrics.EmitCounter(name, value, tags...)
+}
+
+func (m *retirementStartupMetrics) RegisterHistogram(name string, tags ...metrics.T) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if strings.HasPrefix(name, "leader.retirement.") && len(tags) == 1 {
+		m.snapshot.histograms[name+"/"+tags[0].Value]++
+	}
+	return nil
+}
+
+type retirementMetricsBeforeCampaignBackend struct {
+	*blockingLeadershipPrevalidationBackend
+	metrics  *retirementStartupMetrics
+	observed chan retirementStartupSnapshot
+}
+
+func (b *retirementMetricsBeforeCampaignBackend) PrevalidateLeadershipRevision(ctx context.Context) error {
+	m := b.metrics
+	m.mu.Lock()
+	snapshot := retirementStartupSnapshot{counters: map[string]interface{}{}, histograms: map[string]int{}}
+	for k, v := range m.snapshot.counters {
+		snapshot.counters[k] = v
+	}
+	for k, v := range m.snapshot.histograms {
+		snapshot.histograms[k] = v
+	}
+	m.mu.Unlock()
+	select {
+	case b.observed <- snapshot:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return b.blockingLeadershipPrevalidationBackend.PrevalidateLeadershipRevision(ctx)
+}
 
 type retirementHistogramRegistration struct {
 	metrics.Metrics

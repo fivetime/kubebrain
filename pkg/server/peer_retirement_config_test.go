@@ -41,7 +41,10 @@ func TestSuccessorForwardingRejectsUnsafeTLSBeforeStarting(t *testing.T) {
 			case "dynamic certificate":
 				config.ProxyTLS.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { panic("must never run") }
 			}
-			s, err := NewServerWithPeerRetirement(context.Background(), &retirementLifecycleBackend{lock: lock}, nil, config, retirement)
+			// Invalid transport configuration must not publish a baseline or
+			// start workers. This strict mock allows no metric operations.
+			m := metricmock.NewMockMetrics(gomock.NewController(t))
+			s, err := NewServerWithPeerRetirement(context.Background(), &retirementLifecycleBackend{lock: lock}, m, config, retirement)
 			require.Error(t, err)
 			require.Nil(t, s)
 		})
@@ -132,7 +135,7 @@ func TestPeerRetirementConfigurationBindsLocalCredentials(t *testing.T) {
 
 func TestRetirementServerConstructorStartsAfterValidationAndCloses(t *testing.T) {
 	kv := memkv.NewKvStorage()
-	metrics := metricmock.NewMinimalMetrics(gomock.NewController(t))
+	metrics := &retirementStartupMetrics{Metrics: metricmock.NewMinimalMetrics(gomock.NewController(t)), snapshot: retirementStartupSnapshot{counters: map[string]interface{}{}, histograms: map[string]int{}}}
 	b := backend.NewBackend(retirementStorageFixture{kv, 42}, backend.Config{Prefix: "/constructor-retirement", Keyspace: "tenant", Identity: "old", EnableEtcdCompatibility: true}, metrics)
 	t.Cleanup(func() { require.NoError(t, b.(interface{ Close() error }).Close()) })
 	// Model a joining follower in an established cluster. A completely absent
@@ -148,13 +151,30 @@ func TestRetirementServerConstructorStartsAfterValidationAndCloses(t *testing.T)
 		ReadBudget: time.Second, OperationBudget: time.Second, SendBudget: time.Second, Concurrency: 2, RequestsPerSecond: 10}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s, err := NewServerWithPeerRetirement(ctx, blocking, metrics, Config{}, config)
+	observed := make(chan retirementStartupSnapshot, 1)
+	observingBackend := &retirementMetricsBeforeCampaignBackend{blockingLeadershipPrevalidationBackend: blocking, metrics: metrics, observed: observed}
+	s, err := NewServerWithPeerRetirement(ctx, observingBackend, metrics, Config{}, config)
 	require.NoError(t, err)
 	defer func() { cancel(); require.NoError(t, s.Close()) }()
 	select {
 	case <-blocking.entered:
 	case <-time.After(3 * time.Second):
 		t.Fatal("server never reached prevalidation")
+	}
+	baseline := <-observed // Recorded by the worker before entering prevalidation.
+	require.Len(t, baseline.counters, 8)
+	require.Len(t, baseline.histograms, 8)
+	for _, stage := range []struct {
+		name     string
+		outcomes []string
+	}{
+		{"local", []string{"confirmed", "unconfirmed", "deadline", "canceled"}},
+		{"peer", []string{"confirmed", "unconfirmed", "missing_condition", "canceled_before_send"}},
+	} {
+		for _, outcome := range stage.outcomes {
+			require.Equal(t, 0, baseline.counters["leader.retirement."+stage.name+".result/"+outcome])
+			require.Equal(t, 1, baseline.histograms["leader.retirement."+stage.name+".duration.seconds/"+outcome])
+		}
 	}
 	require.Contains(t, s.GetPeerHttpHandlers(), peerRetirementPath)
 	require.NotContains(t, s.GetClientHttpHandlers(), peerRetirementPath)

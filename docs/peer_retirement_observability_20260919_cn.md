@@ -221,6 +221,16 @@ diff-check 通过。未修改集群、未重跑故障验收；指标语义和同
 
 #### 生产导出标签联测发现并修复不匹配
 
+启动顺序补验：在真实 `NewServerWithPeerRetirement` 构造测试的后台
+PrevalidateLeadershipRevision 入口，复制指标注册快照，再进入原阻塞
+夹具；核对八个零 counter 与八个各一次的 histogram 注册均已完成。
+不只在构造函数返回后检查，避免漏掉后台线程先于初始化开始的回归。
+不安全 TLS 的五类构造失败路径改用严格 metrics mock，禁止任何注册。
+首次测试包装器只嵌入 Backend 基础接口，遗漏可选的预校验方法，导致
+编译失败；改为嵌入原具体测试后端后重新验证，未把失败记为通过。
+构造顺序/初始化/TLS 拒绝三项三轮 race 及 vet 已通过。本轮只改测试，
+未部署；候选两个 CI 仍在既有 run 中进行，不重发构建。
+
 `cmd/option/option.go` 实际以 `cluster=ClusterName` 构造 Prometheus
 适配器。此前仅允许 outcome 标签的解析器会拒绝真实产品序列；已有合成
 测试未覆盖该差异。因此候选 `3f64735d` 即使 CI 全绿，也不能作为真实
