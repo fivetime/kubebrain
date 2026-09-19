@@ -117,3 +117,23 @@ endpoint identity 中也不能有任何 fault-owner 标签；旧标签或其他 
 pending（75）；身份不一致返回 fatal（65）。观察器不证明数据包/RPC
 连通性。恢复入口的真实 hook 仍须选择正确阶段、执行独立连通性验证，
 并在整个恢复周期持有独占职责。新增回归使用模拟 kubectl，没有调用集群。
+
+## 2026-09-19 真实集群只读观察兼容性
+
+以全新私有目录
+`/root/.local/state/kubebrain/recovery-observer-readonly.zC07kzvt`
+运行仓库 `capture-local-cilium-endpoint.sh`，目标 `kubebrain-local-0`，
+退出 0，证据位于 `endpoint.o4veAagd`，`evidence.sha256` 核对通过。
+同一 Pod/CEP/agent 进程绑定通过，endpoint ID 2781、identity 211368，
+状态 ready，期望与实际策略修订号均为 47。
+
+随后运行 `observe-local-fault-label.sh` 的 absent 模式，使用前次实际
+Pod JSON 作为同进程基准，退出 0；证据位于
+`identity-observation.5SnY6NrH`，校验和通过，结果为 matched。
+`term-readonly` 仅作为观察参数，未设置任何标签或创建策略。命名空间
+当前 CiliumNetworkPolicy 列表为空，fault-owner 标签 Pod 列表为空。
+
+本轮只执行 GET/LIST 和 agent 内只读 endpoint get，没有重跑旧实验、
+部署镜像或注入故障。此证据确认现场采集及标签缺席观察可用；没有验证
+本次故障策略撤销、PD/TiKV 连通性或原 30 秒故障验收，不能据此声称
+完整恢复控制器或最终目标已完成。
