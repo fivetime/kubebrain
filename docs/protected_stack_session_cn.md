@@ -266,7 +266,11 @@ Baseline（独立核验基线）、Origin（只确定原始起点，不注入故
 Inject（接收同一起点并执行故障操作）、Completed（核验采集/调度/
 退出回执）。所有基线完成后确定起点，先写入全部 worker 的控制管道，
 再且仅再调用一次 Inject；worker 可在 Inject 执行期间采集。管道
-写入不等于远端业务或 worker 的采样确认。不能
+写入不等于远端业务或 worker 的采样确认。Inject/Completed 收到的
+context deadline 为原始起点加 30 秒与外层 deadline 的较早值，
+以便命令适配器从 Deadline() 派生超时时仍使用同一剩余预算；
+不能只依赖取消通知却暴露更晚的外层截止时间。Baseline/Origin
+仍使用故障前的外层预算，worker 的原始故障计时器保留。不能
 在钩子里恢复集群。函数返回前取消进程组并等待直接子进程及读取
 协程；失败先向进程组发 TERM，让实际脚本执行 EXIT 清理；5 秒后
 仍未退出则升级为 KILL。该宽限仅用于失败后的回收，不延长原始

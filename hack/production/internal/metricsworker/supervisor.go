@@ -221,6 +221,11 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 	// The returned clock can only shorten the caller budget, never reset it.
 	timer := time.AfterFunc(time.Until(origin.Add(30*time.Second)), cancel)
 	defer timer.Stop()
+	// Callback adapters may derive subprocess timeouts from Deadline(), not
+	// only observe Done(). Expose the same original budget to them; the timer
+	// above also cancels workers already started with the outer context.
+	faultCtx, faultCancel := context.WithDeadline(ctx, origin.Add(30*time.Second))
+	defer faultCancel()
 	for _, c := range children {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -240,7 +245,7 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 	}
 	// Workers can sample while fault installation/observation is in progress.
 	// Cancellation from any worker or the original clock reaches this hook.
-	if err := hooks.Inject(ctx, origin); err != nil {
+	if err := hooks.Inject(faultCtx, origin); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
@@ -261,7 +266,7 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 				return nil, errors.New("workers reused completion evidence paths")
 			}
 			seenPaths[e.result.Captured.Capture], seenPaths[e.result.Captured.Schedule] = true, true
-			if err := hooks.Completed(ctx, e.index, e.result, origin); err != nil {
+			if err := hooks.Completed(faultCtx, e.index, e.result, origin); err != nil {
 				return nil, err
 			}
 			if err := guard.check(); err != nil {

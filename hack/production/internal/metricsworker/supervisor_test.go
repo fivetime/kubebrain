@@ -115,6 +115,48 @@ func TestSupervisorInjectionFailureAndOriginalDeadline(t *testing.T) {
 	}
 }
 
+func TestSupervisorCallbacksExposeRemainingDeadline(t *testing.T) {
+	for _, earlierParent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("earlier-parent-%t", earlierParent), func(t *testing.T) {
+			owner := supervisorOwner(t)
+			parentDeadline := time.Now().Add(time.Minute)
+			if earlierParent {
+				parentDeadline = time.Now().Add(5 * time.Second)
+			}
+			ctx, cancel := context.WithDeadline(context.Background(), parentDeadline)
+			defer cancel()
+			var want time.Time
+			checked := 0
+			check := func(ctx context.Context) {
+				t.Helper()
+				got, ok := ctx.Deadline()
+				require.True(t, ok)
+				require.True(t, got.Equal(want), "callback deadline %v, want %v", got, want)
+				checked++
+			}
+			_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok")}, Hooks{
+				Baseline: func(context.Context, int, Ready) error { return nil },
+				Origin: func(context.Context) (time.Time, error) {
+					origin := time.Now().Add(-10 * time.Second)
+					want = origin.Add(30 * time.Second)
+					if parentDeadline.Before(want) {
+						want = parentDeadline
+					}
+					return origin, nil
+				},
+				Inject: func(ctx context.Context, _ time.Time) error { check(ctx); return nil },
+				Completed: func(ctx context.Context, _ int, _ Result, _ time.Time) error {
+					check(ctx)
+					return nil
+				},
+			})
+			require.NoError(t, err)
+			require.Equal(t, 2, checked)
+			assertJoined(t, owner, "abcdefgh")
+		})
+	}
+}
+
 func assertJoined(t *testing.T, owner, suffix string) {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(owner, "pid-"+suffix))
