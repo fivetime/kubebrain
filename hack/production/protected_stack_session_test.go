@@ -86,6 +86,8 @@ const stackProbeFixture = `#!/usr/bin/env bash
 set -eu
 printf '%s\n' "$@" > "$stack_owner/probe-args"
 touch "$stack_owner/probe-called"
+[[ $scenario != hold-during-probe ]] || touch "$stack_owner/HOLD"
+[[ $scenario != terminal-during-probe ]] || touch "$stack_owner/final-exit-code"
 [[ $scenario != probe-failed ]] || exit 17
 if [[ $scenario == slow-probe || $scenario == cancel-group ]]; then
  printf '%s\n' "$BASHPID" >> "$stack_owner/pids"
@@ -241,6 +243,8 @@ exercise() {
   invalid-port) stack_info_port=65536;;
  esac
  stack_session_prepare brain-0 || return
+ [[ $scenario != hold-after-prepare ]] || touch "$stack_owner/HOLD"
+ [[ $scenario != terminal-after-prepare ]] || touch "$stack_owner/final-exit-code"
  if [[ $scenario == changed-ports ]]; then stack_anonymous_port=18587; fi
  if [[ $scenario == tampered-probe ]]; then printf '# changed\n' >> "$stack_owner/bin/info-diagnostic-probe"; fi
  touch "$stack_owner/capture-started"
@@ -311,6 +315,40 @@ func TestProtectedStackSessionRejectsMultiplePodDocuments(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	require.Error(t, err)
 	require.True(t, strings.Contains(string(output), "one Pod per file required"), string(output))
+}
+
+func TestProtectedStackSessionOwnerTermination(t *testing.T) {
+	library, err := filepath.Abs("protected-stack-session.sh")
+	require.NoError(t, err)
+	for _, kind := range []string{"stack", "metrics"} {
+		for _, scenario := range []string{"hold-after-prepare", "terminal-after-prepare", "hold-during-probe", "terminal-during-probe"} {
+			t.Run(kind+"/"+scenario, func(t *testing.T) {
+				owner := t.TempDir()
+				require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
+				probe, fixture := stackProbeFixture, stackSessionFixture
+				if kind == "metrics" {
+					probe = metricsProbeFixture()
+					fixture = strings.ReplaceAll(fixture, "stack_session_capture ", "stack_session_capture_metrics ")
+				}
+				require.NoError(t, os.WriteFile(filepath.Join(owner, "bin", "info-diagnostic-probe"), []byte(probe), 0700))
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				out, err := exec.CommandContext(ctx, "bash", "-c", fixture, "test", library, owner, scenario).CombinedOutput()
+				require.NoError(t, ctx.Err(), string(out))
+				require.NoError(t, err, string(out))
+				require.Contains(t, string(out), "EXPECTED_RESULT_AND_CLEANUP")
+				_, err = os.Stat(filepath.Join(owner, "probe-called"))
+				if strings.HasSuffix(scenario, "after-prepare") {
+					require.True(t, os.IsNotExist(err))
+				} else {
+					require.NoError(t, err)
+				}
+				pids, err := os.ReadFile(filepath.Join(owner, "pids"))
+				require.NoError(t, err)
+				require.Len(t, strings.Fields(string(pids)), 2, "must not rearm after owner terminates")
+			})
+		}
+	}
 }
 
 func TestProtectedStackSessionOuterCancellation(t *testing.T) {

@@ -10,6 +10,11 @@ stack_bound_info_port=''
 stack_bound_anonymous_port=''
 stack_metrics_schedule_consumed=false
 
+stack_session_owner_active() {
+ local owner=${stack_owner:-}
+ [[ -n $owner && -d $owner/deployment-claimed && ! -e $owner/HOLD && ! -e $owner/final-exit-code ]]
+}
+
 stack_session_ports_unchanged() {
  [[ -n $stack_bound_info_port && -n $stack_bound_anonymous_port && $stack_info_port == "$stack_bound_info_port" && $stack_anonymous_port == "$stack_bound_anonymous_port" ]]
 }
@@ -80,6 +85,7 @@ stack_session_close() {
 # Rearm only before the fault clock starts; never reset a live fault deadline.
 stack_session_rearm_anonymous() {
  [[ -z $stack_fault_start && ${#stack_pids[@]} == 2 ]] || return 2
+ stack_session_owner_active || return 2
  stack_session_ports_unchanged || return 2
  local log listeners child n
  stack_session_stop_owned "${stack_pids[1]}"
@@ -138,7 +144,7 @@ stack_session_prepare() {
   [[ -n ${!variable:-} ]] || return 2
  done
  [[ $1 == "$stack_sts-"* && ${1#"$stack_sts-"} =~ ^[0-9]+$ ]] || return 2
- [[ ! -e "$stack_owner/HOLD" && -d "$stack_owner/deployment-claimed" && ! -e "$stack_owner/final-exit-code" ]] || return 2
+ stack_session_owner_active || return 2
  # The owner's manifest must include this library, its jq rule and the probe.
  stack_session_verify_inputs || return
  stack_pod=$1
@@ -176,6 +182,7 @@ stack_session_capture_metrics() {
 # restoring/replacing the target Pod. This never waits for successor readiness.
 stack_session_capture_metrics_at() {
  [[ $# == 2 && $1 =~ ^[1-8][0-9]{18}$ && $2 =~ ^(0|[1-9][0-9]{0,10})$ ]] || return 2
+ stack_session_owner_active || return 2
  local origin=$1 offset=$2 now remaining delay
  (( offset < 30000000000 )) || return 2
  [[ $stack_metrics_schedule_consumed == false && ( -z $stack_fault_start || $stack_fault_start == "$origin" ) ]] || return 2
@@ -187,6 +194,7 @@ stack_session_capture_metrics_at() {
  stack_schedule=$(mktemp -d "$stack_owner/metrics-schedule.XXXXXXXX") || return
  printf '%s\t%s\n' "$origin" "$offset" > "$stack_schedule/input.tsv" || return
  while true; do
+  stack_session_owner_active || return 2
   stack_session_budget || return
   now=$(date -u +%s%N) || return
   [[ $now =~ ^[1-8][0-9]{18}$ && $now -ge $origin ]] || return 2
@@ -201,6 +209,7 @@ stack_session_capture_metrics_at() {
  stack_session_capture_metrics "$origin" || return
  printf '%s\n' "$stack_capture" > "$stack_schedule/capture-path" || return
  stack_session_run sha256sum "$stack_schedule/input.tsv" "$stack_schedule/capture-path" "$stack_capture/evidence.sha256" > "$stack_schedule/evidence.sha256" || return
+ stack_session_owner_active || return 2
  stack_session_budget || return
  printf 'SCHEDULE_COMPLETE_NOT_FAULT_ACCEPTANCE\n' > "$stack_schedule/COMPLETE"
 }
@@ -208,6 +217,7 @@ stack_session_capture_metrics_at() {
 stack_session_capture_kind() {
  # Run in the owning shell, not command substitution: job ownership is checked.
  [[ $# == 2 && ( $1 == stack || $1 == metrics ) ]] || return 2
+ stack_session_owner_active || return 2
  stack_session_ports_unchanged || return 2
  local kind=$1 mode=protected-stack output_flag=--stack-output data_name=goroutines.txt
  shift
@@ -246,10 +256,12 @@ stack_session_capture_kind() {
  fi
  stack_session_stage snapshot-after stack_session_run "${stack_k[@]}" get pod "$stack_pod" -o json > "$stack_capture/pod-after.json" || return
  stack_session_stage identity-after stack_session_same_process "$stack_capture/pod-before.json" "$stack_capture/pod-after.json" || return
+ stack_session_owner_active || return 2
  if [[ -z $stack_fault_start ]]; then
   stack_session_stage rearm-anonymous stack_session_rearm_anonymous || return
  fi
  sha256sum "$stack_capture"/*.json "$stack_capture/$data_name" "$stack_capture/timing.tsv" "$stack_capture/probe.stderr" > "$stack_capture/evidence.sha256" || return
+ stack_session_owner_active || return 2
  stack_session_budget || return
  printf 'CAPTURE_COMPLETE_WITHIN_CALLER_BUDGET\n' > "$stack_capture/COMPLETE"
 }

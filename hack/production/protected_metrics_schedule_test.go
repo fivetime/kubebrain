@@ -15,7 +15,7 @@ import (
 func TestProtectedMetricsSchedule(t *testing.T) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
-	for _, scenario := range []string{"success", "late-start", "expired", "future", "changed-origin", "repeat", "invalid-offset", "negative-offset", "capture-failed", "sleep-failed", "oversleep"} {
+	for _, scenario := range []string{"success", "late-start", "expired", "future", "changed-origin", "repeat", "invalid-offset", "negative-offset", "capture-failed", "sleep-failed", "oversleep", "hold-during-wait", "terminal-during-wait"} {
 		t.Run(scenario, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -31,6 +31,7 @@ const metricsScheduleFixture = `
 set -euo pipefail
 source "$1"
 stack_owner=$2 scenario=$3
+mkdir "$stack_owner/deployment-claimed"
 stack_session=$stack_owner
 stack_pids=(1 2)
 stack_bound_info_port=$stack_info_port
@@ -48,6 +49,8 @@ stack_session_run() {
   [[ $2 == 1.000000000s ]]
   test_clock_ns=$((test_clock_ns+1000000000))
   if [[ $scenario == oversleep ]]; then test_clock_ns=$((origin+30000000000)); fi
+  if [[ $scenario == hold-during-wait ]]; then touch "$stack_owner/HOLD"; fi
+  if [[ $scenario == terminal-during-wait ]]; then touch "$stack_owner/final-exit-code"; fi
  else "$@" || return
  fi
  stack_session_budget
@@ -98,6 +101,7 @@ func TestProtectedMetricsScheduleOuterCancellation(t *testing.T) {
 set -euo pipefail
 source "$1"
 stack_owner=$2
+mkdir "$stack_owner/deployment-claimed"
 stack_session=$stack_owner
 stack_pids=(1 2)
 stack_bound_info_port=$stack_info_port
