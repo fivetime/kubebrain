@@ -116,7 +116,7 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 func TestProtectedMetricsWorkerHandshakeAndCleanup(t *testing.T) {
 	worker, err := os.ReadFile("protected-metrics-worker.sh")
 	require.NoError(t, err)
-	for _, scenario := range []string{"success", "baseline-failed", "capture-failed", "missing-binding", "eof", "malformed", "future", "terminate", "hold-after-baseline"} {
+	for _, scenario := range []string{"success", "fragmented", "late-control", "baseline-failed", "capture-failed", "missing-binding", "eof", "malformed", "future", "terminate", "hold-after-baseline", "hold-while-waiting", "terminal-while-waiting"} {
 		t.Run(scenario, func(t *testing.T) {
 			owner := t.TempDir()
 			bundle := t.TempDir()
@@ -143,6 +143,12 @@ func TestProtectedMetricsWorkerHandshakeAndCleanup(t *testing.T) {
 			stdin, err := cmd.StdinPipe()
 			require.NoError(t, err)
 			require.NoError(t, cmd.Start())
+			t.Cleanup(func() {
+				if cmd.ProcessState == nil {
+					cancel()
+					_ = cmd.Wait()
+				}
+			})
 			reader := bufio.NewReader(stdout)
 			ready, readErr := reader.ReadString('\n')
 			if scenario == "baseline-failed" || scenario == "missing-binding" || scenario == "hold-after-baseline" {
@@ -151,9 +157,15 @@ func TestProtectedMetricsWorkerHandshakeAndCleanup(t *testing.T) {
 			} else {
 				require.NoError(t, readErr)
 				require.True(t, strings.HasPrefix(ready, "READY\t"), ready)
-				if scenario == "terminate" {
+				if scenario == "hold-while-waiting" || scenario == "terminal-while-waiting" {
+					marker := "HOLD"
+					if scenario == "terminal-while-waiting" {
+						marker = "final-exit-code"
+					}
+					require.NoError(t, os.WriteFile(filepath.Join(owner, marker), []byte("stop\n"), 0600))
+				} else if scenario == "terminate" {
 					require.NoError(t, syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM))
-				} else if scenario != "eof" {
+				} else if scenario != "eof" && scenario != "late-control" {
 					origin := fmt.Sprintf("%d\n", time.Now().UnixNano())
 					if scenario == "malformed" {
 						origin = "18000000000000000000\n"
@@ -161,16 +173,25 @@ func TestProtectedMetricsWorkerHandshakeAndCleanup(t *testing.T) {
 					if scenario == "future" {
 						origin = fmt.Sprintf("%d\n", time.Now().Add(time.Hour).UnixNano())
 					}
+					if scenario == "fragmented" {
+						_, err = io.WriteString(stdin, origin[:9])
+						require.NoError(t, err)
+						time.Sleep(1200 * time.Millisecond)
+						origin = origin[9:]
+					}
 					_, err = io.WriteString(stdin, origin)
 					require.NoError(t, err)
 				}
 			}
-			_ = stdin.Close()
+			if scenario != "hold-while-waiting" && scenario != "terminal-while-waiting" {
+				_ = stdin.Close()
+			}
 			rest, err := io.ReadAll(reader)
 			require.NoError(t, err)
 			waitErr := cmd.Wait()
+			_ = stdin.Close()
 			require.NoError(t, ctx.Err(), stderr.String())
-			if scenario == "success" {
+			if scenario == "success" || scenario == "fragmented" {
 				require.NoError(t, waitErr, stderr.String())
 				require.True(t, strings.HasPrefix(string(rest), "CAPTURED\t"), string(rest))
 			} else {
@@ -182,7 +203,7 @@ func TestProtectedMetricsWorkerHandshakeAndCleanup(t *testing.T) {
 			require.Len(t, receipts, 1)
 			receipt, err := os.ReadFile(receipts[0])
 			require.NoError(t, err)
-			if scenario == "success" {
+			if scenario == "success" || scenario == "fragmented" {
 				require.Equal(t, "0\n", string(receipt))
 			} else {
 				require.NotEqual(t, "0\n", string(receipt))
@@ -201,6 +222,9 @@ func TestProtectedMetricsWorkerHandshakeAndCleanup(t *testing.T) {
 
 const metricsWorkerLibraryFixture = `
 stack_pids=()
+if [[ $worker_scenario == late-control ]]; then
+ read() { worker_piece=$(date -u +%s%N); SECONDS=$worker_input_deadline; return 0; }
+fi
 stack_session_owner_active() { [[ -d $stack_owner/deployment-claimed && ! -e $stack_owner/HOLD && ! -e $stack_owner/final-exit-code ]]; }
 stack_session_verify_inputs() { sha256sum -c "$stack_owner/tools.sha256" >/dev/null; }
 stack_session_run() { "$@"; }
@@ -211,7 +235,18 @@ stack_session_prepare() {
  printf '%s\n' "$!" > "$stack_owner/child-pid"
  printf '%s %s\n' "$stack_info_port" "$stack_anonymous_port" > "$stack_owner/ports"
 }
-stack_session_close() { local child; for child in "${stack_pids[@]}"; do kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; done; }
+stack_session_close() {
+ local child n
+ for child in "${stack_pids[@]}"; do
+  kill -TERM "$child" 2>/dev/null || true
+  for n in {1..20}; do
+   [[ $'\n'$(jobs -pr)$'\n' == *$'\n'"$child"$'\n'* ]] || break
+   sleep 0.01
+  done
+  if [[ $'\n'$(jobs -pr)$'\n' == *$'\n'"$child"$'\n'* ]]; then kill -KILL "$child" 2>/dev/null || true; fi
+  wait "$child" 2>/dev/null || true
+ done
+}
 stack_session_capture_metrics() {
  [[ $1 == before-fault && ${#stack_pids[@]} == 1 ]]
  [[ $worker_scenario != baseline-failed ]] || return 19

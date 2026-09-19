@@ -37,10 +37,20 @@ printf 'READY\t%s\t%s\n' "$worker_dir" "$stack_capture"
 # One bounded control record, not shell input. EOF, timeout, malformed/future
 # origins and repeated scheduling cannot silently start another experiment.
 worker_origin=''
-worker_read_rc=0
-IFS= read -r -n 20 -t 60 worker_origin || worker_read_rc=$?
-if (( worker_read_rc > 128 )); then exit 124; fi
-(( worker_read_rc == 0 )) || exit 2
+worker_input_deadline=$((SECONDS+60))
+while true; do
+ stack_session_owner_active || exit 2
+ (( SECONDS < worker_input_deadline && ${#worker_origin} < 20 )) || exit 124
+ worker_piece=''
+ worker_read_rc=0
+ IFS= read -r -n "$((20-${#worker_origin}))" -t 1 worker_piece || worker_read_rc=$?
+ worker_origin+=$worker_piece
+ (( worker_read_rc != 0 )) || break
+ # A timed-out read can consume a partial record: retain it across checks.
+ (( worker_read_rc > 128 )) || exit 2
+done
+stack_session_owner_active || exit 2
+(( SECONDS < worker_input_deadline )) || exit 124
 [[ $worker_origin =~ ^[1-8][0-9]{18}$ ]] || exit 2
 stack_session_capture_metrics_at "$worker_origin" "$worker_offset"
 printf '%s\n' "$stack_schedule" > "$worker_dir/schedule-path"
