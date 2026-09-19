@@ -73,6 +73,11 @@ They verify ordering/budget propagation, not a real term change or isolated stre
 
 ## Protocol recovery intent
 
+The recovery-only command is documented in
+[`cmd/lease-fault-recover`](../../cmd/lease-fault-recover/README.md). It defaults
+to local plan/file verification and requires explicit execution. It is not the
+fault-execution CLI, and no real cluster recovery has yet been run through it.
+
 `AcquireFaultOwner` provides a cooperative, namespace-wide cluster claim for
 dedicated fault tests using the fixed immutable ConfigMap `kubebrain-fault-owner`.
 It verifies independently admitted namespace/StatefulSet UIDs, persists a private

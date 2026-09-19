@@ -27,6 +27,16 @@ type FaultRecovery struct {
 	Own, Join, NetworkRestored, IdentityRestored func(context.Context) error
 }
 
+// ValidateRecoveryPlans validates independent network/protocol bindings without
+// opening records, accessing APIs or authorizing any mutation.
+func ValidateRecoveryPlans(network NetworkRecovery, protocol ProtocolRecovery) error {
+	if !protocol.valid() || network.Owner != protocol.Owner || network.NamespaceUID != protocol.NamespaceUID || network.StatefulSetUID != protocol.StatefulSetUID {
+		return errors.New("invalid or inconsistent recovery plans")
+	}
+	_, err := network.encoded()
+	return err
+}
+
 // RecoverFault serializes the recovery half of the fault coordinator. Use an
 // independent recovery context after fault cancellation, bounded to five minutes.
 // It never reports fault acceptance, releases ownership, deletes journals, retries
