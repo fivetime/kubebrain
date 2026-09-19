@@ -2,12 +2,20 @@
 
 ## 最新 CI 核验（2026-09-19）
 
+上述候选两项 CI 均结束后，本地外部回调适配与脚本联动的组合验证
+全部通过：metricsworker race 9.613s、retirementmetrics 2.433s、
+delta CLI 5.791s、workflow 2.665s，以及全部 MetricsWorker 回归
+21.514s；vet/diff-check 通过。下一批源码需独立 CI 验证，尚未部署。
+
 候选 `b57276d20212682475d713f8db14ab458e525868` 探针 CI
 `35437154458` 已全部成功（26m26s），包括调度 CLI、基线时间与
 协调器回归以及最终 race 组，原 watch 已正常退出。API、jobs 和
 完整日志归档至私有目录 `probe-ci-35437154458-terminal.4QzKr1S4`，
-源码 SHA、终态与文件哈希核对通过。镜像 `35437154435` 仍在构建，
-未确认发布完成。该结果不覆盖后续本地 RunFaultCommand 与外部回调
+源码 SHA、终态与文件哈希核对通过。镜像 `35437154435` 已全部成功
+（30m55s），包括发布后校验、标签更新及清理，原 watch 正常退出。
+API、jobs 和完整日志保存在私有目录
+`image-ci-35437154435-terminal.kX9zD5xI`，源码 SHA、成功终态与哈希
+已核对。该结果不覆盖后续本地 RunFaultCommand 与外部回调
 联动测试，不是新集群实验或旧故障失败的改判；未部署。
 
 本地实际 worker/会话集成进一步接入 RunFaultCommand，不再使用无操作
