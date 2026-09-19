@@ -15,7 +15,7 @@ import (
 func TestProtectedStackSession(t *testing.T) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
-	for _, scenario := range []string{"success", "anonymous-reset", "rearm-occupied", "rearm-start-failed", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "occupied-port", "dead-channel", "expired", "future", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe"} {
+	for _, scenario := range []string{"success", "anonymous-reset", "repeated-anonymous-reset", "rearm-occupied", "rearm-start-failed", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "occupied-port", "dead-channel", "expired", "future", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe"} {
 		t.Run(scenario, func(t *testing.T) {
 			owner := t.TempDir()
 			require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
@@ -100,7 +100,7 @@ timeout() {
  if [[ $4 == kubectl ]]; then shift 3; "$@"; else
   local rc=0
   /usr/bin/timeout "$@" || rc=$?
-  if [[ $scenario == anonymous-reset && $rc == 0 ]]; then
+  if [[ ( $scenario == anonymous-reset || $scenario == repeated-anonymous-reset ) && $rc == 0 ]]; then
    kill -TERM "${stack_pids[1]}"
    wait "${stack_pids[1]}" || true
   fi
@@ -161,9 +161,19 @@ exercise() {
  [[ -s $stack_capture/COMPLETE ]] || return
  sha256sum -c "$stack_capture/evidence.sha256" >/dev/null || return
  first=$stack_capture
+ local expected_forwards=3 authenticated_pid=${stack_pids[0]}
+ if [[ $scenario == repeated-anonymous-reset ]]; then
+  stack_session_capture before-fault || return
+  [[ -s $stack_capture/COMPLETE && $stack_capture != "$first" && ${stack_pids[0]} == "$authenticated_pid" ]] || return
+  sha256sum -c "$stack_capture/evidence.sha256" >/dev/null || return
+  [[ $(awk '$2=="rearm-anonymous" && $3=="end" && $4==0 {n++} END {print n+0}' "$stack_capture/timing.tsv") == 1 ]] || return
+  expected_forwards=4
+ fi
  start=$(date -u +%s%N)
  stack_session_capture "$start" || return
- [[ $first != "$stack_capture" && $(wc -l < "$stack_owner/pids") == 3 ]] || return
+ [[ $first != "$stack_capture" && $(wc -l < "$stack_owner/pids") == "$expected_forwards" && ${stack_pids[0]} == "$authenticated_pid" && $stack_fault_start == "$start" ]] || return
+ [[ -s $stack_capture/COMPLETE ]] || return
+ sha256sum -c "$stack_capture/evidence.sha256" >/dev/null || return
  # Fault-time capture must not create another tunnel or reset its clock.
  [[ $(awk '$2=="rearm-anonymous" && $3=="end" && $4==0 {n++} END {print n+0}' "$first/timing.tsv") == 1 ]] || return
  ! rg -q rearm-anonymous "$stack_capture/timing.tsv" || return
@@ -176,12 +186,12 @@ rc=0
 exercise || rc=$?
 stack_session_close
 case $scenario in
- success|anonymous-reset|ready-before|ready-after) [[ $rc == 0 ]];;
+ success|anonymous-reset|repeated-anonymous-reset|ready-before|ready-after) [[ $rc == 0 ]];;
  expired|slow-probe) [[ $rc == 124 ]];;
  *) [[ $rc != 0 ]];;
 esac
 case $scenario in
- success|anonymous-reset|ready-before|ready-after|reset-origin|reset-budget) ;;
+ success|anonymous-reset|repeated-anonymous-reset|ready-before|ready-after|reset-origin|reset-budget) ;;
  *) [[ -z $(find "$stack_owner" -name COMPLETE -print) ]];;
 esac
 if [[ -e $stack_owner/pids ]]; then
