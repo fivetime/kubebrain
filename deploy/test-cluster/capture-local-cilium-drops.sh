@@ -44,7 +44,7 @@ date -u +%Y-%m-%dT%H:%M:%S.%NZ > "$out/finished.utc"
 # kubectl forwards remote timeout's exit status. Require its explicit report,
 # so a local watchdog expiration cannot masquerade as a healthy observation.
 [[ $rc == 124 ]]
-rg -q '^command terminated with exit code 124$' "$out/monitor.stderr"
+grep -Fxq -- 'command terminated with exit code 124' "$out/monitor.stderr"
 after=$(snapshot after)
 same_process "$before/pod.json" "$after/pod.json"
 same_process "$before/agent-before.json" "$after/agent-before.json"

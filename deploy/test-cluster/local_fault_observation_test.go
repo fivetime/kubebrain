@@ -21,6 +21,7 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 		{"pod-restart", "drop", "", 1}, {"agent-restart", "drop", "", 1},
 		{"pod-image", "drop", "", 1}, {"cep-identity", "drop", "", 1},
 		{"remote-failed", "drop", "", 1}, {"missing-remote-marker", "drop", "", 1},
+		{"prefixed-remote-marker", "drop", "", 1}, {"suffixed-remote-marker", "drop", "", 1},
 		{"initial-capture-failed", "drop", "", 1}, {"cancel", "drop", "", 124},
 		{"stable", "label", "present", 0}, {"stable", "label", "absent", 0},
 		{"ready-change", "label", "absent", 0}, {"pending", "label", "absent", 75},
@@ -42,6 +43,9 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 			require.NoError(t, os.Mkdir(bin, 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "mock-api"), []byte(ciliumCaptureMock), 0600))
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "kubectl"), []byte(localFaultObservationMock), 0700))
+			// Minimal CI images need not ship ripgrep. Fail if the capture
+			// unexpectedly invokes it, even on a host where rg is installed.
+			require.NoError(t, os.WriteFile(filepath.Join(bin, "rg"), []byte("#!/bin/sh\nprintf called > \"$CAPTURE_FIXTURE/rg-called\"\nexit 127\n"), 0700))
 			if tc.name == "label-inner-timeout" {
 				// Compress only the inner kubectl deadline; keep real timeout signaling.
 				require.NoError(t, os.WriteFile(filepath.Join(bin, "timeout"), []byte("#!/usr/bin/env bash\nset -euo pipefail\nif [[ ${1:-} == --foreground && ${3:-} == 20s && ${4:-} == kubectl ]]; then set -- \"$1\" \"$2\" 0.2s \"${@:4}\"; fi\nexec /usr/bin/timeout \"$@\"\n"), 0700))
@@ -72,6 +76,8 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 			cmd.Env = env
 			output, err := cmd.CombinedOutput()
 			require.NoError(t, ctx.Err(), string(output))
+			_, rgErr := os.Stat(filepath.Join(dir, "rg-called"))
+			require.True(t, os.IsNotExist(rgErr), "capture must not depend on ripgrep: %s", output)
 			if tc.code == 0 {
 				require.NoError(t, err, string(output))
 			} else {
@@ -159,7 +165,12 @@ if [[ " $* " == *" monitor "* ]]; then
  if [[ $FAULT_SCENARIO == cancel ]]; then printf '%s\n' "$BASHPID" > "$CAPTURE_FIXTURE/blocked.pid"; exec sleep 60; fi
  touch "$CAPTURE_FIXTURE/window-after"
  [[ $FAULT_SCENARIO != remote-failed ]] || exit 1
- [[ $FAULT_SCENARIO == missing-remote-marker ]] || echo 'command terminated with exit code 124' >&2
+ case $FAULT_SCENARIO in
+  missing-remote-marker) : ;;
+  prefixed-remote-marker) echo 'not command terminated with exit code 124' >&2 ;;
+  suffixed-remote-marker) echo 'command terminated with exit code 1240' >&2 ;;
+  *) echo 'command terminated with exit code 124' >&2 ;;
+ esac
  printf '{"synthetic":true}\n'
  exit 124
 fi
