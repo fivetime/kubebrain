@@ -70,3 +70,17 @@ fault deadline expiration, and success. After `WithPreparedFault` returns it
 checks that the direct child is gone and reloads the unchanged independently
 bound record. This verifies local lifecycle ordering and record availability;
 it does not exercise recovery RPCs, escaped descendants, or cluster acceptance.
+
+`VerifyProtocolRecovery` issues only Alarm(GET), LeaseTimeToLive(keys=true), and
+an exact-key linearizable Range using a caller-supplied authenticated gRPC
+connection and an independent recovery context bounded to at most five minutes.
+It requires matching cluster headers, no alarms, the exact lease ID with TTL=-1,
+grantedTTL=0 and no keys, and an empty Range without count/more discrepancies.
+An expired-but-not-revoked lease does not pass. RPC errors are retained; there is
+no verifier retry or mutation. Tests use a fake ClientConn to check exact request
+methods/fields, malformed responses, cluster mismatches and deadline propagation;
+an additional in-memory gRPC server checks protobuf round trips at full-width IDs
+and distinguishes revoked leases from expired-but-retained leases. It uses only
+an in-memory listener, not cluster transport or TLS. Live Kubernetes identity,
+network restoration and process joins remain external prerequisites. The driver
+has not yet connected this verifier or implemented the separate recovery writes.

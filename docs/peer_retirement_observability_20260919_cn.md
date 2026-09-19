@@ -2,6 +2,20 @@
 
 ## 最新 CI 核验（2026-09-19）
 
+候选 2950044a 探针 CI `35443211258` 已全部成功，API/jobs/完整日志
+归档至 `probe-ci-35443211258-terminal.5EvUsbgo`，源码 SHA、所有作业
+成功终态及 SHA-256 核验通过。镜像 `35443211237` 仍运行中，未重跑。
+探针成功覆盖响应 CLI，不覆盖后续本地恢复记录与恢复验证器。
+
+本地新增 VerifyProtocolRecovery，只发送 Alarm(GET)、带 keys 的
+LeaseTimeToLive 和精确键线性化 Range，逐条验证集群/header、alarm
+为空、租约已撤销及 key/count/more 均为空。过期但 grantedTTL 非零
+不视为恢复；调用方提供已认证健康连接及独立最多五分钟恢复预算，
+不改变原 30 秒验收预算。模拟 ClientConn 验证方法、请求、失败路径，
+补充进程内 gRPC/protobuf 回归验证大整数和过期/撤销区别。三轮 race
+1.576s、vet/diff-check 通过。仅只读检查，无真实集群 RPC；实际恢复
+写操作、网络/标签恢复、现场身份检查和驱动接入仍未完成。
+
 协议恢复记录已增加实际子进程生命周期联动回归：父进程先持久化，
 再启动 Bash 准备进程，覆盖准备失败、READY 后取消、故障 deadline
 和成功。WithPreparedFault 返回后先核验直接子进程已消失，再以独立
