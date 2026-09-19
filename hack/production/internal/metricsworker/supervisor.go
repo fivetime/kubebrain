@@ -109,7 +109,9 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 	events := make(chan event, 2*len(commands))
 	for i, spec := range commands {
 		cmd := exec.CommandContext(ctx, spec.Executable, spec.Args...)
-		cmd.Env = spec.Env
+		// nil means inheritance to os/exec, but Command.Env is the complete
+		// admitted environment. Keep even an omitted environment explicit.
+		cmd.Env = append([]string{}, spec.Env...)
 		if spec.Stderr != nil {
 			cmd.Stderr = spec.Stderr
 		}

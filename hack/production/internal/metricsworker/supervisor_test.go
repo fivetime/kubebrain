@@ -84,6 +84,38 @@ func TestSupervisorBarrierAndFixedOrigin(t *testing.T) {
 	}
 }
 
+func TestSupervisorEnvironmentIsExplicit(t *testing.T) {
+	t.Setenv("KUBEBRAIN_WORKER_ENV_TEST", "parent-only")
+	for _, mode := range []string{"nil", "empty", "explicit"} {
+		t.Run(mode, func(t *testing.T) {
+			owner := supervisorOwner(t)
+			spec := command(owner, "abcdefgh", "ok")
+			spec.Args[1] = `printf '%s\n' "${KUBEBRAIN_WORKER_ENV_TEST-absent}" > "$1/environment"` + "\n" + spec.Args[1]
+			spec.Env = nil
+			want := "absent\n"
+			if mode == "empty" {
+				spec.Env = []string{}
+			} else if mode == "explicit" {
+				spec.Env = []string{"KUBEBRAIN_WORKER_ENV_TEST=declared"}
+				want = "declared\n"
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err := Run(ctx, owner, []Command{spec}, Hooks{
+				Baseline:  func(context.Context, int, Ready) error { return nil },
+				Origin:    func(context.Context) (time.Time, error) { return time.Now(), nil },
+				Inject:    func(context.Context, time.Time) error { return nil },
+				Completed: func(context.Context, int, Result, time.Time) error { return nil },
+			})
+			require.NoError(t, err)
+			data, err := os.ReadFile(filepath.Join(owner, "environment"))
+			require.NoError(t, err)
+			require.Equal(t, want, string(data))
+			assertJoined(t, owner, "abcdefgh")
+		})
+	}
+}
+
 func TestSupervisorInjectionFailureAndOriginalDeadline(t *testing.T) {
 	for _, mode := range []string{"error", "deadline"} {
 		t.Run(mode, func(t *testing.T) {
