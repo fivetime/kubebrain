@@ -169,3 +169,16 @@ the named entry with Lstat and compare its inode with the opened file: os.Root
 can resolve an in-root link despite O_NOFOLLOW. Valid relative symlink regressions
 cover protocol intent, network intent and reservation records. These checks do
 not replace exclusive lifecycle ownership or prove live Kubernetes recovery.
+
+`ReserveNetwork` connects intent and receipt persistence to an actual dynamic
+Kubernetes client CREATE. It requires a bounded context and live admission callback,
+arms the create-once intent before the request, submits the inactive selector, and
+saves the actual response before returning success. It does not adopt a same-name
+object, label a Pod, activate a policy or implement a retry loop. A second call
+with the same owner directory fails at arming, including after an ambiguous first
+request. Client transport retry policy remains the caller's responsibility.
+HTTP fixture tests cover the request path/body, pre-request intent, full-width
+resourceVersion receipt, conflict, malformed response, failed persistence and
+admission rejection. They do not simulate Kubernetes admission enforcement or
+Cilium endpoint selection. Real live admission, activation, fault gates and
+recovery still need complete coordinator wiring.
