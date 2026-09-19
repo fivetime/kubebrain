@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Read-only endpoint/Pod binding, not a policy enforcement verdict.
+# Only label observers opt into --allow-identity-pending. It permits the known
+# waiting-for-identity state, never identity drift or an enforcement conclusion.
 set -euo pipefail
 umask 077
-[[ $# == 2 && $1 == /* && -d $1 && ! -L $1 && $2 =~ ^kubebrain-local-[012]$ ]] || exit 2
+[[ ( $# == 2 || ( $# == 3 && $3 == --allow-identity-pending ) ) && $1 == /* && -d $1 && ! -L $1 && $2 =~ ^kubebrain-local-[012]$ ]] || exit 2
+allow_identity_pending=false
+[[ $# != 3 ]] || allow_identity_pending=true
 owner=$1
 pod=$2
 [[ $(stat -c '%a:%u' "$owner") == "700:$EUID" ]] || exit 2
@@ -30,8 +34,9 @@ node=$(jq -er '.spec.nodeName' "$out/pod.json")
 jq -e '.items|length==1 and all(.[];.metadata.deletionTimestamp==null and any(.status.conditions[];.type=="Ready" and .status=="True"))' "$out/agents.json" >/dev/null
 agent=$(jq -er '.items[0].metadata.name' "$out/agents.json")
 "${k[@]}" -n kube-system exec "$agent" -c cilium-agent -- cilium-dbg endpoint get "$id" -o json > "$out/endpoint.json"
-jq -e --argjson id "$id" --arg pod "$pod" --slurpfile expected "$out/pod.json" --slurpfile cep "$out/cep.json" '
- length==1 and .[0].id==$id and .[0].status.state=="ready" and
+jq -e --argjson id "$id" --argjson pending "$allow_identity_pending" --arg pod "$pod" --slurpfile expected "$out/pod.json" --slurpfile cep "$out/cep.json" '
+ length==1 and .[0].id==$id and
+ (.[0].status.state=="ready" or ($pending and .[0].status.state=="waiting-for-identity")) and
  .[0].status["external-identifiers"]["k8s-namespace"]=="kubebrain-dbaas-test" and
  .[0].status["external-identifiers"]["k8s-pod-name"]==$pod and
  .[0].status.identity.id==$cep[0].status.identity.id and

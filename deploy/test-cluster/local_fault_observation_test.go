@@ -26,6 +26,10 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 		{"ready-change", "label", "absent", 0}, {"pending", "label", "absent", 75},
 		{"pending", "label", "present", 75}, {"foreign-endpoint", "label", "absent", 65},
 		{"foreign-pod", "label", "absent", 65}, {"expected-replaced", "label", "absent", 65},
+		{"identity-wait", "label", "present", 75}, {"identity-wait", "label", "absent", 75},
+		{"identity-wait-foreign", "label", "present", 65}, {"unknown-state", "label", "present", 65},
+		{"identity-wait", "drop", "", 1},
+		{"identity-wait-replaced", "label", "present", 65}, {"identity-wait-mismatch", "label", "present", 65},
 	} {
 		t.Run(tc.kind+"/"+tc.mode+"/"+tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -46,7 +50,7 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 				seed.Env = env
 				pod, err := seed.CombinedOutput()
 				require.NoError(t, err, string(pod))
-				if tc.name == "expected-replaced" {
+				if tc.name == "expected-replaced" || tc.name == "identity-wait-replaced" {
 					pod = []byte(strings.Replace(string(pod), `"uid": "app"`, `"uid": "old"`, 1))
 				}
 				expected := filepath.Join(dir, "expected.json")
@@ -129,8 +133,11 @@ jq --arg kind "$FAULT_KIND" --arg mode "$FAULT_MODE" --arg scenario "$FAULT_SCEN
    (if $scenario=="ready-change" then .status.containerStatuses[0].ready=false else . end)
   else . end;
  if type=="array" then
+  (if ($scenario|startswith("identity-wait")) then .[0].status.state="waiting-for-identity"
+   elif $scenario=="unknown-state" then .[0].status.state="unknown-state" else . end) |
+  (if $scenario=="identity-wait-mismatch" then .[0].status.identity.id=456 else . end) |
   if $kind=="label" then
-   .[0].status.identity.labels=(if $scenario=="foreign-endpoint" then ["k8s:kubebrain.io/fault-owner=term-foreign"]
+   .[0].status.identity.labels=(if $scenario=="foreign-endpoint" or $scenario=="identity-wait-foreign" then ["k8s:kubebrain.io/fault-owner=term-foreign"]
     elif ($mode=="present" and $scenario!="pending") or ($mode=="absent" and $scenario=="pending") then ["k8s:kubebrain.io/fault-owner=term-test"] else [] end)
   elif $after and $scenario=="cep-identity" then .[0].status.identity.id=456 else . end
  elif has("items") then .items |= map(change)

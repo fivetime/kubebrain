@@ -168,3 +168,10 @@ Job/Pod 查询确认三个记录的 Job 名称及其 UID 所属 Pod 均无残留
 Secret UID/resourceVersion/data 保持一致，本轮策略、标签和临时 Secret
 不存在，TopoLVM PV 为 12 Bound / 50 Released。仍保持 HOLD；下一步是
 执行前重新检查准入，然后受控运行并恢复。上述均不替代真实故障验收。
+
+实际执行在标签准备时遇到 `waiting-for-identity`，旧端点采集器将其
+拒绝，未进入故障响应验收。后续修正给标签观察显式启用
+`--allow-identity-pending`，仍完成全部前后身份校验且只返回 75；
+未知状态、外来身份及进程替换仍失败。其他调用默认仍要求 `ready`，
+不能用该选项证明策略生效或流量隔离。详见
+[本轮失败证据与恢复记录](peer_fault_unified_observer_20260919_cn.md)。

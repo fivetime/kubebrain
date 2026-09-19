@@ -15,7 +15,7 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 sha256sum "$expected" > "$out/expected.sha256"
 rc=0
-timeout --foreground --kill-after=1s 30s bash "$here/capture-local-cilium-endpoint.sh" "$owner" "$pod" > "$out/capture.log" 2>&1 || rc=$?
+timeout --foreground --kill-after=1s 30s bash "$here/capture-local-cilium-endpoint.sh" "$owner" "$pod" --allow-identity-pending > "$out/capture.log" 2>&1 || rc=$?
 if [[ $rc != 0 ]]; then [[ $rc != 124 ]] || exit 124; exit 65; fi
 capture=$(sed -n 's/^EVIDENCE=//p' "$out/capture.log")
 [[ ${capture%/*} == "$owner" && ${capture##*/} =~ ^endpoint\.[a-zA-Z0-9]+$ && -d $capture && ! -L $capture && $(<"$capture/capture.exit") == 0 ]] || exit 65
@@ -34,7 +34,7 @@ jq -e --arg mode "$mode" --arg token "$token" '
  "k8s:kubebrain.io/fault-owner=" as $prefix |
  [$labels[]|select(startswith($prefix))] as $owners |
  if ($owners|length)>1 or any($owners[];.!=($prefix+$token)) then error("foreign fault owner") else . end |
- {mode:$mode,state:(if (($owners|length)==1)==($mode=="present") then "matched" else "pending" end),
+ {mode:$mode,state:(if .[0].status.state=="ready" and (($owners|length)==1)==($mode=="present") then "matched" else "pending" end),
  scope:"same_process_label_identity_only"}' "$capture/endpoint.json" > "$out/result.json" 2> "$out/classifier.stderr" || exit 65
 sha256sum "$out/result.json" "$out/capture.log" "$out/expected.sha256" "$capture/evidence.sha256" > "$out/evidence.sha256"
 case $(jq -er .state "$out/result.json") in matched) exit 0;; pending) exit 75;; *) exit 65;; esac
