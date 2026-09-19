@@ -134,3 +134,26 @@ RetryPeriod 调度、在 RenewDeadline 内轮询；后端锁的 `genContext`
 
 候选 `4aab067f` 的三项 CI 最新仍在运行：镜像模块扫描、后端 race、
 etcd 服务与 Watch 回归。新增计时测试仍仅本地提交，不取消当前 CI。
+
+## 故障期间采集的现有工具边界
+
+已审查 `capture-rollout-tls-metrics.sh`：它要求 stable rollout phase、
+每个目标容器 Ready，且通过 probe Pod 内 curl 仅提供服务端 CA。
+这与当前故障场景不兼容：旧 leader 可因后端隔离不 Ready，临时
+diagnostic info listener 又要求客户端证书。不能原样调用后将失败
+或缺少计数解释为“没有发送退任通知”，也不能删掉既有安全检查。
+
+`info-diagnostic-probe` 已提供 SPKI 绑定、认证连接和独立匿名连接
+拒绝证明，但目前采集的是 goroutine 栈，不是指标。
+`pod-log-capture` 可在固定身份下保留不重连的日志流，但日志不含
+新增的 Prometheus 计数，不能替代指标采集。
+
+下一轮真实故障之前需要单独完成故障态指标采集能力：保留 namespace、
+StatefulSet、Pod UID/containerID/imageID 前后身份核验，使用验证名称
+和 SPKI 的 mTLS，明确不以 Ready 为前提、也不声称 Ready；限制响应
+大小和总时长、输出不覆盖旧证据。采集应在恢复滚动之前结束并持久化，
+缺失样本不可补零，跨进程计数不可相减。这些是尚未实现的准入要求，
+不是已有采集结果；不为此重新启动旧实验或关闭 TLS 校验。
+
+CI 只读复查证据保存于 `retirement-observability-ci.fjZ3pXP3/`
+`progress.CX7oO7Se`，三个 run/job 仍实际运行；没有重复 dispatch。
