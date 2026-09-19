@@ -94,6 +94,17 @@ It is not yet acquired on the actual test cluster. Fake API tests cover busy
 claims, lost CREATE response, scope/object/record changes, failed recovery and
 conditional deletion; no real cluster concurrency result is claimed.
 
+`RunFaultLifecycle` now requires the actual `FaultOwner` handle, bound to the
+same directory, owner, namespace and StatefulSet identity as preparation. It
+checks the claim before preparation, wraps the additional Own admission with
+claim checks, and rechecks before metric baselines and original fault dispatch.
+The wrapped admission is also used by outcome verification and recovery. The
+claim remains held on return even after successful recovery; release is explicit.
+Lifecycle tests acquire a fake-API claim and verify normal release after recovery,
+retention on failed external join, and refusal of protocol recovery writes after
+the claim disappears. These are cooperating-controller tests, not proof that an
+administrator cannot delete a claim while already-dispatched work is in flight.
+
 `PrepareFault` composes the preparation half: validate shared owner and cluster
 bindings, durably reserve an inactive policy, label the exact admitted Pod, then
 prepare the protocol fixture. Before protocol setup and each protocol write it

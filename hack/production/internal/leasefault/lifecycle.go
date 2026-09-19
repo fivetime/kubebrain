@@ -17,6 +17,9 @@ import (
 // The prepared script must not repeat protocol/network preparation or restore.
 // It owns the original probe, expiry wait and fault gates under the supplied clock.
 type FaultLifecycle struct {
+	// Owner must be an acquired, durably receipted claim for this exact scope.
+	// The lifecycle never releases it; release is an explicit post-recovery step.
+	Owner       *FaultOwner
 	Preparation FaultPreparation
 	Fault       metricsworker.Command
 	Workers     []metricsworker.Command
@@ -53,6 +56,10 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 	if err := l.Preparation.validate(ctx); err != nil {
 		return result, err
 	}
+	p := l.Preparation
+	if l.Owner == nil || l.Owner.directory != p.Directory || l.Owner.binding != (FaultOwnerBinding{Owner: p.Network.Owner, Namespace: p.Network.Namespace, NamespaceUID: p.Network.NamespaceUID, StatefulSetName: p.StatefulSetName, StatefulSetUID: p.Network.StatefulSetUID}) {
+		return result, errors.New("fault lifecycle owner does not match preparation")
+	}
 	if l.OriginalEvidence == nil || l.OutcomeAdmit == nil {
 		return result, errors.New("original outcome evidence and admission are required")
 	}
@@ -71,11 +78,33 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 			return result, errors.New("invalid lifecycle evidence log")
 		}
 	}
+	if err := l.Owner.Check(ctx); err != nil {
+		return result, err
+	}
+	additionalAdmission := l.Preparation.Own
+	l.Preparation.Own = func(ctx context.Context) error {
+		if err := l.Owner.Check(ctx); err != nil {
+			return err
+		}
+		if err := additionalAdmission(ctx); err != nil {
+			return err
+		}
+		return l.Owner.Check(ctx)
+	}
 	result.ExecutionError = PrepareFault(ctx, l.Preparation)
 	if result.ExecutionError == nil {
 		result.ExecutionError = metricsworker.WithPreparedFault(ctx, l.Fault, func(runCtx context.Context, inject func(context.Context, time.Time) error) error {
 			hooks := l.Metrics
+			hooks.Baseline = func(ctx context.Context, index int, ready metricsworker.Ready) error {
+				if err := l.Preparation.Own(ctx); err != nil {
+					return err
+				}
+				return l.Metrics.Baseline(ctx, index, ready)
+			}
 			hooks.Inject = func(faultCtx context.Context, origin time.Time) error {
+				if err := l.Preparation.Own(faultCtx); err != nil {
+					return err
+				}
 				if err := inject(faultCtx, origin); err != nil {
 					return err
 				}
@@ -106,7 +135,7 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 	// are complete. Never reuse an expired fault context for restoration.
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.RecoveryTimeout)
 	defer cancel()
-	p := l.Preparation
+	p = l.Preparation
 	result.RecoveryError = RecoverFault(recoveryCtx, FaultRecovery{
 		Directory: p.Directory, StatefulSetName: p.StatefulSetName, Network: p.Network, Protocol: p.Protocol,
 		Client: p.Client, Connection: l.RecoveryConnection, Own: p.Own, Join: l.Join,

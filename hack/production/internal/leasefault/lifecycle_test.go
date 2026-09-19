@@ -14,9 +14,10 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/metricsworker"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func testFaultLifecycle(t *testing.T, ctx context.Context, prep FaultPreparation, mode string) {
+func testFaultLifecycle(t *testing.T, ctx context.Context, prep FaultPreparation, owner *FaultOwner, mode string) {
 	t.Helper()
 	parentCtx := ctx
 	ctx, cancel := context.WithCancel(ctx)
@@ -53,6 +54,7 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	evidenceRead := false
 	var origin time.Time
 	result, err := RunFaultLifecycle(ctx, FaultLifecycle{
+		Owner:       owner,
 		Preparation: prep, Fault: fault, Workers: []metricsworker.Command{worker}, RecoveryConnection: prep.Connection, RecoveryTimeout: 5 * time.Second,
 		OriginalEvidence: func(faultCtx context.Context) (Binding, []byte, error) {
 			require.False(t, joined, "outcome must precede recovery")
@@ -65,6 +67,9 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 			require.NoError(t, err)
 			require.ErrorIs(t, syscall.Kill(pid, 0), syscall.ESRCH, "outcome must follow prepared child exit")
 			evidenceRead = true
+			if mode == "lifecycle-owner-lost" {
+				require.NoError(t, prep.Client.Resource(ownerResource).Namespace(prep.Network.Namespace).Delete(faultCtx, faultOwnerName, metav1.DeleteOptions{}))
+			}
 			if mode == "lifecycle-outcome-timeout" {
 				<-faultCtx.Done()
 				return Binding{}, nil, faultCtx.Err()
@@ -130,6 +135,14 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		IdentityRestored: func(context.Context) error { require.True(t, joined); return nil },
 	})
 	require.True(t, joined)
+	if mode == "lifecycle-owner-lost" {
+		require.Error(t, err)
+		require.Error(t, result.ExecutionError)
+		require.Error(t, result.RecoveryError)
+		require.Error(t, VerifyProtocolRecovery(parentCtx, prep.Protocol, prep.Connection), "lost claim must not authorize recovery writes")
+		return
+	}
+	require.NoError(t, owner.Check(parentCtx), "lifecycle must not automatically release the claim")
 	if mode == "lifecycle-join-fail" {
 		require.NoError(t, result.ExecutionError)
 		require.ErrorContains(t, result.RecoveryError, "external worker remains")
@@ -139,6 +152,11 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	}
 	require.NoError(t, result.RecoveryError)
 	require.NoError(t, VerifyProtocolRecovery(parentCtx, prep.Protocol, prep.Connection))
+	require.NoError(t, owner.Release(parentCtx, func(ctx context.Context) error {
+		require.True(t, joined)
+		require.NoError(t, result.RecoveryError)
+		return VerifyProtocolRecovery(ctx, prep.Protocol, prep.Connection)
+	}))
 	if mode == "lifecycle-success" {
 		require.NoError(t, err)
 		require.NoError(t, result.ExecutionError)

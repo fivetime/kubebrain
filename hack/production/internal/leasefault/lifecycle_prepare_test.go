@@ -26,6 +26,7 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 		"success", "owner-mismatch", "unsafe-nonce", "reservation-replaced", "dataplane-not-ready", "create-ambiguous", "after-grant-denied",
 		"lifecycle-success", "lifecycle-child-fail", "lifecycle-baseline-fail", "lifecycle-deadline", "lifecycle-parent-cancel", "lifecycle-join-fail",
 		"lifecycle-evidence-fail", "lifecycle-clock-changed", "lifecycle-outcome-mismatch", "lifecycle-outcome-timeout",
+		"lifecycle-owner-lost",
 		"observer-matched", "observer-pending", "observer-input-before", "observer-input-during", "observer-retain-fail", "observer-owner-lost",
 	} {
 		t.Run(mode, func(t *testing.T) {
@@ -107,7 +108,15 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 				prep.Protocol.Owner = "foreign"
 			}
 			if strings.HasPrefix(mode, "lifecycle-") {
-				testFaultLifecycle(t, ctx, prep, mode)
+				client.PrependReactor("create", "configmaps", func(a ktesting.Action) (bool, runtime.Object, error) {
+					u := a.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured)
+					u.SetUID("claim-uid")
+					u.SetResourceVersion("1")
+					return false, nil, nil
+				})
+				owner, err := AcquireFaultOwner(ctx, client, dir, FaultOwnerBinding{Owner: n.Owner, Namespace: n.Namespace, NamespaceUID: n.NamespaceUID, StatefulSetName: "brain", StatefulSetUID: n.StatefulSetUID})
+				require.NoError(t, err)
+				testFaultLifecycle(t, ctx, prep, owner, mode)
 				return
 			}
 			err = PrepareFault(ctx, prep)
