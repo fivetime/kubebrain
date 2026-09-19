@@ -73,6 +73,27 @@ They verify ordering/budget propagation, not a real term change or isolated stre
 
 ## Protocol recovery intent
 
+`AcquireFaultOwner` provides a cooperative, namespace-wide cluster claim for
+dedicated fault tests using the fixed immutable ConfigMap `kubebrain-fault-owner`.
+It verifies independently admitted namespace/StatefulSet UIDs, persists a private
+create-once intent before CREATE, and saves the actual API receipt before success.
+An existing object is busy even for the same textual owner. There is no TTL,
+automatic takeover, CREATE retry or same-name adoption after an ambiguous response.
+`LoadFaultOwner` requires the intent and actual receipt; `Check` revalidates these,
+live scope, UID, immutable data and ownership. It can supply the lifecycle Own
+callback but does not verify executable bundles, process joins or packet state.
+
+`Release` requires a separate fresh recovery/worker-join proof, then checks the
+claim again and deletes with UID and current resourceVersion preconditions. It
+confirms API absence and preserves both records. Failed recovery must not invoke
+automatic deferred release. A crash or uncertain mutation requires explicit
+reconciliation with all prior workers accounted for, not an age-based takeover.
+All cooperating test controllers must use the fixed namespace claim; this does
+not fence administrators, unrelated controllers or API writes already in flight.
+It is not yet acquired on the actual test cluster. Fake API tests cover busy
+claims, lost CREATE response, scope/object/record changes, failed recovery and
+conditional deletion; no real cluster concurrency result is claimed.
+
 `PrepareFault` composes the preparation half: validate shared owner and cluster
 bindings, durably reserve an inactive policy, label the exact admitted Pod, then
 prepare the protocol fixture. Before protocol setup and each protocol write it
