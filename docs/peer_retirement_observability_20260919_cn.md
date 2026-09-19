@@ -110,3 +110,27 @@ SoftState 更新 leader/leadership 指标。KubeBrain 的 TiKV 锁选举及
 准备，后端和探针在 Go 环境准备，没有成功/失败终态。此处新增的
 测试尚未推送，避免取消正在运行的候选 `4aab067f` 工作流；不将它
 算作该候选 CI 的覆盖。
+
+## 按实集群选举参数的本机计时回归
+
+`go list -m` 确认实际使用 client-go `v0.36.2`。其 `renew` 每轮以
+RetryPeriod 调度、在 RenewDeadline 内轮询；后端锁的 `genContext`
+继承父上下文。KubeBrain 在 elector 结束后仍须等待生命周期 join、
+清理旧租约，再执行本地条件释放及 peer 通知。因此 RenewDeadline
+不是端到端 failover 上限，不能把剩余所有时间都归因于某一次 RPC。
+
+新增 `TestPeerRetirementCampaignProductionTimers` 使用与专用集群
+一致的 LeaseDuration=30s、RenewDeadline=25s、RetryPeriod=500ms，
+保留旧节点本地释放超时、健康 peer mTLS + 条件 CAS 的完整路径。
+从设置隔离到通知回调结束采用不可重置的 30 秒上限；没有改变既有
+集群门限。本机 race 通过（会话 86354，包 27.194s），回调耗时
+**26.041285651s**。原两条快速路径再跑三轮通过（2.791s），vet 通过。
+
+这只说明该状态机在可控内存存储、快速生命周期清理条件下不必然
+耗满 30 秒；没有测量真实 TiKV、下一任完整初始化或故障后诊断采集，
+不能据此宣称实集群应当通过，也不能把余下差值直接归因于存储。
+后续采集必须分别绑定退任、local release、peer notification、新任
+初始化及请求转发时间，避免把状态观测延迟当成实际选举时刻。
+
+候选 `4aab067f` 的三项 CI 最新仍在运行：镜像模块扫描、后端 race、
+etcd 服务与 Watch 回归。新增计时测试仍仅本地提交，不取消当前 CI。

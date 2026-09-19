@@ -53,6 +53,7 @@ type retirementScopedPartitionedLock struct {
 	calls    atomic.Int32
 	finished atomic.Bool
 	bounded  atomic.Bool
+	budget   time.Duration
 }
 
 func (l *retirementScopedPartitionedLock) RetirementScope() string {
@@ -62,7 +63,7 @@ func (l *retirementScopedPartitionedLock) RetirementScope() string {
 func (l *retirementScopedPartitionedLock) ReleaseRetiredOwnership(ctx context.Context, scope string, _ election.OwnershipCondition) error {
 	l.calls.Add(1)
 	deadline, ok := ctx.Deadline()
-	l.bounded.Store(ok && time.Until(deadline) <= 10*time.Millisecond && scope == l.RetirementScope() && l.partitioned.Load())
+	l.bounded.Store(ok && time.Until(deadline) <= l.budget && scope == l.RetirementScope() && l.partitioned.Load())
 	<-ctx.Done()
 	l.finished.Store(true)
 	return ctx.Err()
@@ -74,21 +75,31 @@ func (*retirementLifecycleBackend) InitializeLeadershipRevision(context.Context,
 }
 
 func TestPeerRetirementCampaignPartitionToStorageRelease(t *testing.T) {
-	testPeerRetirementCampaignPartition(t, false)
+	testPeerRetirementCampaignPartition(t, false, false)
 }
 
 func TestPeerRetirementCampaignLocalTimeoutThenHealthyPeerRelease(t *testing.T) {
-	testPeerRetirementCampaignPartition(t, true)
+	testPeerRetirementCampaignPartition(t, true, false)
 }
 
-func testPeerRetirementCampaignPartition(t *testing.T, scopedLocal bool) {
+func TestPeerRetirementCampaignProductionTimers(t *testing.T) {
+	testPeerRetirementCampaignPartition(t, true, true)
+}
+
+func testPeerRetirementCampaignPartition(t *testing.T, scopedLocal, productionTimers bool) {
 	t.Helper()
+	cfg := leader.Config{LeaseDuration: 30 * time.Second, RenewDeadline: 200 * time.Millisecond, RetryPeriod: 10 * time.Millisecond}
+	responseBudget := 3 * time.Second
+	if productionTimers {
+		cfg.RenewDeadline, cfg.RetryPeriod = 25*time.Second, 500*time.Millisecond
+		responseBudget = 30 * time.Second
+	}
 	kv := memkv.NewKvStorage()
 	t.Cleanup(func() { require.NoError(t, kv.Close()) })
 	store := retirementStorageFixture{kv, 42}
 	config := election.Config{Prefix: "/lifecycle-retirement", Keyspace: "tenant", Identity: "old", Timeout: time.Second}
 	old := &retirementPartitionedLock{Interface: election.NewResourceLockManager(config, store).GetResourceLock()}
-	scoped := &retirementScopedPartitionedLock{retirementPartitionedLock: old}
+	scoped := &retirementScopedPartitionedLock{retirementPartitionedLock: old, budget: cfg.RetryPeriod}
 	var campaignLock resourcelock.Interface = old
 	if scopedLocal {
 		campaignLock = scoped
@@ -113,7 +124,7 @@ func testPeerRetirementCampaignPartition(t *testing.T, scopedLocal bool) {
 	campaign = leader.NewLeaderElectionWithRetirement(&retirementLifecycleBackend{lock: campaignLock}, metrics, nil,
 		func(ctx context.Context) { close(started); <-ctx.Done(); initializedJoined.Store(true) },
 		func() { cleaned.Store(initializedJoined.Load()) },
-		leader.Config{LeaseDuration: 30 * time.Second, RenewDeadline: 200 * time.Millisecond, RetryPeriod: 10 * time.Millisecond},
+		cfg,
 		func(ctx context.Context, condition election.OwnershipCondition, available bool) {
 			_, fresh := campaign.EpochAndLeadingFresh()
 			valid := available && cleaned.Load() && !campaign.IsLeader() && !fresh && ctx.Err() == nil
@@ -138,11 +149,14 @@ func testPeerRetirementCampaignPartition(t *testing.T, scopedLocal bool) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("campaign never acquired")
 	}
+	faultStarted := time.Now()
 	old.partitioned.Store(true)
 	select {
 	case valid := <-observed:
 		require.True(t, valid, "send only after irreversible cleanup with a live parent context")
-	case <-time.After(3 * time.Second):
+		require.Less(t, time.Since(faultStarted), responseBudget)
+		t.Logf("partition to helper release callback: %s (budget %s)", time.Since(faultStarted), responseBudget)
+	case <-time.After(responseBudget):
 		t.Fatal("post-retirement callback missing")
 	}
 	<-done
