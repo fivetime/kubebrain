@@ -64,10 +64,16 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 	var binding retirementmetrics.CaptureBinding
 	var origin int64
 	var workerDir string
-	baselineChecked, completedChecked := false, false
+	baselineChecked, completedChecked, injected := false, false, false
 	results, runErr := metricsworker.Run(ctx, owner, []metricsworker.Command{{
 		Executable: "/bin/bash", Args: []string{"-c", setup, "test", library, owner, "success"}, Env: os.Environ(), Stderr: stderr,
 	}}, metricsworker.Hooks{
+		Inject: func(_ context.Context, fault time.Time) error {
+			require.True(t, baselineChecked)
+			require.Equal(t, origin, fault.UnixNano())
+			injected = true
+			return nil // Explicit no-op: simulated clock/transport integration only.
+		},
 		Baseline: func(_ context.Context, index int, r metricsworker.Ready) error {
 			workerDir = r.Worker
 			require.Equal(t, 0, index)
@@ -90,13 +96,14 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 			}
 			return nil
 		},
-		Inject: func(context.Context) (time.Time, error) {
+		Origin: func(context.Context) (time.Time, error) {
 			require.True(t, baselineChecked)
 			now := time.Now()
 			origin = now.UnixNano()
 			return now, nil // Clock delivery only: no real Kubernetes fault injected.
 		},
 		Completed: func(_ context.Context, index int, result metricsworker.Result, fault time.Time) error {
+			require.True(t, injected)
 			require.Equal(t, 0, index)
 			require.Equal(t, origin, fault.UnixNano())
 			c := result.Captured
@@ -127,6 +134,7 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 	if reject {
 		require.ErrorContains(t, runErr, "deliberate baseline rejection")
 		require.Zero(t, origin, "must not inject on a rejected baseline")
+		require.False(t, injected)
 		require.False(t, completedChecked)
 		receipt, err := os.ReadFile(filepath.Join(workerDir, "exit-code"))
 		require.NoError(t, err, string(log))

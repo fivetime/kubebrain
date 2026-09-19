@@ -40,10 +40,30 @@ func TestSupervisorBarrierAndFixedOrigin(t *testing.T) {
 	baselines, completed, injections := 0, 0, 0
 	origin := time.Now()
 	results, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok"), command(owner, "ijklmnop", "ok")}, Hooks{
-		Baseline: func(context.Context, int, Ready) error { baselines++; return nil },
-		Inject: func(context.Context) (time.Time, error) {
-			require.Equal(t, 2, baselines)
+		Inject: func(ctx context.Context, got time.Time) error {
+			require.Equal(t, origin, got)
 			injections++
+			// Both workers must receive the clock while this hook is still
+			// executing, not after fault installation/observation returns.
+			for _, suffix := range []string{"abcdefgh", "ijklmnop"} {
+				for {
+					data, err := os.ReadFile(filepath.Join(owner, "origin-"+suffix))
+					if err == nil && string(data) == fmt.Sprintf("%d\n", origin.UnixNano()) {
+						break
+					}
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(5 * time.Millisecond):
+					}
+				}
+			}
+			require.Zero(t, completed)
+			return nil
+		},
+		Baseline: func(context.Context, int, Ready) error { baselines++; return nil },
+		Origin: func(context.Context) (time.Time, error) {
+			require.Equal(t, 2, baselines)
 			return origin, nil
 		},
 		Completed: func(_ context.Context, _ int, _ Result, got time.Time) error {
@@ -61,6 +81,37 @@ func TestSupervisorBarrierAndFixedOrigin(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, fmt.Sprintf("%d\n", origin.UnixNano()), string(data))
 		assertJoined(t, owner, suffix)
+	}
+}
+
+func TestSupervisorInjectionFailureAndOriginalDeadline(t *testing.T) {
+	for _, mode := range []string{"error", "deadline"} {
+		t.Run(mode, func(t *testing.T) {
+			owner := supervisorOwner(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok")}, Hooks{
+				Baseline: func(context.Context, int, Ready) error { return nil },
+				Origin:   func(context.Context) (time.Time, error) { return time.Now().Add(-29800 * time.Millisecond), nil },
+				Inject: func(ctx context.Context, _ time.Time) error {
+					if mode == "error" {
+						return fmt.Errorf("fault install failed")
+					}
+					<-ctx.Done()
+					return ctx.Err()
+				},
+				Completed: func(context.Context, int, Result, time.Time) error {
+					t.Error("failed injection cannot complete")
+					return nil
+				},
+			})
+			require.Error(t, err)
+			if mode == "error" {
+				require.ErrorContains(t, err, "fault install failed")
+			}
+			require.NoError(t, ctx.Err(), "fault timer must cancel Inject before outer deadline")
+			assertJoined(t, owner, "abcdefgh")
+		})
 	}
 }
 
@@ -83,13 +134,14 @@ func TestSupervisorFailuresJoinBeforeReturn(t *testing.T) {
 			defer cancel()
 			injected := false
 			_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", mode)}, Hooks{
+				Inject: func(context.Context, time.Time) error { return nil },
 				Baseline: func(context.Context, int, Ready) error {
 					if mode == "baseline-rejected" {
 						return fmt.Errorf("invalid baseline")
 					}
 					return nil
 				},
-				Inject: func(context.Context) (time.Time, error) {
+				Origin: func(context.Context) (time.Time, error) {
 					injected = true
 					origin := time.Now()
 					if mode == "expired" {
@@ -122,8 +174,9 @@ func TestSupervisorUsesRemainingFaultBudget(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "hang")}, Hooks{
+		Inject:   func(context.Context, time.Time) error { return nil },
 		Baseline: func(context.Context, int, Ready) error { return nil },
-		Inject:   func(context.Context) (time.Time, error) { return time.Now().Add(-29800 * time.Millisecond), nil },
+		Origin:   func(context.Context) (time.Time, error) { return time.Now().Add(-29800 * time.Millisecond), nil },
 		Completed: func(context.Context, int, Result, time.Time) error {
 			t.Error("hung worker cannot complete")
 			return nil
@@ -140,8 +193,9 @@ func TestSupervisorRejectsDuplicateWorkersBeforeInjection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok"), command(owner, "abcdefgh", "ok")}, Hooks{
+		Inject:   func(context.Context, time.Time) error { return nil },
 		Baseline: func(context.Context, int, Ready) error { return nil },
-		Inject: func(context.Context) (time.Time, error) {
+		Origin: func(context.Context) (time.Time, error) {
 			t.Error("duplicate workers must not inject")
 			return time.Now(), nil
 		},
@@ -155,8 +209,9 @@ func TestSupervisorIncompleteBarrierCancelsAllChildren(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok"), command(owner, "ijklmnop", "no-ready")}, Hooks{
+		Inject:   func(context.Context, time.Time) error { return nil },
 		Baseline: func(context.Context, int, Ready) error { return nil },
-		Inject: func(context.Context) (time.Time, error) {
+		Origin: func(context.Context) (time.Time, error) {
 			t.Error("incomplete barrier must not inject")
 			return time.Now(), nil
 		},
@@ -178,8 +233,9 @@ func TestSupervisorGracefulCancellationAndEscalation(t *testing.T) {
 			defer cancel()
 			start := time.Now()
 			_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", mode)}, Hooks{
+				Inject:    func(context.Context, time.Time) error { return nil },
 				Baseline:  func(context.Context, int, Ready) error { return nil },
-				Inject:    func(context.Context) (time.Time, error) { t.Error("no ready worker"); return time.Now(), nil },
+				Origin:    func(context.Context) (time.Time, error) { t.Error("no ready worker"); return time.Now(), nil },
 				Completed: func(context.Context, int, Result, time.Time) error { return nil },
 			})
 			require.Error(t, err)

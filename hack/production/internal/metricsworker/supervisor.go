@@ -31,12 +31,14 @@ type Result struct {
 }
 
 // Hooks must honor cancellation and must not restore the experiment. Validators
-// must independently verify artifacts, not just trust protocol paths. Inject
-// returns the ORIGINAL fault timestamp, never a new timestamp after injection.
+// must independently verify artifacts, not just trust protocol paths. Origin
+// only chooses the original clock; it must not inject a fault. Inject runs after
+// that clock has been dispatched to every worker and must use it unchanged.
 // Restore is permitted only after Run returns and external cleanup checks pass.
 type Hooks struct {
 	Baseline  func(context.Context, int, Ready) error
-	Inject    func(context.Context) (time.Time, error)
+	Origin    func(context.Context) (time.Time, error)
+	Inject    func(context.Context, time.Time) error
 	Completed func(context.Context, int, Result, time.Time) error
 }
 
@@ -59,7 +61,7 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 	if _, ok := parent.Deadline(); !ok {
 		return nil, errors.New("supervisor requires caller deadline")
 	}
-	if len(commands) == 0 || len(commands) > 16 || hooks.Baseline == nil || hooks.Inject == nil || hooks.Completed == nil {
+	if len(commands) == 0 || len(commands) > 16 || hooks.Baseline == nil || hooks.Origin == nil || hooks.Inject == nil || hooks.Completed == nil {
 		return nil, errors.New("invalid supervisor configuration")
 	}
 	// Validate all static inputs before starting any process.
@@ -205,7 +207,7 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 	if err := guard.check(); err != nil {
 		return nil, err
 	}
-	origin, err := hooks.Inject(ctx)
+	origin, err := hooks.Origin(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -229,6 +231,23 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 		if err := c.input.Close(); err != nil {
 			return nil, err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := guard.check(); err != nil {
+		return nil, err
+	}
+	// Workers can sample while fault installation/observation is in progress.
+	// Cancellation from any worker or the original clock reaches this hook.
+	if err := hooks.Inject(ctx, origin); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := guard.check(); err != nil {
+		return nil, err
 	}
 	for count := 0; count < len(commands); count++ {
 		select {

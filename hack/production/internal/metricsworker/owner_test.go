@@ -46,8 +46,9 @@ func TestSupervisorOwnerTerminatesBeforeInjection(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok")}, Hooks{
+				Inject:   func(context.Context, time.Time) error { return nil },
 				Baseline: func(context.Context, int, Ready) error { return os.WriteFile(filepath.Join(owner, marker), nil, 0600) },
-				Inject: func(context.Context) (time.Time, error) {
+				Origin: func(context.Context) (time.Time, error) {
 					t.Error("inactive owner must not inject")
 					return time.Now(), nil
 				},
@@ -67,6 +68,7 @@ func TestSupervisorOwnerWatchCancelsBlockedHook(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok")}, Hooks{
+		Inject: func(context.Context, time.Time) error { return nil },
 		Baseline: func(ctx context.Context, _ int, _ Ready) error {
 			if err := os.WriteFile(filepath.Join(owner, "HOLD"), nil, 0600); err != nil {
 				return err
@@ -74,7 +76,7 @@ func TestSupervisorOwnerWatchCancelsBlockedHook(t *testing.T) {
 			<-ctx.Done()
 			return ctx.Err()
 		},
-		Inject: func(context.Context) (time.Time, error) {
+		Origin: func(context.Context) (time.Time, error) {
 			t.Error("inactive owner must not inject")
 			return time.Now(), nil
 		},
@@ -91,8 +93,9 @@ func TestSupervisorInactiveOwnerDoesNotStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok")}, Hooks{
+		Inject:   func(context.Context, time.Time) error { return nil },
 		Baseline: func(context.Context, int, Ready) error { t.Error("inactive owner cannot reach baseline"); return nil },
-		Inject: func(context.Context) (time.Time, error) {
+		Origin: func(context.Context) (time.Time, error) {
 			t.Error("inactive owner cannot inject")
 			return time.Now(), nil
 		},
@@ -103,13 +106,14 @@ func TestSupervisorInactiveOwnerDoesNotStart(t *testing.T) {
 	require.True(t, os.IsNotExist(err))
 }
 
-func TestSupervisorOwnerTerminatesDuringInjection(t *testing.T) {
+func TestSupervisorOwnerTerminatesDuringOriginSelection(t *testing.T) {
 	owner := supervisorOwner(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok")}, Hooks{
+		Inject:   func(context.Context, time.Time) error { return nil },
 		Baseline: func(context.Context, int, Ready) error { return nil },
-		Inject: func(context.Context) (time.Time, error) {
+		Origin: func(context.Context) (time.Time, error) {
 			return time.Now(), os.WriteFile(filepath.Join(owner, "HOLD"), nil, 0600)
 		},
 		Completed: func(context.Context, int, Result, time.Time) error {
@@ -120,5 +124,22 @@ func TestSupervisorOwnerTerminatesDuringInjection(t *testing.T) {
 	require.Error(t, err)
 	_, err = os.Lstat(filepath.Join(owner, "origin-abcdefgh"))
 	require.True(t, os.IsNotExist(err), "must not deliver clock after owner termination")
+	assertJoined(t, owner, "abcdefgh")
+}
+
+func TestSupervisorOwnerTerminatesDuringInjection(t *testing.T) {
+	owner := supervisorOwner(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok")}, Hooks{
+		Baseline: func(context.Context, int, Ready) error { return nil },
+		Origin:   func(context.Context) (time.Time, error) { return time.Now(), nil },
+		Inject:   func(context.Context, time.Time) error { return os.WriteFile(filepath.Join(owner, "HOLD"), nil, 0600) },
+		Completed: func(context.Context, int, Result, time.Time) error {
+			t.Error("owner terminated during Inject cannot complete")
+			return nil
+		},
+	})
+	require.Error(t, err)
 	assertJoined(t, owner, "abcdefgh")
 }
