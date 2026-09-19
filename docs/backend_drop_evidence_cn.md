@@ -81,3 +81,29 @@ Status 的告警字段不作为健康结论；观察到新 leader/term 也不证
 后失去策略/取消、超预算、留存失败及既有恢复路径；网络和继任 Status
 仍为模拟，不能作为在线 Cilium 丢包或原 30 秒验收证据。完整捕获适配器
 及生产 CLI 组装仍待完成。
+
+## 实时丢包观察脚本
+
+`deploy/test-cluster/observe-local-backend-drops.sh OWNER EXPECTED_POD TARGETS SECONDS ORIGIN_NS`
+调用仓库内 `capture-local-cilium-drops.sh`，不读取旧实验目录作为输入。
+SECONDS 为 1–9 秒；调用方必须用原故障 context 监督整个进程组，不能
+另开恢复预算。脚本另在入口、API 查询前后、捕获后和完成前复核原时钟。
+它不安装策略、不重试捕获，也不自行恢复集群。
+
+EXPECTED_POD 和 TARGETS 必须是独立准入的冻结文件。TARGETS 使用现有
+TCP 观察器的六个后端 `{name,uid,ip,port}` 格式，捕获前后重新读取 Pod
+列表核对 UID/IP；捕获中的两个 endpoint 快照均须匹配原 Pod 进程。
+实际捕获子进程负责同一 Agent/CEP 身份与远端 timeout 回执；观察器核对
+私有目录、成功回执、清单、endpoint、请求时长，以及本次调用之后且原
+30 秒以内的采集区间。它只消费本次已准入子进程产生的清单，不是任意
+外部证据导入器；脚本及依赖哈希、环境和集群身份仍须外层独立准入。
+
+monitor stdout 超过 4 MiB 则拒绝进入 jq；完整解析后，必须同时匹配
+PD 2379 与 TiKV 20160 的同源策略拒绝。输入文件在结束时再次验哈希，
+输出私有 `backend-drops.*` 目录及明确不代表任期/RPC 成功的标记。
+`observation.exit=0`、完整标记、原截止时间和子进程退出都必须由调用方
+检查。不能只凭目录存在或 matches.json 非空接受。
+
+本地测试运行真实观察脚本与 jq 规则，模拟捕获/API 边界，覆盖双后端
+成功、单后端、源 Pod/目标后端替换、旧窗口、捕获失败、损坏/超大日志、
+输入漂移及已过期时钟。尚未执行在线捕获；Go 适配器及生产入口仍待组装。
