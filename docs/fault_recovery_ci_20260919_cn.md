@@ -175,3 +175,18 @@ race 回归通过（5.027s），metricsworker 回归通过（缓存），build �
 `go test -race -count=1 -timeout=2m ./deploy/test-cluster`，97.549s 通过；
 vet 和 diff 检查通过。CI 超时配置和真实故障原 30 秒门限均未修改。
 这解除了后续代码推送前的本地全包验证问题，不代表真实故障验收完成。
+
+## f6daf9d6 完整回归终态
+
+源码 `f6daf9d63443bf392a655ab918d4f164a6cec10d` 的
+[回归工作流 35459391683](https://github.com/fivetime/kubebrain/actions/runs/35459391683)
+已完成且全部作业成功。终态 API、作业列表和完整日志位于
+`/root/.local/state/kubebrain/probe-ci-35459391683-terminal.FF6W9o0A`；
+已核对源码、成功终态与 SHA256SUMS。归档时镜像工作流 35459391712
+仍在运行，不能宣告该镜像已验证，也不能将本次结果用于后续本地代码。
+
+后续本地准备流程组合测试使用真实 KubeBrain/memkv RPC 和模拟
+Kubernetes API，验证策略预留、标签、协议准备及恢复的组合，包括
+CREATE 响应丢失、策略替换和租约创建后准入失败。leasefault、metricsworker、
+build 的完整 race 回归分别为 7.454s、10.771s、2.640s，vet 通过。
+这些结果仍非真实集群故障验收；本轮没有部署镜像或执行故障注入。

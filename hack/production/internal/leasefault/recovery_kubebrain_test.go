@@ -49,13 +49,13 @@ func TestRestoreProtocolKubeBrainGRPC(t *testing.T) {
 	}
 }
 
-func testRestoreProtocolKubeBrainGRPC(t *testing.T, mode string) {
-	expired, foreignKey := mode == "expired-retained", mode == "foreign-key"
+func recoveryGRPCFixture(t *testing.T) *grpc.ClientConn {
+	t.Helper()
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)
 	b := backend.NewBackend(memkv.NewKvStorage(), backend.Config{Identity: "recovery-test", EnableEtcdCompatibility: true}, metrics)
 	server := serveretcd.New(b, metrics, recoveryPeer{})
-	defer func() { require.NoError(t, server.Close()); require.NoError(t, b.(interface{ Close() error }).Close()) }()
+	t.Cleanup(func() { require.NoError(t, server.Close()); require.NoError(t, b.(interface{ Close() error }).Close()) })
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 	pb.RegisterMaintenanceServer(grpcServer, server)
 	pb.RegisterLeaseServer(grpcServer, server)
@@ -63,11 +63,17 @@ func testRestoreProtocolKubeBrainGRPC(t *testing.T, mode string) {
 	listener := bufconn.Listen(1 << 20)
 	done := make(chan struct{})
 	go func() { defer close(done); _ = grpcServer.Serve(listener) }()
-	defer func() { grpcServer.Stop(); _ = listener.Close(); <-done }()
+	t.Cleanup(func() { grpcServer.Stop(); _ = listener.Close(); <-done })
 	conn, err := grpc.NewClient("passthrough:///kubebrain-recovery", grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) }))
 	require.NoError(t, err)
-	defer conn.Close()
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	return conn
+}
+
+func testRestoreProtocolKubeBrainGRPC(t *testing.T, mode string) {
+	expired, foreignKey := mode == "expired-retained", mode == "foreign-key"
+	conn := recoveryGRPCFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	maintenance, lease, kv := pb.NewMaintenanceClient(conn), pb.NewLeaseClient(conn), pb.NewKVClient(conn)

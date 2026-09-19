@@ -45,6 +45,26 @@ a synthetic post-hoc origin only to verify schema compatibility, not fault timin
 
 ## Protocol recovery intent
 
+`PrepareFault` composes the preparation half: validate shared owner and cluster
+bindings, durably reserve an inactive policy, label the exact admitted Pod, then
+prepare the protocol fixture. Before protocol setup and each protocol write it
+rechecks live Pod/controller identity, the actual reservation UID and inactive
+spec, ownership, nonce safety and independent dataplane readiness. It does not
+activate the policy or start a fault clock. Required hooks must prove exclusive
+ownership, absence of stale/foreign selected endpoints, target identity convergence
+and inactive-policy connectivity; callbacks returning nil are not evidence.
+
+Preparation errors never trigger a write retry or imply that nothing changed.
+In particular, a successful CREATE with a lost response leaves intent without an
+actual receipt and requires explicit reconciliation, not adoption by name. The
+composition tests use real KubeBrain/memkv gRPC and a fake Kubernetes tracker,
+covering successful preparation/recovery, owner and nonce rejection, replaced
+reservation, unready dataplane, ambiguous CREATE, and admission lost after lease
+grant. The latter restores the partial protocol fixture and owned label. These
+tests do not establish Cilium behavior, transport security, TiKV operation or
+leadership handoff. The CLI, admitted concrete hooks, original probe and fault
+gates still need integration before any new live experiment.
+
 `ArmProtocolRecovery` persists a create-once private record, syncing both the file
 and its containing directory before returning success. The outer recovery owner
 must call it before granting the fixture lease, writing the owned key or arming
