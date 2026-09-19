@@ -17,10 +17,13 @@ trap 'printf "%s\n" "$?" > "$out/observation.exit"' EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 sha256sum "$expected" "$targets" > "$out/inputs.sha256"
-# A withdrawn Pod label may not yet have reached the endpoint identity. Classify
-# that transition before the strict unlabelled policy observer (75 stays pending).
+# Classify both label transitions before the strict policy observer (75 stays
+# pending). The labelled mode also serves preparation after the API reservation
+# has independently been verified inactive; identity must converge before RPCs.
 if [[ $mode == absent-unlabelled ]]; then
  bash "$here/observe-local-fault-label.sh" "$owner" absent "$expected" "${name#kb-}" > "$out/identity-before.log" 2>&1
+else
+ bash "$here/observe-local-fault-label.sh" "$owner" present "$expected" "${name#kb-}" > "$out/identity-before.log" 2>&1
 fi
 bash "$here/observe-local-policy-state.sh" "$owner" "$mode" "$uid" "$name" "$expected" > "$out/policy-before.log" 2>&1
 bash "$here/observe-local-backend-tcp.sh" "$owner" "$expected" "$targets" > "$out/tcp.log" 2>&1

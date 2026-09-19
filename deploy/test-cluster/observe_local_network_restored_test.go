@@ -17,7 +17,7 @@ import (
 func TestNetworkRestoredObserverOrder(t *testing.T) {
 	source, err := os.ReadFile("observe-local-network-restored.sh")
 	require.NoError(t, err)
-	for _, mode := range []string{"success", "labelled-success", "pending-identity", "fatal-identity", "pending-before", "tcp-fails", "pending-after", "fatal-after", "input-changed"} {
+	for _, mode := range []string{"success", "labelled-success", "labelled-pending-identity", "labelled-fatal-identity", "pending-identity", "fatal-identity", "pending-before", "tcp-fails", "pending-after", "fatal-after", "input-changed"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel() // Each case owns its scripts, evidence and environment.
 			dir := t.TempDir()
@@ -41,7 +41,7 @@ printf 'tcp\n' >> "$1/order"
 [[ $SCENARIO != tcp-fails ]] || exit 23
 `
 			identity := `set -euo pipefail
-[[ $2 == absent && $4 == term-test ]] || exit 99
+[[ $2 == "$LABEL_MODE" && $4 == term-test ]] || exit 99
 printf 'identity\n' >> "$1/order"
 [[ $SCENARIO != pending-identity ]] || exit 75
 [[ $SCENARIO != fatal-identity ]] || exit 65
@@ -52,11 +52,14 @@ printf 'identity\n' >> "$1/order"
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			observationMode := "absent-unlabelled"
-			if mode == "labelled-success" {
+			labelMode := "absent"
+			scenario := strings.TrimPrefix(mode, "labelled-")
+			if strings.HasPrefix(mode, "labelled-") {
 				observationMode = "absent"
+				labelMode = "present"
 			}
 			cmd := exec.CommandContext(ctx, "bash", filepath.Join(dir, "observe-local-network-restored.sh"), dir, observationMode, "policy-uid", "kb-term-test", expected, targets)
-			cmd.Env = append(os.Environ(), "SCENARIO="+mode, "OBSERVATION_MODE="+observationMode)
+			cmd.Env = append(os.Environ(), "SCENARIO="+scenario, "OBSERVATION_MODE="+observationMode, "LABEL_MODE="+labelMode)
 			output, err := cmd.CombinedOutput()
 			require.NoError(t, ctx.Err())
 			if mode == "success" || mode == "labelled-success" {
@@ -64,7 +67,7 @@ printf 'identity\n' >> "$1/order"
 			} else {
 				var exit *exec.ExitError
 				require.ErrorAs(t, err, &exit, string(output))
-				if strings.HasPrefix(mode, "pending-") {
+				if strings.HasPrefix(scenario, "pending-") {
 					require.Equal(t, 75, exit.ExitCode())
 				}
 			}
@@ -77,10 +80,8 @@ printf 'identity\n' >> "$1/order"
 			if mode == "tcp-fails" {
 				want = "policy-before\ntcp\n"
 			}
-			if mode != "labelled-success" {
-				want = "identity\n" + want
-			}
-			if mode == "pending-identity" || mode == "fatal-identity" {
+			want = "identity\n" + want
+			if scenario == "pending-identity" || scenario == "fatal-identity" {
 				want = "identity\n"
 			}
 			require.Equal(t, want, string(order))

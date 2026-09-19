@@ -85,6 +85,19 @@ a deployable CLI are still required. The composition exposed and fixed a duplica
 timer race in the metric supervisor: workers now cancel from the single deadline
 context, preserving `DeadlineExceeded` in the prepared fault callback.
 
+The concrete test-cluster observer
+`deploy/test-cluster/observe-local-network-restored.sh` can provide the network
+portion of `ReservedReady` using mode `absent`, after Go verifies the recorded
+policy still has its inactive selector. It first waits for the *present* Pod label
+to appear in the independently bound Cilium identity, then checks policy absence,
+all six admitted backend TCP endpoints, and policy absence again. Recovery uses
+the same mode while the owned label remains; after label removal it uses
+`absent-unlabelled`, which checks the *absent* identity transition first. Exit 75
+remains pending under the existing bounded context; other errors stop the stage.
+Neither mode proves the Kubernetes policy object's state, protocol health or
+exclusive ownership. Those independent Go checks and lifecycle hooks remain
+mandatory. This shared observer is not a standalone experiment driver.
+
 `ArmProtocolRecovery` persists a create-once private record, syncing both the file
 and its containing directory before returning success. The outer recovery owner
 must call it before granting the fixture lease, writing the owned key or arming
