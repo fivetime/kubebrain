@@ -91,3 +91,20 @@ the deadline, or that the original request and successor gates passed. The
 experiment driver must enforce those requirements and join workers before
 restoration. This command remains an offline diagnostic, not the real fault
 driver or a replacement for its admission and recovery procedure.
+
+## Completed worker receipts
+
+After joining the actual worker, add `--worker WORKER_DIRECTORY` to scheduled
+mode to call `LoadWorkerCaptures`. It requires four distinct sibling directories,
+a private 0700 worker directory, and bounded private regular receipts:
+`baseline-path` must equal the selected baseline, `schedule-path` must equal the
+selected schedule, and `exit-code` must be exactly `0` followed by a newline.
+Receipts are checked before and after loading both captures. Missing or invalid
+receipts never fall back to ordinary scheduled mode. Existing capture identity,
+manifest, timing and delta checks remain mandatory.
+
+Success adds `worker_receipts_verified: true` and `worker_join_proven: false`.
+Files can be forged: these checks bind the evidence but do not authenticate its
+producer, prove process exit or join escaped descendants. The supervisor must
+independently verify successful worker exit, tool provenance and complete joining;
+the real fault driver must finish this verification under its original deadline.

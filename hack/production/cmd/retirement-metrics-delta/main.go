@@ -19,12 +19,13 @@ func run(args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("retirement-metrics-delta", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	var before, after, stage, outcome string
-	var schedule, originNS, offsetNS string
+	var worker, schedule, originNS, offsetNS string
 	var duration bool
 	var binding retirementmetrics.CaptureBinding
 	flags.StringVar(&before, "before", "", "completed earlier metrics capture directory")
 	flags.StringVar(&after, "after", "", "completed later metrics capture directory")
 	flags.StringVar(&schedule, "schedule", "", "completed schedule directory for the later capture")
+	flags.StringVar(&worker, "worker", "", "joined worker directory; requires scheduled mode and matching private receipts")
 	flags.StringVar(&originNS, "fault-origin-ns", "", "independently saved original fault timestamp in Unix nanoseconds")
 	flags.StringVar(&offsetNS, "offset-ns", "", "independently selected capture offset in nanoseconds")
 	flags.StringVar(&binding.NamespaceUID, "namespace-uid", "", "admitted namespace UID")
@@ -39,11 +40,18 @@ func run(args []string, output io.Writer) error {
 		return errors.New("invalid arguments; require before/after, namespace-uid, sts-uid, pod-uid, spec-sha256, cluster, stage and outcome")
 	}
 	var scheduled bool
+	var workerRequested bool
 	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "worker" {
+			workerRequested = true
+		}
 		if f.Name == "schedule" || f.Name == "fault-origin-ns" || f.Name == "offset-ns" {
 			scheduled = true
 		}
 	})
+	if workerRequested && (worker == "" || !scheduled) {
+		return errors.New("worker verification requires worker and scheduled mode")
+	}
 	var origin, offset int64
 	if scheduled {
 		var originErr, offsetErr error
@@ -55,30 +63,40 @@ func run(args []string, output io.Writer) error {
 			return errors.New("scheduled mode requires schedule, canonical fault-origin-ns and offset-ns below 30 seconds")
 		}
 	}
-	var a retirementmetrics.Sample
+	var a, b retirementmetrics.Sample
 	var err error
-	if scheduled {
-		a, err = retirementmetrics.LoadPrefaultCapture(before, binding, time.Unix(0, origin))
+	if workerRequested {
+		a, b, err = retirementmetrics.LoadWorkerCaptures(worker, before, schedule, after, binding, time.Unix(0, origin), time.Duration(offset))
+		if err != nil {
+			return fmt.Errorf("worker evidence: %w", err)
+		}
 	} else {
-		a, err = retirementmetrics.LoadCapture(before, binding)
-	}
-	if err != nil {
-		return fmt.Errorf("before capture: %w", err)
-	}
-	var b retirementmetrics.Sample
-	if scheduled {
-		b, err = retirementmetrics.LoadScheduledCapture(schedule, after, binding, time.Unix(0, origin), time.Duration(offset))
-	} else {
-		b, err = retirementmetrics.LoadCapture(after, binding)
-	}
-	if err != nil {
-		return fmt.Errorf("after capture: %w", err)
+		if scheduled {
+			a, err = retirementmetrics.LoadPrefaultCapture(before, binding, time.Unix(0, origin))
+		} else {
+			a, err = retirementmetrics.LoadCapture(before, binding)
+		}
+		if err != nil {
+			return fmt.Errorf("before capture: %w", err)
+		}
+		if scheduled {
+			b, err = retirementmetrics.LoadScheduledCapture(schedule, after, binding, time.Unix(0, origin), time.Duration(offset))
+		} else {
+			b, err = retirementmetrics.LoadCapture(after, binding)
+		}
+		if err != nil {
+			return fmt.Errorf("after capture: %w", err)
+		}
 	}
 	delta, err := retirementmetrics.SampleDelta(a, b, retirementmetrics.Key{Stage: stage, Outcome: outcome})
 	if err != nil {
 		return err
 	}
 	result := map[string]any{"stage": stage, "outcome": outcome, "count_delta": delta, "scope": "same_process_retirement_counter_only", "fault_acceptance_proven": false, "successor_readiness_proven": false, "event_latency_proven": false}
+	if workerRequested {
+		result["worker_receipts_verified"] = true
+		result["worker_join_proven"] = false
+	}
 	if scheduled {
 		// Strings preserve nanoseconds through consumers using float64 JSON numbers.
 		result["scheduled_capture_verified"] = true
