@@ -45,3 +45,20 @@ Status 的告警字段不作为健康结论；观察到新 leader/term 也不证
 策略/丢包门限，随后由原生生命周期执行降级栈、原响应、指标和恢复
 检查。本地测试含模拟状态转换及实际 KubeBrain/memkv RPC，不是一次
 真实集群选举或原 30 秒验收。
+
+## 激活策略观察入口
+
+`NetworkObserver.Active(ctx, origin)` 复用现有
+`observe-local-policy-state.sh present`，不调用恢复阶段的后端 TCP 连通
+检查。它在每次只读观察前后重新核对认领与 Pod 身份、实际 CREATE
+回执、当前 API 策略 UID，以及唯一由预留 selector 切换而来的精确
+已批准 active spec。策略尚未激活、UID 被替换或规则漂移均失败。
+
+只有身份核验后的明确 pending（退出码 75）才会在同一原故障截止时间内
+重采样；全部输出/状态必须留存。函数入口和返回都复核绝对截止时间，
+不通过恢复预算延长故障观察。成功仅说明同一进程的策略实现状态匹配，
+不是报文拒绝或任期切换证明；仍需丢包与独立继任者门限。
+
+适配器测试覆盖 active、pending 后匹配、仍为 inactive 和被替换的策略，
+并确认 active 路径不会调用恢复/TCP 观察。模拟 API 与脚本边界测试
+不替代真实 Cilium 实现或完整实验验收。

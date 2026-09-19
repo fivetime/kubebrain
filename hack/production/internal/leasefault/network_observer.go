@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -36,6 +37,27 @@ type NetworkObserver struct {
 // API policy is the recorded inactive reservation; this method cannot replace it.
 func (o NetworkObserver) Prepared(ctx context.Context) error {
 	return o.observe(ctx, "prepared", NetworkLabelOwned)
+}
+
+// Active observes only policy realization, never backend TCP reachability.
+// It verifies the exact owned active API policy on every pending observation
+// and uses the SAME original fault deadline. Packet drops remain a separate gate.
+func (o NetworkObserver) Active(ctx context.Context, origin time.Time) error {
+	if ctx == nil || origin.IsZero() || origin.After(time.Now()) {
+		return errors.New("invalid active policy clock")
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || deadline.After(origin.Add(30*time.Second)) {
+		return errors.New("active policy observation needs original fault deadline")
+	}
+	if !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	err := o.observe(ctx, "active", NetworkLabelOwned)
+	if !time.Now().Before(deadline) {
+		return errors.Join(err, context.DeadlineExceeded)
+	}
+	return err
 }
 
 // Restored chooses only between absent and this owner's label using fresh API
@@ -136,6 +158,30 @@ func (o NetworkObserver) observe(ctx context.Context, stage string, phase Networ
 		if !bytes.Equal(receipt, current) {
 			return errors.New("observer reservation changed")
 		}
+		if stage == "active" {
+			active, err := o.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(o.Network.Namespace).Get(ctx, o.Network.PolicyName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			if active == nil || active.GetUID() != policy.GetUID() {
+				return errors.New("active policy replaced")
+			}
+			validated := active.DeepCopy()
+			label, found, err := unstructured.NestedString(validated.Object, "spec", "endpointSelector", "matchLabels", "kubebrain.io/fault-owner")
+			if err != nil || !found || label != o.Network.Nonce {
+				return errors.New("policy is not the owned active selector")
+			}
+			if err := unstructured.SetNestedField(validated.Object, o.Network.ReservedNonce, "spec", "endpointSelector", "matchLabels", "kubebrain.io/fault-owner"); err != nil {
+				return err
+			}
+			raw, err := validated.MarshalJSON()
+			if err != nil {
+				return err
+			}
+			if err := validateReservation(o.Network, raw); err != nil {
+				return err
+			}
+		}
 		return inputs()
 	}
 	mode := "absent"
@@ -143,6 +189,9 @@ func (o NetworkObserver) observe(ctx context.Context, stage string, phase Networ
 		mode = "absent-unlabelled"
 	}
 	args := []string{filepath.Join(o.ScriptDirectory, "observe-local-network-restored.sh"), o.Directory, mode, string(policy.GetUID()), o.Network.PolicyName, filepath.Join(o.Directory, "observer-pod.json"), filepath.Join(o.Directory, "observer-targets.json")}
+	if stage == "active" {
+		args = []string{filepath.Join(o.ScriptDirectory, "observe-local-policy-state.sh"), o.Directory, "present", string(policy.GetUID()), o.Network.PolicyName, filepath.Join(o.Directory, "observer-pod.json")}
+	}
 	err = WaitRecoveryObserver(ctx, "/bin/bash", args, o.Env, admit, func(out []byte, observed error) error { return o.Retain(stage, out, observed) })
 	if err != nil {
 		return err

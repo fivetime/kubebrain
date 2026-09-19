@@ -7,9 +7,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // The subprocess here is a boundary fixture, not a substitute for the real
@@ -22,6 +26,11 @@ func testNetworkObserver(t *testing.T, ctx context.Context, p FaultPreparation, 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "observer-targets.json"), targets, 0600))
 	digest := sha256.Sum256(targets)
 	scripts := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(scripts, "observe-local-policy-state.sh"), []byte(`set -eu
+[[ $# == 5 && $2 == present && $3 == created-uid && $4 == fault-policy && $5 == "$1/observer-pod.json" ]] || exit 99
+printf 'fixture observer result\n'
+if [[ $SCENARIO == observer-active-pending && ! -e "$1/active-seen" ]]; then touch "$1/active-seen"; exit 75; fi
+`), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(scripts, "observe-local-network-restored.sh"), []byte(`set -eu
 [[ $# == 6 && $3 == created-uid && $4 == fault-policy && $5 == "$1/observer-pod.json" && $6 == "$1/observer-targets.json" ]] || exit 99
 [[ $2 == absent || $2 == absent-unlabelled ]] || exit 99
@@ -57,6 +66,39 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 	}
 	if mode == "observer-input-before" {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "observer-targets.json"), []byte("changed"), 0600))
+	}
+	if strings.HasPrefix(mode, "observer-active") {
+		origin := time.Now()
+		faultCtx, cancel := context.WithDeadline(ctx, origin.Add(30*time.Second))
+		defer cancel()
+		if mode != "observer-active-inactive" {
+			require.NoError(t, ActivateNetwork(faultCtx, p.Client, dir, p.Network, origin, p.Own))
+		}
+		if mode == "observer-active-replaced" {
+			resource := p.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(p.Network.Namespace)
+			policy, err := resource.Get(ctx, p.Network.PolicyName, metav1.GetOptions{})
+			require.NoError(t, err)
+			policy.SetUID("other")
+			_, err = resource.Update(ctx, policy, metav1.UpdateOptions{})
+			require.NoError(t, err)
+		}
+		err := o.Active(faultCtx, origin)
+		if mode == "observer-active-inactive" || mode == "observer-active-replaced" {
+			require.Error(t, err)
+			require.Zero(t, retained)
+			return
+		}
+		require.NoError(t, err)
+		require.Equal(t, map[string]bool{"active": true}, stages)
+		if mode == "observer-active-pending" {
+			require.Equal(t, 1, pending)
+			require.Equal(t, 2, retained)
+		} else {
+			require.Equal(t, 1, retained)
+		}
+		_, err = os.Stat(filepath.Join(dir, "observer-modes"))
+		require.ErrorIs(t, err, os.ErrNotExist, "active mode must not invoke restored/TCP observer")
+		return
 	}
 	err := o.Prepared(ctx)
 	if mode != "observer-matched" && mode != "observer-pending" {

@@ -32,6 +32,7 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 		"lifecycle-native-success", "lifecycle-native-gate-fail",
 		"lifecycle-native-stale-successor", "lifecycle-native-identity-mismatch",
 		"observer-matched", "observer-pending", "observer-input-before", "observer-input-during", "observer-retain-fail", "observer-owner-lost",
+		"observer-active", "observer-active-pending", "observer-active-inactive", "observer-active-replaced",
 		"nonce-matched", "nonce-pending", "nonce-input-before", "nonce-input-during", "nonce-retain-fail", "nonce-owner-lost", "nonce-owner-after",
 	} {
 		t.Run(mode, func(t *testing.T) {
