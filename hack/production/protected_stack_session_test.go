@@ -19,7 +19,7 @@ import (
 func TestProtectedStackSession(t *testing.T) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
-	for _, scenario := range []string{"success", "anonymous-reset", "repeated-anonymous-reset", "rearm-occupied", "rearm-start-failed", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "occupied-port", "dead-channel", "expired", "future", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe"} {
+	for _, scenario := range []string{"success", "custom-ports", "same-ports", "invalid-port", "changed-ports", "anonymous-reset", "repeated-anonymous-reset", "rearm-occupied", "rearm-start-failed", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "occupied-port", "dead-channel", "expired", "future", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe"} {
 		t.Run(scenario, func(t *testing.T) {
 			owner := t.TempDir()
 			require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
@@ -31,6 +31,13 @@ func TestProtectedStackSession(t *testing.T) {
 			require.NoError(t, ctx.Err(), string(output))
 			require.NoError(t, err, string(output))
 			require.Contains(t, string(output), "EXPECTED_RESULT_AND_CLEANUP")
+			if scenario == "custom-ports" {
+				args, err := os.ReadFile(filepath.Join(owner, "probe-args"))
+				require.NoError(t, err)
+				require.Contains(t, string(args), "https://127.0.0.1:18586\n")
+				require.Contains(t, string(args), "https://127.0.0.1:18587\n")
+				require.NotContains(t, string(args), "https://127.0.0.1:18584\n")
+			}
 			captures, err := filepath.Glob(filepath.Join(owner, "stack.*", "timing.tsv"))
 			require.NoError(t, err)
 			if scenario == "success" || scenario == "probe-failed" || scenario == "slow-probe" {
@@ -77,6 +84,7 @@ func TestProtectedStackSessionWithoutRipgrep(t *testing.T) {
 
 const stackProbeFixture = `#!/usr/bin/env bash
 set -eu
+printf '%s\n' "$@" > "$stack_owner/probe-args"
 touch "$stack_owner/probe-called"
 [[ $scenario != probe-failed ]] || exit 17
 if [[ $scenario == slow-probe || $scenario == cancel-group ]]; then
@@ -112,7 +120,7 @@ printf '{"mode":"%s","readiness_checked":false,"fault_acceptance_proven":false,"
 }
 
 func testProtectedMetricsSession(t *testing.T, library, probe string) {
-	for _, scenario := range []string{"success", "anonymous-reset", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "expired", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe", "bad-hash", "bad-size", "changed-body"} {
+	for _, scenario := range []string{"success", "custom-ports", "same-ports", "invalid-port", "changed-ports", "anonymous-reset", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "expired", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe", "bad-hash", "bad-size", "changed-body"} {
 		t.Run(scenario, func(t *testing.T) {
 			owner := t.TempDir()
 			require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
@@ -227,7 +235,13 @@ trap stack_session_close EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 exercise() {
+ case $scenario in
+  custom-ports) stack_info_port=18586; stack_anonymous_port=18587;;
+  same-ports) stack_anonymous_port=$stack_info_port;;
+  invalid-port) stack_info_port=65536;;
+ esac
  stack_session_prepare brain-0 || return
+ if [[ $scenario == changed-ports ]]; then stack_anonymous_port=18587; fi
  if [[ $scenario == tampered-probe ]]; then printf '# changed\n' >> "$stack_owner/bin/info-diagnostic-probe"; fi
  touch "$stack_owner/capture-started"
  if [[ $scenario == dead-channel ]]; then
@@ -269,12 +283,12 @@ rc=0
 exercise || rc=$?
 stack_session_close
 case $scenario in
- success|anonymous-reset|repeated-anonymous-reset|ready-before|ready-after) [[ $rc == 0 ]];;
+ success|custom-ports|anonymous-reset|repeated-anonymous-reset|ready-before|ready-after) [[ $rc == 0 ]];;
  expired|slow-probe) [[ $rc == 124 ]];;
  *) [[ $rc != 0 ]];;
 esac
 case $scenario in
- success|anonymous-reset|repeated-anonymous-reset|ready-before|ready-after|reset-origin|reset-budget) ;;
+ success|custom-ports|anonymous-reset|repeated-anonymous-reset|ready-before|ready-after|reset-origin|reset-budget) ;;
  *) [[ -z $(find "$stack_owner" -name COMPLETE -print) ]];;
 esac
 if [[ -e $stack_owner/pids ]]; then

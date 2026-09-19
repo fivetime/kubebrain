@@ -225,6 +225,17 @@ diff-check 通过。未修改集群、未重跑故障验收；指标语义和同
 
 #### 候选 3f64735d 探针 CI 失败：采集测试缺少运行时工具
 
+为后续独立指标控制器补上端口隔离：受保护会话可显式指定不同的 info/
+anonymous 本地端口（1024–65535，无前导零），默认 18584/18585 不变。
+prepare 后 capture/rearm 检查端口仍与准备时相同；所有监听检查、日志、
+转发和探针 URL 使用该端口对。完整会话 race 通过（118.070s），随后新增
+metrics 自定义/同端口/越界/漂移四场景三轮 race 通过（15.866s），相关
+vet、shell 语法及 diff-check 通过。首次补丁因函数内已有注释未匹配而未
+应用，核对当前文件后重新应用；无部分修改或集群操作。
+这只是独立采样进程的前置条件，不宣称已实现并行采样调度。不同控制器
+必须自行 prepare/拥有子进程，不能继承已准备 shell 的 job 表；外层仍
+须固定故障起点并在恢复前收齐结果。旧镜像 CI 仍在运行，未取消/重发。
+
 CI `35429292114` 已以 failure 结束，失败步骤为 protected capture evidence
 and retirement deltas。日志明确为 `/usr/bin/timeout: failed to run command
 ‘rg’: No such file or directory`。离线校验库先通过，随后采集脚本在输入

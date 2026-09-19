@@ -4,6 +4,14 @@
 stack_library_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 stack_pids=()
 stack_fault_start=''
+stack_info_port=${stack_info_port:-18584}
+stack_anonymous_port=${stack_anonymous_port:-18585}
+stack_bound_info_port=''
+stack_bound_anonymous_port=''
+
+stack_session_ports_unchanged() {
+ [[ -n $stack_bound_info_port && -n $stack_bound_anonymous_port && $stack_info_port == "$stack_bound_info_port" && $stack_anonymous_port == "$stack_bound_anonymous_port" ]]
+}
 
 stack_session_verify_inputs() {
  local bindings binding
@@ -71,18 +79,19 @@ stack_session_close() {
 # Rearm only before the fault clock starts; never reset a live fault deadline.
 stack_session_rearm_anonymous() {
  [[ -z $stack_fault_start && ${#stack_pids[@]} == 2 ]] || return 2
+ stack_session_ports_unchanged || return 2
  local log listeners child n
  stack_session_stop_owned "${stack_pids[1]}"
  stack_pids=("${stack_pids[0]}")
- listeners=$(ss -H -ltn '( sport = :18585 )') || return
+ listeners=$(ss -H -ltn "( sport = :$stack_anonymous_port )") || return
  [[ -z $listeners ]] || return 2
- log=$(mktemp "$stack_session/forward-18585-next.XXXXXXXX.log") || return
- "${stack_k[@]}" port-forward --address=127.0.0.1 "pod/$stack_pod" 18585:8080 > "$log" 2>&1 &
+ log=$(mktemp "$stack_session/forward-$stack_anonymous_port-next.XXXXXXXX.log") || return
+ "${stack_k[@]}" port-forward --address=127.0.0.1 "pod/$stack_pod" "$stack_anonymous_port:8080" > "$log" 2>&1 &
  child=$!
  stack_pids+=("$child")
  for n in {1..50}; do
   kill -0 "$child" 2>/dev/null || return
-  if grep -Fq 'Forwarding from 127.0.0.1:18585' "$log"; then return 0; fi
+  if grep -Fq "Forwarding from 127.0.0.1:$stack_anonymous_port" "$log"; then return 0; fi
   sleep 0.1
  done
  return 1
@@ -115,6 +124,14 @@ stack_session_snapshot() {
 
 stack_session_prepare() {
  [[ $# == 1 && ${#stack_pids[@]} == 0 && -z $stack_fault_start ]] || return 2
+ local configured_port
+ for configured_port in "$stack_info_port" "$stack_anonymous_port"; do
+  [[ $configured_port =~ ^[1-9][0-9]{3,4}$ ]] || return 2
+  (( configured_port >= 1024 && configured_port <= 65535 )) || return 2
+ done
+ [[ $stack_info_port != "$stack_anonymous_port" ]] || return 2
+ stack_bound_info_port=$stack_info_port
+ stack_bound_anonymous_port=$stack_anonymous_port
  local variable
  for variable in stack_owner stack_kubeconfig stack_context stack_namespace stack_namespace_uid stack_sts stack_sts_uid stack_tls stack_server_name; do
   [[ -n ${!variable:-} ]] || return 2
@@ -130,7 +147,7 @@ stack_session_prepare() {
  stack_pin=$(set -o pipefail; openssl x509 -in "$stack_owner/info.crt" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | cut -d ' ' -f1) || return
  [[ $stack_pin =~ ^[a-f0-9]{64}$ ]] || return 2
  local port n ready listeners
- for port in 18584 18585; do
+ for port in "$stack_info_port" "$stack_anonymous_port"; do
   listeners=$(ss -H -ltn "( sport = :$port )") || return
   [[ -z $listeners ]] || return 2
   "${stack_k[@]}" port-forward --address=127.0.0.1 "pod/$stack_pod" "$port:8080" > "$stack_session/forward-$port.log" 2>&1 &
@@ -156,6 +173,7 @@ stack_session_capture_metrics() {
 stack_session_capture_kind() {
  # Run in the owning shell, not command substitution: job ownership is checked.
  [[ $# == 2 && ( $1 == stack || $1 == metrics ) ]] || return 2
+ stack_session_ports_unchanged || return 2
  local kind=$1 mode=protected-stack output_flag=--stack-output data_name=goroutines.txt
  shift
  if [[ $kind == metrics ]]; then mode=protected-metrics; output_flag=--metrics-output; data_name=metrics.txt; fi
@@ -178,8 +196,8 @@ stack_session_capture_kind() {
  stack_session_stage verify-inputs stack_session_verify_inputs || return
  stack_session_stage snapshot-before stack_session_snapshot "$stack_capture" || return
  stack_session_stage identity-before stack_session_same_process "$stack_session/pod-before.json" "$stack_capture/pod-before.json" || return
- stack_session_stage protected-probe stack_session_run "$stack_owner/bin/info-diagnostic-probe" --mode "$mode" --endpoint https://127.0.0.1:18584 \
-  --anonymous-endpoint https://127.0.0.1:18585 --server-name "$stack_server_name" \
+ stack_session_stage protected-probe stack_session_run "$stack_owner/bin/info-diagnostic-probe" --mode "$mode" --endpoint "https://127.0.0.1:$stack_info_port" \
+  --anonymous-endpoint "https://127.0.0.1:$stack_anonymous_port" --server-name "$stack_server_name" \
   --server-spki-sha256 "$stack_pin" --cacert "$stack_tls/ca.crt" --cert "$stack_tls/probe.crt" --key "$stack_tls/probe.key" \
   "$output_flag" "$stack_capture/$data_name" > "$stack_capture/probe.json" 2> "$stack_capture/probe.stderr" || return
  jq -e --arg mode "$mode" '.mode==$mode and .readiness_checked==false and .fault_acceptance_proven==false and .pod_identity_proven==false' "$stack_capture/probe.json" >/dev/null || return

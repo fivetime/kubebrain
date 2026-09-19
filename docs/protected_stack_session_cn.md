@@ -18,6 +18,10 @@
   本轮重新核验的资源身份。
 - `stack_tls`：包含 `ca.crt`、`probe.crt`、`probe.key` 的私有目录。
 - `stack_server_name`：info 服务 TLS 名称。
+- `stack_info_port`、`stack_anonymous_port`：可选显式本地端口，默认
+  18584/18585；必须是两个不同的 1024–65535 十进制端口，不接受前导零。
+  在 prepare 前设置，准备后 capture/rearm 拒绝端口漂移。并行指标采样
+  可在独立控制器 shell 中使用 18586/18587；仍需提前检查空闲端口。
 
 owner 下准备 `diagnostic-spec.json`（完整 StatefulSet spec）、`info.crt`
 （预先核验的服务端证书）及 `bin/info-diagnostic-probe`。固定工具目录
@@ -31,7 +35,7 @@ owner 下准备 `diagnostic-spec.json`（完整 StatefulSet spec）、`info.crt`
 退出 143/130，并负责其余故障资源的恢复。调用顺序：
 
 1. `stack_session_prepare <StatefulSet名称-序号>`，预先建立两个指向
-   精确 Pod 的 localhost info 转发，固定端口 18584/18585。
+   精确 Pod 的 localhost info 转发，固定本会话选择的端口对。
 2. `stack_session_capture before-fault`，输出目录由 `stack_capture` 返回。
 3. 故障激活前记录原始纳秒起点；所有后续 capture 传同一个起点。
 4. 读取采集结果后执行外层原有等待栈/降主栈分类与响应断言，最后恢复。
@@ -50,6 +54,11 @@ Pod 名称创建新匿名转发，为下一次采栈预热；日志使用独立�
 故障后的采栈不重连、不补充时间预算；任何通道提前失效仍失败。
 新通道不代表身份已验证：下一次采栈仍须做完整前后 Pod 身份检查、
 SPKI/mTLS 和新的匿名拒绝验证。此前拒绝证据不得替代下一次验证。
+
+独立端口对仅提供并行控制器的基础条件，不代表已实现采样调度器。
+每个控制器必须自己 prepare 并拥有/清理子进程，不能把已准备会话直接
+放入后台 subshell 复用 job 表。外层仍须固定同一故障起点、绑定工具和
+资源身份、等待指标采集终态后再恢复/替换目标 Pod，并保留原验收条件。
 
 ## 原时间预算与失败处理
 
