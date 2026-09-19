@@ -9,13 +9,13 @@
 记录时快照，后续须轮询原 run ID，不重复触发：
 
 - [镜像构建 35420491977](https://github.com/fivetime/kubebrain/actions/runs/35420491977)：push 触发，运行中。
-- [探针回归 35420491991](https://github.com/fivetime/kubebrain/actions/runs/35420491991)：push 触发，运行中。
+- [探针回归 35420491991](https://github.com/fivetime/kubebrain/actions/runs/35420491991)：push 触发，已失败。
 - [后端协议集成 35420501469](https://github.com/fivetime/kubebrain/actions/runs/35420501469)：手动触发一次，已成功完成。
 
 后端 workflow 与全部 job 的终态及候选 SHA 经独立 API 复查，真实协议/
 race、中断启动清理等步骤均成功，证据保存在私有
-`peer-budget-ci.zmNqdVeq/backend-terminal.whzAZTcY`。它不替代尚在
-运行的镜像/探针 CI，也不证明专用集群的 30 秒故障验收通过。
+`peer-budget-ci.zmNqdVeq/backend-terminal.whzAZTcY`。它不替代镜像/
+探针 CI 各自的结果，也不证明专用集群的 30 秒故障验收通过。
 
 没有可据此准入的新镜像，也未开始集群实验。仍须全部相关 CI 通过、
 镜像源码与多架构摘要核验，以及新 owner 的完整准入/恢复准备。
@@ -39,3 +39,22 @@ race、中断启动清理等步骤均成功，证据保存在私有
 这是全包总运行预算，不是改变任何单用例或集群验收门限。最新轮询仍
 存活，506 个通过事件（含子测试）、未见失败；ColdRestoreExecute 已
 通过（17.43 秒）。尚未取得全包终态，不能计为全包通过。
+
+## 探针 CI 失败与隔离修正
+
+失败位于传输/凭据检查步骤的 `deploy/test-cluster` 包：
+`TestLocalDropAndLabelIdentity/drop//stable` 和 `ready-change` 均退出
+127，原因是 `capture-local-cilium-drops.sh` 第 47 行调用了不存在的 `rg`。
+日志不是 Runner 未接活，也不是包级超时；其余身份拒绝负例通过不能
+掩盖正向流程不可用。私有证据 `peer-budget-ci.zmNqdVeq/probe-failure.Hgbau7yu`。
+
+在独立工作树 `cilium-capture-portability.HOAHeGcZ/source` 以候选源码
+复现缺失依赖：测试放置返回 127 的 rg shim，并断言采集不得调用它，
+旧实现的两个正向用例均失败。修正改用 `grep -Fxq` 检查同一个完整
+字面行，不放松远程 timeout 退出码/显式标记、Pod/agent/CEP 身份或
+摘要要求；新增前缀/后缀伪标记拒绝用例。全场景三轮 race 通过
+（141.980 秒），Bash 语法、vet 和 diff 检查通过。
+
+该修正尚未合入主工作树或推送，以免修改运行中的全量工具回归源码。
+后续需等原任务终态再整合验证；当前候选的探针 CI 仍为失败，即使镜像
+构建成功也不具备集群准入条件。没有重触发 CI 或启动新实验。
