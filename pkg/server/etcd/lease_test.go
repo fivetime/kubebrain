@@ -21,8 +21,10 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -3626,14 +3628,9 @@ func TestLeaseKeepAliveRejectsStaleOrChangedEpochWhileWaitingForRenewal(t *testi
 			epoch.Store(1)
 			var fresh atomic.Bool
 			fresh.Store(true)
-			routed := make(chan struct{})
-			var routedOnce sync.Once
 			server.peers = testPeerService{
 				isLeaderFn: func() bool { return true },
 				epochFn: func() (uint64, bool) {
-					if fresh.Load() {
-						routedOnce.Do(func() { close(routed) })
-					}
 					return epoch.Load(), fresh.Load()
 				},
 			}
@@ -3642,15 +3639,57 @@ func TestLeaseKeepAliveRejectsStaleOrChangedEpochWhileWaitingForRenewal(t *testi
 			before := server.leases[leaseID].deadline
 			server.leaseMu.Unlock()
 			server.leaseCheckpointMu.Lock()
-			stream := &fakeLeaseKeepAliveServer{requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}}}
+			locked := true
+			ctx, cancel := context.WithCancel(context.Background())
+			stream := &fakeLeaseKeepAliveServer{ctx: ctx, requests: []*etcdserverpb.LeaseKeepAliveRequest{{ID: leaseID}}}
 			done := make(chan error, 1)
-			go func() { done <- server.LeaseKeepAlive(stream) }()
-			<-routed
+			joined := make(chan struct{})
+			go func() { defer close(joined); done <- server.LeaseKeepAlive(stream) }()
+			defer func() {
+				cancel()
+				if locked {
+					server.leaseCheckpointMu.Unlock()
+				}
+				<-joined
+			}()
+			// A peer lookup is not proof of renewal admission: auth and readiness
+			// can look up the epoch again. Wait until this request actually blocks
+			// on the held checkpoint barrier before changing the admitted term.
+			require.Eventually(t, func() bool {
+				buf := make([]byte, 64<<10)
+				var n int
+				for {
+					n = runtime.Stack(buf, true)
+					if n < len(buf) {
+						break
+					}
+					if len(buf) == 4<<20 {
+						return false
+					}
+					buf = make([]byte, 2*len(buf))
+				}
+				for _, block := range strings.Split(string(buf[:n]), "\n\n") {
+					// The public wrapper owns an inner goroutine, so the test's
+					// caller frame is absent. Bind to this manager's live receiver.
+					if strings.Contains(block, "golang.org/x/sync/semaphore.(*Weighted).Acquire(") &&
+						strings.Contains(block, fmt.Sprintf(".(*leaseManager).lockLeaseCheckpointContext(%p,", server.leaseManager)) &&
+						strings.Contains(block, ".(*leaseManager).leaseKeepAlive(") {
+						return true
+					}
+				}
+				return false
+			}, 3*time.Second, time.Millisecond, "keepalive must reach checkpoint admission before the epoch changes")
 			epoch.Store(tt.nextEpoch)
 			fresh.Store(tt.nextFresh)
 			server.leaseCheckpointMu.Unlock()
+			locked = false
 
-			requireLeaseFollowerUnavailable(t, <-done, "lease keepalive error addr is test-peer leader test-peer")
+			select {
+			case err := <-done:
+				requireLeaseFollowerUnavailable(t, err, "lease keepalive error addr is test-peer leader test-peer")
+			case <-time.After(3 * time.Second):
+				t.Fatal("superseded renewal did not leave checkpoint admission")
+			}
 			require.Empty(t, stream.sent)
 			server.leaseMu.Lock()
 			after := server.leases[leaseID].deadline
