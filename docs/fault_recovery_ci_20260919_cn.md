@@ -217,3 +217,27 @@ build 的完整 race 回归分别为 7.454s、10.771s、2.640s，vet 通过。
 `/root/.local/state/kubebrain/image-ci-35461153617-terminal.aGBklcbl`，
 源码、成功终态与 SHA256SUMS 已核验。该镜像结果仍只对应 66460de1，
 不能用于证明后续认领、响应后门限和锁释放修复已通过 CI。
+
+## 8ea1cc52 回归与镜像终态
+
+源码 `8ea1cc5278c921bcdc676d96d88f6ec483869bc8` 的
+[回归工作流 35462830397](https://github.com/fivetime/kubebrain/actions/runs/35462830397)
+和[镜像工作流 35462830441](https://github.com/fivetime/kubebrain/actions/runs/35462830441)
+均已终态成功，全部作业通过。完整日志、终态 API、作业列表分别归档至：
+
+- `/root/.local/state/kubebrain/ci-35462830397-terminal.aDvfaXsa`
+- `/root/.local/state/kubebrain/ci-35462830441-terminal.lMkNcI0M`
+
+已核对精确源码、全部作业终态及 SHA256SUMS；目录 0700、文件 0600。
+这轮覆盖认领、原响应后门限及操作队列锁释放修复，但不覆盖此后的
+HTTP 并发认领测试、恢复命令、恢复命令真实 RPC 测试以及客户端
+隐式重试修复（91f82be3、0d5d51e5、a0c47919、78ea8093）。这些提交
+将随下一批推送进入 CI，不能借用旧源码的成功结果。
+
+最新客户端修复通过本地 HTTP 对照测试证实：标准 dynamic 客户端会在
+Retry-After 响应后重复写请求；故障工具客户端逐请求设置 MaxRetries(0)，
+并拒绝 HTTP 重定向。GET/POST/PUT/PATCH/DELETE 在 429、503、307、308
+响应下均只发出一次请求。leasefault 完整 race 回归 15.254s，恢复命令
+race 回归及两包 vet 通过。返回错误仍可能代表写入已提交，必须核对状态，
+不意味着服务端 exactly-once。真实集群仍未执行新故障实验，原 30 秒门限
+未通过；本轮 CI 成功不是部署、行为兼容或生产就绪的证明。
