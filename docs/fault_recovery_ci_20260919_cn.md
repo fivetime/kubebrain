@@ -122,3 +122,17 @@ race 回归通过（5.027s），metricsworker 回归通过（缓存），build �
 定向 race 测试重复三次通过，全包 race 通过（5.124s），vet 通过。
 该代码不属于上述 CI 的验证范围；完整控制器、Cilium 撤销隔离与真实集群
 原 30 秒验收仍未完成。本轮没有修改测试集群。
+
+## 191afe8b 策略删除与不确定激活恢复回归
+
+源码 `191afe8b2ed543a304f68cc82e489c18b86df09a` 的
+[回归工作流 35457120500](https://github.com/fivetime/kubebrain/actions/runs/35457120500)
+终态成功，作业用时 26 分 59 秒，最终 race 回归及清理均通过。
+终态 API、全部作业与完整日志保存于私有目录
+`/root/.local/state/kubebrain/probe-ci-35457120500-terminal.0RsgFWfb`，
+源码、成功状态与 SHA256SUMS 均已核验。
+
+此源码包含 `RemoveNetworkPolicy` 和动态客户端 HTTP 生命周期回归，
+不包含后续本地实时身份检查、标签执行、统一恢复入口和组合观察器。
+后续代码尚未推送，不能借用此次 CI 结论。归档时同源码镜像工作流
+35457120550 仍在构建推送；完整故障控制器和真实集群原 30 秒验收未完成。
