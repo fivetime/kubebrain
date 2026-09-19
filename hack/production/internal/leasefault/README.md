@@ -43,6 +43,23 @@ violations, term/identity mismatches, malformed records and a round trip through
 the actual probe encoder using an in-process gRPC fixture. That round trip uses
 a synthetic post-hoc origin only to verify schema compatibility, not fault timing.
 
+`VerifyOriginalOutcome` connects this log validator to the original post-response
+lease/key gate using authenticated healthy-member gRPC supplied by the caller.
+Both reads and the final admission check must finish under a context ending no
+later than the original origin + 30 seconds; a recovery context is not accepted.
+Zero response TTL requires absent lease and key. Positive response TTL requires
+the retained grant and the sole owned key with value `fixture` and matching lease;
+natural expiry between response and observation remains permitted while the grant
+and attachment persist. Foreign attachments fail the isolated-fixture check.
+Headers must match the admitted cluster and observed successor term or later.
+The original probe's successful exit, ongoing isolation, drops, successor, stack
+and metric gates remain independent obligations; this does not declare acceptance.
+
+The result retains partial RPC observations even on failure for caller-owned
+private evidence. Simulated-client tests cover both outcomes, expiry, full-width
+IDs, identity/key/value mismatches, lost final admission and exhausted/extended
+budgets, including RPC timeout. They do not prove a real leadership handoff.
+
 ## Protocol recovery intent
 
 `PrepareFault` composes the preparation half: validate shared owner and cluster
