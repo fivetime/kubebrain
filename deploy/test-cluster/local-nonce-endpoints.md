@@ -1,8 +1,9 @@
 # Endpoint nonce snapshot validation
 
 `local-nonce-endpoints.jq` is a read-only snapshot classifier for fault preparation.
-It is **not yet a complete `FaultPreparation.NoncesSafe` collector/hook**. It
-must not be substituted for that hook with fabricated or incomplete snapshots.
+`observe-local-nonces.sh` now collects its input with live identity checks. Neither
+is yet wired into `FaultPreparation.NoncesSafe`; the Go adapter must still check
+the live claim, pinned tools/inputs and its original bounded context.
 
 Input contains independently admitted `expected_agents: [{uid,node}]`, collected
 `agents: [{uid,node,endpoints}]` (full `cilium-dbg endpoint list -o json` output per
@@ -42,3 +43,36 @@ original scan; `ANY_SOURCE_SHA256SUMS` retains the later all-source classifier
 result against the same captured input, not a fresh scan. This was no fault
 experiment, did not check namespace/StatefulSet admission or final CEP/Node
 stability, and does not authorize future writes. No cluster state was modified.
+
+## Bounded live collector
+
+Invoke with Bash and exactly five arguments: private attempt directory, private
+independently admitted Pod JSON, active nonce, reserved nonce, and absolute Unix
+nanosecond deadline. The deadline must be in the future and at most five minutes
+away. Every kubectl operation uses the remaining budget, never a fresh overall
+timeout; the caller must also supervise the entire process with that context.
+
+The collector is fixed to the dedicated test kubeconfig/context and admitted
+namespace/StatefulSet UIDs used by other local observers. It checks both before
+and after the scan, requires complete ready Node/agent coverage, verifies agent
+and target Pod processes, target controller and allowed label state, and compares
+Node membership and CEP identity/network/owner before and after. It retains all
+snapshots, input/tool-dependent observations, a manifest and exit status privately.
+The caller remains responsible for pinning the actual script/tool bundle and
+authenticating the independently admitted Pod input; the script does not acquire
+ownership, validate CI artifacts or mutate the cluster.
+
+There is no automatic retry or pending-success interpretation. Sequential reads
+still do not prove continuous absence or fence concurrent administrators. A
+successful output marker means only that the bounded snapshot checks passed.
+Mocked kubectl tests cover collisions, omitted/paginated membership, wrong scope,
+node/CEP replacement, agent restart, changed controller/label and expired budget.
+
+The actual collector was also run read-only with a 60-second caller deadline on
+2026-09-19. Evidence is at
+`/root/.local/state/kubebrain/nonce-collector-readonly.ZGddIwtk`, inner capture
+`nonce-observation.54gCCFOY`: 11 agents / 89 endpoints, exit 0, both manifests
+verified. This fresh scan used unused diagnostic nonces `term-readonlycollector`
+and `reserved-readonlycollector`; it created no label/policy/claim and did not
+admit an actual fault attempt. The full lifecycle and real 30-second gate remain
+unverified.
