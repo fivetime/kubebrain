@@ -108,3 +108,27 @@ Files can be forged: these checks bind the evidence but do not authenticate its
 producer, prove process exit or join escaped descendants. The supervisor must
 independently verify successful worker exit, tool provenance and complete joining;
 the real fault driver must finish this verification under its original deadline.
+
+## Supervisor callbacks
+
+`retirementmetrics.NewWorkerGates` supplies `Baseline` and `Completed` callbacks
+for the serialized `metricsworker.Hooks` interface. Each worker needs an
+independently admitted capture binding, offset, stage/outcome, an explicit
+minimum count (nil is rejected), and a choice of whether duration evidence is
+required. Caller-owned minimum pointers are copied, not retained.
+
+Baseline validation saves the parsed sample at READY. Completion must use the
+same READY paths, match that saved sample even if a replacement baseline has a
+valid manifest, and pass completed-worker receipt and schedule checks. It rejects
+repeated completion, missing/reset counters, incompatible duration data and count
+deltas below the admitted minimum. The caller must provide live ownership and
+artifact-provenance admission plus durable measurement retention; an observed
+below-minimum count is retained before returning failure.
+
+Completion checks require a context ending no later than original origin + 30s,
+and recheck admission/deadline after loading and retaining evidence. They never
+use the recovery budget. File loading is synchronous and bounded per file; the
+caller must still supervise filesystem stalls and all processes. These callbacks
+do not choose the original clock, inject faults, join workers or prove successor,
+drop, stack or whole-fault acceptance. They are concrete metric hooks, not a
+complete real-cluster experiment driver. Tests use synthetic capture artifacts.
