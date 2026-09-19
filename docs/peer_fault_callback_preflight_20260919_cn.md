@@ -7,8 +7,8 @@
 权限丢失负例已确认在集群调用及消费 HOLD 前被拒绝。
 
 四个部署阶段通过，实际尝试 `deploy-execute.N7KUR0qD` 的故障控制器
-退出 1，清理退出 0。原会话 42501 尚在自动逆序恢复；最终部署恢复、
-Secret 清理和临时卷/编译产物清理未完成。本轮验收失败。
+退出 1，清理退出 0。原会话 42501 已结束，最终退出 1，四阶段逆序
+恢复及 Secret 清理均退出 0。本轮验收仍为失败。
 
 ## 已观察到的证据
 
@@ -29,3 +29,22 @@ Secret 清理和临时卷/编译产物清理未完成。本轮验收失败。
 目录之前的其他时间检查，也不能将本轮称为产品超时或通过原门限。
 下一步应测试匿名拒绝通道的生命周期管理，保留每次捕获的 TLS/SPKI/
 匿名拒绝、前后完整进程身份及原截止时间约束，不在已消费目录中热修复。
+
+## 恢复与清理
+
+独立复查 `secret-cleanup.V3yle0Sv` 验证原 StatefulSet UID/spec、原
+Secret UID/resourceVersion/data 不变，临时 Secret/策略已不存在。
+generation/observedGeneration 为 122，3 Ready/updated，无故障 Pod 标签。
+
+临时卷规划 12 例和控制器 6 例离线用例通过；只读规划
+`scratch-cleanup.ocJ7Osks` 后，执行 `scratch-cleanup.Ib7fbIwi` 退出 0，
+精确回收 42 个本轮临时卷。所有非目标 PV UID/spec 及命名空间 Pod
+UID/spec/容器状态保持一致。再次复查 `scratch-cleanup.qamTu3g0` 目标归零。
+本地卷现为 12 Bound / 80 Released，剩余均受基线保护，不批量回收。
+已回收临时卷数据不可恢复。编译清理 `compiled-cleanup.NZFLYEhB`
+退出 0，核对摘要、设备/inode 和非活动进程后删除 44 处构建的 ELF。
+源码、证书和证据保留；二进制可重建，旧二进制清单已退役。
+
+仓库修正 `4bd1eea8` 在故障前成功采栈后替换匿名转发，三轮会话 race
+测试通过。尚须完整控制器接入及真实验证，不能把单元测试计作本轮
+故障验收通过，也不能忽略仅剩约 0.964 秒的诊断预算问题。
