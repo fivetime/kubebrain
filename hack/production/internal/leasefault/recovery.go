@@ -101,7 +101,7 @@ func LoadProtocolRecovery(dir string, expected ProtocolRecovery) (ProtocolRecove
 		return ProtocolRecovery{}, err
 	}
 	defer r.Close()
-	f, err := r.OpenFile(protocolRecoveryFile, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := openRecoveryRecord(r, protocolRecoveryFile)
 	if err != nil {
 		return ProtocolRecovery{}, err
 	}

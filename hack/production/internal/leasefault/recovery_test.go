@@ -136,7 +136,7 @@ func TestProtocolRecoveryRejectsUnsafeRecords(t *testing.T) {
 				require.NoError(t, os.Chmod(dir, 0755))
 			case "file-link":
 				require.NoError(t, os.Rename(path, path+".original"))
-				require.NoError(t, os.Symlink(path+".original", path))
+				require.NoError(t, os.Symlink(protocolRecoveryFile+".original", path))
 			case "fifo":
 				require.NoError(t, os.Remove(path))
 				require.NoError(t, syscall.Mkfifo(path, 0600))

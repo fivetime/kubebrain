@@ -137,7 +137,7 @@ func LoadNetworkRecovery(dir string, expected NetworkRecovery) (NetworkRecovery,
 		return NetworkRecovery{}, err
 	}
 	defer r.Close()
-	f, err := r.OpenFile(networkRecoveryFile, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := openRecoveryRecord(r, networkRecoveryFile)
 	if err != nil {
 		return NetworkRecovery{}, err
 	}

@@ -142,12 +142,30 @@ The prepared-child regression arms both protocol and network records before a
 real child starts, then reloads both after preparation failure, cancellation,
 timeout or success and direct-child join. These tests do not prove storage power
 failure durability, distributed ownership, Kubernetes mutations or Cilium state.
-The real reservation CREATE receipt still needs separate durable persistence;
-this intent is NOT a receipt and cannot authorize deleting a same-name policy.
-Neither API is yet wired into the complete cluster fault coordinator.
+This intent is NOT a receipt and cannot authorize deleting a same-name policy.
+These APIs are not yet wired into the complete cluster fault coordinator.
 
 `TestNetworkRecoveryFeedsLabelPlan` loads the persisted original Pod and identity
 into the repository's actual jq label planner, together with synthetic current
 observations. The emitted patch retains the exact Pod UID, full-width string
 resourceVersion and nonce tests. This checks the journal-to-planner boundary;
 the observations are fixtures, not evidence of live policy absence or recovery.
+
+`SaveNetworkReservation` persists the authenticated inactive CREATE response after
+checking the independently bound intent, policy identity, nonempty UID/string
+resourceVersion and exact admitted inactive spec. It is create-once, private and
+syncs both file and directory. Activation must not start until this returns nil.
+`LoadNetworkReservation` revalidates both records before returning the raw receipt
+for the deletion planner. Neither API establishes response provenance: callers
+must use the actual non-dry-run CREATE response, not a same-name GET. Ambiguous
+CREATE or failed persistence requires reconciliation, never a guessed UID or
+unconditional deletion. The CREATE-to-save crash window still needs coordinator
+reconciliation; a missing receipt is not evidence that no policy exists.
+
+Receipt regressions cover rejected active/changed policies, duplicate fields,
+identity mismatches, unsafe records, create-once persistence and the real jq
+deletion planner with synthetic observations. Record readers explicitly check
+the named entry with Lstat and compare its inode with the opened file: os.Root
+can resolve an in-root link despite O_NOFOLLOW. Valid relative symlink regressions
+cover protocol intent, network intent and reservation records. These checks do
+not replace exclusive lifecycle ownership or prove live Kubernetes recovery.

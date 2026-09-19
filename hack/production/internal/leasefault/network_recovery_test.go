@@ -135,7 +135,8 @@ func TestNetworkRecoveryRejectsUnsafeRecord(t *testing.T) {
 			case "missing", "symlink", "fifo":
 				require.NoError(t, os.Remove(path))
 				if mode == "symlink" {
-					require.NoError(t, os.Symlink("missing-target", path))
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "valid-target"), data, 0600))
+					require.NoError(t, os.Symlink("valid-target", path))
 				} else if mode == "fifo" {
 					require.NoError(t, syscall.Mkfifo(path, 0600))
 				}
