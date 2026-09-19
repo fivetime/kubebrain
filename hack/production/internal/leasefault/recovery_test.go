@@ -24,13 +24,15 @@ func TestProtocolRecoverySurvivesPreparedChild(t *testing.T) {
 			require.NoError(t, os.Chmod(dir, 0700))
 			plan := recoveryPlan()
 			require.NoError(t, ArmProtocolRecovery(dir, plan))
+			network := networkPlan()
+			require.NoError(t, ArmNetworkRecovery(dir, network))
 			log, err := os.OpenFile(filepath.Join(dir, "child.stderr"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 			require.NoError(t, err)
 			defer log.Close()
 			pidPath := filepath.Join(dir, "child.pid")
 			spec := metricsworker.Command{Executable: "/bin/bash", Stderr: log, Args: []string{"-c", `
 set -eu
-[[ -s $2 ]]
+[[ -s $2 && -s $4 ]]
 printf '%s\n' "$BASHPID" > "$1"
 [[ $3 != prepare-failure ]] || exit 23
 printf 'FAULT_READY\n'
@@ -39,7 +41,7 @@ if [[ $3 == fault-timeout ]]; then
   while :; do /bin/sleep 1; done
 fi
 printf 'FAULT_DONE\t%s\n' "$origin"
-`, "prepared-recovery-fixture", pidPath, filepath.Join(dir, protocolRecoveryFile), mode}}
+`, "prepared-recovery-fixture", pidPath, filepath.Join(dir, protocolRecoveryFile), mode, filepath.Join(dir, networkRecoveryFile)}}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			called := false
@@ -81,6 +83,10 @@ printf 'FAULT_DONE\t%s\n' "$origin"
 			got, err := LoadProtocolRecovery(dir, plan)
 			require.NoError(t, err)
 			require.Equal(t, plan, got)
+			savedNetwork, err := LoadNetworkRecovery(dir, network)
+			require.NoError(t, err)
+			require.JSONEq(t, string(network.PodBefore), string(savedNetwork.PodBefore))
+			require.JSONEq(t, string(network.ApprovedPolicy), string(savedNetwork.ApprovedPolicy))
 		})
 	}
 }

@@ -120,3 +120,28 @@ child, simulate a network fault, prove escaped descendants are gone, or convert
 the timed-out attempt into acceptance success. Three race runs of the real-service
 cases passed (11.423s); package vet and diff checks also passed. The complete real
 cluster coordinator remains outstanding.
+
+## Network pre-mutation intent
+
+`ArmNetworkRecovery` saves parent-owned namespace/StatefulSet/Pod identities,
+policy name, active/reserved nonces, the original unlabelled Pod and admitted
+active policy before either Pod labeling or inactive policy reservation. It is
+create-once, private, size-bounded and syncs file and directory. Full original
+objects are retained as raw JSON, including full-width numeric values; duplicate
+fields are rejected recursively. Identity extraction is case-sensitive. Object
+identity checks are not full Kubernetes schema validation or policy approval.
+
+`LoadNetworkRecovery` requires independently retained admission and compares all
+saved fields and original objects (JSON whitespace is normalized, object key order
+is retained). Missing, altered, malformed, public, non-regular or linked records
+fail closed. Do not infer that such a failure permits skipping cleanup. Records
+may include sensitive Pod configuration and must remain in the private owner
+directory, never public logs or the repository.
+
+The prepared-child regression arms both protocol and network records before a
+real child starts, then reloads both after preparation failure, cancellation,
+timeout or success and direct-child join. These tests do not prove storage power
+failure durability, distributed ownership, Kubernetes mutations or Cilium state.
+The real reservation CREATE receipt still needs separate durable persistence;
+this intent is NOT a receipt and cannot authorize deleting a same-name policy.
+Neither API is yet wired into the complete cluster fault coordinator.
