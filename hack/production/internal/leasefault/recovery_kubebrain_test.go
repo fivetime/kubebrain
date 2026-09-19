@@ -44,7 +44,7 @@ func (recoveryPeer) SyncReadRevision(context.Context) error { return nil }
 func (recoveryPeer) Ready() error                           { return nil }
 
 func TestRestoreProtocolKubeBrainGRPC(t *testing.T) {
-	for _, mode := range []string{"live", "expired-retained", "foreign-key", "child-timeout"} {
+	for _, mode := range []string{"live", "expired-retained", "foreign-key", "child-timeout", "prepared", "prepared-key-race", "prepared-grant-denied"} {
 		t.Run(mode, func(t *testing.T) { testRestoreProtocolKubeBrainGRPC(t, mode) })
 	}
 }
@@ -76,21 +76,65 @@ func testRestoreProtocolKubeBrainGRPC(t *testing.T, mode string) {
 	plan := ProtocolRecovery{Owner: "in-memory-recovery", NamespaceUID: "fixture-namespace", StatefulSetUID: "fixture-sts", ClusterID: status.Header.ClusterId, AlarmMemberID: status.Header.MemberId, LeaseID: 5177, Key: "/acceptance/recovery-grpc"}
 	dir := t.TempDir()
 	require.NoError(t, os.Chmod(dir, 0700))
-	require.NoError(t, ArmProtocolRecovery(dir, plan))
+	if !strings.HasPrefix(mode, "prepared") {
+		require.NoError(t, ArmProtocolRecovery(dir, plan))
+	}
 	grantTTL := int64(60)
 	if expired {
 		grantTTL = 1
 	}
-	_, err = lease.LeaseGrant(ctx, &pb.LeaseGrantRequest{ID: plan.LeaseID, TTL: grantTTL})
-	require.NoError(t, err)
-	_, err = kv.Put(ctx, &pb.PutRequest{Key: []byte(plan.Key), Value: []byte("fixture"), Lease: plan.LeaseID})
-	require.NoError(t, err)
-	if foreignKey {
-		_, err = kv.Put(ctx, &pb.PutRequest{Key: []byte("/business/not-owned"), Value: []byte("preserve"), Lease: plan.LeaseID})
+	if strings.HasPrefix(mode, "prepared") {
+		admissions := 0
+		prepareErr := PrepareProtocol(ctx, dir, plan, conn, func(context.Context) error {
+			admissions++
+			if admissions >= 3 {
+				_, err := LoadProtocolRecovery(dir, plan)
+				require.NoError(t, err, "journal must precede every write")
+			}
+			if mode == "prepared-grant-denied" && admissions == 3 {
+				return fmt.Errorf("lost admission before grant")
+			}
+			if mode == "prepared-key-race" && admissions == 4 {
+				_, err := kv.Put(ctx, &pb.PutRequest{Key: []byte(plan.Key), Value: []byte("other-writer")})
+				require.NoError(t, err)
+			}
+			return nil
+		})
+		_, err := LoadProtocolRecovery(dir, plan)
+		require.NoError(t, err)
+		if mode != "prepared" {
+			require.Error(t, prepareErr)
+			alarms, err := maintenance.Alarm(ctx, &pb.AlarmRequest{Action: pb.AlarmRequest_GET})
+			require.NoError(t, err)
+			require.Empty(t, alarms.Alarms)
+			if mode == "prepared-key-race" {
+				key, err := kv.Range(ctx, &pb.RangeRequest{Key: []byte(plan.Key)})
+				require.NoError(t, err)
+				require.Len(t, key.Kvs, 1)
+				require.Equal(t, []byte("other-writer"), key.Kvs[0].Value)
+				require.Zero(t, key.Kvs[0].Lease)
+				// Reconciliation must preserve the conflicting writer's key.
+				require.Error(t, RestoreProtocol(ctx, dir, plan, conn, func(context.Context) error { return nil }))
+			} else {
+				require.NoError(t, VerifyProtocolRecovery(ctx, plan, conn))
+			}
+			return
+		}
+		require.NoError(t, prepareErr)
+		// A repeated preparation must not adopt or overwrite the live fixture.
+		require.Error(t, PrepareProtocol(ctx, dir, plan, conn, func(context.Context) error { return nil }))
+	} else {
+		_, err = lease.LeaseGrant(ctx, &pb.LeaseGrantRequest{ID: plan.LeaseID, TTL: grantTTL})
+		require.NoError(t, err)
+		_, err = kv.Put(ctx, &pb.PutRequest{Key: []byte(plan.Key), Value: []byte("fixture"), Lease: plan.LeaseID})
+		require.NoError(t, err)
+		if foreignKey {
+			_, err = kv.Put(ctx, &pb.PutRequest{Key: []byte("/business/not-owned"), Value: []byte("preserve"), Lease: plan.LeaseID})
+			require.NoError(t, err)
+		}
+		_, err = maintenance.Alarm(ctx, &pb.AlarmRequest{Action: pb.AlarmRequest_ACTIVATE, MemberID: plan.AlarmMemberID, Alarm: pb.AlarmType_CORRUPT})
 		require.NoError(t, err)
 	}
-	_, err = maintenance.Alarm(ctx, &pb.AlarmRequest{Action: pb.AlarmRequest_ACTIVATE, MemberID: plan.AlarmMemberID, Alarm: pb.AlarmType_CORRUPT})
-	require.NoError(t, err)
 	if expired {
 		require.Eventually(t, func() bool {
 			response, err := lease.LeaseTimeToLive(ctx, &pb.LeaseTimeToLiveRequest{ID: plan.LeaseID, Keys: true})

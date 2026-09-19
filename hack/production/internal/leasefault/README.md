@@ -296,3 +296,19 @@ cancellation and unchanged deadlines. This is not a mutation retry facility or
 a new fault acceptance clock. Admission/retention callbacks must be bounded and
 the retention implementation must preserve private evidence durably; concrete
 cluster hook configuration remains the complete coordinator's responsibility.
+
+`PrepareProtocol` supplies the protocol fixture preparation: fresh admission,
+no alarm/fixture key/lease and an empty global lease set, durable create-once intent,
+explicit-ID 10-second lease grant, version-zero conditional transaction putting
+`fixture`, then exact-member CORRUPT activation. Each write rechecks intent and
+admission; uncertain outcomes stop without retries. The caller must exclusively
+own the dedicated test instance and unused lease-ID allocation and verify inactive
+network reservation. It does not wait for expiry, launch the original probe or
+start the fault clock. Transaction identity comes from the outer header; etcd's
+inner Put header supplies only revision, which must match the outer revision.
+
+Actual KubeBrain gRPC/memkv tests prepare then restore the fixture, refuse repeated
+preparation, preserve a competing key written before the conditional transaction,
+and perform no write when admission is lost before grant. Conflicting external
+keys also prevent automatic reconciliation rather than being deleted. These tests
+do not prove real TiKV, Kubernetes admission, election or network fault behavior.
