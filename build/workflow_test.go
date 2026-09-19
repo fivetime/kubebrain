@@ -145,6 +145,18 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	require.Contains(t, workflow.On["push"].Paths, "hack/production/cmd/info-diagnostic-probe/**")
 	require.Contains(t, commands, "go vet ./hack/production/cmd/info-diagnostic-probe\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/cmd/info-diagnostic-probe\n")
+	for _, path := range []string{
+		"hack/production/cmd/retirement-metrics-delta/**",
+		"hack/production/protected-stack-session.sh",
+		"hack/production/protected_stack_session_test.go",
+		"hack/production/protected_session_hash_budget_test.go",
+		"hack/production/same-pod-process.jq",
+	} {
+		require.Contains(t, workflow.On["push"].Paths, path)
+	}
+	require.Contains(t, commands, "go vet ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta\n")
+	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta\n")
+	require.Contains(t, commands, "go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|SessionHashVerificationHonorsFaultDeadline)'\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/cmd/pod-log-capture\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=5m -v ./pkg/server/service/etcdproxy\n")
 	require.Contains(t, commands, "go vet ./pkg/server/etcd\n")

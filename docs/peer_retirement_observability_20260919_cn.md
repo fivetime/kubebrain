@@ -223,6 +223,13 @@ diff-check 通过。未修改集群、未重跑故障验收；指标语义和同
 
 #### 退休阶段累计耗时差值
 
+补充整包验证（当前本地源码，非旧候选 CI）：server、leader、Prometheus
+三个完整包 race 通过，分别 79.653s / 4.187s / 1.095s，不仅是新增测试的
+筛选运行。工作流契约测试现已锁定退休差值命令、受保护采集脚本及身份谓词
+的 push 路径，以及库/CLI/session 的 uncached race 执行命令；build 包 race
+通过（2.720s），vet/diff-check 通过。候选 `3f64735d` 的两项 CI 仍运行，
+未取消、重发或部署。本地后续修复仍需要新的同源构建验证。
+
 离线工具增加可选 `--duration`：选定 local/peer 和 outcome 后，同时要求
 直方图与结果 counter 对应，输出完成操作的 count/seconds 差值。不输出
 总 failover latency，不覆盖 lifecycle join，也不能确定单个事件发生时刻。
