@@ -63,3 +63,10 @@ do not simulate storage hardware power failure or guarantee remote filesystem
 durability. Network-policy and Pod-label identities still need separate recovery
 records; this API does not perform RPCs, check live ownership or recreate healthy
 member tunnels. Neither API is yet connected to the real fault driver.
+
+The prepared-child regression arms the record in the parent before spawning a
+real Bash child, then covers preparation failure, cancellation after readiness,
+fault deadline expiration, and success. After `WithPreparedFault` returns it
+checks that the direct child is gone and reloads the unchanged independently
+bound record. This verifies local lifecycle ordering and record availability;
+it does not exercise recovery RPCs, escaped descendants, or cluster acceptance.
