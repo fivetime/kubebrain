@@ -27,6 +27,28 @@ func TestProtectedStackSession(t *testing.T) {
 			require.NoError(t, ctx.Err(), string(output))
 			require.NoError(t, err, string(output))
 			require.Contains(t, string(output), "EXPECTED_RESULT_AND_CLEANUP")
+			captures, err := filepath.Glob(filepath.Join(owner, "stack.*", "timing.tsv"))
+			require.NoError(t, err)
+			if scenario == "success" || scenario == "probe-failed" || scenario == "slow-probe" {
+				require.NotEmpty(t, captures)
+				for _, path := range captures {
+					data, err := os.ReadFile(path)
+					require.NoError(t, err)
+					trace := string(data)
+					require.Contains(t, trace, "\tverify-inputs\tend\t0\n")
+					require.Contains(t, trace, "\tprotected-probe\tstart\t-\n")
+					switch scenario {
+					case "success":
+						require.Contains(t, trace, "\tidentity-after\tend\t0\n")
+					case "probe-failed":
+						require.Contains(t, trace, "\tprotected-probe\tend\t17\n")
+						require.NotContains(t, trace, "\tsnapshot-after\t")
+					case "slow-probe":
+						require.Contains(t, trace, "\tprotected-probe\tend\t124\n")
+						require.NotContains(t, trace, "\tsnapshot-after\t")
+					}
+				}
+			}
 		})
 	}
 }
@@ -188,4 +210,11 @@ func TestProtectedStackSessionOuterCancellation(t *testing.T) {
 	markers, err := filepath.Glob(filepath.Join(owner, "stack.*", "COMPLETE"))
 	require.NoError(t, err)
 	require.Empty(t, markers)
+	traces, err := filepath.Glob(filepath.Join(owner, "stack.*", "timing.tsv"))
+	require.NoError(t, err)
+	require.Len(t, traces, 1)
+	trace, err := os.ReadFile(traces[0])
+	require.NoError(t, err)
+	require.Contains(t, string(trace), "\tprotected-probe\tstart\t-\n")
+	require.NotContains(t, string(trace), "\tsnapshot-after\t")
 }

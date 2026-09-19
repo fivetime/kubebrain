@@ -36,6 +36,17 @@ stack_session_run() {
  stack_session_budget
 }
 
+# Diagnostic timing only: never used to extend or decide the caller's budget.
+# Log stage names, not command arguments (which may contain private paths).
+stack_session_stage() {
+ local stage=$1 rc=0
+ shift
+ printf '%s\t%s\tstart\t-\n' "$EPOCHREALTIME" "$stage" >> "$stack_capture/timing.tsv" || return
+ "$@" || rc=$?
+ printf '%s\t%s\tend\t%s\n' "$EPOCHREALTIME" "$stage" "$rc" >> "$stack_capture/timing.tsv" || return
+ return "$rc"
+}
+
 stack_session_close() {
  local child n
  for child in "${stack_pids[@]}"; do
@@ -126,18 +137,18 @@ stack_session_capture() {
   [[ $'\n'$(jobs -pr)$'\n' == *$'\n'"$child"$'\n'* ]] || return 1
   kill -0 "$child" 2>/dev/null || return
  done
- stack_session_verify_inputs || return
  stack_capture=$(mktemp -d "$stack_owner/stack.XXXXXXXX") || return
- stack_session_snapshot "$stack_capture" || return
- stack_session_same_process "$stack_session/pod-before.json" "$stack_capture/pod-before.json" || return
- stack_session_run "$stack_owner/bin/info-diagnostic-probe" --mode protected-stack --endpoint https://127.0.0.1:18584 \
+ stack_session_stage verify-inputs stack_session_verify_inputs || return
+ stack_session_stage snapshot-before stack_session_snapshot "$stack_capture" || return
+ stack_session_stage identity-before stack_session_same_process "$stack_session/pod-before.json" "$stack_capture/pod-before.json" || return
+ stack_session_stage protected-probe stack_session_run "$stack_owner/bin/info-diagnostic-probe" --mode protected-stack --endpoint https://127.0.0.1:18584 \
   --anonymous-endpoint https://127.0.0.1:18585 --server-name "$stack_server_name" \
   --server-spki-sha256 "$stack_pin" --cacert "$stack_tls/ca.crt" --cert "$stack_tls/probe.crt" --key "$stack_tls/probe.key" \
   --stack-output "$stack_capture/goroutines.txt" > "$stack_capture/probe.json" 2> "$stack_capture/probe.stderr" || return
  jq -e '.mode=="protected-stack" and .readiness_checked==false and .fault_acceptance_proven==false and .pod_identity_proven==false' "$stack_capture/probe.json" >/dev/null || return
- stack_session_run "${stack_k[@]}" get pod "$stack_pod" -o json > "$stack_capture/pod-after.json" || return
- stack_session_same_process "$stack_capture/pod-before.json" "$stack_capture/pod-after.json" || return
- sha256sum "$stack_capture"/*.json "$stack_capture/goroutines.txt" > "$stack_capture/evidence.sha256" || return
+ stack_session_stage snapshot-after stack_session_run "${stack_k[@]}" get pod "$stack_pod" -o json > "$stack_capture/pod-after.json" || return
+ stack_session_stage identity-after stack_session_same_process "$stack_capture/pod-before.json" "$stack_capture/pod-after.json" || return
+ sha256sum "$stack_capture"/*.json "$stack_capture/goroutines.txt" "$stack_capture/timing.tsv" > "$stack_capture/evidence.sha256" || return
  stack_session_budget || return
  printf 'CAPTURE_COMPLETE_WITHIN_CALLER_BUDGET\n' > "$stack_capture/COMPLETE"
 }
