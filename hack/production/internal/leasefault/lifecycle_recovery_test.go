@@ -20,7 +20,7 @@ import (
 )
 
 func TestRecoverFaultStages(t *testing.T) {
-	for _, mode := range []string{"success", "join-error", "owner-mismatch", "withdrawal-error", "protocol-error", "identity-error"} {
+	for _, mode := range []string{"success", "join-error", "owner-mismatch", "withdrawal-error", "protocol-error", "identity-error", "missing-protocol-empty", "missing-protocol-live", "missing-protocol-appeared", "malformed-protocol"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
@@ -28,8 +28,17 @@ func TestRecoverFaultStages(t *testing.T) {
 			protocol.Owner, protocol.NamespaceUID, protocol.StatefulSetUID = network.Owner, network.NamespaceUID, network.StatefulSetUID
 			require.NoError(t, ArmNetworkRecovery(dir, network))
 			require.NoError(t, SaveNetworkReservation(dir, network, reservationFixture()))
-			require.NoError(t, ArmProtocolRecovery(dir, protocol))
+			missingProtocol := mode == "missing-protocol-empty" || mode == "missing-protocol-live" || mode == "missing-protocol-appeared"
+			if !missingProtocol {
+				require.NoError(t, ArmProtocolRecovery(dir, protocol))
+			}
+			if mode == "malformed-protocol" {
+				require.NoError(t, os.WriteFile(dir+"/"+protocolRecoveryFile, []byte("partial"), 0600))
+			}
 			conn := &restoreConnection{recoveryConnection: recoveryConnection{t: t, plan: protocol}, alarm: true, lease: true}
+			if mode == "missing-protocol-empty" {
+				conn.alarm, conn.lease = false, false
+			}
 			if mode == "protocol-error" {
 				conn.mode = "alarm-error"
 			}
@@ -100,7 +109,11 @@ func TestRecoverFaultStages(t *testing.T) {
 				require.True(t, removed)
 				require.False(t, conn.alarm)
 				require.False(t, conn.lease)
-				require.Equal(t, []string{"alarm", "lease"}, conn.writes)
+				if missingProtocol {
+					require.Empty(t, conn.writes)
+				} else {
+					require.Equal(t, []string{"alarm", "lease"}, conn.writes)
+				}
 				patch, err := jsonpatch.DecodePatch(a.(ktesting.PatchAction).GetPatch())
 				require.NoError(t, err)
 				before, err := pod.MarshalJSON()
@@ -126,6 +139,11 @@ func TestRecoverFaultStages(t *testing.T) {
 				Own: func(context.Context) error { require.True(t, joined); return nil },
 				NetworkRestored: func(context.Context) error {
 					require.True(t, removed)
+					if mode == "missing-protocol-appeared" {
+						if _, err := os.Stat(dir + "/" + protocolRecoveryFile); errors.Is(err, os.ErrNotExist) {
+							require.NoError(t, ArmProtocolRecovery(dir, protocol))
+						}
+					}
 					if mode == "withdrawal-error" {
 						return errors.New("Cilium still enforcing")
 					}
@@ -144,21 +162,21 @@ func TestRecoverFaultStages(t *testing.T) {
 				r.Protocol.Owner = "foreign"
 			}
 			err := RecoverFault(ctx, r)
-			if mode == "success" {
+			if mode == "success" || mode == "missing-protocol-empty" {
 				require.NoError(t, err)
 				require.True(t, converged)
 			} else {
 				require.Error(t, err)
 				require.False(t, converged)
 			}
-			if mode == "join-error" || mode == "owner-mismatch" {
+			if mode == "join-error" || mode == "owner-mismatch" || mode == "malformed-protocol" {
 				require.Empty(t, client.Actions())
 				require.Zero(t, conn.calls)
 				require.Zero(t, deletes)
 			} else {
 				require.Equal(t, 1, deletes)
 			}
-			if mode == "success" || mode == "identity-error" {
+			if mode == "success" || mode == "identity-error" || mode == "missing-protocol-empty" {
 				require.Equal(t, 1, patches)
 			} else {
 				require.Zero(t, patches)
@@ -167,7 +185,18 @@ func TestRecoverFaultStages(t *testing.T) {
 				require.Zero(t, conn.calls)
 			}
 			_, err = LoadProtocolRecovery(dir, protocol)
-			require.NoError(t, err)
+			if mode == "missing-protocol-appeared" {
+				require.NoError(t, err)
+				require.Empty(t, conn.writes)
+				require.Zero(t, conn.calls)
+			} else if missingProtocol {
+				require.ErrorIs(t, err, os.ErrNotExist)
+				require.Empty(t, conn.writes)
+			} else if mode == "malformed-protocol" {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
 			_, err = LoadNetworkReservation(dir, network)
 			require.NoError(t, err)
 		})

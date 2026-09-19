@@ -56,8 +56,10 @@ preserved and rejected for rearming, not silently replaced.
 
 `LoadProtocolRecovery` checks exact independently retained admission and rejects
 symlinks, non-regular/public files, oversized or malformed JSON, duplicate/unknown
-fields and identity mismatches. A bad/missing record means manual reconciliation,
-not permission to skip cleanup. The directory and admission must remain trusted;
+fields and identity mismatches. A bad/missing record cannot authorize protocol
+writes or justify skipping cleanup. `RecoverFault` below handles missing intent
+only with independent read-only absence checks; bad records remain fatal.
+The directory and admission must remain trusted;
 this is not a cross-process lock or authenticated manifest. These filesystem tests
 do not simulate storage hardware power failure or guarantee remote filesystem
 durability. Network-policy and Pod-label identities still need separate recovery
@@ -263,6 +265,15 @@ It uses one independent bounded recovery context, not a reset fault deadline.
 Network observation and ownership are repeated before protocol mutations; protocol
 verification is repeated before label mutation. A failed stage prevents subsequent
 stages, leaves all journals intact, and does not release lifecycle ownership.
+
+If the protocol journal is absent, a valid actual network reservation receipt
+still permits exact-policy removal and independent network withdrawal checks.
+This path never performs protocol writes: fresh read-only checks must prove the
+alarm, lease and fixture key absent before removing the owned Pod label. Missing
+intent alone is not proof that preparation never ran. Live protocol state,
+uncertain reads, a malformed journal or a journal appearing during this recovery
+remain reconciliation errors. Tests cover absent-and-empty, absent-but-live,
+newly appearing and malformed journals; none authorize protocol mutations.
 
 The caller must supply real Join/Own/NetworkRestored/IdentityRestored hooks and an
 authenticated recovery connection. These hooks are required evidence sources,

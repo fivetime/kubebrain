@@ -88,8 +88,9 @@ func ArmProtocolRecovery(dir string, plan ProtocolRecovery) error {
 
 // LoadProtocolRecovery checks the record against independently retained
 // admission. Do not derive expected from this record or from a response under
-// test. A malformed/missing record requires stopping for manual reconciliation,
-// not skipping recovery. A valid record must still be checked against live
+// test. A malformed/missing record cannot authorize protocol writes. RecoverFault
+// may reconcile missing intent through independent read-only absence checks;
+// malformed records remain fatal. A valid record must still be checked against live
 // cluster identities before any RPC; restore only after fault workers join.
 func LoadProtocolRecovery(dir string, expected ProtocolRecovery) (ProtocolRecovery, error) {
 	bad := errors.New("invalid protocol recovery record")

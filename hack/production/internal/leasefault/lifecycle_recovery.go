@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"google.golang.org/grpc"
@@ -52,7 +53,21 @@ func RecoverFault(ctx context.Context, r FaultRecovery) error {
 	if r.Network.Owner != r.Protocol.Owner || r.Network.NamespaceUID != r.Protocol.NamespaceUID || r.Network.StatefulSetUID != r.Protocol.StatefulSetUID {
 		return errors.New("network and protocol recovery owners differ")
 	}
-	if _, err := LoadProtocolRecovery(r.Directory, r.Protocol); err != nil {
+	_, protocolErr := LoadProtocolRecovery(r.Directory, r.Protocol)
+	protocolMissing := errors.Is(protocolErr, os.ErrNotExist)
+	if protocolErr != nil && !protocolMissing {
+		return protocolErr
+	}
+	checkProtocolIntent := func() error {
+		_, err := LoadProtocolRecovery(r.Directory, r.Protocol)
+		if protocolMissing {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			if err == nil {
+				return errors.New("protocol intent appeared during read-only recovery")
+			}
+		}
 		return err
 	}
 	if _, err := LoadNetworkReservation(r.Directory, r.Network); err != nil {
@@ -76,17 +91,25 @@ func RecoverFault(ctx context.Context, r FaultRecovery) error {
 	if err := networkReady(ctx); err != nil {
 		return fmt.Errorf("verify network withdrawal: %w", err)
 	}
-	if err := RestoreProtocol(ctx, r.Directory, r.Protocol, r.Connection, networkReady); err != nil {
-		return fmt.Errorf("restore protocol: %w", err)
+	if !protocolMissing {
+		if err := RestoreProtocol(ctx, r.Directory, r.Protocol, r.Connection, networkReady); err != nil {
+			return fmt.Errorf("restore protocol: %w", err)
+		}
 	}
 	protocolReady := func(ctx context.Context) error {
 		if err := networkReady(ctx); err != nil {
 			return err
 		}
-		if _, err := LoadProtocolRecovery(r.Directory, r.Protocol); err != nil {
+		if err := checkProtocolIntent(); err != nil {
 			return err
 		}
 		return VerifyProtocolRecovery(ctx, r.Protocol, r.Connection)
+	}
+	// Missing intent never authorizes protocol writes or proves preparation did
+	// not run. Only independent absence checks can permit label cleanup; any live
+	// fixture/uncertain state remains a reconciliation error with journals intact.
+	if err := protocolReady(ctx); err != nil {
+		return fmt.Errorf("verify protocol before label recovery: %w", err)
 	}
 	if err := RestoreNetworkLabel(ctx, r.Client, r.Directory, r.Network, r.StatefulSetName, protocolReady); err != nil {
 		return fmt.Errorf("restore Pod label: %w", err)
