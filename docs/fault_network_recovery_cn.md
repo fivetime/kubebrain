@@ -137,3 +137,22 @@ Pod JSON 作为同进程基准，退出 0；证据位于
 部署镜像或注入故障。此证据确认现场采集及标签缺席观察可用；没有验证
 本次故障策略撤销、PD/TiKV 连通性或原 30 秒故障验收，不能据此声称
 完整恢复控制器或最终目标已完成。
+
+### 原 Pod 到本地 PD/TiKV 的 TCP 基线
+
+私有证据目录：
+`/root/.local/state/kubebrain/recovery-tcp-readonly.EADCpv99`。
+仅 `STRICT-SHA256SUMS` 覆盖的 `strict-*` 结果为有效基线：第一版 shell
+没有开启失败即退出，不能确保握手错误被正确传播，故原 `results.tsv`
+不用于结论。修正为 `bash -c 'set -e; exec 3<>…; …'` 后完整重跑。
+
+从现有 `kubebrain-local-0` 容器内，对当前 `kb-local-pd-[012]:2379`
+和 `kb-local-tikv-[012]:20160` 的 6 个实际 Pod IP 各进行一次 TCP 握手，
+全部成功。每次连接使用 3 秒容器内 timeout 和 8 秒外层 timeout，
+不发送业务请求、不安装工具、不创建资源。源 Pod 前后同进程检查通过，
+目标 Pod 名称、UID、IP 前后匹配且未删除，严格结果的校验和通过。
+
+这确认可用现有容器能力补充目标网络路径的只读观测；它不是 TLS、
+PD/TiKV 协议健康或故障后的恢复证明。正式恢复 hook 仍需连接已准入
+目标集合、Cilium 观察、失败传播和固定恢复期限，不能把这次无故障基线
+替代真实实验的观测。
