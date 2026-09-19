@@ -44,6 +44,27 @@ func TestOriginalResponseExactIntegersAndBoundaries(t *testing.T) {
 	}
 }
 
+func TestOriginalPendingPrefix(t *testing.T) {
+	b, events := fixture()
+	b.SuccessorTerm = 0 // No successor exists at this observation stage.
+	prefix := encode(t, events[:2])
+	require.NoError(t, ValidateOriginalPendingPrefix(prefix, b))
+	for _, data := range [][]byte{
+		nil, encode(t, events), prefix[:len(prefix)-1], append(append([]byte{}, prefix...), '{'),
+		bytes.Replace(prefix, []byte(`"ttl":-1`), []byte(`"ttl":null`), 1),
+		bytes.Replace(prefix, []byte(`"ttl":-1`), []byte(`"ttl":0`), 1),
+		bytes.Replace(prefix, []byte(`"member_id":9007199254740993`), []byte(`"member_id":9007199254740992`), 1),
+		bytes.Replace(prefix, []byte(`"lease_id":-9223372036854775807`), []byte(`"lease_id":-9223372036854775808`), 1),
+		bytes.Replace(prefix, []byte(`"ttl":-1`), []byte(`"ttl":-1,"ttl":-1`), 1),
+		bytes.Replace(prefix, []byte(`"ttl":-1`), []byte(`"TTL":-1`), 1),
+		bytes.Repeat([]byte{'x'}, 8193),
+	} {
+		require.Error(t, ValidateOriginalPendingPrefix(data, b))
+	}
+	b.Origin = events[1]["at"].(time.Time)
+	require.Error(t, ValidateOriginalPendingPrefix(prefix, b), "request must predate the original clock")
+}
+
 func TestOriginalResponseRejectsInvalidEvidence(t *testing.T) {
 	for _, mode := range []string{"early-response", "late-response", "send-at-origin", "backward-preflight", "wrong-cluster", "rounded-cluster", "wrong-lease", "wrong-initial-member", "wrong-initial-term", "zero-response-member", "stale-response-term", "negative-ttl", "missing-ttl", "null-ttl", "live-preflight", "missing-header", "wrong-phase", "extra-event", "missing-event", "unknown-field", "duplicate-field", "case-alias", "fractional-id", "string-id", "overflow-id", "truncated", "oversize", "no-successor", "zero-origin", "zero-lease"} {
 		t.Run(mode, func(t *testing.T) {

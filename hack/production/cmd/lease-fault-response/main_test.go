@@ -69,3 +69,21 @@ func (brokenIO) Write([]byte) (int, error) { return 0, errors.New("test write fa
 func TestResponseCLIOutputFailure(t *testing.T) {
 	require.Error(t, run(bindings(), strings.NewReader(evidence), brokenIO{}))
 }
+
+func TestPendingPrefixCLI(t *testing.T) {
+	args := append([]string{"--pending-prefix"}, bindings()[:8]...)
+	args = append(args, bindings()[10:]...)
+	prefix := strings.Join(strings.Split(evidence, "\n")[:2], "\n") + "\n"
+	var out bytes.Buffer
+	require.NoError(t, run(args, strings.NewReader(prefix), &out))
+	require.JSONEq(t, `{"pending_prefix_verified":true,"live_wait_proven":false,"fault_acceptance_proven":false}`, out.String())
+	for _, data := range []string{evidence, prefix + "{", strings.TrimSuffix(prefix, "\n"), strings.Replace(prefix, "9007199254740993", "9007199254740992", 1), strings.Replace(prefix, `"ttl":-1`, `"ttl":-1,"ttl":0`, 1)} {
+		out.Reset()
+		require.Error(t, run(args, strings.NewReader(data), &out))
+		require.Empty(t, out.String())
+	}
+	out.Reset()
+	require.Error(t, run(append([]string{"--pending-prefix"}, bindings()...), strings.NewReader(prefix), &out), "successor binding is not accepted in pending mode")
+	require.Empty(t, out.String())
+	require.Error(t, run(args, strings.NewReader(prefix), brokenIO{}))
+}

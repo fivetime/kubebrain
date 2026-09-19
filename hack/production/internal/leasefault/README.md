@@ -70,6 +70,19 @@ API PATCH; final original-response and whole-fault gates remain mandatory.
 The concrete live observer implementing this callback is still required before
 deploying the full fault driver; wiring tests use synthetic evidence only.
 
+For its log-snapshot check, `lease-fault-response --pending-prefix` accepts the
+same decimal binding flags as response mode except `--successor-term` (which is
+not yet known and is rejected). `--pending-prefix` must be the first argument.
+Supply the existing original clock via `--fault-origin-ns`, not a new clock.
+The input must contain exactly the two complete original probe events, without
+any response or partial trailing record. IDs are decoded as exact integers.
+The response validator shares this prefix parser, preventing the pre-activation
+and final gates from disagreeing about identity. Output explicitly records
+`live_wait_proven:false` and `fault_acceptance_proven:false`: this offline check
+cannot replace process liveness, fresh protected stack capture, authentication
+of the input, or observing whether the log changed during capture. The caller
+must bound stdin reads and execution by the original deadline.
+
 `RunFaultLifecycle` requires `OriginalEvidence` and `OutcomeAdmit` and calls
 this gate immediately after the prepared child exits successfully, before metric
 completion checks and recovery. The independently supplied evidence origin must

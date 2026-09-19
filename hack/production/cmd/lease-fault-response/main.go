@@ -17,11 +17,19 @@ import (
 )
 
 func run(args []string, input io.Reader, output io.Writer) error {
+	pending := len(args) > 0 && args[0] == "--pending-prefix"
+	if pending {
+		args = args[1:]
+	}
 	f := flag.NewFlagSet("lease-fault-response", flag.ContinueOnError)
 	f.SetOutput(io.Discard)
 	names := []string{"lease-id", "cluster-id", "initial-member-id", "initial-term", "successor-term", "fault-origin-ns"}
 	values := make([]string, len(names))
 	for i, name := range names {
+		if pending && name == "successor-term" {
+			values[i] = "0"
+			continue
+		}
 		f.StringVar(&values[i], name, "", "independently recorded canonical decimal binding")
 	}
 	bad := errors.New("invalid response binding arguments")
@@ -29,7 +37,11 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		return bad
 	}
 	// Reject repeated options rather than silently taking the last identity.
-	if len(args) != 2*len(names) {
+	wantArgs := 2 * len(names)
+	if pending {
+		wantArgs -= 2
+	}
+	if len(args) != wantArgs {
 		return bad
 	}
 	seen := make(map[string]bool)
@@ -58,9 +70,20 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	if err != nil {
 		return errors.New("cannot read original response evidence")
 	}
-	r, err := leasefault.ValidateOriginalResponse(data, leasefault.Binding{
+	binding := leasefault.Binding{
 		LeaseID: lease, ClusterID: ids[0], InitialMemberID: ids[1], InitialTerm: ids[2], SuccessorTerm: ids[3], Origin: time.Unix(0, origin),
-	})
+	}
+	if pending {
+		if err := leasefault.ValidateOriginalPendingPrefix(data, binding); err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(struct {
+			PrefixVerified        bool `json:"pending_prefix_verified"`
+			LiveWaitProven        bool `json:"live_wait_proven"`
+			FaultAcceptanceProven bool `json:"fault_acceptance_proven"`
+		}{true, false, false})
+	}
+	r, err := leasefault.ValidateOriginalResponse(data, binding)
 	if err != nil {
 		return err
 	}
