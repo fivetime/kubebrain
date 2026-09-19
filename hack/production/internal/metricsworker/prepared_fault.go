@@ -142,6 +142,12 @@ func WithPreparedFault(parent context.Context, spec Command, run func(context.Co
 			}
 			return errors.Join(childErr, ctx.Err(), faultCtx.Err())
 		}()
+		// Cancellation commonly truncates the completion record or closes its
+		// pipe. Preserve the fault context's cause even on those earlier exits;
+		// the session context only reports cancellation, not the fault deadline.
+		if faultCtx != nil {
+			injectErr = errors.Join(injectErr, faultCtx.Err())
+		}
 		if injectErr != nil {
 			cancel()
 		}

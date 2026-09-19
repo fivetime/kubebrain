@@ -106,6 +106,10 @@ func TestPreparedFaultFailuresJoinBeforeRestore(t *testing.T) {
 				return err
 			})
 			require.Error(t, err)
+			if mode == "fault-hang" {
+				require.ErrorIs(t, err, context.DeadlineExceeded, "fault deadline must survive process/handshake errors")
+				require.NoError(t, ctx.Err(), "outer budget must still be available for recovery")
+			}
 			require.Equal(t, mode != "prepare-hang" && mode != "bad-ready", called)
 			// The external restore may start only here, after all direct children
 			// are joined. This is a local lifecycle test, not cluster recovery.
