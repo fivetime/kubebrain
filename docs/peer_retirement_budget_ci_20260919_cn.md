@@ -84,7 +84,7 @@ CI 仍为失败；后续须使用整合后的候选重新验证，未启动新�
 整合候选 `2fd00721b2c95e8dd7708b5d1e400a852873b6f7` 已推送；
 以下 run 的 API head_sha 均独立核验与候选一致，各仅触发一次：
 
-- [镜像构建 35422204061](https://github.com/fivetime/kubebrain/actions/runs/35422204061)：push 触发，运行中。
+- [镜像构建 35422204061](https://github.com/fivetime/kubebrain/actions/runs/35422204061)：push 触发，已成功完成。
 - [探针回归 35422204070](https://github.com/fivetime/kubebrain/actions/runs/35422204070)：push 触发，已失败。
 - [后端协议集成 35422215771](https://github.com/fivetime/kubebrain/actions/runs/35422215771)：手动触发，已成功完成。
 
@@ -98,8 +98,13 @@ CI 仍为失败；后续须使用整合后的候选重新验证，未启动新�
 
 后端 CI 的候选 SHA、workflow 和全部 job 成功终态经独立 API 复查；
 私有证据为 `corrected-candidate-ci.C6iAqJeq/backend-terminal.NCz8Acz4`。
-镜像 CI 仍在运行，探针 CI 已失败，因此尚无新一轮集群准入结论。本轮未部署或
+镜像 CI 已成功，探针 CI 已失败，因此尚无新一轮集群准入结论。本轮未部署或
 修改集群；不会把旧候选的 CI 结果套用于当前候选或重复触发 CI。
+
+镜像候选 SHA、workflow 与全部 job 成功终态已独立 API 复查；日志中
+发布后镜像的 Git SHA 与候选一致。API、作业及完整日志摘要保存于
+`corrected-candidate-ci.C6iAqJeq/image-terminal.4ZqsmsR0`。仍须完成
+探针失败调查与后续准入，不能仅凭镜像 workflow 成功部署。
 
 ### 整合候选的探针终态失败
 
