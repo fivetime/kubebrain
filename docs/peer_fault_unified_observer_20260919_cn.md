@@ -33,11 +33,30 @@ StatefulSet spec/UID 恢复，generation/observedGeneration 为 90，
 本轮标签均不存在。执行句柄已终止，不复用本轮目录重新实验。
 
 存储复查为 12 Bound / 98 Released；实验前为 12 Bound / 50 Released。
-新增对象仍须逐一按本轮创建凭据识别和清理，不能删除原有 Released
-PV 或把配置恢复等同于全部测试残留已清理。编译残留也尚未进行本轮
-终态清理。
+不能由增加的 48 个 Released 直接推断删除范围：其中 6 个是实验前
+已存在、此次滚动后释放的卷，仍受基线保护。
 
 修正的第一轮端点/标签/丢包 race 测试通过
 （41.444 秒）。追加拒绝场景后的端点、标签/丢包、策略/恢复等待三轮
 race 回归通过（183.152 秒），`go vet ./deploy/test-cluster`、Bash
 语法及 diff 检查通过。测试使用模拟 API，不是对失败现场的补验收。
+
+## 终态残留清理
+
+12 项纯规划和 6 项清理控制器模拟通过；随后依据同阶段的 Bound
+Pod/PVC/PV 历史快照，确认 42 个不属于基线的临时卷。删除前逐个
+重新检查 UID/resourceVersion/spec、无 PVC 引用、无 VolumeAttachment、
+旧 owner Pod 不存在，以及 CSI volumeHandle 不与其他 PV 共用。
+仅对这些卷以条件补丁将 Retain 改为 Delete，并等待存储回收完成。
+
+执行 `scratch-cleanup.3LOFI0LI` 退出 0，42 个目标均回收；所有基线与
+非目标 PV 的 UID/spec 保持一致，清理前后命名空间 Pod UID/spec/容器
+状态未变。最终为 12 Bound / 56 Released。新鲜只读复核
+`scratch-cleanup.bELtH58c` 返回 0 个归属本轮的待回收目标。临时卷数据
+不可直接撤销恢复，创建与删除证据及摘要均保留。
+
+随后 `compiled-cleanup.uyz1nddV` 退出 0，删除 44 个已记录构建摘要、
+ELF 类型匹配且未被进程使用的编译产物路径；源码、脚本、日志、证书
+和原始凭据记录保留，编译产物可重建。旧二进制摘要清单现在指向已清理
+路径，不能将该实验目录当作可重新执行的准备目录。下一轮必须使用
+新的实验身份与重新构建的工具。本轮准备失败结论不因清理成功改变。
