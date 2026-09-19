@@ -51,3 +51,7 @@ remove `/metadata/labels/kubebrain.io~1fault-owner`，保留其他标签。
 复查 API 状态及实际 identity 收敛，不能把空补丁当作完整恢复证明。
 
 两个计划的合成输入回归均纳入 probe CI，并由 workflow 契约测试锁定。
+标签测试还使用 JSON Patch 实现实际应用生成的补丁，核对其恰好恢复
+原 Pod JSON、保留其他标签，并验证 UID、资源版本、owner 变化或标签
+被移除时旧补丁的 test 操作失败。这是本地补丁语义测试，不是 API
+服务器集成测试，也不能消除外层独占恢复和现场复查的要求。

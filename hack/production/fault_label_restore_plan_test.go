@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	jsonpatch "gopkg.in/evanphx/json-patch.v4"
 )
 
 func TestFaultLabelRestorePlan(t *testing.T) {
@@ -76,6 +77,37 @@ func TestFaultLabelRestorePlan(t *testing.T) {
 				return
 			}
 			require.JSONEq(t, `[{"op":"test","path":"/metadata/uid","value":"pod-uid"},{"op":"test","path":"/metadata/resourceVersion","value":"9007199254740993"},{"op":"test","path":"/metadata/labels/kubebrain.io~1fault-owner","value":"fresh-owner"},{"op":"remove","path":"/metadata/labels/kubebrain.io~1fault-owner"}]`, out.String())
+			patch, err := jsonpatch.DecodePatch(out.Bytes())
+			require.NoError(t, err)
+			currentJSON, err := json.Marshal(current)
+			require.NoError(t, err)
+			restored, err := patch.Apply(currentJSON)
+			require.NoError(t, err)
+			expectedJSON, err := json.Marshal(before)
+			require.NoError(t, err)
+			require.JSONEq(t, string(expectedJSON), string(restored))
+			// A plan is stale if any precondition changes before the API applies it.
+			for _, changed := range []string{"uid", "resourceVersion", "owner", "owner-missing"} {
+				t.Run(changed, func(t *testing.T) {
+					var fresh map[string]any
+					require.NoError(t, json.Unmarshal(currentJSON, &fresh))
+					meta := fresh["metadata"].(map[string]any)
+					switch changed {
+					case "uid":
+						meta["uid"] = "replacement-uid"
+					case "resourceVersion":
+						meta["resourceVersion"] = "9007199254740994"
+					case "owner":
+						meta["labels"].(map[string]any)["kubebrain.io/fault-owner"] = "new-owner"
+					case "owner-missing":
+						delete(meta["labels"].(map[string]any), "kubebrain.io/fault-owner")
+					}
+					freshJSON, err := json.Marshal(fresh)
+					require.NoError(t, err)
+					_, err = patch.Apply(freshJSON)
+					require.Error(t, err)
+				})
+			}
 		})
 	}
 }
