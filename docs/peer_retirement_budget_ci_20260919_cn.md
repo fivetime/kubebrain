@@ -85,7 +85,7 @@ CI 仍为失败；后续须使用整合后的候选重新验证，未启动新�
 以下 run 的 API head_sha 均独立核验与候选一致，各仅触发一次：
 
 - [镜像构建 35422204061](https://github.com/fivetime/kubebrain/actions/runs/35422204061)：push 触发，运行中。
-- [探针回归 35422204070](https://github.com/fivetime/kubebrain/actions/runs/35422204070)：push 触发，运行中。
+- [探针回归 35422204070](https://github.com/fivetime/kubebrain/actions/runs/35422204070)：push 触发，已失败。
 - [后端协议集成 35422215771](https://github.com/fivetime/kubebrain/actions/runs/35422215771)：手动触发，已成功完成。
 
 补充本地回归会话 94729 已终态退出 0（736.547 秒），使用精确 42 项
@@ -98,5 +98,24 @@ CI 仍为失败；后续须使用整合后的候选重新验证，未启动新�
 
 后端 CI 的候选 SHA、workflow 和全部 job 成功终态经独立 API 复查；
 私有证据为 `corrected-candidate-ci.C6iAqJeq/backend-terminal.NCz8Acz4`。
-镜像与探针 CI 仍在运行，因此尚无新一轮集群准入结论。本轮未部署或
+镜像 CI 仍在运行，探针 CI 已失败，因此尚无新一轮集群准入结论。本轮未部署或
 修改集群；不会把旧候选的 CI 结果套用于当前候选或重复触发 CI。
+
+### 整合候选的探针终态失败
+
+原监控会话 43113 已终态退出 1，run 与候选 SHA 独立 API 复查一致。
+上次失败的传输/凭据步骤本次成功，相关阶段证据保存于私有
+`corrected-candidate-ci.C6iAqJeq/probe-transport-stage.mrzcKwUf`。
+最终失败位于 `Race test all probe regressions`，包耗时 348.430 秒，
+不是该命令的 20 分钟包级超时，也没有据此归因于 Runner。
+
+`TestRestoredAuthOfficialConcurrentStreamRefresh` 在第 8 轮
+KeepAliveOnce 断言处收到 `context deadline exceeded`，最近认证 RPC
+为 DeadlineExceeded；测试共享客户端并发建立 Watch 和 KeepAlive，
+每轮原上限为 5 秒。此前跨所有成员对的原始 RPC 测试已通过，但不能
+替代这个失败。日志/API/摘要证据为
+`corrected-candidate-ci.C6iAqJeq/probe-failure.waKTM0rU`。
+
+保持原源码及单轮门限，启动该用例三次 race 复现（包级 5 分钟），
+会话 30045，私有目录 `stream-refresh-ci-repro.0VkOGeGE`；当前仍在
+运行，尚无复现结论。未重触发 CI、放宽断言或部署此失败候选。
