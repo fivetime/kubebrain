@@ -25,11 +25,19 @@ type FaultLifecycle struct {
 	RecoveryConnection                      grpc.ClientConnInterface
 	RecoveryTimeout                         time.Duration
 	Join, NetworkRestored, IdentityRestored func(context.Context) error
+	// OriginalEvidence must authenticate the original probe log and independent
+	// successor binding, not infer either from the response under test. Its origin
+	// must equal the clock already dispatched to the prepared child and workers.
+	OriginalEvidence func(context.Context) (Binding, []byte, error)
+	// OutcomeAdmit checks live isolation and protocol identities before outcome
+	// reads; Preparation.Own is also rechecked. Both use the original fault context.
+	OutcomeAdmit func(context.Context) error
 }
 
 type LifecycleResult struct {
 	Metrics                       []metricsworker.Result
 	ExecutionError, RecoveryError error
+	Outcome                       *OriginalOutcome
 }
 
 // RunFaultLifecycle never retries an attempt or releases external ownership.
@@ -44,6 +52,9 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 	}
 	if err := l.Preparation.validate(ctx); err != nil {
 		return result, err
+	}
+	if l.OriginalEvidence == nil || l.OutcomeAdmit == nil {
+		return result, errors.New("original outcome evidence and admission are required")
 	}
 	// Reject invalid local tools before any cluster preparation. A private log
 	// is mandatory for every child; no implicit credential environment is added.
@@ -64,7 +75,28 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 	if result.ExecutionError == nil {
 		result.ExecutionError = metricsworker.WithPreparedFault(ctx, l.Fault, func(runCtx context.Context, inject func(context.Context, time.Time) error) error {
 			hooks := l.Metrics
-			hooks.Inject = inject
+			hooks.Inject = func(faultCtx context.Context, origin time.Time) error {
+				if err := inject(faultCtx, origin); err != nil {
+					return err
+				}
+				// The prepared child has exited successfully. These final reads
+				// remain fault gates, not part of the later recovery budget.
+				binding, log, err := l.OriginalEvidence(faultCtx)
+				if err != nil {
+					return err
+				}
+				if !binding.Origin.Equal(origin) {
+					return errors.New("original outcome clock changed")
+				}
+				outcome, err := VerifyOriginalOutcome(faultCtx, l.RecoveryConnection, l.Preparation.Protocol, binding, log, func(ctx context.Context) error {
+					if err := l.Preparation.Own(ctx); err != nil {
+						return err
+					}
+					return l.OutcomeAdmit(ctx)
+				})
+				result.Outcome = &outcome
+				return err
+			}
 			var err error
 			result.Metrics, err = metricsworker.Run(runCtx, l.Preparation.Directory, l.Workers, hooks)
 			return err

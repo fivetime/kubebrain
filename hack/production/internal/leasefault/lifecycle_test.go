@@ -50,9 +50,44 @@ printf '%s\n' "$origin" > "$1/worker.origin"
 printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 `, "worker", dir}}
 	joined := false
+	evidenceRead := false
 	var origin time.Time
 	result, err := RunFaultLifecycle(ctx, FaultLifecycle{
 		Preparation: prep, Fault: fault, Workers: []metricsworker.Command{worker}, RecoveryConnection: prep.Connection, RecoveryTimeout: 5 * time.Second,
+		OriginalEvidence: func(faultCtx context.Context) (Binding, []byte, error) {
+			require.False(t, joined, "outcome must precede recovery")
+			deadline, ok := faultCtx.Deadline()
+			require.True(t, ok)
+			require.False(t, deadline.After(origin.Add(30*time.Second)))
+			data, err := os.ReadFile(filepath.Join(dir, "fault.pid"))
+			require.NoError(t, err)
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			require.NoError(t, err)
+			require.ErrorIs(t, syscall.Kill(pid, 0), syscall.ESRCH, "outcome must follow prepared child exit")
+			evidenceRead = true
+			if mode == "lifecycle-outcome-timeout" {
+				<-faultCtx.Done()
+				return Binding{}, nil, faultCtx.Err()
+			}
+			b := Binding{LeaseID: prep.Protocol.LeaseID, ClusterID: prep.Protocol.ClusterID, InitialMemberID: prep.Protocol.AlarmMemberID, InitialTerm: 2, SuccessorTerm: 3, Origin: origin}
+			// Synthetic original-stream and successor evidence for wiring only.
+			events := []map[string]any{
+				{"phase": "expired_preflight", "at": origin.Add(-2 * time.Second), "lease_id": b.LeaseID, "ttl": int64(-1), "member_id": b.InitialMemberID, "raft_term": b.InitialTerm, "cluster_id": b.ClusterID},
+				{"phase": "request_sent", "at": origin.Add(-time.Second), "lease_id": b.LeaseID},
+				{"phase": "response", "at": time.Now(), "lease_id": b.LeaseID, "ttl": int64(10), "header": map[string]any{"cluster_id": b.ClusterID, "member_id": b.InitialMemberID, "raft_term": b.SuccessorTerm, "revision": int64(1)}},
+			}
+			if mode == "lifecycle-evidence-fail" {
+				return Binding{}, nil, errors.New("untrusted original evidence")
+			}
+			if mode == "lifecycle-clock-changed" {
+				b.Origin = b.Origin.Add(time.Nanosecond)
+			}
+			if mode == "lifecycle-outcome-mismatch" {
+				events[2]["ttl"] = int64(0)
+			}
+			return b, encode(t, events), nil
+		},
+		OutcomeAdmit: func(context.Context) error { require.False(t, joined); return nil },
 		Metrics: metricsworker.Hooks{
 			Baseline: func(context.Context, int, metricsworker.Ready) error {
 				if mode == "lifecycle-baseline-fail" {
@@ -65,13 +100,14 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 				if mode == "lifecycle-parent-cancel" {
 					cancel()
 				}
-				if mode == "lifecycle-deadline" {
+				if mode == "lifecycle-deadline" || mode == "lifecycle-outcome-timeout" {
 					origin = origin.Add(-29500 * time.Millisecond)
 				}
 				return origin, nil
 			},
 			Completed: func(_ context.Context, _ int, _ metricsworker.Result, got time.Time) error {
 				require.Equal(t, origin, got)
+				require.True(t, evidenceRead)
 				return nil
 			},
 		},
@@ -107,6 +143,8 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		require.NoError(t, err)
 		require.NoError(t, result.ExecutionError)
 		require.Len(t, result.Metrics, 1)
+		require.NotNil(t, result.Outcome)
+		require.NotNil(t, result.Outcome.Key)
 		for _, name := range []string{"fault.origin", "worker.origin"} {
 			data, err := os.ReadFile(filepath.Join(dir, name))
 			require.NoError(t, err)
@@ -115,13 +153,17 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	} else {
 		require.Error(t, err)
 		require.Error(t, result.ExecutionError)
-		if mode == "lifecycle-deadline" {
+		if mode == "lifecycle-deadline" || mode == "lifecycle-outcome-timeout" {
 			require.ErrorIs(t, err, context.DeadlineExceeded)
 			require.NoError(t, ctx.Err())
 		}
 		if mode == "lifecycle-baseline-fail" {
 			_, err := os.Stat(filepath.Join(dir, "fault.origin"))
 			require.ErrorIs(t, err, os.ErrNotExist)
+		}
+		if mode == "lifecycle-child-fail" || mode == "lifecycle-baseline-fail" || mode == "lifecycle-deadline" || mode == "lifecycle-parent-cancel" {
+			require.False(t, evidenceRead)
+			require.Nil(t, result.Outcome)
 		}
 	}
 }

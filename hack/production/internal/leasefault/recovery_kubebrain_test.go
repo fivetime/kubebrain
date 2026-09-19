@@ -28,14 +28,24 @@ import (
 )
 
 // Fixed single-leader fixture, not a real election or fault recovery proof.
-type recoveryPeer struct{ service.PeerService }
+type recoveryPeer struct {
+	service.PeerService
+	term uint64
+}
 
-func (recoveryPeer) IsLeader() bool                                 { return true }
-func (recoveryPeer) HasLeader() bool                                { return true }
-func (recoveryPeer) EpochAndLeadingFresh() (uint64, bool)           { return 0, true }
-func (recoveryPeer) LeadershipTerm(context.Context) (uint64, error) { return 1, nil }
-func (recoveryPeer) CurrentLeadershipTerm() uint64                  { return 1 }
-func (recoveryPeer) GetLeaderInfo() string                          { return "recovery-test" }
+func (recoveryPeer) IsLeader() bool                       { return true }
+func (recoveryPeer) HasLeader() bool                      { return true }
+func (recoveryPeer) EpochAndLeadingFresh() (uint64, bool) { return 0, true }
+func (p recoveryPeer) LeadershipTerm(context.Context) (uint64, error) {
+	return p.CurrentLeadershipTerm(), nil
+}
+func (p recoveryPeer) CurrentLeadershipTerm() uint64 {
+	if p.term == 0 {
+		return 1
+	}
+	return p.term
+}
+func (recoveryPeer) GetLeaderInfo() string { return "recovery-test" }
 func (recoveryPeer) GetElectionInfo() (leader.ElectionInfo, error) {
 	return leader.ElectionInfo{LeaderAddress: "recovery-test", IsLeader: true}, nil
 }
@@ -50,11 +60,15 @@ func TestRestoreProtocolKubeBrainGRPC(t *testing.T) {
 }
 
 func recoveryGRPCFixture(t *testing.T) *grpc.ClientConn {
+	return recoveryGRPCFixtureAtTerm(t, 1)
+}
+
+func recoveryGRPCFixtureAtTerm(t *testing.T, term uint64) *grpc.ClientConn {
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	metrics := mock.NewMinimalMetrics(ctrl)
 	b := backend.NewBackend(memkv.NewKvStorage(), backend.Config{Identity: "recovery-test", EnableEtcdCompatibility: true}, metrics)
-	server := serveretcd.New(b, metrics, recoveryPeer{})
+	server := serveretcd.New(b, metrics, recoveryPeer{term: term})
 	t.Cleanup(func() { require.NoError(t, server.Close()); require.NoError(t, b.(interface{ Close() error }).Close()) })
 	grpcServer := grpc.NewServer(server.ClientServerOptions()...)
 	pb.RegisterMaintenanceServer(grpcServer, server)

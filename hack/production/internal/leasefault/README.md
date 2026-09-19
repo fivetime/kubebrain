@@ -60,6 +60,17 @@ private evidence. Simulated-client tests cover both outcomes, expiry, full-width
 IDs, identity/key/value mismatches, lost final admission and exhausted/extended
 budgets, including RPC timeout. They do not prove a real leadership handoff.
 
+`RunFaultLifecycle` now requires `OriginalEvidence` and `OutcomeAdmit` and calls
+this gate immediately after the prepared child exits successfully, before metric
+completion checks and recovery. The independently supplied evidence origin must
+exactly equal the clock dispatched to the child and workers. Failed child execution
+does not read original evidence. Partial outcome observations are returned in
+`LifecycleResult.Outcome`; failures remain execution failures even after recovery
+succeeds. Wiring tests use a fixed-term real KubeBrain service with synthetic probe
+and successor evidence, covering untrusted evidence, clock changes, incompatible
+lease outcome and evidence collection timing out on the original fault context.
+They verify ordering/budget propagation, not a real term change or isolated stream.
+
 ## Protocol recovery intent
 
 `PrepareFault` composes the preparation half: validate shared owner and cluster

@@ -22,11 +22,18 @@ import (
 // Real KubeBrain RPCs, synthetic Kubernetes API and dataplane observations.
 // This verifies composition, not election, Cilium convergence or fault timing.
 func TestPrepareFaultAndRecover(t *testing.T) {
-	for _, mode := range []string{"success", "owner-mismatch", "unsafe-nonce", "reservation-replaced", "dataplane-not-ready", "create-ambiguous", "after-grant-denied", "lifecycle-success", "lifecycle-child-fail", "lifecycle-baseline-fail", "lifecycle-deadline", "lifecycle-parent-cancel", "lifecycle-join-fail", "observer-matched", "observer-pending", "observer-input-before", "observer-input-during", "observer-retain-fail", "observer-owner-lost"} {
+	for _, mode := range []string{
+		"success", "owner-mismatch", "unsafe-nonce", "reservation-replaced", "dataplane-not-ready", "create-ambiguous", "after-grant-denied",
+		"lifecycle-success", "lifecycle-child-fail", "lifecycle-baseline-fail", "lifecycle-deadline", "lifecycle-parent-cancel", "lifecycle-join-fail",
+		"lifecycle-evidence-fail", "lifecycle-clock-changed", "lifecycle-outcome-mismatch", "lifecycle-outcome-timeout",
+		"observer-matched", "observer-pending", "observer-input-before", "observer-input-during", "observer-retain-fail", "observer-owner-lost",
+	} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			conn := recoveryGRPCFixture(t)
+			// Fixed term 3 permits synthetic initial=2/successor=3 evidence in
+			// lifecycle wiring tests; this service does not perform an election.
+			conn := recoveryGRPCFixtureAtTerm(t, 3)
 			status, err := pb.NewMaintenanceClient(conn).Status(ctx, &pb.StatusRequest{})
 			require.NoError(t, err)
 			n := networkPlan()
