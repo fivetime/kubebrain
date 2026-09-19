@@ -205,3 +205,15 @@ TiDBCluster UID 匹配，PD/TiKV 均使用 `kubebrain-local-lvm`。
 `public-tls.VjhD4wHl`，成功摘要为 `diagnostic-identity.sha256`。
 探针客户端证书的客户端用途与 24 小时有效期亦通过。HOLD 仍保留，
 尚未生成新实验 PKI 或上传 Secret，未进行任何部署/故障变更。
+
+随后已完成本机新 PKI 准备（session 13457 退出 0），新叶证书到期时间
+为 **2026-09-20 05:50:13 UTC**，准入前必须重新检查有效期。没有复用
+旧实验的 CA/成员密钥；私钥仅保存于受限私有目录。三成员的新旧双根
+信任过渡校验、成员身份与两个不可变 Secret 的离线计划检查均通过
+（session 45825）。使用 `/dev/null` kubeconfig 和 client dry-run，
+没有上传 Secret；计划不包含 CA 私钥，成员文件逐项绑定。
+
+只读检查 `absence.jb5NKjNK` 证明旧/新 owner 对应的临时 Secret、
+故障策略均不存在，命名空间 Pod 没有 fault-owner 标签。全部材料
+摘要复核通过；HOLD 保持，下一步准备并冻结运行时、恢复和清理流程，
+执行完整离线验收后才考虑预拉取及最终准入。
