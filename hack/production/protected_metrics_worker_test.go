@@ -24,6 +24,14 @@ import (
 )
 
 func TestProtectedMetricsWorkerRealSessionArtifacts(t *testing.T) {
+	for _, reject := range []bool{false, true} {
+		t.Run(fmt.Sprintf("reject-baseline-%t", reject), func(t *testing.T) {
+			testProtectedMetricsWorkerRealSessionArtifacts(t, reject)
+		})
+	}
+}
+
+func testProtectedMetricsWorkerRealSessionArtifacts(t *testing.T, reject bool) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
 	owner := t.TempDir()
@@ -45,65 +53,86 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 `
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "bash", "-c", setup, "test", library, owner, "success")
-	processgroup.Configure(cmd)
-	cmd.WaitDelay = time.Second
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	stdout, err := cmd.StdoutPipe()
+	stderr, err := os.CreateTemp(owner, "supervisor-stderr-*")
 	require.NoError(t, err)
-	stdin, err := cmd.StdinPipe()
-	require.NoError(t, err)
-	require.NoError(t, cmd.Start())
-	t.Cleanup(func() {
-		if cmd.ProcessState == nil {
-			cancel()
-			_ = cmd.Wait()
-		}
+	defer stderr.Close()
+	var before retirementmetrics.Sample
+	var binding retirementmetrics.CaptureBinding
+	var origin int64
+	var workerDir string
+	baselineChecked, completedChecked := false, false
+	results, runErr := metricsworker.Run(ctx, owner, []metricsworker.Command{{
+		Executable: "/bin/bash", Args: []string{"-c", setup, "test", library, owner, "success"}, Env: os.Environ(), Stderr: stderr,
+	}}, metricsworker.Hooks{
+		Baseline: func(_ context.Context, index int, r metricsworker.Ready) error {
+			workerDir = r.Worker
+			require.Equal(t, 0, index)
+			ready := []string{"READY", r.Worker, r.Baseline}
+			require.Equal(t, owner, filepath.Dir(ready[1]))
+			require.Equal(t, owner, filepath.Dir(ready[2]))
+			raw, err := os.ReadFile(filepath.Join(owner, "diagnostic-spec.json"))
+			require.NoError(t, err)
+			var spec map[string]any
+			require.NoError(t, json.Unmarshal(raw, &spec))
+			canonical, err := json.Marshal(spec)
+			require.NoError(t, err)
+			hash := sha256.Sum256(canonical)
+			binding = retirementmetrics.CaptureBinding{NamespaceUID: "ns-uid", StatefulSetUID: "sts-uid", PodUID: "pod-uid", SpecSHA256: hex.EncodeToString(hash[:]), Cluster: "test"}
+			before, err = retirementmetrics.LoadCapture(ready[2], binding)
+			require.NoError(t, err)
+			baselineChecked = true
+			if reject {
+				return fmt.Errorf("deliberate baseline rejection")
+			}
+			return nil
+		},
+		Inject: func(context.Context) (time.Time, error) {
+			require.True(t, baselineChecked)
+			now := time.Now()
+			origin = now.UnixNano()
+			return now, nil // Clock delivery only: no real Kubernetes fault injected.
+		},
+		Completed: func(_ context.Context, index int, result metricsworker.Result, fault time.Time) error {
+			require.Equal(t, 0, index)
+			require.Equal(t, origin, fault.UnixNano())
+			c := result.Captured
+			ready := []string{"READY", result.Ready.Worker, result.Ready.Baseline}
+			captured := []string{"CAPTURED", c.Capture, c.Schedule}
+			after, err := retirementmetrics.LoadCapture(captured[1], binding)
+			require.NoError(t, err)
+			delta, err := retirementmetrics.SampleDelta(before, after, retirementmetrics.Key{Stage: "peer", Outcome: "confirmed"})
+			require.NoError(t, err)
+			require.Equal(t, float64(1), delta)
+			input, err := os.ReadFile(filepath.Join(captured[2], "input.tsv"))
+			require.NoError(t, err)
+			require.Equal(t, fmt.Sprintf("%d\t0\n", origin), string(input))
+			check, err := exec.Command("sha256sum", "-c", filepath.Join(captured[2], "evidence.sha256")).CombinedOutput()
+			require.NoError(t, err, string(check))
+			complete, err := os.ReadFile(filepath.Join(captured[2], "COMPLETE"))
+			require.NoError(t, err)
+			require.Equal(t, "SCHEDULE_COMPLETE_NOT_FAULT_ACCEPTANCE\n", string(complete))
+			receipt, err := os.ReadFile(filepath.Join(ready[1], "exit-code"))
+			require.NoError(t, err)
+			require.Equal(t, "0\n", string(receipt))
+			completedChecked = true
+			return nil
+		},
 	})
-	protocol, err := metricsworker.NewProtocol(stdout, owner)
+	log, err := os.ReadFile(stderr.Name())
 	require.NoError(t, err)
-	r, err := protocol.ReadReady()
-	require.NoError(t, err)
-	ready := []string{"READY", r.Worker, r.Baseline}
-	require.Equal(t, owner, filepath.Dir(ready[1]))
-	require.Equal(t, owner, filepath.Dir(ready[2]))
-	raw, err := os.ReadFile(filepath.Join(owner, "diagnostic-spec.json"))
-	require.NoError(t, err)
-	var spec map[string]any
-	require.NoError(t, json.Unmarshal(raw, &spec))
-	canonical, err := json.Marshal(spec)
-	require.NoError(t, err)
-	hash := sha256.Sum256(canonical)
-	binding := retirementmetrics.CaptureBinding{NamespaceUID: "ns-uid", StatefulSetUID: "sts-uid", PodUID: "pod-uid", SpecSHA256: hex.EncodeToString(hash[:]), Cluster: "test"}
-	before, err := retirementmetrics.LoadCapture(ready[2], binding)
-	require.NoError(t, err)
-	origin := time.Now().UnixNano()
-	_, err = fmt.Fprintf(stdin, "%d\n", origin)
-	require.NoError(t, err)
-	require.NoError(t, stdin.Close())
-	c, err := protocol.ReadCaptured()
-	require.NoError(t, err)
-	require.NoError(t, protocol.Finish())
-	require.NoError(t, cmd.Wait(), stderr.String())
+	if reject {
+		require.ErrorContains(t, runErr, "deliberate baseline rejection")
+		require.Zero(t, origin, "must not inject on a rejected baseline")
+		require.False(t, completedChecked)
+		receipt, err := os.ReadFile(filepath.Join(workerDir, "exit-code"))
+		require.NoError(t, err, string(log))
+		require.Equal(t, "143\n", string(receipt))
+	} else {
+		require.NoError(t, runErr, string(log))
+		require.Len(t, results, 1)
+		require.True(t, completedChecked)
+	}
 	require.NoError(t, ctx.Err())
-	captured := []string{"CAPTURED", c.Capture, c.Schedule}
-	after, err := retirementmetrics.LoadCapture(captured[1], binding)
-	require.NoError(t, err)
-	delta, err := retirementmetrics.SampleDelta(before, after, retirementmetrics.Key{Stage: "peer", Outcome: "confirmed"})
-	require.NoError(t, err)
-	require.Equal(t, float64(1), delta)
-	input, err := os.ReadFile(filepath.Join(captured[2], "input.tsv"))
-	require.NoError(t, err)
-	require.Equal(t, fmt.Sprintf("%d\t0\n", origin), string(input))
-	check, err := exec.Command("sha256sum", "-c", filepath.Join(captured[2], "evidence.sha256")).CombinedOutput()
-	require.NoError(t, err, string(check))
-	complete, err := os.ReadFile(filepath.Join(captured[2], "COMPLETE"))
-	require.NoError(t, err)
-	require.Equal(t, "SCHEDULE_COMPLETE_NOT_FAULT_ACCEPTANCE\n", string(complete))
-	receipt, err := os.ReadFile(filepath.Join(ready[1], "exit-code"))
-	require.NoError(t, err)
-	require.Equal(t, "0\n", string(receipt))
 	pids, err := os.ReadFile(filepath.Join(owner, "pids"))
 	require.NoError(t, err)
 	require.Len(t, strings.Fields(string(pids)), 3)

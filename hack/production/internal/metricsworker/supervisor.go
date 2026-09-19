@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
@@ -75,10 +76,12 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 	children := make([]child, 0, len(commands))
 	defer func() {
 		cancel()
+		// Do not race EOF-triggered EXIT cleanup with the cancellation TERM.
+		// Keep stdin open until the worker's signal/exit path has joined.
+		wg.Wait()
 		for _, c := range children {
 			_ = c.input.Close()
 		}
-		wg.Wait()
 	}()
 	events := make(chan event, 2*len(commands))
 	for i, spec := range commands {
@@ -88,7 +91,21 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 			cmd.Stderr = spec.Stderr
 		}
 		processgroup.Configure(cmd)
-		cmd.WaitDelay = time.Second
+		hardCancel := cmd.Cancel
+		var escalation *time.Timer
+		var escalated chan struct{}
+		cmd.Cancel = func() error {
+			err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			if err == nil {
+				escalated = make(chan struct{})
+				escalation = time.AfterFunc(5*time.Second, func() { defer close(escalated); _ = hardCancel() })
+			}
+			return err
+		}
+		cmd.WaitDelay = 6 * time.Second
 		input, err := cmd.StdinPipe()
 		if err != nil {
 			return nil, err
@@ -126,8 +143,12 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 				cancel()
 			}
 			waitErr := cmd.Wait()
+			// Wait joins os/exec's cancellation watcher before reading its timer.
+			if escalation != nil && !escalation.Stop() {
+				<-escalated
+			}
 			// A direct child can exit while descendants retain its group.
-			_ = cmd.Cancel()
+			_ = hardCancel()
 			if waitErr != nil {
 				cancel()
 			}
