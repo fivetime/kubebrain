@@ -156,3 +156,15 @@ Pod JSON 作为同进程基准，退出 0；证据位于
 PD/TiKV 协议健康或故障后的恢复证明。正式恢复 hook 仍需连接已准入
 目标集合、Cilium 观察、失败传播和固定恢复期限，不能把这次无故障基线
 替代真实实验的观测。
+
+上述检查现已固化为 `deploy/test-cluster/observe-local-backend-tcp.sh`。
+参数为私有 owner 目录、独立保留的源 Pod JSON、已准入的 6 个目标
+`[{name,uid,ip,port}]` 文件。脚本限制目标为本地 PD/TiKV 实例，校验
+namespace、源 Pod 同进程和 StatefulSet 归属、目标 UID/IP、完整列表，
+使用位置参数发起有界 TCP 握手，并在前后重查身份、核验输入未变。
+任何失败都不发布 `evidence.sha256`；调用方仍须施加整体恢复截止时间。
+
+仓库脚本真实只读运行退出 0，证据位于同一私有目录的
+`backend-tcp.KOfpqXEj`，校验和通过。模拟 kubectl 的 race 回归覆盖成功、
+连接失败、目标替换、源进程重启、非法 IP 和分页未完成（4.812s）。
+此脚本尚未连接完整故障执行入口，也不能替代协议健康检查。
