@@ -15,7 +15,7 @@ import (
 func TestProtectedStackSession(t *testing.T) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
-	for _, scenario := range []string{"success", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "occupied-port", "dead-channel", "expired", "future", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe"} {
+	for _, scenario := range []string{"success", "anonymous-reset", "rearm-occupied", "rearm-start-failed", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "occupied-port", "dead-channel", "expired", "future", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe"} {
 		t.Run(scenario, func(t *testing.T) {
 			owner := t.TempDir()
 			require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
@@ -93,16 +93,28 @@ sha256sum "$1" "$stack_library_dir/same-pod-process.jq" "$stack_owner/bin/info-d
 if [[ $scenario == missing-binding ]]; then
  sha256sum "$stack_owner/bin/info-diagnostic-probe" > "$stack_owner/tools.sha256"
 fi
-ss() { if [[ $scenario == occupied-port ]]; then echo occupied; fi; }
+ss() { if [[ $scenario == occupied-port || ( $scenario == rearm-occupied && -e $stack_owner/probe-called ) ]]; then echo occupied; fi; }
 openssl() { if [[ $1 == x509 ]]; then printf fake-public-key; else /bin/cat; fi; }
 timeout() {
  [[ $1 == --foreground && $2 == --kill-after=1s ]] || return 99
- if [[ $4 == kubectl ]]; then shift 3; "$@"; else /usr/bin/timeout "$@"; fi
+ if [[ $4 == kubectl ]]; then shift 3; "$@"; else
+  local rc=0
+  /usr/bin/timeout "$@" || rc=$?
+  if [[ $scenario == anonymous-reset && $rc == 0 ]]; then
+   kill -TERM "${stack_pids[1]}"
+   wait "${stack_pids[1]}" || true
+  fi
+  return "$rc"
+ fi
 }
 kubectl() {
  while [[ $# -gt 0 && $1 != get && $1 != port-forward ]]; do shift; done
  if [[ $1 == port-forward ]]; then
   printf '%s\n' "$BASHPID" >> "$stack_owner/pids"
+  if [[ -e $stack_owner/probe-called ]]; then
+   [[ $scenario != rearm-start-failed ]] || return 91
+   if [[ $scenario == cancel-rearm ]]; then exec /usr/bin/sleep 60; fi
+  fi
   printf 'Forwarding from 127.0.0.1:%s -> 8080\n' "${4%:*}"
   exec /usr/bin/sleep 60
  fi
@@ -151,7 +163,10 @@ exercise() {
  first=$stack_capture
  start=$(date -u +%s%N)
  stack_session_capture "$start" || return
- [[ $first != "$stack_capture" && $(wc -l < "$stack_owner/pids") == 2 ]] || return
+ [[ $first != "$stack_capture" && $(wc -l < "$stack_owner/pids") == 3 ]] || return
+ # Fault-time capture must not create another tunnel or reset its clock.
+ [[ $(awk '$2=="rearm-anonymous" && $3=="end" && $4==0 {n++} END {print n+0}' "$first/timing.tsv") == 1 ]] || return
+ ! rg -q rearm-anonymous "$stack_capture/timing.tsv" || return
  case $scenario in
   reset-origin) stack_session_capture "$((start+1))";;
   reset-budget) stack_session_capture before-fault;;
@@ -161,12 +176,12 @@ rc=0
 exercise || rc=$?
 stack_session_close
 case $scenario in
- success|ready-before|ready-after) [[ $rc == 0 ]];;
+ success|anonymous-reset|ready-before|ready-after) [[ $rc == 0 ]];;
  expired|slow-probe) [[ $rc == 124 ]];;
  *) [[ $rc != 0 ]];;
 esac
 case $scenario in
- success|ready-before|ready-after|reset-origin|reset-budget) ;;
+ success|anonymous-reset|ready-before|ready-after|reset-origin|reset-budget) ;;
  *) [[ -z $(find "$stack_owner" -name COMPLETE -print) ]];;
 esac
 if [[ -e $stack_owner/pids ]]; then
@@ -217,4 +232,34 @@ func TestProtectedStackSessionOuterCancellation(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(trace), "\tprotected-probe\tstart\t-\n")
 	require.NotContains(t, string(trace), "\tsnapshot-after\t")
+}
+
+func TestProtectedStackSessionRearmCancellation(t *testing.T) {
+	library, err := filepath.Abs("protected-stack-session.sh")
+	require.NoError(t, err)
+	owner := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(owner, "bin", "info-diagnostic-probe"), []byte(stackProbeFixture), 0700))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "timeout", "--kill-after=2s", "3s", "bash", "-c", stackSessionFixture, "test", library, owner, "cancel-rearm").CombinedOutput()
+	require.NoError(t, ctx.Err(), string(output))
+	var exit *exec.ExitError
+	require.ErrorAs(t, err, &exit, string(output))
+	require.Equal(t, 124, exit.ExitCode())
+	pids, err := os.ReadFile(filepath.Join(owner, "pids"))
+	require.NoError(t, err)
+	require.Len(t, strings.Fields(string(pids)), 3, "original two tunnels and replacement anonymous tunnel")
+	for _, pid := range strings.Fields(string(pids)) {
+		require.Error(t, exec.Command("kill", "-0", pid).Run(), "child survived: %s", pid)
+	}
+	markers, err := filepath.Glob(filepath.Join(owner, "stack.*", "COMPLETE"))
+	require.NoError(t, err)
+	require.Empty(t, markers)
+	traces, err := filepath.Glob(filepath.Join(owner, "stack.*", "timing.tsv"))
+	require.NoError(t, err)
+	require.Len(t, traces, 1)
+	trace, err := os.ReadFile(traces[0])
+	require.NoError(t, err)
+	require.Contains(t, string(trace), "\trearm-anonymous\tstart\t-\n")
 }

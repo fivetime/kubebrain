@@ -47,20 +47,45 @@ stack_session_stage() {
  return "$rc"
 }
 
+stack_session_stop_owned() {
+ local child=$1 n
+ if [[ $'\n'$(jobs -pr)$'\n' == *$'\n'"$child"$'\n'* ]]; then
+  kill -TERM "$child" 2>/dev/null || true
+  for n in {1..20}; do
+   [[ $'\n'$(jobs -pr)$'\n' == *$'\n'"$child"$'\n'* ]] || break
+   sleep 0.1
+  done
+  if [[ $'\n'$(jobs -pr)$'\n' == *$'\n'"$child"$'\n'* ]]; then kill -KILL "$child" 2>/dev/null || true; fi
+ fi
+ wait "$child" 2>/dev/null || true
+}
+
 stack_session_close() {
- local child n
- for child in "${stack_pids[@]}"; do
-  if [[ $'\n'$(jobs -pr)$'\n' == *$'\n'"$child"$'\n'* ]]; then
-   kill -TERM "$child" 2>/dev/null || true
-   for n in {1..20}; do
-    [[ $'\n'$(jobs -pr)$'\n' == *$'\n'"$child"$'\n'* ]] || break
-    sleep 0.1
-   done
-   if [[ $'\n'$(jobs -pr)$'\n' == *$'\n'"$child"$'\n'* ]]; then kill -KILL "$child" 2>/dev/null || true; fi
-  fi
-  wait "$child" 2>/dev/null || true
- done
+ local child
+ for child in "${stack_pids[@]}"; do stack_session_stop_owned "$child"; done
  stack_pids=()
+}
+
+# A TLS rejection can terminate kubectl's negative-test tunnel after the probe
+# has verified the alert. Never reuse that tunnel for a subsequent capture.
+# Rearm only before the fault clock starts; never reset a live fault deadline.
+stack_session_rearm_anonymous() {
+ [[ -z $stack_fault_start && ${#stack_pids[@]} == 2 ]] || return 2
+ local log listeners child n
+ stack_session_stop_owned "${stack_pids[1]}"
+ stack_pids=("${stack_pids[0]}")
+ listeners=$(ss -H -ltn '( sport = :18585 )') || return
+ [[ -z $listeners ]] || return 2
+ log=$(mktemp "$stack_session/forward-18585-next.XXXXXXXX.log") || return
+ "${stack_k[@]}" port-forward --address=127.0.0.1 "pod/$stack_pod" 18585:8080 > "$log" 2>&1 &
+ child=$!
+ stack_pids+=("$child")
+ for n in {1..50}; do
+  kill -0 "$child" 2>/dev/null || return
+  if rg -q 'Forwarding from 127.0.0.1:18585' "$log"; then return 0; fi
+  sleep 0.1
+ done
+ return 1
 }
 
 stack_session_same_process() {
@@ -148,6 +173,9 @@ stack_session_capture() {
  jq -e '.mode=="protected-stack" and .readiness_checked==false and .fault_acceptance_proven==false and .pod_identity_proven==false' "$stack_capture/probe.json" >/dev/null || return
  stack_session_stage snapshot-after stack_session_run "${stack_k[@]}" get pod "$stack_pod" -o json > "$stack_capture/pod-after.json" || return
  stack_session_stage identity-after stack_session_same_process "$stack_capture/pod-before.json" "$stack_capture/pod-after.json" || return
+ if [[ -z $stack_fault_start ]]; then
+  stack_session_stage rearm-anonymous stack_session_rearm_anonymous || return
+ fi
  sha256sum "$stack_capture"/*.json "$stack_capture/goroutines.txt" "$stack_capture/timing.tsv" "$stack_capture/probe.stderr" > "$stack_capture/evidence.sha256" || return
  stack_session_budget || return
  printf 'CAPTURE_COMPLETE_WITHIN_CALLER_BUDGET\n' > "$stack_capture/COMPLETE"
