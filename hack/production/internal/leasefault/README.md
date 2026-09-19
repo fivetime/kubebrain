@@ -83,6 +83,26 @@ cannot replace process liveness, fresh protected stack capture, authentication
 of the input, or observing whether the log changed during capture. The caller
 must bound stdin reads and execution by the original deadline.
 
+`WithOriginalProbe` supplies concrete process ownership for an admitted original
+`lease-term-probe` executable: start once, retain at most 12 KiB stdout, and always
+cancel/join before returning. `AwaitRequest` waits for the two complete events
+under the preparation budget, without claiming server blocking. `Pending`
+checks that snapshot before and after the caller's fresh blocked-stack observer
+under the original fault context; changed output or observed exit fails. `Finish`
+requires exit success within that same fault budget and returns the original log
+for final validation. Returning success without `Finish` is rejected. No PID-file
+adoption or replacement request occurs. These local observations are not atomic
+with remote activation (nor with bytes still in transport); final gates remain
+necessary. Full deployment still needs the protected-stack observer, prepared
+child/controller wiring, and lifecycle's independent escaped-process audit.
+
+Process-boundary tests cover changed output during observation, failed stack
+checks, cancellation, oversize output, nonzero exit and missing/timed-out join.
+The lease-term-probe command also tests this supervisor with its actual parser
+and probe in a subprocess against an mTLS gRPC fixture: exactly one accepted TCP
+connection, one TTL query and one renewal stream. The fixture's request barrier
+is not real cluster stack evidence or a 30-second acceptance result.
+
 `RunFaultLifecycle` requires `OriginalEvidence` and `OutcomeAdmit` and calls
 this gate immediately after the prepared child exits successfully, before metric
 completion checks and recovery. The independently supplied evidence origin must
