@@ -169,6 +169,11 @@ namespace、源 Pod 同进程和 StatefulSet 归属、目标 UID/IP、完整列�
 连接失败、目标替换、源进程重启、非法 IP 和分页未完成（4.812s）。
 此脚本尚未连接完整故障执行入口，也不能替代协议健康检查。
 
+补充真实连接拒绝回归：测试绑定本机 TCP 端口但不 listen，并保持 socket
+打开避免端口复用竞态；模拟 kubectl 仅重定向目标地址，实际执行脚本
+传来的 timeout/Bash 握手命令。确认 Connection refused 被传播、结果列表
+为空、没有成功证据。三轮 race 通过（4.890s），不依赖测试集群或外部服务。
+
 ### 组合网络恢复观察入口
 
 `deploy/test-cluster/observe-local-network-restored.sh` 接收

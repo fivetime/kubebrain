@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -14,7 +16,7 @@ import (
 )
 
 func TestLocalBackendTCPObserver(t *testing.T) {
-	for _, mode := range []string{"success", "connection-failure", "target-replaced", "source-restarted", "invalid-ip", "pagination"} {
+	for _, mode := range []string{"success", "connection-failure", "real-connection-refused", "target-replaced", "source-restarted", "invalid-ip", "pagination"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel() // Fixtures and subprocess environments are isolated.
 			dir := t.TempDir()
@@ -24,6 +26,17 @@ func TestLocalBackendTCPObserver(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "mock-api"), []byte(ciliumCaptureMock), 0600))
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "kubectl"), []byte(tcpObserverMock), 0700))
 			env := append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "CAPTURE_FIXTURE="+dir, "CAPTURE_SCENARIO=stable", "TCP_SCENARIO="+mode)
+			if mode == "real-connection-refused" {
+				// Reserve a TCP port without listening: deterministic refusal, no
+				// close/rebind race and no dependency on an external service.
+				fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = syscall.Close(fd) })
+				require.NoError(t, syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}))
+				address, err := syscall.Getsockname(fd)
+				require.NoError(t, err)
+				env = append(env, "TCP_REFUSED_PORT="+strconv.Itoa(address.(*syscall.SockaddrInet4).Port), "LC_ALL=C")
+			}
 			seed := exec.Command("bash", filepath.Join(dir, "mock-api"), "get", "pod", "kubebrain-local-0")
 			seed.Env = env
 			pod, err := seed.Output()
@@ -67,6 +80,15 @@ func TestLocalBackendTCPObserver(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, observations, 1)
 			proof := filepath.Join(observations[0], "evidence.sha256")
+			if mode == "real-connection-refused" {
+				require.FileExists(t, filepath.Join(dir, "real-exec"))
+				stderr, err := os.ReadFile(filepath.Join(observations[0], "kb-local-pd-0.stderr"))
+				require.NoError(t, err)
+				require.Contains(t, string(stderr), "Connection refused")
+				results, err := os.ReadFile(filepath.Join(observations[0], "results.tsv"))
+				require.NoError(t, err)
+				require.Empty(t, results, "failed handshake must not publish connected")
+			}
 			if mode == "success" {
 				check := exec.Command("sha256sum", "-c", proof)
 				result, err := check.CombinedOutput()
@@ -88,6 +110,16 @@ while [[ $# -gt 0 && $1 != get && $1 != exec ]]; do shift; done
 if [[ $1 == exec ]]; then
  [[ " $* " == *'set -e; exec 3<>'* ]] || exit 99
  [[ $TCP_SCENARIO != connection-failure ]] || exit 23
+ if [[ $TCP_SCENARIO == real-connection-refused ]]; then
+  while [[ $1 != -- ]]; do shift; done
+  shift
+  command=("$@")
+  count=${#command[@]}
+  command[count-2]=127.0.0.1
+  command[count-1]=$TCP_REFUSED_PORT
+  printf executed > "$CAPTURE_FIXTURE/real-exec"
+  exec "${command[@]}"
+ fi
  exit 0
 fi
 if [[ $2 == pods ]]; then
