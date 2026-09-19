@@ -46,5 +46,15 @@ checkpoint 屏障，并等待运行时栈确认：同一 lease manager 的
 vet/diff-check 通过。与 CI 相同筛选范围的
 `(Lease|Revoke|Expiry|Checkpoint|Attachment)` race 回归通过（82.521s）。
 完整日志、退出码 0 及核验过的哈希保存在私有目录
-`lease-renewal-sync-check.4pHtRMkQ`。尚未推送修复、未重跑 CI、
-未部署或重跑集群实验；远端原镜像任务仍由原监控跟踪。
+`lease-renewal-sync-check.4pHtRMkQ`。
+
+原镜像任务 `35433943731` 已成功结束，API、jobs 和完整日志归档至
+私有目录 `image-ci-35433943731-terminal.ZH0QuMOK`，源码 SHA 与哈希
+核对通过；它不抵消同候选的探针失败。确认原任务全部结束后，已将
+测试修复与双 worker 回归推送为 `a776293cb2fbe889a0c3f04bc3148e06ab995e23`。
+新探针 CI `35435337854`、镜像 CI `35435337855` 已确认运行中，等待终态。
+未部署或重跑集群实验，不将本地测试结果当作远端门禁通过。
+
+推送后本地再次运行独立 worker 协调器、退任指标解析及 delta CLI 的
+race 回归，分别通过（8.765s、2.331s、3.461s）；这只覆盖工具回归，
+不补足实际实验驱动接入，也不替代同源码的完整 CI 和集群验收。
