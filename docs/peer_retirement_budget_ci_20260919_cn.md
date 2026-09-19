@@ -190,3 +190,18 @@ resourceVersion、type、data 与前次基线相同。当前本地 PV 为 12 Bou
 86 Released。原始快照及摘要私有保存，未修改工作负载或 Secret。
 这只是初步复查，后端身份、证书、完整运行时/恢复准备与最终准入仍
 待核验，HOLD 尚未解除。
+
+随后新 owner 的完整基线采集（session 71692）通过：PD 的精确 uint64
+集群 ID 为 `7686251028133611667`，请求前后同一 PD 进程不变；
+TiDBCluster UID 匹配，PD/TiKV 均使用 `kubebrain-local-lvm`。
+`baseline.initial` 绑定原配置、Secret 与卷快照。
+
+公开证书采集（session 45594）通过：三个 Pod 前后进程身份一致，
+挂载证书与原 CA 匹配，health 客户端用途与 info 服务端用途正确，
+证书剩余有效期至少 24 小时，原 StatefulSet 不变。首次检查误用了
+`.svc.cluster.local` 名称而失败；实际原配置 ServerName 为
+`kubebrain-local-info.kubebrain-dbaas-test.svc`，在 SAN 中，重新按原
+配置核验通过，未修改证书或跳过名称校验。失败部分证据保留在
+`public-tls.VjhD4wHl`，成功摘要为 `diagnostic-identity.sha256`。
+探针客户端证书的客户端用途与 24 小时有效期亦通过。HOLD 仍保留，
+尚未生成新实验 PKI 或上传 Secret，未进行任何部署/故障变更。
