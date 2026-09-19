@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,7 +16,7 @@ func TestProtectedSessionHashVerificationHonorsFaultDeadline(t *testing.T) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
 	owner := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(owner, "sha256sum"), []byte("#!/bin/bash\nprintf called > \"$stack_owner/hash-called\"\nexec /usr/bin/sleep 60\n"), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(owner, "sha256sum"), []byte("#!/bin/bash\nprintf '%s\\n' \"$BASHPID\" > \"$stack_owner/hash-called\"\nexec /usr/bin/sleep 60\n"), 0700))
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "bash", "-c", `
@@ -33,4 +34,7 @@ echo HASH_DEADLINE_ENFORCED
 	require.NoError(t, ctx.Err(), string(output))
 	require.NoError(t, err, string(output))
 	require.Contains(t, string(output), "HASH_DEADLINE_ENFORCED")
+	pid, err := os.ReadFile(filepath.Join(owner, "hash-called"))
+	require.NoError(t, err)
+	require.Error(t, exec.Command("kill", "-0", strings.TrimSpace(string(pid))).Run(), "hash subprocess survived deadline")
 }

@@ -198,6 +198,23 @@ run/job API 和完整日志已保存在 `retirement-observability-ci.fjZ3pXP3/`
 探针 CI 最新仍运行，不能称三项全通过；本机未推送工具改动不在这次
 后端 CI 的验证范围内。
 
+### 后续终态与进程清理回归
+
+镜像 CI `35427286402` 已成功，API 核对源码为
+`4aab067fcec420e6443dde2dfac3c6c45ad55ac9`。run/job API、完整日志和
+已校验摘要保存在私有证据目录 `retirement-observability-ci.fjZ3pXP3/`
+`image-terminal.IhjsW4hL`。这是候选源码的构建结果，不覆盖之后的本机工具改动。
+
+新增 metrics session 外部取消回归，与 stack session 共用断言：
+必须已进入探针阶段，外层返回 124，两个转发进程与阻塞探针均已退出，
+没有 COMPLETE 或事后身份采样。哈希校验截止测试也记录并检查子进程 PID，
+不能仅凭调用返回超时判定清理完成。
+
+stack/metrics 外部取消、匿名通道重建取消、哈希截止四项三轮 race
+通过（32.651s）；metrics 成功路径单独通过（4.737s），vet 和改动文件
+diff-check 通过。未修改集群、未重跑故障验收；指标语义和同进程差值
+校验仍待完成，不能据此宣称原 30 秒门限或整体生产就绪通过。
+
 ### 取消和写入失败边界回归
 
 新增故障模式测试验证 metrics 响应体传输中取消/截止；明确断言已经

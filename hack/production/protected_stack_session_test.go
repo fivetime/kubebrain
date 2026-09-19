@@ -71,6 +71,11 @@ printf '{"mode":"%s","readiness_checked":false,"fault_acceptance_proven":false,"
 func TestProtectedMetricsSession(t *testing.T) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
+	probe := metricsProbeFixture()
+	testProtectedMetricsSession(t, library, probe)
+}
+
+func metricsProbeFixture() string {
 	probe := strings.ReplaceAll(stackProbeFixture, "--stack-output", "--metrics-output")
 	probe = strings.ReplaceAll(probe, "synthetic stack", "x 1")
 	probe = strings.ReplaceAll(probe, "mode=protected-stack", "mode=protected-metrics")
@@ -80,6 +85,10 @@ hash=$(sha256sum "$2"); size=$(stat -c %s "$2")
 [[ $scenario != bad-size ]] || size=$((size+1))
 [[ $scenario != changed-body ]] || printf 'x 2\n' >> "$2"
 printf '{"mode":"%s","readiness_checked":false,"fault_acceptance_proven":false,"pod_identity_proven":false,"metric_semantics_proven":false,"metrics_text_syntax_validated":true,"metrics_bytes":%s,"metrics_sha256":"%s"}\n' "$mode" "$size" "${hash%% *}"`)
+	return probe
+}
+
+func testProtectedMetricsSession(t *testing.T, library, probe string) {
 	for _, scenario := range []string{"success", "anonymous-reset", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "expired", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe", "bad-hash", "bad-size", "changed-body"} {
 		t.Run(scenario, func(t *testing.T) {
 			owner := t.TempDir()
@@ -244,14 +253,24 @@ func TestProtectedStackSessionRejectsMultiplePodDocuments(t *testing.T) {
 }
 
 func TestProtectedStackSessionOuterCancellation(t *testing.T) {
+	testProtectedSessionOuterCancellation(t, "stack", stackProbeFixture, stackSessionFixture)
+}
+
+func TestProtectedMetricsSessionOuterCancellation(t *testing.T) {
+	fixture := strings.ReplaceAll(stackSessionFixture, "stack_session_capture ", "stack_session_capture_metrics ")
+	testProtectedSessionOuterCancellation(t, "metrics", metricsProbeFixture(), fixture)
+}
+
+func testProtectedSessionOuterCancellation(t *testing.T, kind, probe, fixture string) {
+	t.Helper()
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
 	owner := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
-	require.NoError(t, os.WriteFile(filepath.Join(owner, "bin", "info-diagnostic-probe"), []byte(stackProbeFixture), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(owner, "bin", "info-diagnostic-probe"), []byte(probe), 0700))
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "timeout", "--kill-after=2s", "3s", "bash", "-c", stackSessionFixture, "test", library, owner, "cancel-group")
+	cmd := exec.CommandContext(ctx, "timeout", "--kill-after=2s", "3s", "bash", "-c", fixture, "test", library, owner, "cancel-group")
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, ctx.Err(), string(output))
 	var exit *exec.ExitError
@@ -263,10 +282,10 @@ func TestProtectedStackSessionOuterCancellation(t *testing.T) {
 	for _, pid := range strings.Fields(string(pids)) {
 		require.Error(t, exec.Command("kill", "-0", pid).Run(), "child survived: %s", pid)
 	}
-	markers, err := filepath.Glob(filepath.Join(owner, "stack.*", "COMPLETE"))
+	markers, err := filepath.Glob(filepath.Join(owner, kind+".*", "COMPLETE"))
 	require.NoError(t, err)
 	require.Empty(t, markers)
-	traces, err := filepath.Glob(filepath.Join(owner, "stack.*", "timing.tsv"))
+	traces, err := filepath.Glob(filepath.Join(owner, kind+".*", "timing.tsv"))
 	require.NoError(t, err)
 	require.Len(t, traces, 1)
 	trace, err := os.ReadFile(traces[0])
