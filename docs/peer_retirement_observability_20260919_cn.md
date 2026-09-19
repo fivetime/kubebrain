@@ -2,6 +2,14 @@
 
 ## 最新 CI 核验（2026-09-19）
 
+候选 `b356b2578310592893de1525fa294104d1883c56` 探针 CI
+`35444751082` 已全部成功（25m47s），含最终全量 race，原 watch
+正常退出。API/jobs/完整日志归档至
+`probe-ci-35444751082-terminal.qUuAQlC6`，源码 SHA、所有作业成功
+终态及 SHA-256 核验通过。镜像 `35444751084` 仍运行中，未重跑。
+此结果覆盖持久化意图和只读恢复校验，不覆盖后续本地 RestoreProtocol
+及真实 KubeBrain 恢复集成回归；无部署或新的集群验收结论。
+
 恢复写阶段已补充真实 KubeBrain 服务集成测试：构造 RPCServer、
 memkv 后端及真实 lease/alarm 实现，经内存 gRPC 创建测试租约/键、
 激活 CORRUPT，再调用 RestoreProtocol 和独立最终核验。分别覆盖
