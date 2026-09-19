@@ -2,11 +2,19 @@
 
 ## 最新 CI 核验（2026-09-19）
 
+上一批两项 CI 结束后，合并后的本地检查全部通过：完整 metricsworker
+race 8.768s、retirementmetrics 2.370s、delta CLI 3.473s、workflow
+2.611s、全部 worker 回归 13.219s；vet/diff-check 通过。准备将这些
+后续修复作为新候选推送；不得借用上一候选的 CI 结果部署。
+
 候选 `cc06a777179e7cfa37885bc1951765ecce80cc9c` 的探针 CI
 `35432495145` 已完整成功，包括最终 race 组，原 watch 已正常退出。
 API、jobs 和完整日志归档到私有目录
 `probe-ci-35432495145-terminal.PmCpSQmb`，源码 SHA 与证据哈希核对
-通过。镜像任务 `35432495109` 此时仍在构建推送。该成功不覆盖
+通过。镜像任务 `35432495109` 随后成功结束（30m43s），包括发布
+校验、晋级及清理；源码 SHA 与证据哈希核对通过，日志/API/jobs
+保存在 `image-ci-35432495109-terminal.p6lIRhsF`。两条原 watch 均
+正常退出，此批无剩余运行任务。上述成功不覆盖
 后续本地 TERM 清理、owner 观察、调度证据及 Origin/Inject 拆分，
 也不改变原真实故障验收失败结论；未部署或触发新实验。
 
