@@ -32,5 +32,20 @@
 原执行器会话 61286 已终止，最终退出 124（保留故障失败结果）。
 四个逆序恢复阶段均验证通过，`recovery-exit-code=0`；临时 Secret
 清理验证通过，`secret-cleanup-exit-code=0`。故障清理退出 0。
-仍需独立重新读取集群核验恢复状态，随后按精确归属清理临时存储和
-编译残留；不得重复启动或消费此实验目录。
+独立复查 `secret-cleanup.4iDoqzEN` 验证原 StatefulSet UID/spec、
+3 Ready/updated、原 Secret UID/resourceVersion/data 不变，以及临时
+Secret/策略不存在；当前 generation/observedGeneration 均为 106，
+原固定镜像已恢复。采集的 Pod 列表无故障 owner 标签。
+
+临时卷规划 12 例及控制器 6 例离线测试通过；只读规划
+`scratch-cleanup.8jYwSWYl` 确认 42 个本轮独占、已释放且未挂载的
+临时卷。执行 `scratch-cleanup.F7dKTLmH` 退出 0，42 卷已回收，
+所有非目标 PV UID/spec 保持不变，命名空间 Pod UID/spec/容器状态
+前后相同。独立复查 `scratch-cleanup.fWs6ye6L` 目标归零。
+本地 StorageClass 现为 12 Bound / 68 Released；68 个剩余卷受基线
+保护（包括本轮滚动释放的 6 个原 Bound 临时卷），不批量回收。
+删除的临时卷数据不可恢复。编译残留经 `compiled-cleanup.ylsxeVns`
+只读核验，执行 `compiled-cleanup.g1VKykKi` 退出 0：按已记录摘要、
+设备/inode 和非活动进程检查，删除 44 处本轮构建的 ELF 文件；源码、
+证书、日志和证据保留。二进制可从源码重建，旧二进制摘要清单则已
+退役，不得用于重新运行或消费此实验目录。
