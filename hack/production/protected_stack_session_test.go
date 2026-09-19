@@ -82,6 +82,55 @@ func TestProtectedStackSessionWithoutRipgrep(t *testing.T) {
 	require.Contains(t, string(output), "EXPECTED_RESULT_AND_CLEANUP")
 }
 
+func TestProtectedStackSessionExpiredWait(t *testing.T) {
+	library, err := filepath.Abs("protected-stack-session.sh")
+	require.NoError(t, err)
+	for _, mode := range []string{"success", "zero", "wrong-count", "unknown-source", "wrong-hash", "missing-binding", "expired"} {
+		t.Run(mode, func(t *testing.T) {
+			owner := t.TempDir()
+			require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
+			frame := "goroutine 17 [select]:\ngithub.com/kubewharf/kubebrain/pkg/server/etcd.(*leaseManager).refreshLeaseHoldingLocks(0xc)\n\t/work/pkg/server/etcd/lease.go:1645 +0x1\n"
+			if mode == "zero" {
+				frame = "goroutine 17 [running]:\nmain.main()\n\t/work/main.go:1 +0x1\n"
+			}
+			probe := strings.Replace(stackProbeFixture, "synthetic stack\\n", frame, 1)
+			require.NoError(t, os.WriteFile(filepath.Join(owner, "bin", "info-diagnostic-probe"), []byte(probe), 0700))
+			setup := strings.Split(stackSessionFixture, "exercise() {")[0]
+			script := setup + `
+if [[ $4 != missing-binding ]]; then
+ sha256sum "$stack_library_dir/expired-lease-wait-frames.jq" >> "$stack_owner/tools.sha256"
+fi
+stack_session_prepare brain-0
+source_sha=e3914449b57ab6e211ece94cb88fd3318acb2970
+file_sha=3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88
+count=1
+clock=$(date +%s%N)
+case $4 in
+ zero|wrong-count) count=0;;
+ unknown-source) source_sha=0000000000000000000000000000000000000000;;
+ wrong-hash) file_sha=0000000000000000000000000000000000000000000000000000000000000000;;
+ expired) clock=$((clock-30000000001));;
+esac
+stack_session_capture_expired_wait "$clock" "$source_sha" "$file_sha" "$count"
+sha256sum -c "$stack_wait/evidence.sha256"
+`
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			out, err := exec.CommandContext(ctx, "bash", "-c", script, "test", library, owner, "success", mode).CombinedOutput()
+			require.NoError(t, ctx.Err(), string(out))
+			complete, globErr := filepath.Glob(filepath.Join(owner, "expired-wait.*", "COMPLETE"))
+			require.NoError(t, globErr)
+			if mode == "success" || mode == "zero" {
+				require.NoError(t, err, string(out))
+				require.Len(t, complete, 1)
+			} else {
+				require.Error(t, err, string(out))
+				require.Empty(t, complete)
+			}
+		})
+	}
+}
+
 const stackProbeFixture = `#!/usr/bin/env bash
 set -eu
 printf '%s\n' "$@" > "$stack_owner/probe-args"

@@ -173,6 +173,44 @@ stack_session_capture() {
  stack_session_capture_kind stack "$@"
 }
 
+# Capture and classify in the SAME owning shell; never adopt a capture path
+# supplied by stdout or a previous attempt. count=1 is a pending candidate;
+# count=0 is a demotion observation. Neither identifies a particular lease.
+# Caller independently admits image/source and original RPC/term/ownership.
+stack_session_capture_expired_wait() {
+ stack_wait=''
+ [[ $# == 4 && $2 =~ ^[a-f0-9]{40}$ && $3 =~ ^[a-f0-9]{64}$ && $4 =~ ^[01]$ ]] || return 2
+ local clock=$1 source=$2 source_hash=$3 count=$4 classifier binding
+ classifier=$stack_library_dir/expired-lease-wait-frames.jq
+ stack_session_owner_active || return 2
+ # Set/validate the same clock before even hashing the classifier.
+ if [[ $clock == before-fault ]]; then
+  [[ -z $stack_fault_start ]] || return 2
+ else
+  [[ $clock =~ ^[1-8][0-9]{18}$ && ( -z $stack_fault_start || $stack_fault_start == "$clock" ) ]] || return 2
+  stack_fault_start=$clock
+ fi
+ binding=$(stack_session_run sha256sum "$classifier") || return
+ stack_session_run grep -Fxq -- "$binding" "$stack_owner/tools.sha256" || return
+ stack_session_capture "$clock" || return
+ stack_wait=$(mktemp -d "$stack_owner/expired-wait.XXXXXXXX") || return
+ stack_session_run sha256sum -c "$stack_capture/evidence.sha256" >/dev/null || return
+ stack_session_run jq -n --arg capture "$stack_capture" --arg source "$source" --arg hash "$source_hash" --arg clock "$clock" --arg count "$count" \
+  '{capture:$capture,source:$source,source_file_sha256:$hash,clock:$clock,expected_candidates:$count,lease_identity_proven:false,fault_acceptance_proven:false}' > "$stack_wait/input.json" || return
+ stack_session_run jq -Rs --arg source "$source" --arg source_file_sha256 "$source_hash" -f "$classifier" \
+  "$stack_capture/goroutines.txt" > "$stack_wait/frames.json" || return
+ stack_session_run jq -e --argjson count "$count" 'length==$count' "$stack_wait/frames.json" >/dev/null || return
+ # Recheck captured bytes and admitted tools after classification as well.
+ stack_session_run sha256sum -c "$stack_capture/evidence.sha256" >/dev/null || return
+ stack_session_verify_inputs || return
+ binding=$(stack_session_run sha256sum "$classifier") || return
+ stack_session_run grep -Fxq -- "$binding" "$stack_owner/tools.sha256" || return
+ stack_session_run sha256sum "$stack_wait/input.json" "$stack_wait/frames.json" "$stack_capture/evidence.sha256" > "$stack_wait/evidence.sha256" || return
+ stack_session_owner_active || return 2
+ stack_session_budget || return
+ printf 'SOURCE_BOUND_WAIT_CANDIDATES_NOT_LEASE_OR_FAULT_PROOF\n' > "$stack_wait/COMPLETE"
+}
+
 stack_session_capture_metrics() {
  stack_session_capture_kind metrics "$@"
 }
