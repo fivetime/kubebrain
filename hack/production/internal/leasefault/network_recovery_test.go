@@ -1,15 +1,52 @@
 package leasefault
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestNetworkRecoveryFeedsLabelPlan(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Chmod(dir, 0700))
+	admitted := networkPlan()
+	require.NoError(t, ArmNetworkRecovery(dir, admitted))
+	saved, err := LoadNetworkRecovery(dir, admitted)
+	require.NoError(t, err)
+	// Synthetic fresh observations: no API calls, no data-plane recovery proof.
+	current := json.RawMessage(strings.Replace(string(saved.PodBefore), `"app":"brain"`, `"app":"brain","kubebrain.io/fault-owner":"active"`, 1))
+	input := map[string]interface{}{
+		"binding": map[string]string{"namespace": saved.Namespace, "namespaceUID": saved.NamespaceUID,
+			"name": saved.PodName, "uid": saved.PodUID, "nonce": saved.Nonce, "policyName": saved.PolicyName},
+		"namespace": map[string]interface{}{"apiVersion": "v1", "kind": "Namespace",
+			"metadata": map[string]string{"name": saved.Namespace, "uid": saved.NamespaceUID}},
+		"expected": saved.PodBefore, "current": current,
+		"policies": json.RawMessage(`{"apiVersion":"v1","kind":"List","items":[]}`),
+	}
+	data, err := json.Marshal(input)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "jq", "-e", "-f", "../../fault-label-restore-plan.jq")
+	cmd.Stdin = bytes.NewReader(data)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+	require.JSONEq(t, `[
+{"op":"test","path":"/metadata/uid","value":"pod-uid"},
+{"op":"test","path":"/metadata/resourceVersion","value":"18446744073709551615"},
+{"op":"test","path":"/metadata/labels/kubebrain.io~1fault-owner","value":"active"},
+{"op":"remove","path":"/metadata/labels/kubebrain.io~1fault-owner"}
+]`, string(output))
+}
 
 func networkPlan() NetworkRecovery {
 	return NetworkRecovery{

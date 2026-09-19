@@ -145,3 +145,9 @@ failure durability, distributed ownership, Kubernetes mutations or Cilium state.
 The real reservation CREATE receipt still needs separate durable persistence;
 this intent is NOT a receipt and cannot authorize deleting a same-name policy.
 Neither API is yet wired into the complete cluster fault coordinator.
+
+`TestNetworkRecoveryFeedsLabelPlan` loads the persisted original Pod and identity
+into the repository's actual jq label planner, together with synthetic current
+observations. The emitted patch retains the exact Pod UID, full-width string
+resourceVersion and nonce tests. This checks the journal-to-planner boundary;
+the observations are fixtures, not evidence of live policy absence or recovery.
