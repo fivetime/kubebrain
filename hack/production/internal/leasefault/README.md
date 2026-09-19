@@ -1,5 +1,17 @@
 # Original expired-lease response evidence
 
+The shell entrypoint is `hack/production/cmd/lease-fault-response`. Supply the
+completed original JSONL through stdin and exactly one `--name value` pair for
+each of `lease-id`, `cluster-id`, `initial-member-id`, `initial-term`,
+`successor-term`, and `fault-origin-ns`. Values must be canonical decimal strings,
+not values rounded by a JSON floating-point tool. Input is bounded to 12 KiB.
+The caller must execute it within the remaining original fault deadline: stdin
+can block and the offline validator does not establish a fresh execution budget.
+On success stdout is one JSON summary with exact integers encoded as strings and
+`fault_acceptance_proven: false`; validation failures emit no success summary.
+The caller owns log provenance, redirection and output publication. This command
+does not open files, mutate the cluster, or perform recovery.
+
 `ValidateOriginalResponse` is the repository-owned offline validator for the
 original `lease-term-probe` JSONL stream. It accepts exactly three newline-ended
 events: expired preflight, request sent, response. It bounds each event to 4 KiB
