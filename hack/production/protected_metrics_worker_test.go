@@ -27,13 +27,23 @@ func TestProtectedMetricsWorkerRealSessionArtifacts(t *testing.T) {
 	for _, count := range []int{1, 2} {
 		for _, reject := range []bool{false, true} {
 			t.Run(fmt.Sprintf("workers-%d-reject-baseline-%t", count, reject), func(t *testing.T) {
-				testProtectedMetricsWorkerRealSessionArtifacts(t, count, reject)
+				testProtectedMetricsWorkerRealSessionArtifacts(t, count, reject, false)
 			})
 		}
 	}
 }
 
-func testProtectedMetricsWorkerRealSessionArtifacts(t *testing.T, count int, reject bool) {
+func TestProtectedMetricsWorkerPreparedFaultSession(t *testing.T) {
+	for _, count := range []int{1, 2} {
+		for _, reject := range []bool{false, true} {
+			t.Run(fmt.Sprintf("workers-%d-reject-baseline-%t", count, reject), func(t *testing.T) {
+				testProtectedMetricsWorkerRealSessionArtifacts(t, count, reject, true)
+			})
+		}
+	}
+}
+
+func testProtectedMetricsWorkerRealSessionArtifacts(t *testing.T, count int, reject, prepared bool) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
 	owner := t.TempDir()
@@ -85,17 +95,9 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 "$3"
 	for i := range commands {
 		commands[i] = metricsworker.Command{Executable: "/bin/bash", Args: []string{"-c", workerSetup, "worker", fmt.Sprint(18586 + 2*i), fmt.Sprint(18587 + 2*i), fmt.Sprint(i * 100000000)}, Env: os.Environ(), Stderr: stderr}
 	}
-	results, runErr := metricsworker.Run(ctx, owner, commands, metricsworker.Hooks{
-		Inject: func(ctx context.Context, fault time.Time) error {
-			require.Equal(t, count, baselineChecked)
-			require.Equal(t, origin, fault.UnixNano())
-			injected = true
-			// A synthetic external fault callback waits for the real worker
-			// scripts' scheduled artifacts. This proves workers can progress
-			// before Inject returns; no Kubernetes fault is executed.
-			return metricsworker.RunFaultCommand(ctx, metricsworker.Command{
-				Executable: "/bin/bash", Stderr: faultLog,
-				Args: []string{"-c", `set -eu
+	// Both adapters use the same synthetic fault gates. The actual worker
+	// scripts must progress while Inject is still executing.
+	const faultScript = `set -eu
 printf '%s\n' "$3" "$$"
 while true; do
  seen=0
@@ -106,8 +108,19 @@ while true; do
  /bin/sleep 0.01
 done
 printf 'workers-captured-before-inject-return\n'
-`, "synthetic-fault", owner, fmt.Sprint(count)},
-			}, fault)
+`
+	faultInject := func(ctx context.Context, fault time.Time) error {
+		return metricsworker.RunFaultCommand(ctx, metricsworker.Command{
+			Executable: "/bin/bash", Stderr: faultLog,
+			Args: []string{"-c", faultScript, "synthetic-fault", owner, fmt.Sprint(count)},
+		}, fault)
+	}
+	hooks := metricsworker.Hooks{
+		Inject: func(ctx context.Context, fault time.Time) error {
+			require.Equal(t, count, baselineChecked)
+			require.Equal(t, origin, fault.UnixNano())
+			injected = true
+			return faultInject(ctx, fault)
 		},
 		Baseline: func(_ context.Context, index int, r metricsworker.Ready) error {
 			require.GreaterOrEqual(t, index, 0)
@@ -171,7 +184,39 @@ printf 'workers-captured-before-inject-return\n'
 			completedChecked++
 			return nil
 		},
-	})
+	}
+	var results []metricsworker.Result
+	runWorkers := func(ctx context.Context) error {
+		var err error
+		results, err = metricsworker.Run(ctx, owner, commands, hooks)
+		return err
+	}
+	var runErr error
+	if prepared {
+		// Keep the original child in this shell across READY/clock delivery.
+		// Protocol stdout is separate from the unchanged evidence log.
+		script := `set -eu
+/bin/sleep 0.05 & original_probe=$!
+printf 'FAULT_READY\n'
+IFS= read -r origin
+set -- "$1" "$2" "$origin"
+{
+` + faultScript + `
+wait "$original_probe"
+printf '0\n' > "$1/prepared-probe-exit"
+} >&2
+printf 'FAULT_DONE\t%s\n' "$origin"
+`
+		runErr = metricsworker.WithPreparedFault(ctx, metricsworker.Command{
+			Executable: "/bin/bash", Stderr: faultLog,
+			Args: []string{"-c", script, "synthetic-prepared-fault", owner, fmt.Sprint(count)},
+		}, func(ctx context.Context, inject func(context.Context, time.Time) error) error {
+			faultInject = inject
+			return runWorkers(ctx)
+		})
+	} else {
+		runErr = runWorkers(ctx)
+	}
 	log, err := os.ReadFile(stderr.Name())
 	require.NoError(t, err)
 	faultOutput, err := os.ReadFile(faultLog.Name())
@@ -181,7 +226,7 @@ printf 'workers-captured-before-inject-return\n'
 		require.Zero(t, origin, "must not inject on a rejected baseline")
 		require.False(t, injected)
 		require.Zero(t, completedChecked)
-		require.Empty(t, faultOutput, "rejected baseline must not start external command")
+		require.Empty(t, faultOutput, "rejected baseline must not execute fault gates")
 		for _, workerDir := range workerDirs {
 			receipt, err := os.ReadFile(filepath.Join(workerDir, "exit-code"))
 			require.NoError(t, err, string(log))
@@ -189,6 +234,11 @@ printf 'workers-captured-before-inject-return\n'
 		}
 	} else {
 		require.NoError(t, runErr, string(log))
+		if prepared {
+			data, err := os.ReadFile(filepath.Join(owner, "prepared-probe-exit"))
+			require.NoError(t, err)
+			require.Equal(t, "0\n", string(data), "original probe must be waited by its parent")
+		}
 		require.Len(t, results, count)
 		require.Equal(t, count, completedChecked)
 		lines := strings.Split(strings.TrimSpace(string(faultOutput)), "\n")
