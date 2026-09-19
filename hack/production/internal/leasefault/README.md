@@ -182,3 +182,16 @@ resourceVersion receipt, conflict, malformed response, failed persistence and
 admission rejection. They do not simulate Kubernetes admission enforcement or
 Cilium endpoint selection. Real live admission, activation, fault gates and
 recovery still need complete coordinator wiring.
+
+`ActivateNetwork` loads the durable CREATE receipt, admits live ownership, reads
+the current inactive policy and sends a conditional JSON Patch. Tests bind UID,
+current resourceVersion and the complete inactive spec before replacing only the
+owner selector. It rechecks the retained receipt and live admission before PATCH,
+and validates the active response. The caller must pass the original fault origin
+and a context deadline no later than origin + 30 seconds. It does not create a new
+budget or retry conflicting writes. API acknowledgement is not Cilium enforcement;
+the coordinator must still verify drops and all remaining gates on that same clock.
+An ambiguous PATCH error requires recovery after joining workers, never assuming
+the policy remained inactive. Fake-client tests apply the actual JSON Patch and
+reject stale UID/resourceVersion/spec, missing receipt, lost ownership, reset
+budget and invalid responses; these are not real API/Cilium acceptance evidence.
