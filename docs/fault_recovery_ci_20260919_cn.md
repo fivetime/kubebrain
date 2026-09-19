@@ -190,3 +190,9 @@ Kubernetes API，验证策略预留、标签、协议准备及恢复的组合，
 CREATE 响应丢失、策略替换和租约创建后准入失败。leasefault、metricsworker、
 build 的完整 race 回归分别为 7.454s、10.771s、2.640s，vet 通过。
 这些结果仍非真实集群故障验收；本轮没有部署镜像或执行故障注入。
+
+同源码镜像工作流 35459391712 随后全部作业成功，终态 API、作业列表
+和完整日志已保存至
+`/root/.local/state/kubebrain/image-ci-35459391712-terminal.CS7zJbFa`，
+源码、终态和 SHA256SUMS 已核验。这仍只覆盖 f6daf9d6，不覆盖后续
+本地准备/恢复组合及完整生命周期库入口；新代码需要下一轮 CI 验证。

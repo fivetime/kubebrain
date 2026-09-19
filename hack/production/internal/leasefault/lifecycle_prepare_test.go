@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,7 +22,7 @@ import (
 // Real KubeBrain RPCs, synthetic Kubernetes API and dataplane observations.
 // This verifies composition, not election, Cilium convergence or fault timing.
 func TestPrepareFaultAndRecover(t *testing.T) {
-	for _, mode := range []string{"success", "owner-mismatch", "unsafe-nonce", "reservation-replaced", "dataplane-not-ready", "create-ambiguous", "after-grant-denied"} {
+	for _, mode := range []string{"success", "owner-mismatch", "unsafe-nonce", "reservation-replaced", "dataplane-not-ready", "create-ambiguous", "after-grant-denied", "lifecycle-success", "lifecycle-child-fail", "lifecycle-baseline-fail", "lifecycle-deadline", "lifecycle-parent-cancel", "lifecycle-join-fail"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -97,6 +98,10 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 			}
 			if mode == "owner-mismatch" {
 				prep.Protocol.Owner = "foreign"
+			}
+			if strings.HasPrefix(mode, "lifecycle-") {
+				testFaultLifecycle(t, ctx, prep, mode)
+				return
 			}
 			err = PrepareFault(ctx, prep)
 			if mode == "success" || mode == "after-grant-denied" {

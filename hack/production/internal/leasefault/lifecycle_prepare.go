@@ -33,6 +33,13 @@ type FaultPreparation struct {
 // Errors require post-join reconciliation, including ambiguous CREATE without a
 // receipt; callers must not interpret an error as proof nothing was changed.
 func PrepareFault(ctx context.Context, p FaultPreparation) error {
+	if err := p.validate(ctx); err != nil {
+		return err
+	}
+	return prepareFault(ctx, p)
+}
+
+func (p FaultPreparation) validate(ctx context.Context) error {
 	if ctx == nil || p.Client == nil || p.Connection == nil || p.Own == nil || p.NoncesSafe == nil || p.ReservedReady == nil || p.StatefulSetName == "" {
 		return errors.New("incomplete fault preparation")
 	}
@@ -46,9 +53,11 @@ func PrepareFault(ctx context.Context, p FaultPreparation) error {
 	if !p.Protocol.valid() || p.Network.Owner != p.Protocol.Owner || p.Network.NamespaceUID != p.Protocol.NamespaceUID || p.Network.StatefulSetUID != p.Protocol.StatefulSetUID {
 		return errors.New("invalid or inconsistent preparation identities")
 	}
-	if _, err := p.Network.encoded(); err != nil {
-		return err
-	}
+	_, err := p.Network.encoded()
+	return err
+}
+
+func prepareFault(ctx context.Context, p FaultPreparation) error {
 	safe := func(ctx context.Context) error {
 		if err := p.Own(ctx); err != nil {
 			return err

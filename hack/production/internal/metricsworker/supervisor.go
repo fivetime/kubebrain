@@ -221,13 +221,14 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 		return nil, errors.New("invalid original fault clock")
 	}
 	// The returned clock can only shorten the caller budget, never reset it.
-	timer := time.AfterFunc(time.Until(origin.Add(30*time.Second)), cancel)
-	defer timer.Stop()
 	// Callback adapters may derive subprocess timeouts from Deadline(), not
-	// only observe Done(). Expose the same original budget to them; the timer
-	// above also cancels workers already started with the outer context.
+	// only observe Done(). Use ONE deadline context, then cancel already-started
+	// workers from it. A second same-deadline timer calling cancel directly can
+	// win the race and turn DeadlineExceeded into plain Canceled in faultCtx.
 	faultCtx, faultCancel := context.WithDeadline(ctx, origin.Add(30*time.Second))
 	defer faultCancel()
+	stopFault := context.AfterFunc(faultCtx, cancel)
+	defer stopFault()
 	for _, c := range children {
 		if err := ctx.Err(); err != nil {
 			return nil, err

@@ -65,6 +65,26 @@ tests do not establish Cilium behavior, transport security, TiKV operation or
 leadership handoff. The CLI, admitted concrete hooks, original probe and fault
 gates still need integration before any new live experiment.
 
+`RunFaultLifecycle` now connects `PrepareFault`, the original prepared-child
+session, the metric-worker supervisor and `RecoverFault`. It validates required
+configuration and private child logs before preparation. A failed attempt is not
+retried; after both supervisors return and join their children, recovery uses a
+separate context bounded to at most five minutes, even if the caller was canceled.
+The external Join hook must additionally reject escaped/unmanaged workers before
+any recovery API/RPC work. Execution and recovery errors remain separately visible;
+successful cleanup cannot convert failed fault gates into acceptance. Ownership
+is never released by this entry point.
+
+Real Bash children plus real KubeBrain/memkv RPCs and a simulated Kubernetes API
+exercise success, rejected metric baseline, child failure, original deadline,
+parent cancellation and failed external join. Tests verify identical fault/worker
+clocks and direct-child reaping before recovery. These synthetic scripts do not
+inject a network fault or validate real metrics. This remains a library entry:
+admitted concrete scripts, evidence validators, ownership and observer hooks and
+a deployable CLI are still required. The composition exposed and fixed a duplicate
+timer race in the metric supervisor: workers now cancel from the single deadline
+context, preserving `DeadlineExceeded` in the prepared fault callback.
+
 `ArmProtocolRecovery` persists a create-once private record, syncing both the file
 and its containing directory before returning success. The outer recovery owner
 must call it before granting the fixture lease, writing the owned key or arming
