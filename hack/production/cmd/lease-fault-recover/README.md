@@ -65,6 +65,10 @@ reconciliation. Success reports `RECOVERY_VERIFIED_OWNER_CLAIM_RETAINED_NOT_FAUL
 Claim release remains a separate explicit step after fresh full recovery proof.
 
 Tests cover strict parsing, pinned private files, no-client default mode, failed
-join and missing-record ordering with injected client/admission fixtures. These
-do not establish a real cluster recovery, TLS session or a valid real join script.
-The shared library separately tests staged recovery using real KubeBrain RPCs.
+join and missing-record ordering with injected client/admission fixtures. An
+execution-path test also prepares and recovers a real KubeBrain RPC service over
+in-memory gRPC with memkv, a fake Kubernetes API and fixture observer/join scripts.
+It checks protocol restoration, policy removal, preservation of unrelated labels,
+retention of ownership on both success and identity-observation failure, and
+private evidence contents/statuses. These tests do not establish a real cluster
+recovery, TLS session, Cilium convergence or a valid real join script.
