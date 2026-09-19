@@ -85,7 +85,7 @@ CI 仍为失败；后续须使用整合后的候选重新验证，未启动新�
 以下 run 的 API head_sha 均独立核验与候选一致，各仅触发一次：
 
 - [镜像构建 35422204061](https://github.com/fivetime/kubebrain/actions/runs/35422204061)：push 触发，已成功完成。
-- [探针回归 35422204070](https://github.com/fivetime/kubebrain/actions/runs/35422204070)：首次尝试失败；第二次尝试已排队，详见下文。
+- [探针回归 35422204070](https://github.com/fivetime/kubebrain/actions/runs/35422204070)：首次尝试失败；第二次尝试已成功完成，详见下文。
 - [后端协议集成 35422215771](https://github.com/fivetime/kubebrain/actions/runs/35422215771)：手动触发，已成功完成。
 
 补充本地回归会话 94729 已终态退出 0（736.547 秒），使用精确 42 项
@@ -173,3 +173,20 @@ peer-retirement-test-pki、uid-delete）；使用 `-mod=readonly`，编译
 前后源码与归档逐项比较通过，六个二进制摘要均已验证。编译器版本
 单独记录。本机准备没有创建实验 PKI 或运行时执行凭据，没有集群
 变更。HOLD 保持，尚需探针第二次尝试成功及全套新基线/准入核验。
+
+### 第二次探针 CI 成功及初步基线复查
+
+监控会话 37066 已终态退出 0；attempt=2 的 API、作业与完整日志独立
+核验为成功，head_sha 匹配 `2fd00721`。所有作业步骤成功；先前失败的
+并发认证刷新完成全部 20 轮（41.59 秒），完整探针包通过（293.266 秒）。
+证据为 `corrected-candidate-ci.C6iAqJeq/probe-attempt2-terminal.KCHMhmwB`。
+至此候选的三个 CI 均有成功终态。首次认证超时原因仍未确定，失败
+记录保留；此次通过不能证明其根因已修复，也不替代原 30 秒故障验收。
+
+新 owner 的初步只读基线检查 `baseline-check.ZaJQG5Rg` 已通过：
+namespace UID 不变；原 StatefulSet UID/spec 不变，generation 与
+observedGeneration 为 130、3 Ready/updated；原 peer Secret 的 UID、
+resourceVersion、type、data 与前次基线相同。当前本地 PV 为 12 Bound /
+86 Released。原始快照及摘要私有保存，未修改工作负载或 Secret。
+这只是初步复查，后端身份、证书、完整运行时/恢复准备与最终准入仍
+待核验，HOLD 尚未解除。
