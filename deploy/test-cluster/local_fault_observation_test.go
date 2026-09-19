@@ -33,6 +33,7 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 		{"regenerating", "label", "present", 75}, {"regenerating", "label", "absent", 75},
 		{"cep-lag", "label", "present", 75}, {"cep-lag", "label", "absent", 75},
 		{"label-base-drift", "label", "present", 65}, {"regenerating", "drop", "", 1},
+		{"label-cancel", "label", "present", 124}, {"label-inner-timeout", "label", "absent", 124},
 	} {
 		t.Run(tc.kind+"/"+tc.mode+"/"+tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -41,6 +42,10 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 			require.NoError(t, os.Mkdir(bin, 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "mock-api"), []byte(ciliumCaptureMock), 0600))
 			require.NoError(t, os.WriteFile(filepath.Join(bin, "kubectl"), []byte(localFaultObservationMock), 0700))
+			if tc.name == "label-inner-timeout" {
+				// Compress only the inner kubectl deadline; keep real timeout signaling.
+				require.NoError(t, os.WriteFile(filepath.Join(bin, "timeout"), []byte("#!/usr/bin/env bash\nset -euo pipefail\nif [[ ${1:-} == --foreground && ${3:-} == 20s && ${4:-} == kubectl ]]; then set -- \"$1\" \"$2\" 0.2s \"${@:4}\"; fi\nexec /usr/bin/timeout \"$@\"\n"), 0700))
+			}
 			env := append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "CAPTURE_FIXTURE="+dir, "CAPTURE_SCENARIO=stable", "FAULT_KIND="+tc.kind, "FAULT_MODE="+tc.mode, "FAULT_SCENARIO="+tc.name)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -60,6 +65,9 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 				require.NoError(t, os.WriteFile(expected, pod, 0600))
 				require.NoError(t, os.Remove(filepath.Join(dir, "app-seen")))
 				cmd = exec.CommandContext(ctx, "bash", "observe-local-fault-label.sh", dir, tc.mode, expected, "term-test")
+				if tc.name == "label-cancel" {
+					cmd = exec.CommandContext(ctx, "timeout", "--kill-after=1s", "2s", "bash", "observe-local-fault-label.sh", dir, tc.mode, expected, "term-test")
+				}
 			}
 			cmd.Env = env
 			output, err := cmd.CombinedOutput()
@@ -116,12 +124,36 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 				require.NoError(t, err)
 				require.Equal(t, "143", strings.TrimSpace(string(code)))
 			}
+			if strings.HasPrefix(tc.name, "label-") && tc.code == 124 {
+				pid, err := os.ReadFile(filepath.Join(dir, "blocked.pid"))
+				require.NoError(t, err)
+				require.Error(t, exec.Command("kill", "-0", strings.TrimSpace(string(pid))).Run())
+				want := "124"
+				if tc.name == "label-cancel" {
+					want = "143"
+				}
+				code, err := os.ReadFile(filepath.Join(matches[0], "observation.exit"))
+				require.NoError(t, err)
+				require.Equal(t, want, strings.TrimSpace(string(code)))
+				captures, err := filepath.Glob(filepath.Join(dir, "endpoint.*"))
+				require.NoError(t, err)
+				require.Len(t, captures, 1)
+				code, err = os.ReadFile(filepath.Join(captures[0], "capture.exit"))
+				require.NoError(t, err)
+				require.Equal(t, want, strings.TrimSpace(string(code)))
+				_, err = os.Stat(filepath.Join(captures[0], "evidence.sha256"))
+				require.True(t, os.IsNotExist(err))
+			}
 		})
 	}
 }
 
 const localFaultObservationMock = `#!/usr/bin/env bash
 set -euo pipefail
+if [[ ( $FAULT_SCENARIO == label-cancel || $FAULT_SCENARIO == label-inner-timeout ) && " $* " == *" cilium-dbg endpoint get "* ]]; then
+ printf '%s\n' "$BASHPID" > "$CAPTURE_FIXTURE/blocked.pid"
+ exec sleep 60
+fi
 if [[ $FAULT_SCENARIO == initial-capture-failed ]]; then export CAPTURE_SCENARIO=wrong-namespace; fi
 if [[ " $* " == *" monitor "* ]]; then
  if [[ $FAULT_SCENARIO == cancel ]]; then printf '%s\n' "$BASHPID" > "$CAPTURE_FIXTURE/blocked.pid"; exec sleep 60; fi
