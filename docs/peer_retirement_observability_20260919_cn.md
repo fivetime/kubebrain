@@ -72,3 +72,18 @@ SoftState 更新 leader/leadership 指标。KubeBrain 的 TiKV 锁选举及
 `TestPeerRetirementCampaignPartitionToStorageRelease` race 通过
 （1.404s），相关 `go vet` 通过。一次误用名称的筛选没有执行测试，
 不计覆盖；已按上述真实名称补测。未触发 CI 或变更集群。
+
+## 组合验证与 CI 启动
+
+候选 `4aab067fcec420e6443dde2dfac3c6c45ad55ac9` 组合 race 检查
+通过：server 33.132s、leader 2.307s、Prometheus 1.052s（会话
+93458；`retirement-observability-validation.yw2Rq2vc` 保存日志和摘要）。
+推送会话 14029 退出 0，origin/dbaas 已更新，自动触发以下任务：
+
+- 镜像：[35427286402](https://github.com/fivetime/kubebrain/actions/runs/35427286402)。
+- 后端协议：[35427286386](https://github.com/fivetime/kubebrain/actions/runs/35427286386)。
+- 探针回归：[35427286439](https://github.com/fivetime/kubebrain/actions/runs/35427286439)。
+
+初始 API 记录均绑定该候选，尚无通过结论；证据目录
+`retirement-observability-ci.fjZ3pXP3`。没有重复手动触发、部署或
+故障注入，原集群基线保持。本节是启动记录，不是 CI 终态。
