@@ -45,3 +45,30 @@ SoftState 更新 leader/leadership 指标。KubeBrain 的 TiKV 锁选举及
 新增测试覆盖四种固定结果、跳过路径不发网络请求、指标写入失败不
 重试、nil 依赖安全行为及导出的名称、标签、单位和说明。本次尚无
 新 CI 或集群部署结果；下一步仍需定位退任与选举各阶段的真实延迟。
+
+## 本地条件释放的独立观测
+
+随后补充 `leader_retirement_local_result` 和
+`leader_retirement_local_duration_seconds`。仅原实验性作用域释放
+路径在实际调用本地条件释放后记录，缺少条件不会伪造一次本地调用。
+固定 `outcome` 为 `confirmed`、`unconfirmed`、`deadline`、`canceled`。
+同时检查返回错误和调用结束时的上下文状态，取消由我们自己的清理
+操作触发之前采样；不输出原始错误或所有权条件。
+
+本地耗时不含前面的生命周期 join 和后面的 peer 通知。未增加重试，
+本地预算仍为一个 RetryPeriod，原始冻结条件原样传递给 peer。
+这仍不是整段退任耗时，也不补证历史实验的发送结果。
+
+首次两项 leader 测试在后台 mock 失败后阻塞于读取缺失的 peer 回调，
+已分别取栈并终止（会话 56828、39442，非通过结果）。单例进一步
+确认：测试的 10ms 预算下，内存后端 nil 返回发生在约 23ms，因而
+指标正确为 deadline，而初版测试错误预期 confirmed。测试现按真实
+上下文核验，并在 Campaign 已退出后先断言回调存在，避免无限等待；
+确定性单测单独锁定晚到成功、包裹 deadline、取消和不确定提交分类。
+生产预算、提交语义及旧任期安全约束未变。
+
+后续验证：完整 leader race 包通过（4.301s），本地释放/指标相关
+三轮 race 通过（4.709s），完整 Prometheus race 包通过（1.093s），
+`TestPeerRetirementCampaignPartitionToStorageRelease` race 通过
+（1.404s），相关 `go vet` 通过。一次误用名称的筛选没有执行测试，
+不计覆盖；已按上述真实名称补测。未触发 CI 或变更集群。

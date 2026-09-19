@@ -320,6 +320,12 @@ func (pw *prometheusWrapper) mustGetHistogramVec(name string, labels []metrics.T
 }
 
 func metricHelp(name string) string {
+	if formatName(name) == "leader_retirement_local_result" {
+		return "Post-join local conditional ownership release outcomes. Confirmed excludes uncertain or late results and does not prove successor readiness."
+	}
+	if formatName(name) == "leader_retirement_local_duration_seconds" {
+		return "Post-join local conditional ownership release duration in seconds; excludes lifecycle join and subsequent peer notification. Not total failover latency or successor readiness."
+	}
 	if formatName(name) == "leader_retirement_peer_result" {
 		return "Post-join peer retirement callback outcomes. Confirmed means bounded HTTP acknowledgement, not successor readiness. No endpoint or ownership labels."
 	}

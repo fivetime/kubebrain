@@ -490,8 +490,11 @@ func (l *leaderElection) Campaign(ctx context.Context) {
 					// uncertain result never reactivates this term or retries a
 					// newly read holder; the peer receives the same frozen claim.
 					releaseCtx, releaseCancel := context.WithTimeout(context.Background(), l.retryPeriod)
-					_ = l.retiredReleaser.ReleaseRetiredOwnership(releaseCtx, l.retirementScope, condition)
+					started := time.Now()
+					err := l.retiredReleaser.ReleaseRetiredOwnership(releaseCtx, l.retirementScope, condition)
+					contextErr := releaseCtx.Err()
 					releaseCancel()
+					recordRetiredRelease(l.metricCli, started, err, contextErr)
 				}
 				l.onTermRetired(ctx, condition, available)
 			default:

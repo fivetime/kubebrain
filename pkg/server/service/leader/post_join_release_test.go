@@ -8,6 +8,7 @@ import (
 
 	"github.com/golang/mock/gomock"
 	"github.com/kubewharf/kubebrain/pkg/backend/election"
+	"github.com/kubewharf/kubebrain/pkg/metrics"
 	metricmock "github.com/kubewharf/kubebrain/pkg/metrics/mock"
 	"github.com/kubewharf/kubebrain/pkg/storage"
 	"github.com/kubewharf/kubebrain/pkg/storage/memkv"
@@ -96,6 +97,16 @@ func TestScopedPostJoinReleaseUsesFrozenClaimAndBoundedFallback(t *testing.T) {
 			m := metricmock.NewMockMetrics(gomock.NewController(t))
 			m.EXPECT().EmitCounter(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
 			m.EXPECT().EmitGauge(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
+			metricOutcome := make(chan string, 1)
+			if mode != "missing_claim" {
+				m.EXPECT().EmitHistogram("leader.retirement.local.duration.seconds", gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ string, _ interface{}, tags ...metrics.T) error {
+						if len(tags) == 1 && tags[0].Name == "outcome" {
+							metricOutcome <- tags[0].Value
+						}
+						return nil
+					}).Times(1)
+			}
 			started, done := make(chan struct{}), make(chan struct{})
 			var joined, cleaned atomic.Bool
 			ctx, cancel := context.WithCancel(context.WithValue(context.Background(), campaignContextMarker{}, true))
@@ -105,6 +116,7 @@ func TestScopedPostJoinReleaseUsesFrozenClaimAndBoundedFallback(t *testing.T) {
 				replacementInstalled              bool
 				claim                             election.OwnershipCondition
 				err                               error
+				contextErr                        error
 			}
 			local := make(chan observation, 1)
 			peer := make(chan observation, 1)
@@ -135,6 +147,7 @@ func TestScopedPostJoinReleaseUsesFrozenClaimAndBoundedFallback(t *testing.T) {
 						}
 					}
 				}
+				got.contextErr = releaseCtx.Err()
 				local <- got
 				return got.err
 			}
@@ -173,6 +186,7 @@ func TestScopedPostJoinReleaseUsesFrozenClaimAndBoundedFallback(t *testing.T) {
 			case <-time.After(3 * time.Second):
 				t.Fatal("retirement stalled")
 			}
+			require.NotEmpty(t, peer, "joined campaign must have published its retirement observation")
 			gotPeer := <-peer
 			require.Equal(t, mode != "shutdown", gotPeer.active)
 			require.True(t, gotPeer.safe)
@@ -182,6 +196,15 @@ func TestScopedPostJoinReleaseUsesFrozenClaimAndBoundedFallback(t *testing.T) {
 				require.Empty(t, local, "missing exact condition cannot authorize local release")
 			} else {
 				gotLocal := <-local
+				require.NotEmpty(t, metricOutcome)
+				outcome := <-metricOutcome
+				if gotLocal.contextErr == context.DeadlineExceeded {
+					require.Equal(t, "deadline", outcome, "even a nil commit result can arrive after the release budget")
+				} else if gotLocal.err == nil {
+					require.Contains(t, []string{"confirmed", "deadline"}, outcome, "deadline may expire between backend return and observation")
+				} else {
+					require.Contains(t, []string{"unconfirmed", "deadline"}, outcome)
+				}
 				require.True(t, gotLocal.safe)
 				require.True(t, gotLocal.deadline)
 				require.Equal(t, gotLocal.claim, gotPeer.claim, "local attempt cannot replace frozen peer condition")
