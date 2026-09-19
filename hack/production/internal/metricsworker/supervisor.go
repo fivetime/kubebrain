@@ -71,6 +71,10 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 			return nil, err
 		}
 	}
+	guard, err := bindOwner(owner)
+	if err != nil {
+		return nil, err
+	}
 	ctx, cancel := context.WithCancel(parent)
 	var wg sync.WaitGroup
 	children := make([]child, 0, len(commands))
@@ -81,6 +85,23 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 		wg.Wait()
 		for _, c := range children {
 			_ = c.input.Close()
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if guard.check() != nil {
+					cancel()
+					return
+				}
+			}
 		}
 	}()
 	events := make(chan event, 2*len(commands))
@@ -172,14 +193,23 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 			if err := hooks.Baseline(ctx, e.index, *e.ready); err != nil {
 				return nil, err
 			}
+			if err := guard.check(); err != nil {
+				return nil, err
+			}
 			results[e.index].Ready = *e.ready
 		}
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := guard.check(); err != nil {
+		return nil, err
+	}
 	origin, err := hooks.Inject(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := guard.check(); err != nil {
 		return nil, err
 	}
 	now := time.Now()
@@ -215,10 +245,16 @@ func Run(parent context.Context, owner string, commands []Command, hooks Hooks) 
 			if err := hooks.Completed(ctx, e.index, e.result, origin); err != nil {
 				return nil, err
 			}
+			if err := guard.check(); err != nil {
+				return nil, err
+			}
 			results[e.index] = e.result
 		}
 	}
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := guard.check(); err != nil {
 		return nil, err
 	}
 	if !time.Now().Before(origin.Add(30 * time.Second)) {

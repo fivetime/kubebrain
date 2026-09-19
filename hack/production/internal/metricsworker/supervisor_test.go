@@ -34,7 +34,7 @@ printf 'CAPTURED\t%s/metrics.z%s\t%s/metrics-schedule.%s\n' "$owner" "${suffix:1
 }
 
 func TestSupervisorBarrierAndFixedOrigin(t *testing.T) {
-	owner := t.TempDir()
+	owner := supervisorOwner(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	baselines, completed, injections := 0, 0, 0
@@ -78,7 +78,7 @@ func assertJoined(t *testing.T, owner, suffix string) {
 func TestSupervisorFailuresJoinBeforeReturn(t *testing.T) {
 	for _, mode := range []string{"baseline-rejected", "exit-ready", "hang", "no-ready", "expired", "future", "completed-rejected"} {
 		t.Run(mode, func(t *testing.T) {
-			owner := t.TempDir()
+			owner := supervisorOwner(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 			defer cancel()
 			injected := false
@@ -117,7 +117,7 @@ func TestSupervisorFailuresJoinBeforeReturn(t *testing.T) {
 }
 
 func TestSupervisorUsesRemainingFaultBudget(t *testing.T) {
-	owner := t.TempDir()
+	owner := supervisorOwner(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	started := time.Now()
@@ -136,7 +136,7 @@ func TestSupervisorUsesRemainingFaultBudget(t *testing.T) {
 }
 
 func TestSupervisorRejectsDuplicateWorkersBeforeInjection(t *testing.T) {
-	owner := t.TempDir()
+	owner := supervisorOwner(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok"), command(owner, "abcdefgh", "ok")}, Hooks{
@@ -151,7 +151,7 @@ func TestSupervisorRejectsDuplicateWorkersBeforeInjection(t *testing.T) {
 }
 
 func TestSupervisorIncompleteBarrierCancelsAllChildren(t *testing.T) {
-	owner := t.TempDir()
+	owner := supervisorOwner(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	_, err := Run(ctx, owner, []Command{command(owner, "abcdefgh", "ok"), command(owner, "ijklmnop", "no-ready")}, Hooks{
@@ -173,7 +173,7 @@ func TestSupervisorIncompleteBarrierCancelsAllChildren(t *testing.T) {
 func TestSupervisorGracefulCancellationAndEscalation(t *testing.T) {
 	for _, mode := range []string{"graceful", "ignore-term"} {
 		t.Run(mode, func(t *testing.T) {
-			owner := t.TempDir()
+			owner := supervisorOwner(t)
 			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 			defer cancel()
 			start := time.Now()
@@ -201,4 +201,11 @@ func TestSupervisorGracefulCancellationAndEscalation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func supervisorOwner(t *testing.T) string {
+	t.Helper()
+	owner := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(owner, "deployment-claimed"), 0700))
+	return owner
 }

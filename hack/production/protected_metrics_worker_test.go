@@ -35,6 +35,7 @@ func testProtectedMetricsWorkerRealSessionArtifacts(t *testing.T, reject bool) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
 	owner := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(owner, "deployment-claimed"), 0700))
 	require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
 	probe := strings.Replace(metricsProbeFixture(), `printf 'x 1\n' > "$2"`, `value=0
 if [[ -e $stack_owner/baseline-written ]]; then value=1; else touch "$stack_owner/baseline-written"; fi
@@ -44,6 +45,9 @@ printf '# TYPE leader_retirement_peer_result counter\nleader_retirement_peer_res
 	// Reuse only the Kubernetes/transport fixtures, not the session exercise.
 	setup, _, ok := strings.Cut(stackSessionFixture, "trap stack_session_close EXIT")
 	require.True(t, ok)
+	// Claim exists before the supervisor starts; the fixture must not recreate it.
+	require.Contains(t, setup, `mkdir "$stack_owner/deployment-claimed"`)
+	setup = strings.Replace(setup, `mkdir "$stack_owner/deployment-claimed"`, `test -d "$stack_owner/deployment-claimed"`, 1)
 	setup += `
 sha256sum "$stack_library_dir/protected-metrics-worker.sh" >> "$stack_owner/tools.sha256"
 export stack_kubeconfig stack_context stack_namespace stack_namespace_uid stack_sts stack_sts_uid stack_tls stack_server_name
