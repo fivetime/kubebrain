@@ -259,3 +259,14 @@ worker 成功退出或子进程已回收。协调器仍须独立 LoadCapture 核
 核对回执并回收进程。读取等待须由外层取消/超时约束，不能直接无期限
 阻塞恢复。当前仅接入实际 worker/会话脚本的模拟集群回归，完整多
 worker supervisor 尚未接入真实实验。
+
+`metricsworker.Run` 已提供进程协调核心，调用方必须给出 deadline、
+已准入的命令/完整环境、私有 stderr 文件及三个遵守取消的钩子：
+Baseline（独立核验基线）、Inject（返回原始故障起点）、Completed
+（核验采集/调度/退出回执）。所有基线完成后才注入一次故障；不能
+在钩子里恢复集群。函数返回前取消进程组并等待直接子进程及读取
+协程；失败使用强制取消，可能缺少退出回执，因此不能判成功。
+这不是对逃离进程组的后代或所有 Kubernetes port-forward 残留的
+自动证明，恢复前仍须独立清理核验。钩子若不遵守 context，其自身
+阻塞无法由该函数安全中断。当前测试使用受控 Bash worker，真实
+protected-metrics-worker 的 supervisor 集成及实验适配尚待验证。
