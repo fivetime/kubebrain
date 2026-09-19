@@ -14,6 +14,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/metricsworker"
 	"github.com/stretchr/testify/require"
+	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -209,8 +210,47 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 			require.Equal(t, origin, got)
 			require.Equal(t, 1, activationCalls)
 			require.False(t, joined)
-			if mode == "lifecycle-native-gate-fail" {
-				return 0, errors.New("independent drop/successor gate failed")
+			if mode == "lifecycle-native-success" || mode == "lifecycle-native-gate-fail" {
+				// Simulated network and independent Status, composed by the real
+				// observer inside the native lifecycle; not live fault evidence.
+				old := observation.Initial.InitialMemberID
+				healthy := old + 1
+				if healthy == 0 {
+					healthy = 1
+				}
+				stages := []string{}
+				conn := &successorConnection{read: func(context.Context, int) (*pb.StatusResponse, error) {
+					stages = append(stages, "status")
+					return &pb.StatusResponse{Header: &pb.ResponseHeader{ClusterId: observation.Initial.ClusterID, MemberId: healthy, RaftTerm: 3}, Leader: healthy}, nil
+				}}
+				observer := FaultObservation{
+					Connection: conn,
+					Successor:  SuccessorBinding{ClusterID: observation.Initial.ClusterID, ObserverMemberID: healthy, OldLeaderID: old, OldTerm: observation.Initial.InitialTerm},
+					Active: func(_ context.Context, at time.Time) error {
+						require.Equal(t, got, at)
+						stages = append(stages, "active")
+						return nil
+					},
+					Drops: func(_ context.Context, at time.Time) error {
+						require.Equal(t, got, at)
+						stages = append(stages, "drops")
+						if mode == "lifecycle-native-gate-fail" {
+							return errors.New("independent drop gate failed")
+						}
+						return nil
+					},
+					CheckIsolation: prep.Own,
+					RetainStatus:   func(context.Context, SuccessorSample) error { stages = append(stages, "retain"); return nil },
+				}
+				term, err := observer.Observe(faultCtx, got)
+				if mode == "lifecycle-native-gate-fail" {
+					require.Error(t, err)
+					require.Equal(t, []string{"active", "drops"}, stages)
+					return term, err
+				}
+				require.NoError(t, err)
+				require.Equal(t, uint64(3), term)
+				require.Equal(t, []string{"active", "drops", "status", "retain", "active"}, stages)
 			}
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "fault.origin"), []byte(fmt.Sprintln(got.UnixNano())), 0600))
 			release()

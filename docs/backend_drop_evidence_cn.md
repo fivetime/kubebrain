@@ -62,3 +62,22 @@ Status 的告警字段不作为健康结论；观察到新 leader/term 也不证
 适配器测试覆盖 active、pending 后匹配、仍为 inactive 和被替换的策略，
 并确认 active 路径不会调用恢复/TCP 观察。模拟 API 与脚本边界测试
 不替代真实 Cilium 实现或完整实验验收。
+
+## 原生故障门限组合
+
+`FaultObservation.Observe` 可作为 `FaultLifecycle.ObserveFault`，依次执行
+策略实现、两种后端丢包、独立 Status 换主、再次策略实现检查。所有步骤
+共用调用方原故障 context/origin；入口拒绝超过 origin+30s 的截止时间，
+每个门限前后及每次 Status 前后均复查准入和绝对截止时间。失败返回零 term，
+不继续后续门限；最终策略失效或证据留存失败也不能交付继任 term。
+
+`Active` 可绑定上述 `NetworkObserver.Active`；`Drops` 仍须由具体捕获
+适配器完成同源、同窗口、PD/TiKV 双门限与留存，不能用只解析历史文件
+代替。`CheckIsolation` 必须新鲜核对认领、进程、精确 active 策略及独立
+连接准入，而不是复用缓存结果。Successor 的初始身份必须与原探针一致。
+最后一次实现检查只是再次采样，不证明采样之间持续隔离。
+
+本地顺序测试与原生生命周期集成测试覆盖门限失败不查询 Status、观察
+后失去策略/取消、超预算、留存失败及既有恢复路径；网络和继任 Status
+仍为模拟，不能作为在线 Cilium 丢包或原 30 秒验收证据。完整捕获适配器
+及生产 CLI 组装仍待完成。
