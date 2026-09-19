@@ -155,6 +155,7 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 		require.Contains(t, workflow.On["push"].Paths, path)
 	}
 	require.Contains(t, commands, "go vet ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta\n")
+	require.Contains(t, commands, "for tool in bash jq openssl timeout sha256sum grep date stat awk find wc dirname mktemp mkdir touch cat sleep cut; do command -v \"$tool\" >/dev/null; done\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|SessionHashVerificationHonorsFaultDeadline)'\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/cmd/pod-log-capture\n")

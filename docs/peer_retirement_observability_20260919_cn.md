@@ -223,6 +223,25 @@ diff-check 通过。未修改集群、未重跑故障验收；指标语义和同
 
 #### 退休阶段累计耗时差值
 
+#### 候选 3f64735d 探针 CI 失败：采集测试缺少运行时工具
+
+CI `35429292114` 已以 failure 结束，失败步骤为 protected capture evidence
+and retirement deltas。日志明确为 `/usr/bin/timeout: failed to run command
+‘rg’: No such file or directory`。离线校验库先通过，随后采集脚本在输入
+绑定检查提前失败；部分预期失败场景因此未执行到目标分支，不能把它们的
+PASS 解释为有效覆盖。后续整套探针回归步骤未完成，不算候选 CI 通过。
+run/job API、完整日志与已验证摘要保存在私有目录
+`probe-ci-35429292114-failed.ryCekcna`，原失败保留。
+
+修复仅在仓库中进行，不登录或维护 Runner 主机：运行时精确行匹配改为
+`grep -Fxq`，转发就绪日志用固定字符串 `grep -Fq`；保留 stack_session_run
+原截止预算。测试夹具在 exercise 之前检查实际依赖，缺失即退出 127，
+避免反例测试把环境错误当作预期业务拒绝。CI 也预检基础命令，工作流契约
+测试锁定预检；另以失败 rg 替身验证成功采集不再调用 ripgrep。
+build race 通过（2.737s），相关 vet/bash 语法检查通过；完整受保护采集
+race 通过（113.678s），包括不依赖 rg、取消清理及哈希截止。
+镜像 CI `35429292124` 仍运行，未取消或重发。本地修复不是 CI 成功证据。
+
 补充整包验证（当前本地源码，非旧候选 CI）：server、leader、Prometheus
 三个完整包 race 通过，分别 79.653s / 4.187s / 1.095s，不仅是新增测试的
 筛选运行。工作流契约测试现已锁定退休差值命令、受保护采集脚本及身份谓词

@@ -57,6 +57,24 @@ func TestProtectedStackSession(t *testing.T) {
 	}
 }
 
+func TestProtectedStackSessionWithoutRipgrep(t *testing.T) {
+	library, err := filepath.Abs("protected-stack-session.sh")
+	require.NoError(t, err)
+	owner := t.TempDir()
+	bin := filepath.Join(owner, "bin")
+	require.NoError(t, os.Mkdir(bin, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "info-diagnostic-probe"), []byte(stackProbeFixture), 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "rg"), []byte("#!/bin/bash\necho RIPGREP_MUST_NOT_BE_CALLED >&2\nexit 127\n"), 0700))
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, "bash", "-c", stackSessionFixture, "test", library, owner, "success").CombinedOutput()
+	require.NoError(t, ctx.Err(), string(output))
+	require.NoError(t, err, string(output))
+	require.NotContains(t, string(output), "RIPGREP_MUST_NOT_BE_CALLED")
+	require.Contains(t, string(output), "EXPECTED_RESULT_AND_CLEANUP")
+}
+
 const stackProbeFixture = `#!/usr/bin/env bash
 set -eu
 touch "$stack_owner/probe-called"
@@ -133,6 +151,9 @@ func testProtectedMetricsSession(t *testing.T, library, probe string) {
 const stackSessionFixture = `
 set -euo pipefail
 umask 077
+for stack_test_tool in bash jq openssl timeout sha256sum grep date stat awk find wc dirname mktemp mkdir touch cat sleep cut; do
+ command -v "$stack_test_tool" >/dev/null || { printf 'missing fixture dependency: %s\n' "$stack_test_tool" >&2; exit 127; }
+done
 source "$1"
 export stack_owner=$2 scenario=$3
 stack_kubeconfig=synthetic-config
@@ -238,7 +259,7 @@ exercise() {
  sha256sum -c "$stack_capture/evidence.sha256" >/dev/null || return
  # Fault-time capture must not create another tunnel or reset its clock.
  [[ $(awk '$2=="rearm-anonymous" && $3=="end" && $4==0 {n++} END {print n+0}' "$first/timing.tsv") == 1 ]] || return
- ! rg -q rearm-anonymous "$stack_capture/timing.tsv" || return
+ ! grep -Fq rearm-anonymous "$stack_capture/timing.tsv" || return
  case $scenario in
   reset-origin) stack_session_capture "$((start+1))";;
   reset-budget) stack_session_capture before-fault;;

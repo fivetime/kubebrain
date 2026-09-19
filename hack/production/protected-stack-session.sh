@@ -10,11 +10,11 @@ stack_session_verify_inputs() {
  stack_session_run sha256sum -c "$stack_owner/diagnostic-inputs.sha256" "$stack_owner/tools.sha256" >/dev/null || return
  bindings=$(stack_session_run sha256sum "$stack_library_dir/protected-stack-session.sh" "$stack_library_dir/same-pod-process.jq" "$stack_owner/bin/info-diagnostic-probe") || return
  while IFS= read -r binding; do
-  stack_session_run rg --fixed-strings --line-regexp --quiet -- "$binding" "$stack_owner/tools.sha256" || return
+  stack_session_run grep -Fxq -- "$binding" "$stack_owner/tools.sha256" || return
  done <<< "$bindings"
  bindings=$(stack_session_run sha256sum "$stack_owner/diagnostic-spec.json" "$stack_owner/info.crt") || return
  while IFS= read -r binding; do
-  stack_session_run rg --fixed-strings --line-regexp --quiet -- "$binding" "$stack_owner/diagnostic-inputs.sha256" || return
+  stack_session_run grep -Fxq -- "$binding" "$stack_owner/diagnostic-inputs.sha256" || return
  done <<< "$bindings"
 }
 
@@ -82,7 +82,7 @@ stack_session_rearm_anonymous() {
  stack_pids+=("$child")
  for n in {1..50}; do
   kill -0 "$child" 2>/dev/null || return
-  if rg -q 'Forwarding from 127.0.0.1:18585' "$log"; then return 0; fi
+  if grep -Fq 'Forwarding from 127.0.0.1:18585' "$log"; then return 0; fi
   sleep 0.1
  done
  return 1
@@ -138,7 +138,7 @@ stack_session_prepare() {
   ready=false
   for n in {1..50}; do
    kill -0 "${stack_pids[-1]}" 2>/dev/null || return
-   if rg -q "Forwarding from 127.0.0.1:$port" "$stack_session/forward-$port.log"; then ready=true; break; fi
+   if grep -Fq "Forwarding from 127.0.0.1:$port" "$stack_session/forward-$port.log"; then ready=true; break; fi
    sleep 0.1
   done
   [[ $ready == true ]] || return 1
