@@ -34,6 +34,13 @@ type FaultLifecycle struct {
 	// successor binding, not infer either from the response under test. Its origin
 	// must equal the clock already dispatched to the prepared child and workers.
 	OriginalEvidence func(context.Context) (Binding, []byte, error)
+	// OriginalPending rechecks the original live probe, its response-free log,
+	// same-term/process identity and source-bound blocked stack after preparation
+	// and metric baselines, immediately before activation. FAULT_READY alone is
+	// stale by then. It must use the supplied original fault budget, never resend
+	// the renewal or extend the clock. This observation is not atomic with PATCH;
+	// final response validation must still reject a pre-origin response.
+	OriginalPending func(context.Context, time.Time) error
 	// OutcomeAdmit checks live isolation and protocol identities before outcome
 	// reads; Preparation.Own is also rechecked. Both use the original fault context.
 	OutcomeAdmit func(context.Context) error
@@ -65,7 +72,7 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 	if l.Owner == nil || l.Owner.directory != p.Directory || l.Owner.binding != (FaultOwnerBinding{Owner: p.Network.Owner, Namespace: p.Network.Namespace, NamespaceUID: p.Network.NamespaceUID, StatefulSetName: p.StatefulSetName, StatefulSetUID: p.Network.StatefulSetUID}) {
 		return result, errors.New("fault lifecycle owner does not match preparation")
 	}
-	if l.OriginalEvidence == nil || l.OutcomeAdmit == nil {
+	if l.OriginalEvidence == nil || l.OriginalPending == nil || l.OutcomeAdmit == nil {
 		return result, errors.New("original outcome evidence and admission are required")
 	}
 	// Reject invalid local tools before any cluster preparation. A private log
@@ -114,6 +121,9 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 				// metric workers. No preparation or activation gets a fresh budget.
 				if err := l.Preparation.NoncesSafe(faultCtx); err != nil {
 					return fmt.Errorf("pre-activation nonce admission: %w", err)
+				}
+				if err := l.OriginalPending(faultCtx, origin); err != nil {
+					return fmt.Errorf("pre-activation original probe admission: %w", err)
 				}
 				if err := ActivateNetwork(faultCtx, l.Preparation.Client, l.Preparation.Directory, l.Preparation.Network, origin, func(ctx context.Context) error {
 					return CheckNetworkIdentity(ctx, l.Preparation.Client, l.Preparation.Network, l.Preparation.StatefulSetName, NetworkLabelOwned, l.Preparation.Own)

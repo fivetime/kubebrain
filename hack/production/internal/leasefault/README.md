@@ -60,7 +60,17 @@ private evidence. Simulated-client tests cover both outcomes, expiry, full-width
 IDs, identity/key/value mismatches, lost final admission and exhausted/extended
 budgets, including RPC timeout. They do not prove a real leadership handoff.
 
-`RunFaultLifecycle` now requires `OriginalEvidence` and `OutcomeAdmit` and calls
+`RunFaultLifecycle` also requires `OriginalPending(ctx, origin)` after nonce
+admission and metric baseline collection, before policy activation. This must
+freshly authenticate the original still-live, response-free probe and its
+same-process, same-term, source-bound blocked stack within the original fault
+deadline. A previous `FAULT_READY` is not sufficient. Failure prevents activation
+and still joins children before recovery. The callback is not atomic with the
+API PATCH; final original-response and whole-fault gates remain mandatory.
+The concrete live observer implementing this callback is still required before
+deploying the full fault driver; wiring tests use synthetic evidence only.
+
+`RunFaultLifecycle` requires `OriginalEvidence` and `OutcomeAdmit` and calls
 this gate immediately after the prepared child exits successfully, before metric
 completion checks and recovery. The independently supplied evidence origin must
 exactly equal the clock dispatched to the child and workers. Failed child execution

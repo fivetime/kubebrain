@@ -61,9 +61,11 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	evidenceRead := false
 	var origin time.Time
 	activationCalls := 0
+	pendingChecks := 0
 	client := prep.Client.(*fake.FakeDynamicClient)
 	client.PrependReactor("patch", "ciliumnetworkpolicies", func(a ktesting.Action) (bool, runtime.Object, error) {
 		activationCalls++
+		require.Equal(t, 1, pendingChecks, "activation requires fresh original probe admission")
 		require.False(t, origin.IsZero(), "activation must follow original clock selection")
 		_, err := os.Stat(filepath.Join(dir, "fault.origin"))
 		require.ErrorIs(t, err, os.ErrNotExist, "child must still await activation acknowledgement")
@@ -96,6 +98,19 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	result, err := RunFaultLifecycle(ctx, FaultLifecycle{
 		Owner:       owner,
 		Preparation: prep, Fault: fault, Workers: []metricsworker.Command{worker}, RecoveryConnection: prep.Connection, RecoveryTimeout: 5 * time.Second,
+		OriginalPending: func(faultCtx context.Context, got time.Time) error {
+			pendingChecks++
+			require.Equal(t, origin, got)
+			require.Zero(t, activationCalls)
+			require.False(t, joined)
+			deadline, ok := faultCtx.Deadline()
+			require.True(t, ok)
+			require.False(t, deadline.After(origin.Add(30*time.Second)))
+			if mode == "lifecycle-activation-original-fail" {
+				return errors.New("original probe already responded during baseline capture")
+			}
+			return nil
+		},
 		OriginalEvidence: func(faultCtx context.Context) (Binding, []byte, error) {
 			require.False(t, joined, "outcome must precede recovery")
 			deadline, ok := faultCtx.Deadline()
@@ -175,7 +190,7 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		IdentityRestored: func(context.Context) error { require.True(t, joined); return nil },
 	})
 	require.True(t, joined)
-	if mode == "lifecycle-baseline-fail" || mode == "lifecycle-parent-cancel" || mode == "lifecycle-activation-nonce-fail" {
+	if mode == "lifecycle-baseline-fail" || mode == "lifecycle-parent-cancel" || mode == "lifecycle-activation-nonce-fail" || mode == "lifecycle-activation-original-fail" {
 		require.Zero(t, activationCalls)
 		require.False(t, result.ActivationAcknowledged)
 	} else {
