@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/leasefault"
 	"github.com/kubewharf/kubebrain/hack/production/internal/metricsworker"
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 	"github.com/stretchr/testify/require"
@@ -55,12 +56,13 @@ exec bash "$stack_library_dir/protected-wait-worker.sh" brain-0 e3914449b57ab6e2
 			require.NoError(t, err)
 			defer stderr.Close()
 			called := false
+			var origin time.Time
 			err = metricsworker.WithPreparedFault(ctx, metricsworker.Command{Executable: "/bin/bash", Args: []string{"-c", worker, "worker", receipt}, Env: os.Environ(), Stderr: stderr}, func(runCtx context.Context, capture func(context.Context, time.Time) error) error {
 				called = true
 				if mode == "controller-reject" {
 					return errors.New("original probe not pending")
 				}
-				origin := time.Now()
+				origin = time.Now()
 				faultCtx, faultCancel := context.WithDeadline(runCtx, origin.Add(5*time.Second))
 				defer faultCancel()
 				return capture(faultCtx, origin)
@@ -94,6 +96,32 @@ exec bash "$stack_library_dir/protected-wait-worker.sh" brain-0 e3914449b57ab6e2
 			marker, err := os.ReadFile(filepath.Join(classified, "COMPLETE"))
 			require.NoError(t, err)
 			require.Equal(t, "SOURCE_BOUND_WAIT_CANDIDATES_NOT_LEASE_OR_FAULT_PROOF\n", string(marker))
+			load := func(clock time.Time, count int) (leasefault.WaitReceipt, error) {
+				return leasefault.LoadWaitReceipt(receipt, "e3914449b57ab6e211ece94cb88fd3318acb2970", "3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88", count, clock)
+			}
+			verified, err := load(origin, 1)
+			require.NoError(t, err)
+			require.Equal(t, classified, verified.Classification)
+			_, err = load(origin.Add(time.Nanosecond), 1)
+			require.Error(t, err)
+			_, err = load(origin, 0)
+			require.Error(t, err)
+			for _, item := range []struct{ dir, name string }{
+				{receipt, "exit-code"}, {receipt, "capture-path"}, {receipt, "classification-path"},
+				{verified.Capture, "goroutines.txt"}, {verified.Capture, "pod-after.json"},
+				{verified.Classification, "input.json"}, {verified.Classification, "frames.json"},
+				{verified.Classification, "evidence.sha256"}, {verified.Classification, "COMPLETE"},
+			} {
+				path := filepath.Join(item.dir, item.name)
+				data, err := os.ReadFile(path)
+				require.NoError(t, err)
+				require.NoError(t, os.WriteFile(path, append(append([]byte{}, data...), 'x'), 0600))
+				_, err = load(origin, 1)
+				require.Error(t, err, item.name)
+				require.NoError(t, os.WriteFile(path, data, 0600))
+			}
+			_, err = load(origin, 1)
+			require.NoError(t, err)
 		})
 	}
 }
