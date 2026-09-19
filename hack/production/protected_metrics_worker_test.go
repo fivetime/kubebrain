@@ -72,26 +72,48 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 "$3"
 	stderr, err := os.CreateTemp(owner, "supervisor-stderr-*")
 	require.NoError(t, err)
 	defer stderr.Close()
+	faultLog, err := os.CreateTemp(owner, "fault-command-*")
+	require.NoError(t, err)
+	defer faultLog.Close()
 	before := make([]retirementmetrics.Sample, count)
 	var binding retirementmetrics.CaptureBinding
 	var origin int64
 	workerDirs := make([]string, count)
+	baselineDirs := make([]string, count)
 	baselineChecked, completedChecked, injected := 0, 0, false
 	commands := make([]metricsworker.Command, count)
 	for i := range commands {
 		commands[i] = metricsworker.Command{Executable: "/bin/bash", Args: []string{"-c", workerSetup, "worker", fmt.Sprint(18586 + 2*i), fmt.Sprint(18587 + 2*i), fmt.Sprint(i * 100000000)}, Env: os.Environ(), Stderr: stderr}
 	}
 	results, runErr := metricsworker.Run(ctx, owner, commands, metricsworker.Hooks{
-		Inject: func(_ context.Context, fault time.Time) error {
+		Inject: func(ctx context.Context, fault time.Time) error {
 			require.Equal(t, count, baselineChecked)
 			require.Equal(t, origin, fault.UnixNano())
 			injected = true
-			return nil // Explicit no-op: simulated clock/transport integration only.
+			// A synthetic external fault callback waits for the real worker
+			// scripts' scheduled artifacts. This proves workers can progress
+			// before Inject returns; no Kubernetes fault is executed.
+			return metricsworker.RunFaultCommand(ctx, metricsworker.Command{
+				Executable: "/bin/bash", Stderr: faultLog,
+				Args: []string{"-c", `set -eu
+printf '%s\n' "$3" "$$"
+while true; do
+ seen=0
+ for marker in "$1"/metrics-schedule.*/COMPLETE; do
+  if [[ -f $marker ]]; then seen=$((seen+1)); fi
+ done
+ if (( seen == $2 )); then break; fi
+ /bin/sleep 0.01
+done
+printf 'workers-captured-before-inject-return\n'
+`, "synthetic-fault", owner, fmt.Sprint(count)},
+			}, fault)
 		},
 		Baseline: func(_ context.Context, index int, r metricsworker.Ready) error {
 			require.GreaterOrEqual(t, index, 0)
 			require.Less(t, index, count)
 			workerDirs[index] = r.Worker
+			baselineDirs[index] = r.Baseline
 			ready := []string{"READY", r.Worker, r.Baseline}
 			require.Equal(t, owner, filepath.Dir(ready[1]))
 			require.Equal(t, owner, filepath.Dir(ready[2]))
@@ -115,6 +137,10 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 "$3"
 			require.Equal(t, count, baselineChecked)
 			now := time.Now()
 			origin = now.UnixNano()
+			for _, baseline := range baselineDirs {
+				_, err := retirementmetrics.LoadPrefaultCapture(baseline, binding, now)
+				require.NoError(t, err)
+			}
 			return now, nil // Clock delivery only: no real Kubernetes fault injected.
 		},
 		Completed: func(_ context.Context, index int, result metricsworker.Result, fault time.Time) error {
@@ -148,11 +174,14 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 "$3"
 	})
 	log, err := os.ReadFile(stderr.Name())
 	require.NoError(t, err)
+	faultOutput, err := os.ReadFile(faultLog.Name())
+	require.NoError(t, err)
 	if reject {
 		require.ErrorContains(t, runErr, "deliberate baseline rejection")
 		require.Zero(t, origin, "must not inject on a rejected baseline")
 		require.False(t, injected)
 		require.Zero(t, completedChecked)
+		require.Empty(t, faultOutput, "rejected baseline must not start external command")
 		for _, workerDir := range workerDirs {
 			receipt, err := os.ReadFile(filepath.Join(workerDir, "exit-code"))
 			require.NoError(t, err, string(log))
@@ -162,6 +191,13 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 "$3"
 		require.NoError(t, runErr, string(log))
 		require.Len(t, results, count)
 		require.Equal(t, count, completedChecked)
+		lines := strings.Split(strings.TrimSpace(string(faultOutput)), "\n")
+		require.Len(t, lines, 3)
+		require.Equal(t, fmt.Sprint(origin), lines[0])
+		require.Regexp(t, `^[1-9][0-9]*$`, lines[1])
+		require.Equal(t, "workers-captured-before-inject-return", lines[2])
+		_, statErr := os.Stat("/proc/" + lines[1])
+		require.True(t, os.IsNotExist(statErr), "fault command survived supervisor return")
 		if count == 2 {
 			require.NotEqual(t, results[0].Ready.Worker, results[1].Ready.Worker)
 			require.NotEqual(t, results[0].Captured.Capture, results[1].Captured.Capture)
