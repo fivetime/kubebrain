@@ -19,6 +19,7 @@ func TestNetworkRestoredObserverOrder(t *testing.T) {
 	require.NoError(t, err)
 	for _, mode := range []string{"success", "pending-before", "tcp-fails", "pending-after", "fatal-after", "input-changed"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel() // Each case owns its scripts, evidence and environment.
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "observe-local-network-restored.sh"), source, 0600))

@@ -33,6 +33,9 @@ func TestLocalPolicyObserverAndRecoveryWait(t *testing.T) {
 		{"wait-cancel", 124},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if strings.HasPrefix(tc.name, "unlabelled-") {
+				t.Parallel() // Independent temp directory and per-command environment.
+			}
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
 			bin := filepath.Join(dir, "bin")

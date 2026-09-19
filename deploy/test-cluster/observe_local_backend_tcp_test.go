@@ -16,6 +16,7 @@ import (
 func TestLocalBackendTCPObserver(t *testing.T) {
 	for _, mode := range []string{"success", "connection-failure", "target-replaced", "source-restarted", "invalid-ip", "pagination"} {
 		t.Run(mode, func(t *testing.T) {
+			t.Parallel() // Fixtures and subprocess environments are isolated.
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
 			bin := filepath.Join(dir, "bin")
