@@ -98,3 +98,11 @@ removal: only the exact lease-not-found error proceeds to final verification.
 Other write failures remain errors, with no retry or invented success. Partial
 recovery needs reconciliation under the same owner, not a new experiment. Tests
 use simulated RPCs; they do not establish live recovery or mutation atomicity.
+
+`TestRestoreProtocolKubeBrainGRPC` additionally runs the real KubeBrain RPCServer,
+backend and lease/alarm code over in-memory gRPC with memkv storage. It arms the
+record before granting a fixture lease/key and activating CORRUPT, then verifies
+restore and already-restored behavior for both live and expired-but-retained
+leases. The expiry case waits for an observed negative TTL with retained key and
+positive granted TTL, not a synthetic response. Peer leadership and Kubernetes
+admission are fixed fixtures; this is not TiKV, TLS, network-fault or cluster proof.

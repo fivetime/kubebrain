@@ -2,6 +2,15 @@
 
 ## 最新 CI 核验（2026-09-19）
 
+恢复写阶段已补充真实 KubeBrain 服务集成测试：构造 RPCServer、
+memkv 后端及真实 lease/alarm 实现，经内存 gRPC 创建测试租约/键、
+激活 CORRUPT，再调用 RestoreProtocol 和独立最终核验。分别覆盖
+有效租约和实际观察到 TTL<0、grantedTTL>0、键仍保留的过期租约，
+恢复后再次调用也通过。首轮有效租约 race 1.216s；完整三轮包 race
+11.237s，vet/diff-check 通过。对照服务源码确认 CORRUPT 下只读预检
+仍可用，撤销须在 disarm 后。领导权及 Kubernetes 准入是固定 fixture，
+没有 TiKV、TLS 或真实网络故障，不能替代集群验收；当前仍为本地改动。
+
 恢复写阶段补充拒绝路径回归：模拟撤销返回精确 LeaseNotFound 但
 租约实际仍保留，以及成功应答但未撤销，均必须走到最终 TTL 读取
 并失败，不能靠写响应判成功或重试；另外验证 alarm 已清除后第二次
