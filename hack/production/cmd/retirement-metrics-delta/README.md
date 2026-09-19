@@ -55,3 +55,35 @@ command does not verify those, the entire 30-second fault
 gate, successor readiness, or production readiness. Count changes do not locate
 individual events in time or explain latency. No live experiment is authorized
 merely because this offline check succeeds.
+
+## Scheduled later capture
+
+To check the later capture against its scheduler receipt, add all three flags:
+
+```
+--schedule SCHEDULE_DIRECTORY
+--fault-origin-ns ORIGINAL_UNIX_NANOSECONDS
+--offset-ns PLANNED_OFFSET_NANOSECONDS
+```
+
+Supply the original clock and planned offset from the independently saved
+experiment inputs, not from an unverified receipt. Decimal values must be
+canonical (no sign or leading zeroes); the offset can be zero but must be less
+than 30 seconds. Supplying any of these flags requires all three; an empty,
+partial or invalid scheduled request never falls back to ordinary capture mode.
+
+This calls `LoadScheduledCapture` for `--after`, checking the exact schedule
+manifest, capture binding, completion marker, planned lower bound and original
+30-second upper bound, including capture stage times. Fault-time anonymous
+rearming is rejected. The schedule and later capture must be distinct sibling
+directories. Ordinary mode and `--duration` semantics are unchanged.
+
+Successful scheduled output also includes `scheduled_capture_verified: true`,
+`fault_origin_ns` and `offset_ns`; the timestamps are JSON strings to preserve
+nanosecond precision. The existing fault/readiness/event-latency proof fields
+remain false. This does not prove the earlier capture preceded fault injection,
+that the worker exited successfully, that every artifact was flushed within
+the deadline, or that the original request and successor gates passed. The
+experiment driver must enforce those requirements and join workers before
+restoration. This command remains an offline diagnostic, not the real fault
+driver or a replacement for its admission and recovery procedure.

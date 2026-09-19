@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,6 +21,26 @@ func TestRejectInvalidArgumentsWithoutSuccess(t *testing.T) {
 		var output bytes.Buffer
 		require.Error(t, run(args, &output))
 		require.Empty(t, output.String())
+	}
+}
+
+func TestScheduledArgumentsNeverFallBack(t *testing.T) {
+	base := []string{"--before", "/missing", "--after", "/missing", "--stage", "peer", "--outcome", "confirmed"}
+	for _, extra := range [][]string{
+		{"--schedule="}, {"--fault-origin-ns=1800000010000000000"}, {"--offset-ns=0"},
+		{"--schedule=/missing", "--fault-origin-ns=1800000010000000000"},
+		{"--schedule=/missing", "--fault-origin-ns=+1800000010000000000", "--offset-ns=0"},
+		{"--schedule=/missing", "--fault-origin-ns=1800000010000000000", "--offset-ns=00"},
+		{"--schedule=/missing", "--fault-origin-ns=1800000010000000000", "--offset-ns=-1"},
+		{"--schedule=/missing", "--fault-origin-ns=1800000010000000000", "--offset-ns=30000000000"},
+		{"--schedule=/missing", "--fault-origin-ns=9223372036854775808", "--offset-ns=0"},
+	} {
+		t.Run(strings.Join(extra, " "), func(t *testing.T) {
+			var output bytes.Buffer
+			err := run(append(append([]string{}, base...), extra...), &output)
+			require.ErrorContains(t, err, "scheduled mode requires")
+			require.Empty(t, output.String())
+		})
 	}
 }
 
@@ -40,13 +61,14 @@ func TestCLIProcessHelper(t *testing.T) {
 }
 
 func TestCLICompletedCapturePair(t *testing.T) {
-	for _, scenario := range []string{"success", "duration-success", "duration-missing", "missing-baseline", "reset", "changed-process", "reversed", "overlap", "tampered", "incomplete", "wrong-admission", "wrong-cluster", "missing-cluster"} {
+	for _, scenario := range []string{"success", "duration-success", "duration-missing", "missing-baseline", "reset", "changed-process", "reversed", "overlap", "tampered", "incomplete", "wrong-admission", "wrong-cluster", "missing-cluster", "scheduled-success", "scheduled-duration-success", "scheduled-wrong-clock", "scheduled-wrong-offset", "scheduled-early", "scheduled-late", "scheduled-incomplete", "scheduled-tampered"} {
 		t.Run(scenario, func(t *testing.T) {
 			baseline := 2
 			if scenario == "missing-baseline" {
 				baseline = -1
 			}
-			before, specHash := cliCaptureFixture(t, 1800000000, baseline, "process", scenario == "duration-success")
+			withDuration := strings.HasSuffix(scenario, "duration-success")
+			before, specHash := cliCaptureFixture(t, 1800000000, baseline, "process", withDuration)
 			afterCount, afterTime, afterProcess := 5, int64(1800000020), "process"
 			if scenario == "reset" {
 				afterCount = 1
@@ -57,7 +79,10 @@ func TestCLICompletedCapturePair(t *testing.T) {
 			if scenario == "overlap" {
 				afterTime = 1800000000
 			}
-			after, _ := cliCaptureFixture(t, afterTime, afterCount, afterProcess, scenario == "duration-success")
+			if scenario == "scheduled-late" {
+				afterTime = 1800000040
+			}
+			after, _ := cliCaptureFixture(t, afterTime, afterCount, afterProcess, withDuration)
 			if scenario == "reversed" {
 				before, after = after, before
 			}
@@ -79,7 +104,27 @@ func TestCLICompletedCapturePair(t *testing.T) {
 				cluster = ""
 			}
 			args := []string{"-test.run=^TestCLIProcessHelper$", "--", "--before", before, "--after", after, "--namespace-uid", "ns-uid", "--sts-uid", "sts-uid", "--pod-uid", podUID, "--spec-sha256", specHash, "--cluster", cluster, "--stage", "peer", "--outcome", "confirmed"}
-			if scenario == "duration-success" || scenario == "duration-missing" {
+			if strings.HasPrefix(scenario, "scheduled-") {
+				origin, offset := "1800000010000000000", "4000000000"
+				if scenario == "scheduled-early" {
+					offset = "15000000000"
+				}
+				schedule := cliScheduleFixture(t, after, origin, offset)
+				if scenario == "scheduled-wrong-clock" {
+					origin = "1800000010000000001"
+				}
+				if scenario == "scheduled-wrong-offset" {
+					offset = "4000000001"
+				}
+				if scenario == "scheduled-incomplete" {
+					require.NoError(t, os.Remove(filepath.Join(schedule, "COMPLETE")))
+				}
+				if scenario == "scheduled-tampered" {
+					require.NoError(t, os.WriteFile(filepath.Join(schedule, "evidence.sha256"), []byte("tampered\n"), 0600))
+				}
+				args = append(args, "--schedule", schedule, "--fault-origin-ns", origin, "--offset-ns", offset)
+			}
+			if withDuration || scenario == "duration-missing" {
 				args = append(args, "--duration")
 			}
 			binary, err := os.Executable()
@@ -93,7 +138,7 @@ func TestCLICompletedCapturePair(t *testing.T) {
 			cmd.Stderr = &stderr
 			err = cmd.Run()
 			require.NoError(t, ctx.Err())
-			if scenario != "success" && scenario != "duration-success" {
+			if scenario != "success" && !withDuration && scenario != "scheduled-success" {
 				var exit *exec.ExitError
 				require.ErrorAs(t, err, &exit)
 				require.Equal(t, 1, exit.ExitCode())
@@ -103,6 +148,14 @@ func TestCLICompletedCapturePair(t *testing.T) {
 			}
 			require.NoError(t, err, stderr.String())
 			require.Empty(t, stderr.String())
+			if scenario == "scheduled-duration-success" {
+				require.JSONEq(t, `{"stage":"peer","outcome":"confirmed","count_delta":3,"duration_delta":{"count":3,"seconds":0.75},"scope":"same_process_retirement_completed_operations","fault_acceptance_proven":false,"successor_readiness_proven":false,"event_latency_proven":false,"scheduled_capture_verified":true,"fault_origin_ns":"1800000010000000000","offset_ns":"4000000000"}`, stdout.String())
+				return
+			}
+			if scenario == "scheduled-success" {
+				require.JSONEq(t, `{"stage":"peer","outcome":"confirmed","count_delta":3,"scope":"same_process_retirement_counter_only","fault_acceptance_proven":false,"successor_readiness_proven":false,"event_latency_proven":false,"scheduled_capture_verified":true,"fault_origin_ns":"1800000010000000000","offset_ns":"4000000000"}`, stdout.String())
+				return
+			}
 			if scenario == "duration-success" {
 				require.JSONEq(t, `{"stage":"peer","outcome":"confirmed","count_delta":3,"duration_delta":{"count":3,"seconds":0.75},"scope":"same_process_retirement_completed_operations","fault_acceptance_proven":false,"successor_readiness_proven":false,"event_latency_proven":false}`, stdout.String())
 				return
@@ -110,6 +163,20 @@ func TestCLICompletedCapturePair(t *testing.T) {
 			require.JSONEq(t, `{"stage":"peer","outcome":"confirmed","count_delta":3,"scope":"same_process_retirement_counter_only","fault_acceptance_proven":false,"successor_readiness_proven":false,"event_latency_proven":false}`, stdout.String())
 		})
 	}
+}
+
+func cliScheduleFixture(t *testing.T, capture, origin, offset string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp(filepath.Dir(capture), "schedule.")
+	require.NoError(t, err)
+	input, path := []byte(origin+"\t"+offset+"\n"), []byte(capture+"\n")
+	captureManifest, err := os.ReadFile(filepath.Join(capture, "evidence.sha256"))
+	require.NoError(t, err)
+	manifest := fmt.Sprintf("%x  %s\n%x  %s\n%x  %s\n", sha256.Sum256(input), filepath.Join(dir, "input.tsv"), sha256.Sum256(path), filepath.Join(dir, "capture-path"), sha256.Sum256(captureManifest), filepath.Join(capture, "evidence.sha256"))
+	for name, data := range map[string][]byte{"input.tsv": input, "capture-path": path, "evidence.sha256": []byte(manifest), "COMPLETE": []byte("SCHEDULE_COMPLETE_NOT_FAULT_ACCEPTANCE\n")} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), data, 0600))
+	}
+	return dir
 }
 
 func cliCaptureFixture(t *testing.T, started int64, count int, process string, withDuration bool) (string, string) {
