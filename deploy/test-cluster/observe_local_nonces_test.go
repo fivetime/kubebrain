@@ -42,6 +42,9 @@ func TestObserveLocalNonces(t *testing.T) {
 			cmd.Env = env
 			out, err := cmd.CombinedOutput()
 			require.NoError(t, ctx.Err(), string(out))
+			// A malformed fixture must not masquerade as a safety rejection.
+			require.NotContains(t, string(out), "compile error")
+			require.NotContains(t, string(out), "syntax error")
 			if mode == "success" {
 				require.NoError(t, err, string(out))
 				require.Contains(t, string(out), "COMPLETE_AGENT_NONCE_SNAPSHOT_NOT_CONTINUOUS_ABSENCE_OR_ENFORCEMENT")
@@ -56,6 +59,18 @@ func TestObserveLocalNonces(t *testing.T) {
 				return
 			}
 			require.Len(t, captures, 1)
+			// Late rejection cases must reach the observation being tested.
+			stage := map[string]string{
+				"collision":     "input.json",
+				"agent-restart": "cilium-worker1.after.json",
+				"node-replaced": "nodes-after.json",
+				"cep-replaced":  "cep-after.json",
+			}[mode]
+			if stage != "" {
+				data, readErr := os.ReadFile(filepath.Join(captures[0], stage))
+				require.NoError(t, readErr, string(out))
+				require.NotEmpty(t, data)
+			}
 			code, err := os.ReadFile(filepath.Join(captures[0], "observation.exit"))
 			require.NoError(t, err)
 			if mode == "success" {
@@ -79,7 +94,7 @@ pod() {
 }
 if [[ $1 == fixture-pod ]]; then pod app 0; exit; fi
 if [[ $1 == exec ]]; then
- jq -n --arg mode "$NONCE_MODE" '[{id:42,status:{identity:{labels:["k8s:app=brain"]+(if $mode=="collision" then ["container:kubebrain.io/fault-owner=reserved-test"] else [] end)},"external-identifiers":{"k8s-namespace":"kubebrain-dbaas-test","k8s-pod-name":"kubebrain-local-0"},networking:{addressing:[{ipv4:"10.0.0.1"}]}}}]'
+ jq -n --arg mode "$NONCE_MODE" '[{id:42,status:{identity:{labels:(["k8s:app=brain"]+(if $mode=="collision" then ["container:kubebrain.io/fault-owner=reserved-test"] else [] end))},"external-identifiers":{"k8s-namespace":"kubebrain-dbaas-test","k8s-pod-name":"kubebrain-local-0"},networking:{addressing:[{ipv4:"10.0.0.1"}]}}}]'
  exit
 fi
 [[ $1 == get ]] || exit 99

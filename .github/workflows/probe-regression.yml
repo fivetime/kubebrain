@@ -23,6 +23,8 @@ name: Rollout probe regression
       - 'hack/production/fault_policy_delete_plan_test.go'
       - 'hack/production/fault-label-restore-plan.jq'
       - 'hack/production/fault_label_restore_plan_test.go'
+      - 'hack/production/expired-lease-wait-frames.jq'
+      - 'hack/production/expired_lease_wait_frames_test.go'
       - 'hack/production/cmd/peer-retirement-scope/**'
       - 'hack/production/cmd/peer-retirement-test-pki/**'
       - 'hack/production/internal/**'
@@ -166,6 +168,7 @@ jobs:
           go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|MetricsSchedule|MetricsWorker|SessionHashVerificationHonorsFaultDeadline)'
           go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestFaultPolicyDeletePlan$'
           go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestFaultLabelRestorePlan$'
+          go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestExpiredLeaseWait'
           go vet ./hack/production/cmd/uid-delete
           go test -race -count=1 -timeout=2m -v ./hack/production/cmd/uid-delete -run '^TestFaultPolicyPlanDeleteTransport$'
       - name: Race test all probe regressions

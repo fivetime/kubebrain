@@ -156,6 +156,8 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	for _, path := range []string{
 		"hack/production/cmd/retirement-metrics-delta/**",
 		"hack/production/protected-stack-session.sh",
+		"hack/production/expired-lease-wait-frames.jq",
+		"hack/production/expired_lease_wait_frames_test.go",
 		"hack/production/protected_stack_session_test.go",
 		"hack/production/protected_session_hash_budget_test.go",
 		"hack/production/protected_metrics_schedule_test.go",
@@ -171,6 +173,7 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	require.Contains(t, commands, "for tool in bash jq openssl timeout sha256sum grep date stat awk find wc dirname mktemp mkdir touch cat sleep cut; do command -v \"$tool\" >/dev/null; done\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|MetricsSchedule|MetricsWorker|SessionHashVerificationHonorsFaultDeadline)'\n")
+	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestExpiredLeaseWait'\n")
 	require.Contains(t, workflow.On["push"].Paths, "hack/production/fault-policy-delete-plan.jq")
 	require.Contains(t, workflow.On["push"].Paths, "hack/production/fault_policy_delete_plan_test.go")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestFaultPolicyDeletePlan$'\n")

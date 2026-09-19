@@ -281,3 +281,40 @@ nonce 适配器不依赖尚未创建的策略回执；首次扫描失败时不�
 边界夹具，不能代表真实 Cilium 故障。相关完整 race 回归 15.636s / 2.261s，
 新增 nonce 用例重复 3 次通过，vet 与 build race（2.613s）通过。
 完整真实故障驱动及原 30 秒集群验收仍未完成。
+
+## 原始阻塞栈的源码绑定与 CI 覆盖
+
+接入观察子进程时发现 `expired-lease-wait-frames.jq` 仍只允许旧源码，
+且现有 CI 的 production 测试筛选没有运行 `TestExpiredLeaseWait`。
+已通过 `git show e3914449b57ab6e211ece94cb88fd3318acb2970:pkg/server/etcd/lease.go`
+核对该对象的完整文件 SHA256 仍为
+`3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88`，
+第 1645 行仍是 `refreshLeaseHoldingLocks` 过期等待的 `select`，随后为
+`case <-revoked:`。因此添加该精确源码绑定，继续拒绝短 SHA、未知源码、
+不匹配文件哈希和非顶层等待点；没有引入通配源码批准。
+
+同时增加判定器/测试文件的 CI 路径触发与明确的 `TestExpiredLeaseWait`
+竞态测试步骤，并锁定工作流契约。该测试还会核对检出源码的哈希及等待
+行，避免只用合成栈测试而漏掉产品代码漂移。源码分类绑定与镜像/CI 准入
+彼此独立：添加此绑定不代表仍在运行的 e3914449 CI 已通过，也不证明原始
+RPC 已阻塞、栈对应唯一租约或整次故障验收成功。本轮未操作集群。
+
+## e3914449 回归失败：nonce 测试夹具 jq 表达式
+
+[回归 35466044051](https://github.com/fivetime/kubebrain/actions/runs/35466044051)
+在 2026-09-19 20:16 UTC 终态失败。`TestObserveLocalNonces/success`
+的模拟 endpoint 数据生成表达式在 Runner 上报 `unexpected '+'`，
+退出码 3；不是 Runner 离线。后续诊断取消修复的 CI 步骤被跳过，
+因此该修复尚未得到这轮 CI 的验证。
+
+已为对象字段值中的数组相加表达式添加显式括号，并增强失败用例：
+禁止语法/编译错误冒充安全拒绝；碰撞、Agent 重启、节点替换和 CEP
+替换必须生成对应阶段证据。定向 race 重复 3 次通过（9.641s），
+工作流与源码绑定定向 race 通过，deploy/test-cluster 与 build 的 vet
+通过。随后 deploy/test-cluster 完整 race 回归通过（100.865s）。
+本地 jq 为 1.8.1；尚需下一轮 CI 验证 Runner 上的修复结果。
+
+失败终态、作业列表及完整日志已归档并校验 SHA256SUMS：
+`/root/.local/state/kubebrain/probe-ci-35466044051-failed.HsEzmDVT`。
+同源码镜像工作流 35466044040 在修复时仍运行，未重启、取消或以新推送
+打断它。本轮没有部署或故障注入，原 30 秒验收仍未通过。
