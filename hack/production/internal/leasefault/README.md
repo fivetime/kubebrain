@@ -220,3 +220,17 @@ independent context after cancellation; a repeat absence check sends no DELETE.
 The original receipt remains intact. This verifies component composition and
 ambiguous-response handling, not real API admission, Cilium withdrawal, worker
 joining, protocol/label restoration or the complete 30-second acceptance gate.
+
+`CheckNetworkIdentity` supplies the live API-identity part of admission callbacks.
+It reads the admitted Namespace, StatefulSet and Pod, checks exact UIDs and
+non-deleting objects, requires the Pod's controller reference to identify that
+StatefulSet, and enforces an explicit unlabelled/owned/recovery label phase. A
+complete namespace Pod selection for both fault nonces must contain no reserved
+nonce match and at most the admitted active Pod at the same resourceVersion.
+Pagination, changed observations and API errors fail closed. It checks externally
+held lifecycle ownership before and after reads. This does not acquire a lock or
+make sequential reads atomic, and Pod-list absence does not prove absence of stale
+Cilium endpoints. Callers still need phase-specific worker-join, endpoint and
+dataplane checks. Fake-client tests cover identities, controller relationship,
+label phases/collisions, incomplete lists, changed versions and lost ownership;
+the complete coordinator is not yet wired to this helper.
