@@ -14,8 +14,10 @@ import (
 // FaultLifecycle binds preparation, one original prepared probe, metric workers
 // and post-join recovery. Commands and hooks must be independently admitted;
 // success from a child is not a substitute for the actual fault/metric gates.
-// The prepared script must not repeat protocol/network preparation or restore.
-// It owns the original probe, expiry wait and fault gates under the supplied clock.
+// The prepared script must not mutate protocol/network state or restore it.
+// It owns the original probe, expiry wait and fault observations under the
+// supplied clock. The parent activates the reserved policy before dispatching
+// that clock to the prepared child (metric workers already received it).
 type FaultLifecycle struct {
 	// Owner must be an acquired, durably receipted claim for this exact scope.
 	// The lifecycle never releases it; release is an explicit post-recovery step.
@@ -41,6 +43,9 @@ type LifecycleResult struct {
 	Metrics                       []metricsworker.Result
 	ExecutionError, RecoveryError error
 	Outcome                       *OriginalOutcome
+	// API acknowledgement only, never Cilium enforcement or acceptance. False
+	// after an error does not imply the PATCH had no effect.
+	ActivationAcknowledged bool
 }
 
 // RunFaultLifecycle never retries an attempt or releases external ownership.
@@ -105,6 +110,17 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 				if err := l.Preparation.Own(faultCtx); err != nil {
 					return err
 				}
+				// The single fault clock already runs and has been dispatched to
+				// metric workers. No preparation or activation gets a fresh budget.
+				if err := l.Preparation.NoncesSafe(faultCtx); err != nil {
+					return fmt.Errorf("pre-activation nonce admission: %w", err)
+				}
+				if err := ActivateNetwork(faultCtx, l.Preparation.Client, l.Preparation.Directory, l.Preparation.Network, origin, func(ctx context.Context) error {
+					return CheckNetworkIdentity(ctx, l.Preparation.Client, l.Preparation.Network, l.Preparation.StatefulSetName, NetworkLabelOwned, l.Preparation.Own)
+				}); err != nil {
+					return fmt.Errorf("activate reserved fault policy: %w", err)
+				}
+				result.ActivationAcknowledged = true
 				if err := inject(faultCtx, origin); err != nil {
 					return err
 				}

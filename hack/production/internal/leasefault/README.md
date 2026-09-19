@@ -124,6 +124,25 @@ checks the claim before preparation, wraps the additional Own admission with
 claim checks, and rechecks before metric baselines and original fault dispatch.
 The wrapped admission is also used by outcome verification and recovery. The
 claim remains held on return even after successful recovery; release is explicit.
+
+The lifecycle now performs native `ActivateNetwork` itself. After all metric
+workers receive the original clock, it rechecks nonce safety within that same
+budget, then activates the exact receipted policy with conditional UID/RV/spec
+tests and fresh owned-label/claim admission. Only an acknowledged activation
+permits dispatch of the unchanged clock to the already-prepared probe child.
+That child must no longer create/activate policies: it only observes enforcement,
+drop, successor, original probe and stack gates. Preparation and recovery also
+remain parent-owned. `LifecycleResult.ActivationAcknowledged` means only an API
+acknowledgement, not enforcement; false on error cannot prove no mutation occurred.
+
+Activation admission failure, PATCH conflict and an applied PATCH with a lost
+response fail execution without dispatching the child clock or reading original
+outcome evidence. The parent joins children before attempting recovery and does
+not retry activation. Composition tests assert zero/one activation calls, clock
+ordering, policy absence and restored labels/protocol afterward, including the
+lost-response case. These use fake Kubernetes and real local RPC/process fixtures,
+not a new real-cluster fault attempt. A deployable observation child and complete
+CLI/admission bundle are still required.
 Lifecycle tests acquire a fake-API claim and verify normal release after recovery,
 retention on failed external join, and refusal of protocol recovery writes after
 the claim disappears. These are cooperating-controller tests, not proof that an

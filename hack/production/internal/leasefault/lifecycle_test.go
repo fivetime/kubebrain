@@ -14,7 +14,13 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/metricsworker"
 	"github.com/stretchr/testify/require"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 func testFaultLifecycle(t *testing.T, ctx context.Context, prep FaultPreparation, owner *FaultOwner, mode string) {
@@ -37,6 +43,7 @@ set -eu
 printf '%s\n' "$$" > "$1/fault.pid"
 printf 'FAULT_READY\n'
 IFS= read -r origin
+[[ -f "$1/activation-ack" ]]
 printf '%s\n' "$origin" > "$1/fault.origin"
 if [[ $2 == lifecycle-child-fail ]]; then exit 7; fi
 if [[ $2 == lifecycle-deadline ]]; then exec /bin/sleep 60; fi
@@ -53,6 +60,39 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	joined := false
 	evidenceRead := false
 	var origin time.Time
+	activationCalls := 0
+	client := prep.Client.(*fake.FakeDynamicClient)
+	client.PrependReactor("patch", "ciliumnetworkpolicies", func(a ktesting.Action) (bool, runtime.Object, error) {
+		activationCalls++
+		require.False(t, origin.IsZero(), "activation must follow original clock selection")
+		_, err := os.Stat(filepath.Join(dir, "fault.origin"))
+		require.ErrorIs(t, err, os.ErrNotExist, "child must still await activation acknowledgement")
+		if mode == "lifecycle-activation-conflict" {
+			return true, nil, errors.New("conditional PATCH conflict")
+		}
+		if mode == "lifecycle-activation-lost-response" {
+			obj, err := client.Tracker().Get(a.GetResource(), a.GetNamespace(), prep.Network.PolicyName)
+			require.NoError(t, err)
+			u := obj.(*unstructured.Unstructured).DeepCopy()
+			require.NoError(t, unstructured.SetNestedField(u.Object, prep.Network.Nonce, "spec", "endpointSelector", "matchLabels", "kubebrain.io/fault-owner"))
+			require.NoError(t, client.Tracker().Update(a.GetResource(), u, a.GetNamespace()))
+			return true, nil, errors.New("activation committed but response lost")
+		}
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "activation-ack"), []byte("fixture\n"), 0600))
+		return false, nil, nil
+	})
+	originalNonceCheck := prep.NoncesSafe
+	prep.NoncesSafe = func(ctx context.Context) error {
+		if !origin.IsZero() {
+			deadline, ok := ctx.Deadline()
+			require.True(t, ok)
+			require.False(t, deadline.After(origin.Add(30*time.Second)))
+			if mode == "lifecycle-activation-nonce-fail" {
+				return errors.New("foreign endpoint before activation")
+			}
+		}
+		return originalNonceCheck(ctx)
+	}
 	result, err := RunFaultLifecycle(ctx, FaultLifecycle{
 		Owner:       owner,
 		Preparation: prep, Fault: fault, Workers: []metricsworker.Command{worker}, RecoveryConnection: prep.Connection, RecoveryTimeout: 5 * time.Second,
@@ -135,6 +175,19 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		IdentityRestored: func(context.Context) error { require.True(t, joined); return nil },
 	})
 	require.True(t, joined)
+	if mode == "lifecycle-baseline-fail" || mode == "lifecycle-parent-cancel" || mode == "lifecycle-activation-nonce-fail" {
+		require.Zero(t, activationCalls)
+		require.False(t, result.ActivationAcknowledged)
+	} else {
+		require.Equal(t, 1, activationCalls, "activation must never retry")
+		require.Equal(t, mode != "lifecycle-activation-conflict" && mode != "lifecycle-activation-lost-response", result.ActivationAcknowledged)
+	}
+	if strings.HasPrefix(mode, "lifecycle-activation-") {
+		_, statErr := os.Stat(filepath.Join(dir, "fault.origin"))
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+		require.False(t, evidenceRead)
+		require.Nil(t, result.Outcome)
+	}
 	if mode == "lifecycle-owner-lost" {
 		require.Error(t, err)
 		require.Error(t, result.ExecutionError)
@@ -152,6 +205,11 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	}
 	require.NoError(t, result.RecoveryError)
 	require.NoError(t, VerifyProtocolRecovery(parentCtx, prep.Protocol, prep.Connection))
+	_, policyErr := prep.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(prep.Network.Namespace).Get(parentCtx, prep.Network.PolicyName, metav1.GetOptions{})
+	require.True(t, apierrors.IsNotFound(policyErr), "recovery must remove even activation committed with a lost response")
+	pod, podErr := prep.Client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).Namespace(prep.Network.Namespace).Get(parentCtx, prep.Network.PodName, metav1.GetOptions{})
+	require.NoError(t, podErr)
+	require.Equal(t, map[string]string{"app": "brain"}, pod.GetLabels())
 	require.NoError(t, owner.Release(parentCtx, func(ctx context.Context) error {
 		require.True(t, joined)
 		require.NoError(t, result.RecoveryError)
