@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/metricsworker"
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 	"github.com/kubewharf/kubebrain/hack/production/internal/retirementmetrics"
 	"github.com/stretchr/testify/require"
@@ -60,12 +61,11 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 			_ = cmd.Wait()
 		}
 	})
-	reader := bufio.NewReader(stdout)
-	line, err := reader.ReadString('\n')
+	protocol, err := metricsworker.NewProtocol(stdout, owner)
 	require.NoError(t, err)
-	ready := strings.Split(strings.TrimSuffix(line, "\n"), "\t")
-	require.Len(t, ready, 3)
-	require.Equal(t, "READY", ready[0])
+	r, err := protocol.ReadReady()
+	require.NoError(t, err)
+	ready := []string{"READY", r.Worker, r.Baseline}
 	require.Equal(t, owner, filepath.Dir(ready[1]))
 	require.Equal(t, owner, filepath.Dir(ready[2]))
 	raw, err := os.ReadFile(filepath.Join(owner, "diagnostic-spec.json"))
@@ -82,13 +82,12 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 	_, err = fmt.Fprintf(stdin, "%d\n", origin)
 	require.NoError(t, err)
 	require.NoError(t, stdin.Close())
-	rest, err := io.ReadAll(reader)
+	c, err := protocol.ReadCaptured()
 	require.NoError(t, err)
+	require.NoError(t, protocol.Finish())
 	require.NoError(t, cmd.Wait(), stderr.String())
 	require.NoError(t, ctx.Err())
-	captured := strings.Split(strings.TrimSuffix(string(rest), "\n"), "\t")
-	require.Len(t, captured, 3)
-	require.Equal(t, "CAPTURED", captured[0])
+	captured := []string{"CAPTURED", c.Capture, c.Schedule}
 	after, err := retirementmetrics.LoadCapture(captured[1], binding)
 	require.NoError(t, err)
 	delta, err := retirementmetrics.SampleDelta(before, after, retirementmetrics.Key{Stage: "peer", Outcome: "confirmed"})
