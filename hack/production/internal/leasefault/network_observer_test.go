@@ -122,14 +122,16 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 		require.ErrorIs(t, err, os.ErrNotExist, "drop mode must not probe backend TCP")
 		return
 	}
-	if strings.HasPrefix(mode, "observer-active") {
+	if strings.HasPrefix(mode, "observer-active") || strings.HasPrefix(mode, "observer-check-active") {
+		checkOnly := strings.HasPrefix(mode, "observer-check-active")
+		activeMode := strings.Replace(mode, "observer-check-active", "observer-active", 1)
 		origin := time.Now()
 		faultCtx, cancel := context.WithDeadline(ctx, origin.Add(30*time.Second))
 		defer cancel()
-		if mode != "observer-active-inactive" {
+		if activeMode != "observer-active-inactive" {
 			require.NoError(t, ActivateNetwork(faultCtx, p.Client, dir, p.Network, origin, p.Own))
 		}
-		if mode == "observer-active-replaced" {
+		if activeMode == "observer-active-replaced" {
 			resource := p.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(p.Network.Namespace)
 			policy, err := resource.Get(ctx, p.Network.PolicyName, metav1.GetOptions{})
 			require.NoError(t, err)
@@ -137,13 +139,32 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 			_, err = resource.Update(ctx, policy, metav1.UpdateOptions{})
 			require.NoError(t, err)
 		}
-		err := o.Active(faultCtx, origin)
-		if mode == "observer-active-inactive" || mode == "observer-active-replaced" {
+		observe := o.Active
+		if checkOnly {
+			observe = o.CheckActive
+			// Checking must not depend on a cached script verdict, or launch any
+			// observation subprocess at all. Remove this fixture's executable.
+			require.NoError(t, os.Remove(filepath.Join(scripts, "observe-local-policy-state.sh")))
+		}
+		err := observe(faultCtx, origin)
+		if activeMode == "observer-active-inactive" || activeMode == "observer-active-replaced" {
 			require.Error(t, err)
 			require.Zero(t, retained)
 			return
 		}
 		require.NoError(t, err)
+		if checkOnly {
+			require.Zero(t, retained)
+			// A previously matched API check must not hide a later replacement.
+			resource := p.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(p.Network.Namespace)
+			policy, err := resource.Get(ctx, p.Network.PolicyName, metav1.GetOptions{})
+			require.NoError(t, err)
+			policy.SetUID("replaced-after-check")
+			_, err = resource.Update(ctx, policy, metav1.UpdateOptions{})
+			require.NoError(t, err)
+			require.Error(t, o.CheckActive(faultCtx, origin))
+			return
+		}
 		require.Equal(t, map[string]bool{"active": true}, stages)
 		if mode == "observer-active-pending" {
 			require.Equal(t, 1, pending)

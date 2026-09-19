@@ -49,6 +49,14 @@ func (o NetworkObserver) Active(ctx context.Context, origin time.Time) error {
 	return o.observeFault(ctx, "active", origin, 0)
 }
 
+// CheckActive refreshes ownership, Pod identity, the exact active API policy and
+// frozen inputs without running a dataplane script. It is suitable for the
+// network part of FaultObservation.CheckIsolation before/after each Status read.
+// It does not establish Cilium realization; Active and Drops remain mandatory.
+func (o NetworkObserver) CheckActive(ctx context.Context, origin time.Time) error {
+	return o.observeFault(ctx, "check-active", origin, 0)
+}
+
 // Drops captures once (including on exit 75), binds both backend classes and
 // retains the result before accepting it. durationSeconds is the remote capture
 // interval, not a fresh budget. The full child is supervised under ctx.
@@ -181,7 +189,7 @@ func (o NetworkObserver) observeCapture(ctx context.Context, stage string, phase
 		if !bytes.Equal(receipt, current) {
 			return errors.New("observer reservation changed")
 		}
-		if stage == "active" || stage == "drops" {
+		if stage == "active" || stage == "drops" || stage == "check-active" {
 			active, err := o.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(o.Network.Namespace).Get(ctx, o.Network.PolicyName, metav1.GetOptions{})
 			if err != nil {
 				return err
@@ -206,6 +214,9 @@ func (o NetworkObserver) observeCapture(ctx context.Context, stage string, phase
 			}
 		}
 		return inputs()
+	}
+	if stage == "check-active" {
+		return admit(ctx)
 	}
 	mode := "absent"
 	if phase == NetworkUnlabelled {
