@@ -46,5 +46,22 @@ UID/spec/容器状态保持一致。再次复查 `scratch-cleanup.qamTu3g0` 目�
 源码、证书和证据保留；二进制可重建，旧二进制清单已退役。
 
 仓库修正 `4bd1eea8` 在故障前成功采栈后替换匿名转发，三轮会话 race
-测试通过。尚须完整控制器接入及真实验证，不能把单元测试计作本轮
+测试通过。后续完整控制器离线接入已完成，见
+[会话验证记录](protected_stack_session_cn.md)；仍须真实验证，不能把离线测试计作本轮
 故障验收通过，也不能忽略仅剩约 0.964 秒的诊断预算问题。
+
+## 后续新实验准备（未部署）
+
+新目录 `fault-anonymous-rearm.uDtThDsG` 固定工具源码 `57b7433c`，
+产品候选仍为 `2ad79751`。只读重新核验原配置 generation 122、
+3 Ready/updated、本地卷 12 Bound / 80 Released、PD 精确集群 ID，
+三项 CI 与已发布镜像摘要/版本均通过。新构建六个工具并保存摘要；
+三成员新 PKI、信任材料及 client-only Secret 方案校验通过，尚未上传。
+证书到期时间为 2026-09-20 03:29:42 UTC，最终准入须重新检查有效期。
+
+`restored-baseline.GCOTyWZ0` 再次证明原 Secret UID/resourceVersion/data
+未变，上一轮及新 owner 的临时 Secret/策略不存在，三个 Pod 无故障标签，
+诊断/RPC 端口空闲；挂载公有证书及采集前后进程身份也通过独立检查。
+上述读取没有改变集群或默认 2PC。新 owner 仍 HOLD，尚无部署和故障
+结果；下一步为新 token 控制器/恢复闭包冻结、绑定的离线回归、预拉取
+及清理证明、最终准入。旧目录保持终态，不复用 claim 或 PKI。
