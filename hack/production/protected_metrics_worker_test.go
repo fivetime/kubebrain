@@ -24,21 +24,23 @@ import (
 )
 
 func TestProtectedMetricsWorkerRealSessionArtifacts(t *testing.T) {
-	for _, reject := range []bool{false, true} {
-		t.Run(fmt.Sprintf("reject-baseline-%t", reject), func(t *testing.T) {
-			testProtectedMetricsWorkerRealSessionArtifacts(t, reject)
-		})
+	for _, count := range []int{1, 2} {
+		for _, reject := range []bool{false, true} {
+			t.Run(fmt.Sprintf("workers-%d-reject-baseline-%t", count, reject), func(t *testing.T) {
+				testProtectedMetricsWorkerRealSessionArtifacts(t, count, reject)
+			})
+		}
 	}
 }
 
-func testProtectedMetricsWorkerRealSessionArtifacts(t *testing.T, reject bool) {
+func testProtectedMetricsWorkerRealSessionArtifacts(t *testing.T, count int, reject bool) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
 	owner := t.TempDir()
 	require.NoError(t, os.Mkdir(filepath.Join(owner, "deployment-claimed"), 0700))
 	require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
 	probe := strings.Replace(metricsProbeFixture(), `printf 'x 1\n' > "$2"`, `value=0
-if [[ -e $stack_owner/baseline-written ]]; then value=1; else touch "$stack_owner/baseline-written"; fi
+if [[ -e $stack_owner/baseline-written-$stack_info_port ]]; then value=1; else touch "$stack_owner/baseline-written-$stack_info_port"; fi
 printf '# TYPE leader_retirement_peer_result counter\nleader_retirement_peer_result{cluster="test",outcome="confirmed"} %s\n' "$value" > "$2"`, 1)
 	require.NotEqual(t, metricsProbeFixture(), probe)
 	require.NoError(t, os.WriteFile(filepath.Join(owner, "bin", "info-diagnostic-probe"), []byte(probe), 0700))
@@ -50,33 +52,46 @@ printf '# TYPE leader_retirement_peer_result counter\nleader_retirement_peer_res
 	setup = strings.Replace(setup, `mkdir "$stack_owner/deployment-claimed"`, `test -d "$stack_owner/deployment-claimed"`, 1)
 	setup += `
 sha256sum "$stack_library_dir/protected-metrics-worker.sh" >> "$stack_owner/tools.sha256"
-export stack_kubeconfig stack_context stack_namespace stack_namespace_uid stack_sts stack_sts_uid stack_tls stack_server_name
-export -f kubectl timeout ss openssl
-unset stack_info_port stack_anonymous_port
-exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
+declare -f kubectl timeout ss openssl
+declare -p stack_owner scenario stack_library_dir stack_kubeconfig stack_context stack_namespace stack_namespace_uid stack_sts stack_sts_uid stack_tls stack_server_name
+printf '%s\n' 'export stack_owner scenario stack_kubeconfig stack_context stack_namespace stack_namespace_uid stack_sts stack_sts_uid stack_tls stack_server_name' 'export -f kubectl timeout ss openssl'
 `
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	// Create shared immutable fixture files once, before starting workers. This
+	// shell never prepares a session or owns any port-forward jobs.
+	prepare := exec.CommandContext(ctx, "/bin/bash", "-c", setup, "test", library, owner, "success")
+	processgroup.Configure(prepare)
+	prepare.WaitDelay = time.Second
+	bootstrap, err := prepare.Output()
+	require.NoError(t, err)
+	workerSetup := "set -euo pipefail\n" + string(bootstrap) + `
+export stack_info_port=$1 stack_anonymous_port=$2
+exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 "$3"
+`
 	stderr, err := os.CreateTemp(owner, "supervisor-stderr-*")
 	require.NoError(t, err)
 	defer stderr.Close()
-	var before retirementmetrics.Sample
+	before := make([]retirementmetrics.Sample, count)
 	var binding retirementmetrics.CaptureBinding
 	var origin int64
-	var workerDir string
-	baselineChecked, completedChecked, injected := false, false, false
-	results, runErr := metricsworker.Run(ctx, owner, []metricsworker.Command{{
-		Executable: "/bin/bash", Args: []string{"-c", setup, "test", library, owner, "success"}, Env: os.Environ(), Stderr: stderr,
-	}}, metricsworker.Hooks{
+	workerDirs := make([]string, count)
+	baselineChecked, completedChecked, injected := 0, 0, false
+	commands := make([]metricsworker.Command, count)
+	for i := range commands {
+		commands[i] = metricsworker.Command{Executable: "/bin/bash", Args: []string{"-c", workerSetup, "worker", fmt.Sprint(18586 + 2*i), fmt.Sprint(18587 + 2*i), fmt.Sprint(i * 100000000)}, Env: os.Environ(), Stderr: stderr}
+	}
+	results, runErr := metricsworker.Run(ctx, owner, commands, metricsworker.Hooks{
 		Inject: func(_ context.Context, fault time.Time) error {
-			require.True(t, baselineChecked)
+			require.Equal(t, count, baselineChecked)
 			require.Equal(t, origin, fault.UnixNano())
 			injected = true
 			return nil // Explicit no-op: simulated clock/transport integration only.
 		},
 		Baseline: func(_ context.Context, index int, r metricsworker.Ready) error {
-			workerDir = r.Worker
-			require.Equal(t, 0, index)
+			require.GreaterOrEqual(t, index, 0)
+			require.Less(t, index, count)
+			workerDirs[index] = r.Worker
 			ready := []string{"READY", r.Worker, r.Baseline}
 			require.Equal(t, owner, filepath.Dir(ready[1]))
 			require.Equal(t, owner, filepath.Dir(ready[2]))
@@ -88,35 +103,37 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 			require.NoError(t, err)
 			hash := sha256.Sum256(canonical)
 			binding = retirementmetrics.CaptureBinding{NamespaceUID: "ns-uid", StatefulSetUID: "sts-uid", PodUID: "pod-uid", SpecSHA256: hex.EncodeToString(hash[:]), Cluster: "test"}
-			before, err = retirementmetrics.LoadCapture(ready[2], binding)
+			before[index], err = retirementmetrics.LoadCapture(ready[2], binding)
 			require.NoError(t, err)
-			baselineChecked = true
-			if reject {
+			baselineChecked++
+			if reject && baselineChecked == count {
 				return fmt.Errorf("deliberate baseline rejection")
 			}
 			return nil
 		},
 		Origin: func(context.Context) (time.Time, error) {
-			require.True(t, baselineChecked)
+			require.Equal(t, count, baselineChecked)
 			now := time.Now()
 			origin = now.UnixNano()
 			return now, nil // Clock delivery only: no real Kubernetes fault injected.
 		},
 		Completed: func(_ context.Context, index int, result metricsworker.Result, fault time.Time) error {
 			require.True(t, injected)
-			require.Equal(t, 0, index)
+			require.GreaterOrEqual(t, index, 0)
+			require.Less(t, index, count)
 			require.Equal(t, origin, fault.UnixNano())
 			c := result.Captured
 			ready := []string{"READY", result.Ready.Worker, result.Ready.Baseline}
 			captured := []string{"CAPTURED", c.Capture, c.Schedule}
-			after, err := retirementmetrics.LoadScheduledCapture(captured[2], captured[1], binding, fault, 0)
+			offset := time.Duration(index) * 100 * time.Millisecond
+			after, err := retirementmetrics.LoadScheduledCapture(captured[2], captured[1], binding, fault, offset)
 			require.NoError(t, err)
-			delta, err := retirementmetrics.SampleDelta(before, after, retirementmetrics.Key{Stage: "peer", Outcome: "confirmed"})
+			delta, err := retirementmetrics.SampleDelta(before[index], after, retirementmetrics.Key{Stage: "peer", Outcome: "confirmed"})
 			require.NoError(t, err)
 			require.Equal(t, float64(1), delta)
 			input, err := os.ReadFile(filepath.Join(captured[2], "input.tsv"))
 			require.NoError(t, err)
-			require.Equal(t, fmt.Sprintf("%d\t0\n", origin), string(input))
+			require.Equal(t, fmt.Sprintf("%d\t%d\n", origin, int64(offset)), string(input))
 			check, err := exec.Command("sha256sum", "-c", filepath.Join(captured[2], "evidence.sha256")).CombinedOutput()
 			require.NoError(t, err, string(check))
 			complete, err := os.ReadFile(filepath.Join(captured[2], "COMPLETE"))
@@ -125,7 +142,7 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 			receipt, err := os.ReadFile(filepath.Join(ready[1], "exit-code"))
 			require.NoError(t, err)
 			require.Equal(t, "0\n", string(receipt))
-			completedChecked = true
+			completedChecked++
 			return nil
 		},
 	})
@@ -135,19 +152,33 @@ exec bash "$stack_library_dir/protected-metrics-worker.sh" brain-0 0
 		require.ErrorContains(t, runErr, "deliberate baseline rejection")
 		require.Zero(t, origin, "must not inject on a rejected baseline")
 		require.False(t, injected)
-		require.False(t, completedChecked)
-		receipt, err := os.ReadFile(filepath.Join(workerDir, "exit-code"))
-		require.NoError(t, err, string(log))
-		require.Equal(t, "143\n", string(receipt))
+		require.Zero(t, completedChecked)
+		for _, workerDir := range workerDirs {
+			receipt, err := os.ReadFile(filepath.Join(workerDir, "exit-code"))
+			require.NoError(t, err, string(log))
+			require.Equal(t, "143\n", string(receipt))
+		}
 	} else {
 		require.NoError(t, runErr, string(log))
-		require.Len(t, results, 1)
-		require.True(t, completedChecked)
+		require.Len(t, results, count)
+		require.Equal(t, count, completedChecked)
+		if count == 2 {
+			require.NotEqual(t, results[0].Ready.Worker, results[1].Ready.Worker)
+			require.NotEqual(t, results[0].Captured.Capture, results[1].Captured.Capture)
+		}
 	}
 	require.NoError(t, ctx.Err())
 	pids, err := os.ReadFile(filepath.Join(owner, "pids"))
 	require.NoError(t, err)
-	require.Len(t, strings.Fields(string(pids)), 3)
+	require.Len(t, strings.Fields(string(pids)), 3*count)
+	sessions, err := filepath.Glob(filepath.Join(owner, "stack-session.*"))
+	require.NoError(t, err)
+	require.Len(t, sessions, count)
+	for port := 18586; port < 18586+2*count; port++ {
+		logs, err := filepath.Glob(filepath.Join(owner, "stack-session.*", fmt.Sprintf("forward-%d.log", port)))
+		require.NoError(t, err)
+		require.Len(t, logs, 1, "each configured port belongs to exactly one session")
+	}
 	for _, pid := range strings.Fields(string(pids)) {
 		require.Error(t, exec.Command("kill", "-0", pid).Run(), "forward survived worker exit")
 	}

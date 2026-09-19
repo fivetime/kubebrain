@@ -2,6 +2,17 @@
 
 ## 最新 CI 核验（2026-09-19）
 
+新候选 `69bc9334` CI 执行期间，本地将实际 worker/会话协调器集成
+扩展到双 worker：同一实验目录先准备一次共享冻结输入，后续独立
+Bash 进程只读取输入，各用独立端口和 0/100ms 偏移。每个 worker
+分别验证 LoadScheduledCapture、同进程计数差值、调度输入和退出
+回执；最后一个基线被拒绝时不选择起点、不注入，两个 worker 都
+以 143 清理退出。正常或拒绝返回时，六个模拟转发进程均不存在。
+初轮通过（17.531s），三轮 race 通过（50.498s）；Kubernetes、TLS
+和探针仍为模拟器，不宣称真实故障或端口竞争已验证。尚未推送。
+补充每个配置端口仅属于一个 session 的日志路径断言后，完整 worker
+race 再跑通过（21.488s），vet/diff-check 通过。
+
 上一批两项 CI 结束后，合并后的本地检查全部通过：完整 metricsworker
 race 8.768s、retirementmetrics 2.370s、delta CLI 3.473s、workflow
 2.611s、全部 worker 回归 13.219s；vet/diff-check 通过。准备将这些
