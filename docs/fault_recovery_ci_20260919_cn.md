@@ -137,6 +137,11 @@ race 回归通过（5.027s），metricsworker 回归通过（缓存），build �
 后续代码尚未推送，不能借用此次 CI 结论。归档时同源码镜像工作流
 35457120550 仍在构建推送；完整故障控制器和真实集群原 30 秒验收未完成。
 
+同源码镜像工作流 35457120550 随后成功，作业用时 33 分 15 秒。
+终态 API、全部作业和完整日志保存在私有目录
+`/root/.local/state/kubebrain/image-ci-35457120550-terminal.zifOr9GO`，
+源码、成功状态与 SHA256SUMS 均已核验。此结论仍不覆盖后续本地提交。
+
 ### 后续本地全包门限检查：未通过
 
 后续恢复/观察代码尚未推送时，按 CI 原命令执行
@@ -148,3 +153,12 @@ race 回归通过（5.027s），metricsworker 回归通过（缓存），build �
 并行化后，三个相关观察测试的定向 race 通过（22.082s），vet/diff 检查
 通过。断言、CI 的 2 分钟上限和真实故障 30 秒门限均未放宽。后续本地
 提交暂不推送；现有远端 `191afe8b` 的成功 CI 不覆盖这些更改。
+
+进一步 JSON 耗时记录保存在私有目录
+`/root/.local/state/kubebrain/test-cluster-timing.y3plddfR/events.jsonl`。
+记录中 LocalDropAndLabelIdentity 为 47.03s，endpoint 采集为 9.18s。
+审核两组用例的独立目录与子进程环境后，改为各最多 4 个用例并行，
+不更改断言或用例期限；两组定向 race 合计 15.656s 通过，vet 通过。
+再次全包运行仍在 120 秒超时，已推进到 PeerTrustStagePreflight。
+该调整只证明局部执行时间改善，不证明全包门限已满足；还需完整耗时
+分析，不能将诊断运行或定向结果冒充 CI 全包通过。

@@ -13,6 +13,8 @@ import (
 )
 
 func TestLocalDropAndLabelIdentity(t *testing.T) {
+	// Fixtures and child environments are per-case; cap concurrent shell trees.
+	slots := make(chan struct{}, 4)
 	for _, tc := range []struct {
 		name, kind, mode string
 		code             int
@@ -37,6 +39,9 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 		{"label-cancel", "label", "present", 124}, {"label-inner-timeout", "label", "absent", 124},
 	} {
 		t.Run(tc.kind+"/"+tc.mode+"/"+tc.name, func(t *testing.T) {
+			t.Parallel()
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
 			bin := filepath.Join(dir, "bin")

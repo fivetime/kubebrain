@@ -14,8 +14,12 @@ import (
 )
 
 func TestCaptureLocalCiliumEndpointProcessIdentity(t *testing.T) {
+	slots := make(chan struct{}, 4)
 	for _, scenario := range []string{"stable", "ready-restored", "ready-lost", "agent-ready-change", "pod-restart", "agent-restart", "pod-spec-change", "pod-uid-change", "cep-change", "endpoint-not-ready", "wrong-namespace", "missing-image-id"} {
 		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			slots <- struct{}{}
+			defer func() { <-slots }()
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
 			bin := filepath.Join(dir, "bin")
