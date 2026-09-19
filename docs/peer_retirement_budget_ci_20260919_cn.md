@@ -10,7 +10,12 @@
 
 - [镜像构建 35420491977](https://github.com/fivetime/kubebrain/actions/runs/35420491977)：push 触发，运行中。
 - [探针回归 35420491991](https://github.com/fivetime/kubebrain/actions/runs/35420491991)：push 触发，运行中。
-- [后端协议集成 35420501469](https://github.com/fivetime/kubebrain/actions/runs/35420501469)：手动触发一次，运行中。
+- [后端协议集成 35420501469](https://github.com/fivetime/kubebrain/actions/runs/35420501469)：手动触发一次，已成功完成。
+
+后端 workflow 与全部 job 的终态及候选 SHA 经独立 API 复查，真实协议/
+race、中断启动清理等步骤均成功，证据保存在私有
+`peer-budget-ci.zmNqdVeq/backend-terminal.whzAZTcY`。它不替代尚在
+运行的镜像/探针 CI，也不证明专用集群的 30 秒故障验收通过。
 
 没有可据此准入的新镜像，也未开始集群实验。仍须全部相关 CI 通过、
 镜像源码与多架构摘要核验，以及新 owner 的完整准入/恢复准备。
@@ -27,3 +32,10 @@
 测试选择为 `^Test(ColdRestoreExecute|ProtectedStackSession|SamePodProcess|Successor|WaitPolicyAbsence|ExpiredLeaseWait)`。
 覆盖中断处的 ColdRestoreExecute 与本批相关诊断/观察工具；此结果仍不
 替代完整实验工具包的回归，也不替代上述候选 CI 或真实集群验收。
+
+完整实验工具包另以 `go test -json -race -count=1 -timeout=30m
+./hack/production` 重新运行，未过滤测试或修改断言；枚举有 760 个顶层
+测试。私有证据 `production-full-regression.Yn9yRX9d`，会话 54056。
+这是全包总运行预算，不是改变任何单用例或集群验收门限。最新轮询仍
+存活，506 个通过事件（含子测试）、未见失败；ColdRestoreExecute 已
+通过（17.43 秒）。尚未取得全包终态，不能计为全包通过。
