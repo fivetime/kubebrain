@@ -160,6 +160,9 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 		"hack/production/protected_wait_worker_test.go",
 		"hack/production/expired-lease-wait-frames.jq",
 		"hack/production/expired_lease_wait_frames_test.go",
+		"hack/production/monitor-stream.jq",
+		"hack/production/backend-drops.jq",
+		"hack/production/backend_drops_test.go",
 		"hack/production/protected_stack_session_test.go",
 		"hack/production/protected_session_hash_budget_test.go",
 		"hack/production/protected_metrics_schedule_test.go",
@@ -176,6 +179,7 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|MetricsSchedule|MetricsWorker|SessionHashVerificationHonorsFaultDeadline)'\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestExpiredLeaseWait'\n")
+	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestBackendPolicyDropEvidence$'\n")
 	require.Contains(t, workflow.On["push"].Paths, "hack/production/fault-policy-delete-plan.jq")
 	require.Contains(t, workflow.On["push"].Paths, "hack/production/fault_policy_delete_plan_test.go")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestFaultPolicyDeletePlan$'\n")
