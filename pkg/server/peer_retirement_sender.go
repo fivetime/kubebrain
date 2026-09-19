@@ -133,6 +133,8 @@ func retirementSigningPublicKey(key any) (encoded []byte, err error) {
 }
 
 // send makes at most one attempt per configured peer under ONE shared deadline.
+// Each attempt receives a share of the remaining budget so an unresponsive
+// first peer cannot consume the entire window before healthy peers are tried.
 // It returns nil only for an explicit 204. Lost acknowledgements, old peers (404),
 // conflicts and deadlines are all unconfirmed; normal lease election remains
 // the fallback. Never log the serialized condition or transport errors/URLs.
@@ -149,12 +151,20 @@ func (s *peerRetirementSender) send(parent context.Context, condition election.O
 	}
 	ctx, cancel := context.WithTimeout(parent, s.budget)
 	defer cancel()
-	for _, endpoint := range s.endpoints {
+	for i, endpoint := range s.endpoints {
 		if ctx.Err() != nil {
 			break
 		}
-		r, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+		deadline, _ := ctx.Deadline()
+		remaining := time.Until(deadline)
+		attemptBudget := remaining / time.Duration(len(s.endpoints)-i)
+		if attemptBudget <= 0 {
+			break
+		}
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, attemptBudget)
+		r, err := http.NewRequestWithContext(attemptCtx, http.MethodPost, endpoint, bytes.NewReader(payload))
 		if err != nil {
+			cancelAttempt()
 			return errPeerRetirementUnconfirmed
 		}
 		r.Header.Set(retirementInstanceHeader, s.instance)
@@ -162,12 +172,15 @@ func (s *peerRetirementSender) send(parent context.Context, condition election.O
 		r.Header.Set("Content-Type", "application/json")
 		response, err := s.client.Do(r)
 		if err != nil {
+			cancelAttempt()
 			continue
 		}
 		// No response payload is part of this protocol. Closing rather than
 		// buffering/draining prevents a malicious peer from streaming forever.
 		_ = response.Body.Close()
-		if response.StatusCode == http.StatusNoContent && ctx.Err() == nil {
+		confirmed := response.StatusCode == http.StatusNoContent && attemptCtx.Err() == nil && ctx.Err() == nil
+		cancelAttempt()
+		if confirmed {
 			return nil
 		}
 	}

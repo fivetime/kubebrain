@@ -90,16 +90,18 @@ func TestPeerRetirementSenderNoRedirectAndBoundedFallback(t *testing.T) {
 	require.ErrorIs(t, sender.send(ctx, condition), errPeerRetirementUnconfirmed)
 	require.Equal(t, int32(1), fallback.Load())
 
-	// Hold the first response until client cancellation. An attempt-local timer
-	// must not reset the global budget and start a second request afterward.
+	// An attempt must inherit an earlier parent deadline, not gain another
+	// configured window. No acknowledgement may be accepted after cancellation.
 	slow := retirementHandlerServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		<-r.Context().Done()
 	}), pool, certs, false)
-	bounded, err := newPeerRetirementSender("instance", "old", []string{slow.URL, second.URL}, credentials, 50*time.Millisecond)
+	bounded, err := newPeerRetirementSender("instance", "old", []string{slow.URL}, credentials, time.Second)
 	require.NoError(t, err)
+	ctx, cancel = context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
 	start := time.Now()
-	require.ErrorIs(t, bounded.send(context.Background(), condition), errPeerRetirementUnconfirmed)
+	require.ErrorIs(t, bounded.send(ctx, condition), errPeerRetirementUnconfirmed)
 	require.Less(t, time.Since(start), time.Second)
 	require.Equal(t, int32(1), fallback.Load(), "shared deadline exhausted: no next peer request")
 }
@@ -148,6 +150,43 @@ func TestPeerRetirementSenderRejectsUnsafeConfiguration(t *testing.T) {
 	transport := sender.client.Transport.(*http.Transport)
 	require.Equal(t, uint16(tls.VersionTLS13), transport.TLSClientConfig.MinVersion)
 	require.Nil(t, transport.Proxy)
+}
+
+func TestPeerRetirementSenderUnresponsivePeerDoesNotStarveHealthyPeer(t *testing.T) {
+	for _, h2 := range []bool{false, true} {
+		t.Run(fmt.Sprintf("h2=%v", h2), func(t *testing.T) {
+			auth, pool, certs, payload, condition := retirementHandlerFixture(t)
+			var slowCalls, healthyCalls atomic.Int32
+			slowDone := make(chan struct{})
+			slow := retirementHandlerServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				slowCalls.Add(1)
+				<-r.Context().Done()
+				close(slowDone)
+			}), pool, certs, h2)
+			h, err := newPeerRetirementHandler(auth, func(ctx context.Context, received election.OwnershipCondition) error {
+				wire, err := received.MarshalBinary()
+				if err != nil || !bytes.Equal(payload, wire) {
+					return errPeerRetirementRequest
+				}
+				healthyCalls.Add(1)
+				return nil
+			}, time.Second, time.Second, 2, 100)
+			require.NoError(t, err)
+			healthy := retirementHandlerServer(t, h, pool, certs, h2)
+			sender, err := newPeerRetirementSender("instance", "old", []string{slow.URL, healthy.URL},
+				&tls.Config{RootCAs: pool, Certificates: []tls.Certificate{certs[0]}}, time.Second)
+			require.NoError(t, err)
+			require.NoError(t, sender.send(context.Background(), condition))
+			require.Equal(t, int32(1), slowCalls.Load())
+			require.Equal(t, int32(1), healthyCalls.Load())
+			select {
+			case <-slowDone:
+			case <-time.After(time.Second):
+				t.Fatal("timed-out peer request was not canceled")
+			}
+		})
+	}
 }
 
 func TestPeerRetirementSenderRejectsUntrustedServer(t *testing.T) {

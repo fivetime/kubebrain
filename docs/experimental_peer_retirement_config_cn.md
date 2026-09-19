@@ -42,6 +42,14 @@
   轮换时可提前给同一 holder 配置不同 key 的多个 pin。
 - 三个预算均为 Go duration 字符串，范围 `(0, 1m]`；concurrency 为 1–64，
   requests_per_second 为 `(0, 1000]`。没有隐式默认预算或错误容忍回退。
+- `send_budget` 是一次退让通知的总预算，不是每个 peer 的独立预算。
+  发送仍串行且每个配置 peer 至多尝试一次；每次从剩余总时间中按尚未
+  尝试的 peer 数分配本次上限，避免首个无响应 peer 耗尽全部时间。
+  较早的父级截止时间始终生效，父级取消立即停止后续尝试。只接受在
+  本次及总预算内收到的 204；超时/不确定提交不使旧 term 恢复有效。
+  多 peer 配置中，单个慢 peer 获得的时间会小于完整 `send_budget`，
+  因而这不是提高所有单次请求成功率的保证；所有尝试失败仍回退正常
+  租约选举。各次尝试使用同一冻结 claim，不能重新读取新 holder 后释放。
 - scope 来自实际 backend resource lock 的 RetirementScope，绑定真实存储
   cluster ID、keyspace 和选举 prefix，算法见
   [retired_release_scope.go](../pkg/backend/election/retired_release_scope.go)。
