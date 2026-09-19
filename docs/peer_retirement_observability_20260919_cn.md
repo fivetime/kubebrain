@@ -219,6 +219,26 @@ diff-check 通过。未修改集群、未重跑故障验收；指标语义和同
 
 #### 离线采集目录加载与命令
 
+#### 生产导出标签联测发现并修复不匹配
+
+`cmd/option/option.go` 实际以 `cluster=ClusterName` 构造 Prometheus
+适配器。此前仅允许 outcome 标签的解析器会拒绝真实产品序列；已有合成
+测试未覆盖该差异。因此候选 `3f64735d` 即使 CI 全绿，也不能作为真实
+退休指标诊断工具准入，需包含零基线及本次 cluster 绑定修复的新版本。
+
+新增 `ParseForCluster`，生产采集加载器和 CLI 必须接收独立准入的 cluster，
+仅允许匹配的 cluster/outcome 两个标签。错误或缺失 cluster、额外标签、
+重复标签均拒绝；空 cluster 的旧 Parse 只用于不带全局标签的单元夹具。
+cluster 同时进入 Sample 进程身份比较，不能跨 cluster 做差值。
+
+新增独立子进程测试使用产品 Prometheus 适配器真实 `/metrics` HTTP 输出，
+验证八个零序列与一次 peer confirmed 后的 0→1 差值，而非手写导出文本。
+该测试验证导出/解析联通，不声称启动了真实服务器或产生真实退休事件。
+最终库/CLI 三轮 race 通过（4.507s/5.064s），会话产物加载成功路径 race
+通过（4.700s），相关 vet/diff-check 通过；此前完整探针三轮 race 通过
+（12.468s）。旧候选两个 CI 仍运行，分别在 etcd service/Watch 检查及
+镜像构建；本次修复未推送、未部署，不取消或重复触发原构建。
+
 后续补充 CLI 真正入口的子进程测试：完整的合成采集包前后计数 2→5，
 核对退出码 0 和唯一成功 JSON（delta=3，三项 readiness/latency/acceptance
 结论仍为 false）；基线缺失、回退、进程变化、倒序、重叠、篡改、不完整、

@@ -17,7 +17,7 @@ import (
 func captureFixture(t *testing.T) (string, CaptureBinding) {
 	t.Helper()
 	dir := t.TempDir()
-	raw := []byte("# TYPE leader_retirement_peer_result counter\nleader_retirement_peer_result{outcome=\"confirmed\"} 1\n")
+	raw := []byte("# TYPE leader_retirement_peer_result counter\nleader_retirement_peer_result{cluster=\"test\",outcome=\"confirmed\"} 1\n")
 	start := time.Unix(1800000000, 0).UTC()
 	summary, err := json.Marshal(summaryFixture(t, raw, start))
 	require.NoError(t, err)
@@ -27,7 +27,7 @@ func captureFixture(t *testing.T) (string, CaptureBinding) {
 	canonical, err := json.Marshal(decoded)
 	require.NoError(t, err)
 	hash := sha256.Sum256(canonical)
-	binding := CaptureBinding{NamespaceUID: "ns-uid", StatefulSetUID: "sts-uid", PodUID: "pod-uid", SpecSHA256: hex.EncodeToString(hash[:])}
+	binding := CaptureBinding{NamespaceUID: "ns-uid", StatefulSetUID: "sts-uid", PodUID: "pod-uid", SpecSHA256: hex.EncodeToString(hash[:]), Cluster: "test"}
 	pod := `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"brain-0","namespace":"ns","uid":"pod-uid","ownerReferences":[{"kind":"StatefulSet","uid":"sts-uid","controller":true}]},"spec":{"nodeName":"node","containers":[{"name":"brain","image":"fixed"}]},"status":{"podIP":"10.0.0.1","containerStatuses":[{"name":"brain","imageID":"fixed-id","containerID":"process","restartCount":0,"ready":true,"state":{"running":{"startedAt":"start"}}}]}}`
 	trace := ""
 	for i, stage := range []string{"verify-inputs", "snapshot-before", "identity-before", "protected-probe", "snapshot-after", "identity-after"} {

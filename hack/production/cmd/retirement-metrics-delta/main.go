@@ -23,11 +23,12 @@ func run(args []string, output io.Writer) error {
 	flags.StringVar(&binding.NamespaceUID, "namespace-uid", "", "admitted namespace UID")
 	flags.StringVar(&binding.StatefulSetUID, "sts-uid", "", "admitted StatefulSet UID")
 	flags.StringVar(&binding.PodUID, "pod-uid", "", "admitted demoted Pod UID")
+	flags.StringVar(&binding.Cluster, "cluster", "", "admitted KubeBrain cluster label")
 	flags.StringVar(&binding.SpecSHA256, "spec-sha256", "", "canonical admitted StatefulSet spec hash")
 	flags.StringVar(&stage, "stage", "", "local or peer")
 	flags.StringVar(&outcome, "outcome", "", "retirement outcome")
 	if flags.Parse(args) != nil || flags.NArg() != 0 || before == "" || after == "" || (stage != "local" && stage != "peer") || outcome == "" {
-		return errors.New("invalid arguments; require before/after, namespace-uid, sts-uid, pod-uid, spec-sha256, stage and outcome")
+		return errors.New("invalid arguments; require before/after, namespace-uid, sts-uid, pod-uid, spec-sha256, cluster, stage and outcome")
 	}
 	a, err := retirementmetrics.LoadCapture(before, binding)
 	if err != nil {

@@ -40,7 +40,7 @@ func TestCLIProcessHelper(t *testing.T) {
 }
 
 func TestCLICompletedCapturePair(t *testing.T) {
-	for _, scenario := range []string{"success", "missing-baseline", "reset", "changed-process", "reversed", "overlap", "tampered", "incomplete", "wrong-admission"} {
+	for _, scenario := range []string{"success", "missing-baseline", "reset", "changed-process", "reversed", "overlap", "tampered", "incomplete", "wrong-admission", "wrong-cluster", "missing-cluster"} {
 		t.Run(scenario, func(t *testing.T) {
 			baseline := 2
 			if scenario == "missing-baseline" {
@@ -71,7 +71,14 @@ func TestCLICompletedCapturePair(t *testing.T) {
 			if scenario == "wrong-admission" {
 				podUID = "wrong"
 			}
-			args := []string{"-test.run=^TestCLIProcessHelper$", "--", "--before", before, "--after", after, "--namespace-uid", "ns-uid", "--sts-uid", "sts-uid", "--pod-uid", podUID, "--spec-sha256", specHash, "--stage", "peer", "--outcome", "confirmed"}
+			cluster := "test"
+			if scenario == "wrong-cluster" {
+				cluster = "other"
+			}
+			if scenario == "missing-cluster" {
+				cluster = ""
+			}
+			args := []string{"-test.run=^TestCLIProcessHelper$", "--", "--before", before, "--after", after, "--namespace-uid", "ns-uid", "--sts-uid", "sts-uid", "--pod-uid", podUID, "--spec-sha256", specHash, "--cluster", cluster, "--stage", "peer", "--outcome", "confirmed"}
 			binary, err := os.Executable()
 			require.NoError(t, err)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -101,7 +108,7 @@ func TestCLICompletedCapturePair(t *testing.T) {
 func cliCaptureFixture(t *testing.T, started int64, count int, process string) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
-	raw := []byte(fmt.Sprintf("# TYPE leader_retirement_peer_result counter\nleader_retirement_peer_result{outcome=\"confirmed\"} %d\n", count))
+	raw := []byte(fmt.Sprintf("# TYPE leader_retirement_peer_result counter\nleader_retirement_peer_result{cluster=\"test\",outcome=\"confirmed\"} %d\n", count))
 	if count < 0 {
 		raw = []byte("unrelated 1\n")
 	}

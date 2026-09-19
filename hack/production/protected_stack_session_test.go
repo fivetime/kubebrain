@@ -117,7 +117,7 @@ func testProtectedMetricsSession(t *testing.T, library, probe string) {
 				canonical, err := json.Marshal(spec)
 				require.NoError(t, err)
 				hash := sha256.Sum256(canonical)
-				binding := retirementmetrics.CaptureBinding{NamespaceUID: "ns-uid", StatefulSetUID: "sts-uid", PodUID: "pod-uid", SpecSHA256: hex.EncodeToString(hash[:])}
+				binding := retirementmetrics.CaptureBinding{NamespaceUID: "ns-uid", StatefulSetUID: "sts-uid", PodUID: "pod-uid", SpecSHA256: hex.EncodeToString(hash[:]), Cluster: "test"}
 				captures, err := filepath.Glob(filepath.Join(owner, "metrics.*", "COMPLETE"))
 				require.NoError(t, err)
 				require.Len(t, captures, 2)

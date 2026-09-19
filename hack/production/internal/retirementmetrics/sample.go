@@ -92,7 +92,7 @@ func NewSample(raw, summary []byte, process Process) (Sample, error) {
 	if s.Bytes != len(raw) || s.SHA256 != hex.EncodeToString(sum[:]) {
 		return bad()
 	}
-	counters, err := Parse(raw)
+	counters, err := ParseForCluster(raw, process.Cluster)
 	if err != nil {
 		return Sample{}, err
 	}

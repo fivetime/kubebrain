@@ -20,6 +20,7 @@ type Counters map[Key]float64
 // Process must come from the verified Kubernetes capture, not metric labels.
 type Process struct {
 	PodUID, ContainerID, StartedAt string
+	Cluster                        string
 	RestartCount                   int32
 }
 
@@ -28,6 +29,12 @@ func (p Process) valid() bool {
 }
 
 func Parse(raw []byte) (Counters, error) {
+	return ParseForCluster(raw, "")
+}
+
+// ParseForCluster binds the global cluster label used by the production
+// exporter. Empty cluster accepts only the unlabeled unit-fixture format.
+func ParseForCluster(raw []byte, cluster string) (Counters, error) {
 	if len(raw) == 0 || len(raw) > 8<<20 {
 		return nil, errors.New("invalid metrics size")
 	}
@@ -46,10 +53,32 @@ func Parse(raw []byte) (Counters, error) {
 			return nil, errors.New("retirement result must be a counter")
 		}
 		for _, sample := range family.Metric {
-			if len(sample.Label) != 1 || sample.Label[0].GetName() != "outcome" || sample.Counter == nil || sample.TimestampMs != nil {
+			expectedLabels := 1
+			if cluster != "" {
+				expectedLabels = 2
+			}
+			if len(sample.Label) != expectedLabels || sample.Counter == nil || sample.TimestampMs != nil {
 				return nil, errors.New("invalid retirement counter sample")
 			}
-			outcome := sample.Label[0].GetValue()
+			outcome := ""
+			seenLabels := map[string]bool{}
+			for _, label := range sample.Label {
+				name := label.GetName()
+				if seenLabels[name] {
+					return nil, errors.New("duplicate retirement label")
+				}
+				seenLabels[name] = true
+				switch name {
+				case "outcome":
+					outcome = label.GetValue()
+				case "cluster":
+					if cluster == "" || label.GetValue() != cluster {
+						return nil, errors.New("retirement cluster mismatch")
+					}
+				default:
+					return nil, errors.New("unexpected retirement label")
+				}
+			}
 			valid := outcome == "confirmed" || outcome == "unconfirmed"
 			if stage == "local" {
 				valid = valid || outcome == "deadline" || outcome == "canceled"

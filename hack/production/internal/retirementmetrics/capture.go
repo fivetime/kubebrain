@@ -23,6 +23,7 @@ import (
 // StatefulSet spec (case-sensitive JSON with integers preserved).
 type CaptureBinding struct {
 	NamespaceUID, StatefulSetUID, PodUID, SpecSHA256 string
+	Cluster                                          string
 }
 
 // LoadCapture reads the protected-stack-session metrics directory without
@@ -30,7 +31,7 @@ type CaptureBinding struct {
 // of the local filesystem or the experiment's original admission.
 func LoadCapture(dir string, expected CaptureBinding) (Sample, error) {
 	bad := func() (Sample, error) { return Sample{}, errors.New("invalid metrics capture evidence") }
-	if expected.NamespaceUID == "" || expected.StatefulSetUID == "" || expected.PodUID == "" || len(expected.SpecSHA256) != 64 {
+	if expected.NamespaceUID == "" || expected.StatefulSetUID == "" || expected.PodUID == "" || expected.Cluster == "" || len(expected.SpecSHA256) != 64 {
 		return bad()
 	}
 	abs, err := filepath.Abs(dir)
@@ -140,6 +141,7 @@ func LoadCapture(dir string, expected CaptureBinding) (Sample, error) {
 	if err != nil || afterProcess != process {
 		return bad()
 	}
+	process.Cluster = expected.Cluster
 	beforeStatuses := at(before, "status", "containerStatuses").([]any)
 	afterStatuses := at(after, "status", "containerStatuses").([]any)
 	if beforeStatuses[0].(map[string]any)["imageID"] != afterStatuses[0].(map[string]any)["imageID"] {

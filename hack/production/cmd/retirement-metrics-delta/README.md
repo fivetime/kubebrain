@@ -10,6 +10,7 @@ Required flags:
 --before CAPTURE_DIRECTORY --after CAPTURE_DIRECTORY
 --namespace-uid ADMITTED_NAMESPACE_UID --sts-uid ADMITTED_STS_UID
 --pod-uid ADMITTED_POD_UID --spec-sha256 CANONICAL_ADMITTED_SPEC_SHA256
+--cluster ADMITTED_KUBEBRAIN_CLUSTER_NAME
 --stage local|peer --outcome OUTCOME
 ```
 
@@ -30,7 +31,8 @@ Checks include:
   and running start time before/after; readiness may legitimately change.
 - Successful ordered capture stages, with probe summary times inside the
   protected-probe stage, and strict non-overlap between samples.
-- Probe summary/content binding and finite integer counters with known labels.
+- Probe summary/content binding and finite integer counters with known labels;
+  the production `cluster` label must equal the independently admitted name.
 
 Success prints one JSON object with `count_delta`. Missing counters, first
 appearance without a baseline, reset, process change, overlap, or invalid evidence
