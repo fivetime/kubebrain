@@ -30,6 +30,9 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 		{"identity-wait-foreign", "label", "present", 65}, {"unknown-state", "label", "present", 65},
 		{"identity-wait", "drop", "", 1},
 		{"identity-wait-replaced", "label", "present", 65}, {"identity-wait-mismatch", "label", "present", 65},
+		{"regenerating", "label", "present", 75}, {"regenerating", "label", "absent", 75},
+		{"cep-lag", "label", "present", 75}, {"cep-lag", "label", "absent", 75},
+		{"label-base-drift", "label", "present", 65}, {"regenerating", "drop", "", 1},
 	} {
 		t.Run(tc.kind+"/"+tc.mode+"/"+tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -91,6 +94,20 @@ func TestLocalDropAndLabelIdentity(t *testing.T) {
 				_, err := os.Stat(filepath.Join(dir, "window-after"))
 				require.True(t, os.IsNotExist(err), "must not start monitor after rejected initial capture")
 			}
+			if tc.name == "cep-lag" {
+				// A second full capture observes convergence; the first must remain pending.
+				next := exec.CommandContext(ctx, "bash", "observe-local-fault-label.sh", dir, tc.mode, filepath.Join(dir, "expected.json"), "term-test")
+				next.Env = env
+				output, err := next.CombinedOutput()
+				require.NoError(t, err, string(output))
+				observations, err := filepath.Glob(filepath.Join(dir, "identity-observation.*"))
+				require.NoError(t, err)
+				require.Len(t, observations, 2)
+				for _, observation := range observations {
+					output, err := exec.Command("sha256sum", "-c", filepath.Join(observation, "evidence.sha256")).CombinedOutput()
+					require.NoError(t, err, string(output))
+				}
+			}
 			if tc.name == "cancel" {
 				pid, err := os.ReadFile(filepath.Join(dir, "blocked.pid"))
 				require.NoError(t, err)
@@ -116,8 +133,14 @@ if [[ " $* " == *" monitor "* ]]; then
 fi
 after=false
 [[ ! -e $CAPTURE_FIXTURE/window-after ]] || after=true
+cep_after=false
+[[ ! -e $CAPTURE_FIXTURE/cep-seen ]] || cep_after=true
 bash "$CAPTURE_FIXTURE/mock-api" "$@" |
-jq --arg kind "$FAULT_KIND" --arg mode "$FAULT_MODE" --arg scenario "$FAULT_SCENARIO" --argjson after "$after" '
+jq --arg kind "$FAULT_KIND" --arg mode "$FAULT_MODE" --arg scenario "$FAULT_SCENARIO" --argjson after "$after" --argjson cep_after "$cep_after" '
+ def labelset:
+  ["k8s:app=kubebrain"] +
+  (if $scenario=="foreign-endpoint" or $scenario=="identity-wait-foreign" then ["k8s:kubebrain.io/fault-owner=term-foreign"]
+   elif ($mode=="present" and $scenario!="pending") or ($mode=="absent" and $scenario=="pending") then ["k8s:kubebrain.io/fault-owner=term-test"] else [] end);
  def change:
   if $kind=="drop" and $after then
    if .kind=="Pod" and .metadata.uid=="app" then
@@ -127,6 +150,14 @@ jq --arg kind "$FAULT_KIND" --arg mode "$FAULT_MODE" --arg scenario "$FAULT_SCEN
    elif .kind=="Pod" and .metadata.uid=="agent" and $scenario=="agent-restart" then .status.containerStatuses[0].restartCount=1
    elif .metadata.uid=="cep-uid" and $scenario=="cep-identity" then .status.identity.id=456
    else . end
+  elif $kind=="label" and .metadata.uid=="cep-uid" then
+   .status.identity.labels=labelset |
+   if $scenario=="cep-lag" then
+    .status.identity.id=(if $cep_after then 456 else 123 end) |
+    if $cep_after then . else
+     .status.identity.labels=(["k8s:app=kubebrain"]+(if $mode=="absent" then ["k8s:kubebrain.io/fault-owner=term-test"] else [] end)) end
+   elif $scenario=="label-base-drift" then .status.identity.labels += ["k8s:unexpected=other"]
+   else . end
   elif $kind=="label" and .kind=="Pod" and .metadata.uid=="app" then
    (if $mode=="present" then .metadata.labels={"kubebrain.io/fault-owner":"term-test"} else . end) |
    (if $scenario=="foreign-pod" then .metadata.labels={"kubebrain.io/fault-owner":"term-foreign"} else . end) |
@@ -134,11 +165,12 @@ jq --arg kind "$FAULT_KIND" --arg mode "$FAULT_MODE" --arg scenario "$FAULT_SCEN
   else . end;
  if type=="array" then
   (if ($scenario|startswith("identity-wait")) then .[0].status.state="waiting-for-identity"
-   elif $scenario=="unknown-state" then .[0].status.state="unknown-state" else . end) |
+   elif $scenario=="unknown-state" then .[0].status.state="unknown-state"
+   elif $scenario=="regenerating" then .[0].status.state="regenerating" else . end) |
   (if $scenario=="identity-wait-mismatch" then .[0].status.identity.id=456 else . end) |
+  (if $scenario=="cep-lag" then .[0].status.identity.id=456 else . end) |
   if $kind=="label" then
-   .[0].status.identity.labels=(if $scenario=="foreign-endpoint" or $scenario=="identity-wait-foreign" then ["k8s:kubebrain.io/fault-owner=term-foreign"]
-    elif ($mode=="present" and $scenario!="pending") or ($mode=="absent" and $scenario=="pending") then ["k8s:kubebrain.io/fault-owner=term-test"] else [] end)
+   .[0].status.identity.labels=labelset
   elif $after and $scenario=="cep-identity" then .[0].status.identity.id=456 else . end
  elif has("items") then .items |= map(change)
  else change end'

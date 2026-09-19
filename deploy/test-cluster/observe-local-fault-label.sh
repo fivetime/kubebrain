@@ -15,7 +15,7 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 sha256sum "$expected" > "$out/expected.sha256"
 rc=0
-timeout --foreground --kill-after=1s 30s bash "$here/capture-local-cilium-endpoint.sh" "$owner" "$pod" --allow-identity-pending > "$out/capture.log" 2>&1 || rc=$?
+timeout --foreground --kill-after=1s 30s bash "$here/capture-local-cilium-endpoint.sh" "$owner" "$pod" --label-transition "$mode" "$token" > "$out/capture.log" 2>&1 || rc=$?
 if [[ $rc != 0 ]]; then [[ $rc != 124 ]] || exit 124; exit 65; fi
 capture=$(sed -n 's/^EVIDENCE=//p' "$out/capture.log")
 [[ ${capture%/*} == "$owner" && ${capture##*/} =~ ^endpoint\.[a-zA-Z0-9]+$ && -d $capture && ! -L $capture && $(<"$capture/capture.exit") == 0 ]] || exit 65
@@ -28,13 +28,8 @@ for current in pod.json pod-after.json; do
  if $mode=="present" then .metadata.labels["kubebrain.io/fault-owner"]==$token
  else ((.metadata.labels//{})|has("kubebrain.io/fault-owner")|not) end' "$capture/$current" >/dev/null || exit 65
 done
-jq -e --arg mode "$mode" --arg token "$token" '
- .[0].status.identity.labels as $labels |
- if ($labels|type)!="array" or (all($labels[];type=="string")|not) then error("missing identity labels") else . end |
- "k8s:kubebrain.io/fault-owner=" as $prefix |
- [$labels[]|select(startswith($prefix))] as $owners |
- if ($owners|length)>1 or any($owners[];.!=($prefix+$token)) then error("foreign fault owner") else . end |
- {mode:$mode,state:(if .[0].status.state=="ready" and (($owners|length)==1)==($mode=="present") then "matched" else "pending" end),
- scope:"same_process_label_identity_only"}' "$capture/endpoint.json" > "$out/result.json" 2> "$out/classifier.stderr" || exit 65
+jq -e --arg mode "$mode" 'select(.mode==$mode and (.state=="matched" or .state=="pending") and
+ .scope=="label_identity_transition_only_not_enforcement") |
+ .scope="same_process_label_identity_only"' "$capture/label-transition.json" > "$out/result.json" || exit 65
 sha256sum "$out/result.json" "$out/capture.log" "$out/expected.sha256" "$capture/evidence.sha256" > "$out/evidence.sha256"
 case $(jq -er .state "$out/result.json") in matched) exit 0;; pending) exit 75;; *) exit 65;; esac
