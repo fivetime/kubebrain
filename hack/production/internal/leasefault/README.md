@@ -84,3 +84,17 @@ and distinguishes revoked leases from expired-but-retained leases. It uses only
 an in-memory listener, not cluster transport or TLS. Live Kubernetes identity,
 network restoration and process joins remain external prerequisites. The driver
 has not yet connected this verifier or implemented the separate recovery writes.
+
+`RestoreProtocol` now provides the protocol write phase, still not wired to a
+driver or used on a cluster. It requires a saved matching intent, bounded recovery
+context, authenticated connection, and an external admission callback that checks
+exclusive recovery ownership, process joins, restored network and live identities.
+The callback and record are rechecked before each write. Read preflight rejects
+unrelated alarms, other keys on the lease, or a fixture key with a different lease.
+Only the exact CORRUPT alarm is deactivated and the recorded lease revoked; it never
+deletes keys directly or edits Kubernetes resources. All three read-only recovery
+checks must subsequently pass. Normal expiry may race revocation after alarm
+removal: only the exact lease-not-found error proceeds to final verification.
+Other write failures remain errors, with no retry or invented success. Partial
+recovery needs reconciliation under the same owner, not a new experiment. Tests
+use simulated RPCs; they do not establish live recovery or mutation atomicity.
