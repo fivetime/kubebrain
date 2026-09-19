@@ -143,3 +143,29 @@ successor 原截止时间、清理退出码和无子进程泄漏断言。mock �
 这些测试不证明真实 mTLS、数据面隔离或 30 秒故障验收。新实验驱动
 尚须使用新的冻结工具目录接入本库，完成准入、真实实验及恢复；不能
 在已消费的 `fault-2ad79751.N8nMZWbk` 中替换脚本后重跑。
+
+## 同一身份约束下的指标捕获
+
+新增 `stack_session_capture_metrics before-fault` 或
+`stack_session_capture_metrics "$fault_start_ns"`。仍需原有 prepare、
+完整冻结输入及调用方 EXIT/TERM/INT 清理约束；不是独立可直接执行
+的采集脚本。输出在新的 `metrics.*` 目录，路径仍由 `stack_capture`
+返回。使用 `protected-metrics` 探针保存 `metrics.txt`，不输出栈文件。
+
+复用原 namespace/StatefulSet/spec/Pod 进程校验及前后同进程比较，
+不要求 Ready；任何身份漂移拒绝生成 COMPLETE。要求探针退出成功，
+摘要模式及所有证明边界正确，文本语法验证为 true，语义证明为 false；
+同时验证非符号链接原始文件、非空且不超过 8 MiB 的长度及实际
+SHA-256 与摘要相符。文件、摘要、身份和时序
+统一写入 evidence.sha256。COMPLETE 仍仅代表本次采集完整，不是指标
+语义、业务可用性或整个故障验收通过。
+
+故障起点沿用同一不可重置 30 秒预算；故障前成功采集后可重建匿名
+通道，故障中不能重建或延长预算。不能用指标替换必需的降级等待栈
+断言，也不能在已经接近截止时追加采集再扩大门限。持续采样调度和
+目标 family/同进程差值分析仍待实现，未部署到真实集群。
+
+新指标模式 21 项模拟用例与原栈流程一起 race 通过（28.791s），覆盖
+Ready 改变但进程不变、进程重启、namespace/STS/spec 漂移、超时、
+时钟重置拒绝、绑定缺失/篡改及原始文件哈希/长度不符。vet、Bash
+语法和 diff-check 通过；模拟测试不代替探针的真实 TLS 测试或集群验收。

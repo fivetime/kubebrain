@@ -68,6 +68,37 @@ mode=protected-stack
 printf '{"mode":"%s","readiness_checked":false,"fault_acceptance_proven":false,"pod_identity_proven":false}\n' "$mode"
 `
 
+func TestProtectedMetricsSession(t *testing.T) {
+	library, err := filepath.Abs("protected-stack-session.sh")
+	require.NoError(t, err)
+	probe := strings.ReplaceAll(stackProbeFixture, "--stack-output", "--metrics-output")
+	probe = strings.ReplaceAll(probe, "synthetic stack", "x 1")
+	probe = strings.ReplaceAll(probe, "mode=protected-stack", "mode=protected-metrics")
+	probe = strings.ReplaceAll(probe, `printf '{"mode":"%s","readiness_checked":false,"fault_acceptance_proven":false,"pod_identity_proven":false}\n' "$mode"`, `
+hash=$(sha256sum "$2"); size=$(stat -c %s "$2")
+[[ $scenario != bad-hash ]] || hash=bad
+[[ $scenario != bad-size ]] || size=$((size+1))
+[[ $scenario != changed-body ]] || printf 'x 2\n' >> "$2"
+printf '{"mode":"%s","readiness_checked":false,"fault_acceptance_proven":false,"pod_identity_proven":false,"metric_semantics_proven":false,"metrics_text_syntax_validated":true,"metrics_bytes":%s,"metrics_sha256":"%s"}\n' "$mode" "$size" "${hash%% *}"`)
+	for _, scenario := range []string{"success", "anonymous-reset", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "expired", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe", "bad-hash", "bad-size", "changed-body"} {
+		t.Run(scenario, func(t *testing.T) {
+			owner := t.TempDir()
+			require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
+			require.NoError(t, os.WriteFile(filepath.Join(owner, "bin", "info-diagnostic-probe"), []byte(probe), 0700))
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			fixture := strings.ReplaceAll(stackSessionFixture, "stack_session_capture ", "stack_session_capture_metrics ")
+			output, err := exec.CommandContext(ctx, "bash", "-c", fixture, "test", library, owner, scenario).CombinedOutput()
+			require.NoError(t, ctx.Err(), string(output))
+			require.NoError(t, err, string(output))
+			require.Contains(t, string(output), "EXPECTED_RESULT_AND_CLEANUP")
+			stacks, err := filepath.Glob(filepath.Join(owner, "metrics.*", "goroutines.txt"))
+			require.NoError(t, err)
+			require.Empty(t, stacks, "metrics capture must not produce a stack artifact")
+		})
+	}
+}
+
 const stackSessionFixture = `
 set -euo pipefail
 umask 077

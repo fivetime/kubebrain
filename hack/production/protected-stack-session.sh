@@ -146,7 +146,19 @@ stack_session_prepare() {
 }
 
 stack_session_capture() {
+ stack_session_capture_kind stack "$@"
+}
+
+stack_session_capture_metrics() {
+ stack_session_capture_kind metrics "$@"
+}
+
+stack_session_capture_kind() {
  # Run in the owning shell, not command substitution: job ownership is checked.
+ [[ $# == 2 && ( $1 == stack || $1 == metrics ) ]] || return 2
+ local kind=$1 mode=protected-stack output_flag=--stack-output data_name=goroutines.txt
+ shift
+ if [[ $kind == metrics ]]; then mode=protected-metrics; output_flag=--metrics-output; data_name=metrics.txt; fi
  [[ $# == 1 ]] || return 2
  if [[ $1 == before-fault ]]; then
   [[ -z $stack_fault_start ]] || return 2
@@ -162,21 +174,29 @@ stack_session_capture() {
   [[ $'\n'$(jobs -pr)$'\n' == *$'\n'"$child"$'\n'* ]] || return 1
   kill -0 "$child" 2>/dev/null || return
  done
- stack_capture=$(mktemp -d "$stack_owner/stack.XXXXXXXX") || return
+ stack_capture=$(mktemp -d "$stack_owner/$kind.XXXXXXXX") || return
  stack_session_stage verify-inputs stack_session_verify_inputs || return
  stack_session_stage snapshot-before stack_session_snapshot "$stack_capture" || return
  stack_session_stage identity-before stack_session_same_process "$stack_session/pod-before.json" "$stack_capture/pod-before.json" || return
- stack_session_stage protected-probe stack_session_run "$stack_owner/bin/info-diagnostic-probe" --mode protected-stack --endpoint https://127.0.0.1:18584 \
+ stack_session_stage protected-probe stack_session_run "$stack_owner/bin/info-diagnostic-probe" --mode "$mode" --endpoint https://127.0.0.1:18584 \
   --anonymous-endpoint https://127.0.0.1:18585 --server-name "$stack_server_name" \
   --server-spki-sha256 "$stack_pin" --cacert "$stack_tls/ca.crt" --cert "$stack_tls/probe.crt" --key "$stack_tls/probe.key" \
-  --stack-output "$stack_capture/goroutines.txt" > "$stack_capture/probe.json" 2> "$stack_capture/probe.stderr" || return
- jq -e '.mode=="protected-stack" and .readiness_checked==false and .fault_acceptance_proven==false and .pod_identity_proven==false' "$stack_capture/probe.json" >/dev/null || return
+  "$output_flag" "$stack_capture/$data_name" > "$stack_capture/probe.json" 2> "$stack_capture/probe.stderr" || return
+ jq -e --arg mode "$mode" '.mode==$mode and .readiness_checked==false and .fault_acceptance_proven==false and .pod_identity_proven==false' "$stack_capture/probe.json" >/dev/null || return
+ if [[ $kind == metrics ]]; then
+  local hash size
+  [[ -f $stack_capture/metrics.txt && ! -L $stack_capture/metrics.txt ]] || return 1
+  hash=$(sha256sum "$stack_capture/metrics.txt") || return
+  size=$(stat -c %s "$stack_capture/metrics.txt") || return
+  (( size > 0 && size <= 8388608 )) || return 1
+  jq -e --arg hash "${hash%% *}" --argjson size "$size" '.metrics_text_syntax_validated==true and .metric_semantics_proven==false and .metrics_sha256==$hash and .metrics_bytes==$size' "$stack_capture/probe.json" >/dev/null || return
+ fi
  stack_session_stage snapshot-after stack_session_run "${stack_k[@]}" get pod "$stack_pod" -o json > "$stack_capture/pod-after.json" || return
  stack_session_stage identity-after stack_session_same_process "$stack_capture/pod-before.json" "$stack_capture/pod-after.json" || return
  if [[ -z $stack_fault_start ]]; then
   stack_session_stage rearm-anonymous stack_session_rearm_anonymous || return
  fi
- sha256sum "$stack_capture"/*.json "$stack_capture/goroutines.txt" "$stack_capture/timing.tsv" "$stack_capture/probe.stderr" > "$stack_capture/evidence.sha256" || return
+ sha256sum "$stack_capture"/*.json "$stack_capture/$data_name" "$stack_capture/timing.tsv" "$stack_capture/probe.stderr" > "$stack_capture/evidence.sha256" || return
  stack_session_budget || return
  printf 'CAPTURE_COMPLETE_WITHIN_CALLER_BUDGET\n' > "$stack_capture/COMPLETE"
 }
