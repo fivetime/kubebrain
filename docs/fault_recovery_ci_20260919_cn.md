@@ -338,3 +338,27 @@ RPC 已阻塞、栈对应唯一租约或整次故障验收成功。本轮未操�
 随后完整 `TestProtectedStackSession*` race 回归通过（102.413s），
 production vet、Bash 语法检查和 diff 检查通过。旧批次两个工作流均
 已终态，因此积累的修复可进入下一轮 CI，不需中断任何运行中作业。
+
+## 44e37d24 回归终态与原生生命周期接入
+
+源码 `44e37d24b13e0dc6dd4e90b0aae5819d5c3634f9` 的
+[回归 35467781335](https://github.com/fivetime/kubebrain/actions/runs/35467781335)
+已全部成功，包含此前失败的 nonce 测试及诊断取消修复验证。
+精确源码、作业终态、完整日志和 SHA256SUMS 已核验，归档目录：
+`/root/.local/state/kubebrain/probe-ci-35467781335-terminal.rRu3XAVb`。
+同源码镜像工作流 35467781221 此时仍运行，未取消或重启。
+
+后续本地批次增加一次性栈 worker、回执链校验、原请求组合观察，
+并将其作为 RunFaultLifecycle 的 Observation 路径接入父进程激活、
+原响应后 lease/key 校验和 join 后恢复。原生路径拒绝混用外部故障
+命令/原证据回调，绑定实际准备计划的租约、集群和成员身份。
+真实 memkv RPC + 模拟 API/子进程测试覆盖成功、独立观察失败、
+无效继任 term 和准备前身份不匹配拒绝；完整 leasefault race 回归
+通过（19.359s），vet 通过。此批次尚未进入远端 CI，不能借用
+44e37d24 的成功结果，也未在集群部署或执行新的故障实验。
+
+同源码镜像 35467781221 随后全部成功，终态、完整日志和校验清单归档至
+`/root/.local/state/kubebrain/image-ci-35467781221-terminal.RypkQ1N6`，
+源码、全部作业成功及 SHA256SUMS 已核验。两个旧工作流均终态后，
+本地原生接入批次可推送进入新的 CI。实际脚本组合复测同时通过
+（21.181s），但所有成功结果均不能替代原 30 秒真实集群验收。

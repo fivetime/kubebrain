@@ -29,6 +29,8 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 		"lifecycle-owner-lost",
 		"lifecycle-activation-nonce-fail", "lifecycle-activation-conflict", "lifecycle-activation-lost-response",
 		"lifecycle-activation-original-fail",
+		"lifecycle-native-success", "lifecycle-native-gate-fail",
+		"lifecycle-native-stale-successor", "lifecycle-native-identity-mismatch",
 		"observer-matched", "observer-pending", "observer-input-before", "observer-input-during", "observer-retain-fail", "observer-owner-lost",
 		"nonce-matched", "nonce-pending", "nonce-input-before", "nonce-input-during", "nonce-retain-fail", "nonce-owner-lost", "nonce-owner-after",
 	} {

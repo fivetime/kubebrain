@@ -95,7 +95,7 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		}
 		return originalNonceCheck(ctx)
 	}
-	result, err := RunFaultLifecycle(ctx, FaultLifecycle{
+	lifecycle := FaultLifecycle{
 		Owner:       owner,
 		Preparation: prep, Fault: fault, Workers: []metricsworker.Command{worker}, RecoveryConnection: prep.Connection, RecoveryTimeout: 5 * time.Second,
 		OriginalPending: func(faultCtx context.Context, got time.Time) error {
@@ -188,7 +188,47 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		},
 		NetworkRestored:  func(context.Context) error { require.True(t, joined); return nil },
 		IdentityRestored: func(context.Context) error { require.True(t, joined); return nil },
-	})
+	}
+	if strings.HasPrefix(mode, "lifecycle-native-") {
+		lifecycle.Fault = metricsworker.Command{}
+		lifecycle.OriginalPending = nil
+		lifecycle.OriginalEvidence = nil
+		observation, release := nativeObservationFixture(t, prep, log("native.stderr"), func(stage string) {
+			if stage == "pending" {
+				pendingChecks++
+				require.Zero(t, activationCalls)
+			} else {
+				evidenceRead = true
+			}
+		})
+		lifecycle.Observation = &observation
+		if mode == "lifecycle-native-identity-mismatch" {
+			lifecycle.Observation.Initial.LeaseID++
+		}
+		lifecycle.ObserveFault = func(faultCtx context.Context, got time.Time) (uint64, error) {
+			require.Equal(t, origin, got)
+			require.Equal(t, 1, activationCalls)
+			require.False(t, joined)
+			if mode == "lifecycle-native-gate-fail" {
+				return 0, errors.New("independent drop/successor gate failed")
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "fault.origin"), []byte(fmt.Sprintln(got.UnixNano())), 0600))
+			release()
+			if mode == "lifecycle-native-stale-successor" {
+				return 2, nil
+			}
+			return 3, nil
+		}
+	}
+	result, err := RunFaultLifecycle(ctx, lifecycle)
+	if mode == "lifecycle-native-identity-mismatch" {
+		require.ErrorContains(t, err, "native observation protocol identity mismatch")
+		require.False(t, joined)
+		require.Zero(t, activationCalls)
+		_, statErr := os.Stat(filepath.Join(dir, networkRecoveryFile))
+		require.ErrorIs(t, statErr, os.ErrNotExist)
+		return
+	}
 	require.True(t, joined)
 	if mode == "lifecycle-baseline-fail" || mode == "lifecycle-parent-cancel" || mode == "lifecycle-activation-nonce-fail" || mode == "lifecycle-activation-original-fail" {
 		require.Zero(t, activationCalls)
@@ -230,7 +270,7 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		require.NoError(t, result.RecoveryError)
 		return VerifyProtocolRecovery(ctx, prep.Protocol, prep.Connection)
 	}))
-	if mode == "lifecycle-success" {
+	if mode == "lifecycle-success" || mode == "lifecycle-native-success" {
 		require.NoError(t, err)
 		require.NoError(t, result.ExecutionError)
 		require.Len(t, result.Metrics, 1)

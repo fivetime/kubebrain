@@ -33,13 +33,32 @@ type ObservedOriginal struct {
 }
 
 func WithOriginalObservation(ctx context.Context, o OriginalObservation, run func(context.Context, *ObservedOriginal) error) error {
-	if ctx == nil || run == nil || o.Admit == nil || o.Retain == nil || o.Initial.LeaseID == 0 || o.Initial.ClusterID == 0 || o.Initial.InitialMemberID == 0 || o.Initial.InitialTerm == 0 ||
-		!o.Initial.Origin.IsZero() || o.Initial.SuccessorTerm != 0 || o.Before.Count != 1 || o.After.Count != 0 || o.Before.Directory == o.After.Directory || o.Before.Source != o.After.Source || o.Before.SourceHash != o.After.SourceHash {
-		return errors.New("incomplete original observation")
+	if ctx == nil || run == nil {
+		return errors.New("original observation needs context and controller")
+	}
+	if err := o.validate(); err != nil {
+		return err
 	}
 	if err := o.Admit(ctx); err != nil {
 		return err
 	}
+	return o.withPrepared(ctx, run)
+}
+
+func (o OriginalObservation) validate() error {
+	if o.Admit == nil || o.Retain == nil || o.Initial.LeaseID == 0 || o.Initial.ClusterID == 0 || o.Initial.InitialMemberID == 0 || o.Initial.InitialTerm == 0 ||
+		!o.Initial.Origin.IsZero() || o.Initial.SuccessorTerm != 0 || o.Before.Count != 1 || o.After.Count != 0 || o.Before.Directory == o.After.Directory || o.Before.Source != o.After.Source || o.Before.SourceHash != o.After.SourceHash {
+		return errors.New("incomplete original observation")
+	}
+	for _, w := range []WaitObservation{o.Before, o.After} {
+		if w.Admit == nil || w.Retain == nil || w.Directory == "" || w.Source == "" || w.SourceHash == "" {
+			return errors.New("incomplete stack observation")
+		}
+	}
+	return nil
+}
+
+func (o OriginalObservation) withPrepared(ctx context.Context, run func(context.Context, *ObservedOriginal) error) error {
 	return WithWaitObservation(ctx, o.Before, func(beforeCtx context.Context, before func(context.Context, time.Time) error) error {
 		return WithWaitObservation(beforeCtx, o.After, func(afterCtx context.Context, after func(context.Context, time.Time) error) error {
 			return WithOriginalProbe(afterCtx, o.Probe, func(p *OriginalProbe) error {

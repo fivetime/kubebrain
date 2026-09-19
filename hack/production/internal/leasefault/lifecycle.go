@@ -24,7 +24,14 @@ type FaultLifecycle struct {
 	Owner       *FaultOwner
 	Preparation FaultPreparation
 	Fault       metricsworker.Command
-	Workers     []metricsworker.Command
+	// Observation selects the native original-probe/two-stack path instead of
+	// Fault. In this mode OriginalPending/OriginalEvidence must be nil: the
+	// coordinator binds them to the same actual probe. ObserveFault independently
+	// verifies drops/successor and returns its term AFTER parent activation; it
+	// must not mutate fault state, renew the lease, or restore the experiment.
+	Observation  *OriginalObservation
+	ObserveFault func(context.Context, time.Time) (uint64, error)
+	Workers      []metricsworker.Command
 	// Inject must be nil: the coordinator installs the one prepared-child hook.
 	Metrics                                 metricsworker.Hooks
 	RecoveryConnection                      grpc.ClientConnInterface
@@ -72,12 +79,27 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 	if l.Owner == nil || l.Owner.directory != p.Directory || l.Owner.binding != (FaultOwnerBinding{Owner: p.Network.Owner, Namespace: p.Network.Namespace, NamespaceUID: p.Network.NamespaceUID, StatefulSetName: p.StatefulSetName, StatefulSetUID: p.Network.StatefulSetUID}) {
 		return result, errors.New("fault lifecycle owner does not match preparation")
 	}
-	if l.OriginalEvidence == nil || l.OriginalPending == nil || l.OutcomeAdmit == nil {
+	if l.OutcomeAdmit == nil {
 		return result, errors.New("original outcome evidence and admission are required")
 	}
 	// Reject invalid local tools before any cluster preparation. A private log
 	// is mandatory for every child; no implicit credential environment is added.
 	commands := append([]metricsworker.Command{l.Fault}, l.Workers...)
+	if l.Observation != nil {
+		o := *l.Observation
+		if l.Fault.Executable != "" || len(l.Fault.Args) != 0 || len(l.Fault.Env) != 0 || l.Fault.Stderr != nil || l.OriginalEvidence != nil || l.OriginalPending != nil || l.ObserveFault == nil {
+			return result, errors.New("native observation cannot mix external fault/evidence callbacks")
+		}
+		if err := o.validate(); err != nil {
+			return result, err
+		}
+		if o.Initial.LeaseID != p.Protocol.LeaseID || o.Initial.ClusterID != p.Protocol.ClusterID || o.Initial.InitialMemberID != p.Protocol.AlarmMemberID {
+			return result, errors.New("native observation protocol identity mismatch")
+		}
+		commands = append([]metricsworker.Command{o.Probe, o.Before.Command, o.After.Command}, l.Workers...)
+	} else if l.OriginalEvidence == nil || l.OriginalPending == nil || l.ObserveFault != nil {
+		return result, errors.New("external fault requires original pending/outcome evidence")
+	}
 	for _, c := range commands {
 		if err := processgroup.ValidateExecutable(c.Executable); err != nil {
 			return result, err
@@ -105,7 +127,7 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 	}
 	result.ExecutionError = PrepareFault(ctx, l.Preparation)
 	if result.ExecutionError == nil {
-		result.ExecutionError = metricsworker.WithPreparedFault(ctx, l.Fault, func(runCtx context.Context, inject func(context.Context, time.Time) error) error {
+		execute := func(runCtx context.Context, inject func(context.Context, time.Time) error) error {
 			hooks := l.Metrics
 			hooks.Baseline = func(ctx context.Context, index int, ready metricsworker.Ready) error {
 				if err := l.Preparation.Own(ctx); err != nil {
@@ -155,7 +177,43 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 			var err error
 			result.Metrics, err = metricsworker.Run(runCtx, l.Preparation.Directory, l.Workers, hooks)
 			return err
-		})
+		}
+		if l.Observation == nil {
+			result.ExecutionError = metricsworker.WithPreparedFault(ctx, l.Fault, execute)
+		} else {
+			o := *l.Observation
+			guard := func(admit func(context.Context) error) func(context.Context) error {
+				return func(ctx context.Context) error {
+					if err := l.Preparation.Own(ctx); err != nil {
+						return err
+					}
+					if err := admit(ctx); err != nil {
+						return err
+					}
+					return l.Preparation.Own(ctx)
+				}
+			}
+			o.Admit = guard(o.Admit)
+			o.Before.Admit = guard(o.Before.Admit)
+			o.After.Admit = guard(o.After.Admit)
+			result.ExecutionError = WithOriginalObservation(ctx, o, func(runCtx context.Context, original *ObservedOriginal) error {
+				l.OriginalPending = original.Pending
+				l.OriginalEvidence = original.Evidence
+				return execute(runCtx, func(faultCtx context.Context, origin time.Time) error {
+					if err := l.Preparation.Own(faultCtx); err != nil {
+						return err
+					}
+					term, err := l.ObserveFault(faultCtx, origin)
+					if err != nil {
+						return err
+					}
+					if err := l.Preparation.Own(faultCtx); err != nil {
+						return err
+					}
+					return original.Finish(faultCtx, origin, term)
+				})
+			})
+		}
 	}
 	// WithPreparedFault and Run have returned: their deferred cancel/join paths
 	// are complete. Never reuse an expired fault context for restoration.
