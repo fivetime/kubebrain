@@ -6,8 +6,8 @@ PD/TiKV、默认 2PC 和原 30 秒故障门限。85 个离线用例、镜像审�
 预拉取及清理、最终准入均通过；四个部署阶段通过。
 
 实际尝试 `deploy-execute.jclo6sAy` 的故障控制器退出 **124**，故障资源
-清理退出 **0**。本轮完整验收失败。记录时执行会话 **30903 仍存活**，
-正在自动逆序恢复；尚未证明最终原配置恢复、Secret 清理或临时卷清理。
+清理退出 **0**。本轮完整验收失败。执行会话 **30903 已终止，退出 124**；
+四阶段逆序恢复与 Secret 清理均退出 0，独立恢复复查通过。
 
 ## 时间与采集证据
 
@@ -35,7 +35,21 @@ PD/TiKV、默认 2PC 和原 30 秒故障门限。85 个离线用例、镜像审�
 
 ## 恢复与清理边界
 
-继续轮询同一会话至终态，不重启或修改冻结运行时。临时卷规划 12 个
-用例、控制器 6 个用例已在本轮独立通过（`HmlrPkDo` / `rKhd5Bci`），
-尚未对真实资源运行清理。须先独立证明原配置/凭据恢复，再按精确
-UID/spec/历史归属核验本轮临时卷；基线卷和旧 Ceph 实例不在删除范围。
+全程跟踪同一会话至终态，未重启或修改冻结运行时。
+`secret-cleanup.eyViarNA` 独立核验原 StatefulSet UID/spec 和原 Secret
+UID/resourceVersion/data 不变；generation/observedGeneration 均为 130，
+3 Ready/updated，临时 Secret/策略不存在，三个 Pod 无故障标签。
+
+临时卷规划 12 个用例、控制器 6 个用例在本轮独立通过
+（`HmlrPkDo` / `rKhd5Bci`）。只读规划 `scratch-cleanup.vtWqXQfz`
+确认 42 个精确目标后，`scratch-cleanup.g2YqAJhW`（session 46572）
+执行退出 0，回收本轮 42 个已释放临时卷；数据不可恢复。所有非目标
+PV UID/spec 及命名空间 Pod UID/spec/容器状态不变。再次只读复查
+`scratch-cleanup.KJq90nlc` 目标归零，本地卷为 12 Bound / 86 Released；
+剩余均受基线保护，未批量回收，也未操作旧 Ceph 实例。
+
+编译残留只读规划 `compiled-cleanup.S7E0Zxhv` 确认 44 处已知摘要的
+本轮 ELF；`compiled-cleanup.GLx6YADP`（session 25625）退出 0，逐一
+核验文件身份及非活动进程后删除。源码、证书、日志与证据保留，二进制
+可重建；依赖这些已删除二进制的旧清单现已退役，不据其缺失重跑实验。
+本轮没有仍在运行的执行/清理会话，也没有启动后续实验。
