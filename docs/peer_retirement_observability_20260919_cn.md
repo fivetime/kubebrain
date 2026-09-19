@@ -157,3 +157,26 @@ StatefulSet、Pod UID/containerID/imageID 前后身份核验，使用验证名�
 
 CI 只读复查证据保存于 `retirement-observability-ci.fjZ3pXP3/`
 `progress.CX7oO7Se`，三个 run/job 仍实际运行；没有重复 dispatch。
+
+## 受保护的原始指标采集模式已实现（尚未接入集群实验）
+
+`info-diagnostic-probe --mode protected-metrics --metrics-output <新文件>`
+复用现有固定服务端名称/SPKI、mTLS 及独立匿名通道的真实 TLS 拒绝
+校验，访问 `/ping` 与 `/metrics`，不访问 `/ready` 或 pprof。
+原 protected、protected-stack、disabled 模式行为及栈输出字段保留。
+禁止同时指定 stack-output；其他模式不得指定 metrics-output。
+
+受现有 25 秒总上下文和 8 MiB 响应上限约束，不跟随重定向；响应
+必须非空且以换行结束，文件以 0600 排他创建，已有文件不覆盖。
+新摘要字段为 `metrics_bytes`、`metrics_sha256`，不冒充 stack 字段。
+这是**原始传输捕获**，未解析或证明 Prometheus 语义；摘要明确
+`metric_semantics_proven=false`、`pod_identity_proven=false`、
+`fault_acceptance_proven=false`、`readiness_checked=false`。
+不能仅凭换行就宣称响应是有效指标，更不能把缺失计数补零。
+
+完整探针包 race 通过（3.477s），vet 与 diff-check 通过。新增测试
+覆盖 TLS 1.2/1.3、错误 pin/名称、未保护监听、重定向、空/截断/
+超大响应、文件不覆盖、独立通道、模式参数隔离及输出权限/声明。
+仍须补齐调用方的 Pod/进程身份前后核验、有限采样调度、指标语义及
+同进程差值校验，才能接入真实故障实验；本次没有部署或集群采集。
+候选 `4aab067f` 三项 CI 复查仍运行，本机新增工具改动不属于该 CI。

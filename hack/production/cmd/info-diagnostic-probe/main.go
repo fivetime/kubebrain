@@ -28,7 +28,10 @@ const stackPath = "/debug/pprof/goroutine?debug=2"
 
 type config struct {
 	endpoint, anonymousEndpoint, serverName, serverPin, ca, cert, key, mode, stackOutput string
+	metricsOutput                                                                        string
 }
+
+func (c config) protectedCapture() bool { return c.capturesStack() || c.mode == "protected-metrics" }
 
 func (c config) capturesStack() bool {
 	return c.mode == "protected" || c.mode == "protected-stack"
@@ -49,7 +52,7 @@ func (c config) validate() error {
 	if err := validateOrigin(c.endpoint); err != nil {
 		return err
 	}
-	if c.capturesStack() {
+	if c.protectedCapture() {
 		if err := validateOrigin(c.anonymousEndpoint); err != nil {
 			return fmt.Errorf("anonymous endpoint: %w", err)
 		}
@@ -65,11 +68,14 @@ func (c config) validate() error {
 	if pin, err := hex.DecodeString(c.serverPin); err != nil || len(pin) != sha256.Size {
 		return errors.New("server pin must be SHA-256 SPKI hex")
 	}
-	if !c.capturesStack() && c.mode != "disabled" {
-		return errors.New("mode must be protected, protected-stack or disabled")
+	if !c.protectedCapture() && c.mode != "disabled" {
+		return errors.New("mode must be protected, protected-stack, protected-metrics or disabled")
 	}
 	if c.capturesStack() != (c.stackOutput != "") {
 		return errors.New("stack-output required only in protected capture modes")
+	}
+	if (c.mode == "protected-metrics") != (c.metricsOutput != "") {
+		return errors.New("metrics-output required only in protected-metrics mode")
 	}
 	return nil
 }
@@ -186,7 +192,7 @@ func probeWithDiagnostics(ctx context.Context, c config, diagnostics io.Writer) 
 	}
 	defer good.CloseIdleConnections()
 	paths := []string{"/ping", "/ready"}
-	if c.mode == "protected-stack" {
+	if c.mode == "protected-stack" || c.mode == "protected-metrics" {
 		// The caller intentionally isolates backend access during fault tests.
 		// Capture listener evidence without asserting application readiness.
 		paths = []string{"/ping"}
@@ -202,11 +208,15 @@ func probeWithDiagnostics(ctx context.Context, c config, diagnostics io.Writer) 
 	}
 	defer anonymous.CloseIdleConnections()
 	anonymousEndpoint := c.endpoint
-	if c.capturesStack() {
+	if c.protectedCapture() {
 		anonymousEndpoint = c.anonymousEndpoint
 	}
-	_, err = req("anonymous-profile", anonymous, anonymousEndpoint, stackPath, http.StatusNotFound, 4096)
-	if c.capturesStack() {
+	path := stackPath
+	if c.mode == "protected-metrics" {
+		path = "/metrics"
+	}
+	_, err = req("anonymous-profile", anonymous, anonymousEndpoint, path, http.StatusNotFound, 4096)
+	if c.protectedCapture() {
 		// Connection refusal, timeout, EOF and local trust failures are not
 		// authentication proof. Require a verified server, its certificate
 		// request and its TLS alert after we supplied an empty certificate.
@@ -222,6 +232,18 @@ func probeWithDiagnostics(ctx context.Context, c config, diagnostics io.Writer) 
 	if c.mode == "disabled" {
 		_, err := req("authenticated-profile", good, c.endpoint, stackPath, http.StatusNotFound, 4096)
 		return nil, err
+	}
+	if c.mode == "protected-metrics" {
+		body, err := req("authenticated-metrics", good, c.endpoint, "/metrics", http.StatusOK, stackLimit)
+		if err != nil {
+			return nil, err
+		}
+		// This captures bounded raw exposition only. Metric presence, types,
+		// process identity and paired deltas require separate caller validation.
+		if len(body) == 0 || !bytes.HasSuffix(body, []byte("\n")) {
+			return nil, errors.New("empty or incomplete metrics body")
+		}
+		return body, nil
 	}
 	body, err := req("authenticated-profile", good, c.endpoint, stackPath, http.StatusOK, stackLimit)
 	if err != nil {
@@ -260,14 +282,26 @@ func runWithDiagnostics(c config, output, diagnostics io.Writer) error {
 			return err
 		}
 	}
+	if c.mode == "protected-metrics" {
+		if err := saveStack(c.metricsOutput, body); err != nil {
+			return err
+		}
+	}
 	sum := sha256.Sum256(body)
-	return json.NewEncoder(output).Encode(map[string]any{
+	result := map[string]any{
 		"scope": "info_listener_transport_only", "mode": c.mode,
 		"started": started, "completed": time.Now().UTC(),
 		"stack_bytes": len(body), "stack_sha256": hex.EncodeToString(sum[:]),
 		"pod_identity_proven": false, "fault_acceptance_proven": false,
-		"readiness_checked": c.mode != "protected-stack",
-	})
+		"readiness_checked": c.mode != "protected-stack" && c.mode != "protected-metrics",
+	}
+	if c.mode == "protected-metrics" {
+		delete(result, "stack_bytes")
+		delete(result, "stack_sha256")
+		result["metrics_bytes"], result["metrics_sha256"] = len(body), hex.EncodeToString(sum[:])
+		result["metric_semantics_proven"] = false
+	}
+	return json.NewEncoder(output).Encode(result)
 }
 
 func main() {
@@ -279,7 +313,8 @@ func main() {
 	flag.StringVar(&c.ca, "cacert", "", "server CA PEM file")
 	flag.StringVar(&c.cert, "cert", "", "client certificate PEM file")
 	flag.StringVar(&c.key, "key", "", "client private key PEM file")
-	flag.StringVar(&c.mode, "mode", "", "protected, protected-stack (fault-time capture without readiness), or disabled")
+	flag.StringVar(&c.mode, "mode", "", "protected, protected-stack, protected-metrics (fault-time captures without readiness), or disabled")
+	flag.StringVar(&c.metricsOutput, "metrics-output", "", "new private raw metrics file (protected-metrics only)")
 	flag.StringVar(&c.stackOutput, "stack-output", "", "new private stack file (protected capture modes only)")
 	flag.Parse()
 	if flag.NArg() != 0 {
