@@ -320,3 +320,31 @@ successor 第 47 次采样的确认发生在故障后 **29.821388370 秒**，
 证明发送预算修复无效或存储是唯一瓶颈。保留完整原门限和校验要求。
 恢复进展：`recovery/diagnostics/exit-code=0`；协议恢复已完成三个
 副本滚动，尚需该阶段后验证与后续证书恢复、Secret 清理终态。
+
+### 本轮终态：失败保留，恢复及精确清理完成
+
+执行会话 79201 已终态退出 124，`execute-process.exit` 与
+`final-exit-code` 均为 124；不是仍在运行或验收通过。四项自动恢复
+阶段均退出 0，`recovery-exit-code=0`，`secret-cleanup-exit-code=0`。
+独立复查会话 63567 退出 0，证据 `independent-restoration.nvx9NEbv`：
+StatefulSet UID/spec 与原基线完全相同，generation/observedGeneration
+为 138、3 Ready/updated，恢复原固定镜像 `sha256:50b9938f…`；原 peer
+Secret UID/resourceVersion/type/data 未变，本轮临时 Secret、故障策略
+和标签均已消失，受控转发端口无残留。这不改变本轮故障门限失败。
+
+临时卷先只读核验（`scratch-cleanup.OysxZhvZ`），随后会话 86771
+退出 0，`scratch-cleanup.FtvhwwAD` 精确回收 42 个本轮 4 GiB、
+Released、无挂载的临时卷。逐项核对历史归属、UID/spec/resourceVersion
+和 CSI 独占性；所有非目标卷 UID/spec 清理前后相同。清理后本地卷
+为 12 Bound / 92 Released，剩余 Released 均属于执行前基线，不因
+其 Released 状态删除。已删除临时数据不可恢复，旧 Ceph 卷未改动。
+
+编译残留先只读核验 44 个路径（会话 45030），再由会话 29762
+退出 0 精确删除；证据 `compiled-cleanup.2URD8ESu`。仅删除新 owner
+内匹配已知辅助工具摘要、且未被进程使用的 ELF，源码、日志、证书、
+计划和回执保留，可从固定源码重编译。此 owner 的二进制依赖摘要
+现仅作历史记录，不再是可执行运行时；严禁复用已消费实验目录。
+
+当前无本轮执行/清理任务运行。下一步分析 leader 确认偏晚的原因、
+补充可定位机制的回归或诊断，而不是重复同一集群实验或放宽门限。
+整体 DBaaS 兼容性及生产就绪目标仍未完成。
