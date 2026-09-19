@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,22 @@ func testNetworkObserver(t *testing.T, ctx context.Context, p FaultPreparation, 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "observer-targets.json"), targets, 0600))
 	digest := sha256.Sum256(targets)
 	scripts := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(scripts, "observe-local-backend-drops.sh"), []byte(`set -eu
+umask 077
+[[ $# == 5 && $2 == "$1/observer-pod.json" && $3 == "$1/observer-targets.json" && $4 == 1 && $5 == "$ORIGIN" ]] || exit 99
+printf 'once\n' >> "$1/drop-attempts"
+if [[ $SCENARIO == observer-drops-bad-output ]]; then printf 'fixture observer result\n'; exit 0; fi
+path="$1/backend-drops.abcdefgh"
+mkdir "$path"
+printf '0\n' > "$path/observation.exit"
+printf '%s\n' "$ORIGIN" > "$path/origin"
+[[ $SCENARIO != observer-drops-wrong-clock ]] || printf '1\n' > "$path/origin"
+[[ $SCENARIO != observer-drops-wrong-exit ]] || printf '9\n' > "$path/observation.exit"
+[[ $SCENARIO != observer-drops-wrong-path ]] || path=/other/backend-drops.abcdefgh
+printf 'EVIDENCE=%s\nSAME_SOURCE_PD_AND_TIKV_POLICY_DROPS_NOT_TERM_OR_RPC_PROOF\n' "$path"
+[[ $SCENARIO != observer-drops-pending ]] || exit 75
+if [[ $SCENARIO == observer-drops-input-during ]]; then printf changed > "$3"; fi
+`), 0600))
 	require.NoError(t, os.WriteFile(filepath.Join(scripts, "observe-local-policy-state.sh"), []byte(`set -eu
 [[ $# == 5 && $2 == present && $3 == created-uid && $4 == fault-policy && $5 == "$1/observer-pod.json" ]] || exit 99
 printf 'fixture observer result\n'
@@ -54,11 +71,13 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 		Retain: func(stage string, output []byte, observed error) error {
 			retained++
 			stages[stage] = true
-			require.Contains(t, string(output), "fixture observer result")
+			if stage != "drops" {
+				require.Contains(t, string(output), "fixture observer result")
+			}
 			if errors.Is(observed, ErrObservationPending) {
 				pending++
 			}
-			if mode == "observer-retain-fail" {
+			if mode == "observer-retain-fail" || mode == "observer-drops-retain-fail" {
 				return errors.New("evidence retention failed")
 			}
 			return nil
@@ -66,6 +85,42 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 	}
 	if mode == "observer-input-before" {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "observer-targets.json"), []byte("changed"), 0600))
+	}
+	if strings.HasPrefix(mode, "observer-drops") {
+		origin := time.Now()
+		faultCtx, cancel := context.WithDeadline(ctx, origin.Add(30*time.Second))
+		defer cancel()
+		o.Env = append(o.Env, "ORIGIN="+strconv.FormatInt(origin.UnixNano(), 10))
+		if mode != "observer-drops-inactive" {
+			require.NoError(t, ActivateNetwork(faultCtx, p.Client, dir, p.Network, origin, p.Own))
+		}
+		duration := 1
+		if mode == "observer-drops-invalid-duration" {
+			duration = 10
+		}
+		err := o.Drops(faultCtx, origin, duration)
+		if mode == "observer-drops" {
+			require.NoError(t, err)
+		} else {
+			require.Error(t, err)
+		}
+		if mode == "observer-drops-inactive" || mode == "observer-drops-invalid-duration" {
+			require.Zero(t, retained)
+			_, err = os.Stat(filepath.Join(dir, "drop-attempts"))
+			require.ErrorIs(t, err, os.ErrNotExist)
+			return
+		}
+		require.Equal(t, 1, retained, "capture must never be retried")
+		require.Equal(t, map[string]bool{"drops": true}, stages)
+		attempts, err := os.ReadFile(filepath.Join(dir, "drop-attempts"))
+		require.NoError(t, err)
+		require.Equal(t, "once\n", string(attempts))
+		if mode == "observer-drops-pending" {
+			require.Equal(t, 1, pending)
+		}
+		_, err = os.Stat(filepath.Join(dir, "observer-modes"))
+		require.ErrorIs(t, err, os.ErrNotExist, "drop mode must not probe backend TCP")
+		return
 	}
 	if strings.HasPrefix(mode, "observer-active") {
 		origin := time.Now()

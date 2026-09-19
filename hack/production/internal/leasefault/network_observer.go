@@ -8,6 +8,9 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -43,17 +46,33 @@ func (o NetworkObserver) Prepared(ctx context.Context) error {
 // It verifies the exact owned active API policy on every pending observation
 // and uses the SAME original fault deadline. Packet drops remain a separate gate.
 func (o NetworkObserver) Active(ctx context.Context, origin time.Time) error {
+	return o.observeFault(ctx, "active", origin, 0)
+}
+
+// Drops captures once (including on exit 75), binds both backend classes and
+// retains the result before accepting it. durationSeconds is the remote capture
+// interval, not a fresh budget. The full child is supervised under ctx.
+// Use with FaultObservation.Active and independent successor checks; packets
+// alone neither establish term loss nor the original request's outcome.
+func (o NetworkObserver) Drops(ctx context.Context, origin time.Time, durationSeconds int) error {
+	if durationSeconds < 1 || durationSeconds > 9 {
+		return errors.New("drop capture duration must be 1..9 seconds")
+	}
+	return o.observeFault(ctx, "drops", origin, durationSeconds)
+}
+
+func (o NetworkObserver) observeFault(ctx context.Context, stage string, origin time.Time, durationSeconds int) error {
 	if ctx == nil || origin.IsZero() || origin.After(time.Now()) {
-		return errors.New("invalid active policy clock")
+		return errors.New("invalid network fault clock")
 	}
 	deadline, ok := ctx.Deadline()
 	if !ok || deadline.After(origin.Add(30*time.Second)) {
-		return errors.New("active policy observation needs original fault deadline")
+		return errors.New("network fault observation needs original fault deadline")
 	}
 	if !time.Now().Before(deadline) {
 		return context.DeadlineExceeded
 	}
-	err := o.observe(ctx, "active", NetworkLabelOwned)
+	err := o.observeCapture(ctx, stage, NetworkLabelOwned, origin, durationSeconds)
 	if !time.Now().Before(deadline) {
 		return errors.Join(err, context.DeadlineExceeded)
 	}
@@ -71,6 +90,10 @@ func (o NetworkObserver) Unlabelled(ctx context.Context) error {
 }
 
 func (o NetworkObserver) observe(ctx context.Context, stage string, phase NetworkLabelPhase) error {
+	return o.observeCapture(ctx, stage, phase, time.Time{}, 0)
+}
+
+func (o NetworkObserver) observeCapture(ctx context.Context, stage string, phase NetworkLabelPhase, origin time.Time, durationSeconds int) error {
 	if o.Client == nil || o.Admit == nil || o.Retain == nil || !filepath.IsAbs(o.ScriptDirectory) || filepath.Clean(o.ScriptDirectory) != o.ScriptDirectory {
 		return errors.New("incomplete network observer binding")
 	}
@@ -158,7 +181,7 @@ func (o NetworkObserver) observe(ctx context.Context, stage string, phase Networ
 		if !bytes.Equal(receipt, current) {
 			return errors.New("observer reservation changed")
 		}
-		if stage == "active" {
+		if stage == "active" || stage == "drops" {
 			active, err := o.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(o.Network.Namespace).Get(ctx, o.Network.PolicyName, metav1.GetOptions{})
 			if err != nil {
 				return err
@@ -192,10 +215,69 @@ func (o NetworkObserver) observe(ctx context.Context, stage string, phase Networ
 	if stage == "active" {
 		args = []string{filepath.Join(o.ScriptDirectory, "observe-local-policy-state.sh"), o.Directory, "present", string(policy.GetUID()), o.Network.PolicyName, filepath.Join(o.Directory, "observer-pod.json")}
 	}
+	if stage == "drops" {
+		if err := admit(ctx); err != nil {
+			return err
+		}
+		args = []string{filepath.Join(o.ScriptDirectory, "observe-local-backend-drops.sh"), o.Directory, filepath.Join(o.Directory, "observer-pod.json"), filepath.Join(o.Directory, "observer-targets.json"), strconv.Itoa(durationSeconds), strconv.FormatInt(origin.UnixNano(), 10)}
+		out, observed := RunRecoveryObserver(ctx, "/bin/bash", args, o.Env)
+		if observed == nil {
+			// Exact output from the admitted child, never accept an arbitrary
+			// exit-zero wrapper or a marker embedded in unrelated log output.
+			lines := strings.Split(string(out), "\n")
+			if len(lines) != 3 || lines[2] != "" || lines[1] != "SAME_SOURCE_PD_AND_TIKV_POLICY_DROPS_NOT_TERM_OR_RPC_PROOF" || !strings.HasPrefix(lines[0], "EVIDENCE=") {
+				observed = errors.New("invalid drop observation completion")
+			} else {
+				path := strings.TrimPrefix(lines[0], "EVIDENCE=")
+				if filepath.Dir(path) != o.Directory || !regexp.MustCompile(`^backend-drops\.[A-Za-z0-9]{8}$`).MatchString(filepath.Base(path)) {
+					observed = errors.New("drop evidence outside owned directory")
+				} else {
+					observed = checkDropReceipt(path, origin)
+				}
+			}
+		}
+		if err := o.Retain(stage, out, observed); err != nil {
+			return errors.Join(err, observed, ctx.Err())
+		}
+		if err := errors.Join(observed, ctx.Err()); err != nil {
+			return err
+		}
+		return admit(ctx)
+	}
 	err = WaitRecoveryObserver(ctx, "/bin/bash", args, o.Env, admit, func(out []byte, observed error) error { return o.Retain(stage, out, observed) })
 	if err != nil {
 		return err
 	}
 	// A matched script cannot mask changed admission or inputs on its return.
 	return admit(ctx)
+}
+
+// Read only fixed private receipt names after the actual child has joined.
+// This checks consistency of the admitted producer, not imported evidence.
+func checkDropReceipt(path string, origin time.Time) error {
+	r, err := recoveryRoot(path)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	for name, expected := range map[string]string{"observation.exit": "0\n", "origin": strconv.FormatInt(origin.UnixNano(), 10) + "\n"} {
+		f, err := openRecoveryRecord(r, name)
+		if err != nil {
+			return err
+		}
+		st, err := f.Stat()
+		if err != nil || st.Mode().Perm()&0077 != 0 || st.Size() > 63 {
+			f.Close()
+			return errors.New("invalid private drop receipt")
+		}
+		data, readErr := io.ReadAll(io.LimitReader(f, 64))
+		closeErr := f.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return err
+		}
+		if string(data) != expected {
+			return errors.New("drop observation receipt mismatch")
+		}
+	}
+	return nil
 }

@@ -33,6 +33,9 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 		"lifecycle-native-stale-successor", "lifecycle-native-identity-mismatch",
 		"observer-matched", "observer-pending", "observer-input-before", "observer-input-during", "observer-retain-fail", "observer-owner-lost",
 		"observer-active", "observer-active-pending", "observer-active-inactive", "observer-active-replaced",
+		"observer-drops", "observer-drops-pending", "observer-drops-bad-output", "observer-drops-wrong-path",
+		"observer-drops-input-during", "observer-drops-retain-fail", "observer-drops-inactive", "observer-drops-invalid-duration",
+		"observer-drops-wrong-clock", "observer-drops-wrong-exit",
 		"nonce-matched", "nonce-pending", "nonce-input-before", "nonce-input-during", "nonce-retain-fail", "nonce-owner-lost", "nonce-owner-after",
 	} {
 		t.Run(mode, func(t *testing.T) {
