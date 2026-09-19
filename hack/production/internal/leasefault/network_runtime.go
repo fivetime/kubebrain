@@ -14,7 +14,7 @@ import (
 // NetworkFaultRuntime assembles the concrete repository network observers with
 // the native probe lifecycle. It does not acquire/release ownership, discover
 // identities, admit images or build commands. Those are independent inputs.
-// Lifecycle must leave ReservedReady, ObserveFault, NetworkRestored and
+// Lifecycle must leave NoncesSafe, ReservedReady, ObserveFault, NetworkRestored and
 // IdentityRestored empty; this runtime supplies them, never silently overrides.
 type NetworkFaultRuntime struct {
 	Lifecycle                      FaultLifecycle
@@ -39,7 +39,7 @@ func (r NetworkFaultRuntime) Run(ctx context.Context) (LifecycleResult, error) {
 
 func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	l := r.Lifecycle
-	if l.Observation == nil || l.Owner == nil || l.Preparation.Own == nil || l.OutcomeAdmit == nil || l.Preparation.ReservedReady != nil || l.ObserveFault != nil || l.NetworkRestored != nil || l.IdentityRestored != nil || r.AdmitNetwork == nil || r.RetainNetwork == nil || r.SuccessorConnection == nil || r.AdmitSuccessor == nil || r.RetainStatus == nil || r.CaptureSeconds < 1 || r.CaptureSeconds > 9 {
+	if l.Observation == nil || l.Owner == nil || l.Preparation.Own == nil || l.OutcomeAdmit == nil || l.Preparation.NoncesSafe != nil || l.Preparation.ReservedReady != nil || l.ObserveFault != nil || l.NetworkRestored != nil || l.IdentityRestored != nil || r.AdmitNetwork == nil || r.RetainNetwork == nil || r.SuccessorConnection == nil || r.AdmitSuccessor == nil || r.RetainStatus == nil || r.CaptureSeconds < 1 || r.CaptureSeconds > 9 {
 		return FaultLifecycle{}, errors.New("incomplete or conflicting concrete network runtime")
 	}
 	initial := l.Observation.Initial
@@ -66,6 +66,7 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	}
 	n := NetworkObserver{Directory: p.Directory, StatefulSetName: p.StatefulSetName, ScriptDirectory: r.ScriptDirectory, TargetsSHA256: r.TargetsSHA256, Network: p.Network, Client: p.Client, Env: append([]string{}, r.Env...), Admit: admit, Retain: r.RetainNetwork}
 	l.Preparation.Own = admit
+	l.Preparation.NoncesSafe = n.NoncesSafe
 	l.Preparation.ReservedReady = n.Prepared
 	l.NetworkRestored = n.Restored
 	l.IdentityRestored = n.Unlabelled

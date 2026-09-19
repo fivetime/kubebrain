@@ -17,6 +17,7 @@ import (
 func nativeNetworkRuntimeFixture(t *testing.T, l FaultLifecycle, release func(), joined func() bool, mode string) NetworkFaultRuntime {
 	t.Helper()
 	p := l.Preparation
+	l.Preparation.NoncesSafe = nil
 	l.Preparation.ReservedReady = nil
 	l.ObserveFault = nil
 	l.NetworkRestored = nil
@@ -27,6 +28,10 @@ func nativeNetworkRuntimeFixture(t *testing.T, l FaultLifecycle, release func(),
 	targets := "[]"
 	write(filepath.Join(p.Directory, "observer-targets.json"), targets)
 	digest := sha256.Sum256([]byte(targets))
+	write(filepath.Join(scripts, "observe-local-nonces.sh"), `set -eu
+[[ $# == 5 && $2 == "$1/observer-pod.json" && $5 =~ ^[0-9]{19}$ ]] || exit 99
+printf 'fixture nonce scan\n'
+`)
 	write(filepath.Join(scripts, "observe-local-network-restored.sh"), `set -eu
 [[ $# == 6 && ( $2 == absent || $2 == absent-unlabelled ) ]] || exit 99
 printf 'fixture restoration\n'
@@ -58,6 +63,7 @@ printf 'EVIDENCE=%s\nSAME_SOURCE_PD_AND_TIKV_POLICY_DROPS_NOT_TERM_OR_RPC_PROOF\
 		return &pb.StatusResponse{Header: &pb.ResponseHeader{ClusterId: initial.ClusterID, MemberId: healthy, RaftTerm: 3}, Leader: healthy}, nil
 	}}
 	t.Cleanup(func() {
+		require.Greater(t, stages["nonces"], 1, "repeat nonce scans throughout preparation and before activation")
 		// Protocol preflight, intent admission, three before-write gates and
 		// the final preparation check all re-observe the reserved network.
 		require.Equal(t, 6, stages["prepared"])
@@ -82,6 +88,10 @@ printf 'EVIDENCE=%s\nSAME_SOURCE_PD_AND_TIKV_POLICY_DROPS_NOT_TERM_OR_RPC_PROOF\
 		AdmitNetwork: func(context.Context) error { return nil },
 		RetainNetwork: func(stage string, _ []byte, err error) error {
 			stages[stage]++
+			if stage == "nonces" {
+				require.Zero(t, stages["active"], "nonce scan must precede fault observations")
+				require.Zero(t, stages["drops"])
+			}
 			if stage == "restored" || stage == "unlabelled" {
 				require.True(t, joined(), "concrete restoration must follow actual child join")
 			} else {

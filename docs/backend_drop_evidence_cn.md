@@ -138,12 +138,18 @@ Status 连接的身份/来源。测试验证未激活、策略替换均拒绝，
 独立连接准入、证据留存、恢复连接及 Join；本入口不发现身份、不获取或
 自动释放认领，也不替代 CI/镜像准入。
 
-组装时要求原生命周期留空 ReservedReady、ObserveFault、NetworkRestored
+组装时要求原生命周期留空 NoncesSafe、ReservedReady、ObserveFault、NetworkRestored
 和 IdentityRestored，避免静默覆盖或混入外部故障脚本。独立观察的 cluster、
 old leader、old term 必须与原探针初始身份相同，观察成员必须不同；不允许
 预填故障时钟。上述冲突在任何集群准备操作前失败。准备阶段、故障阶段
 和恢复阶段共用同一个由 Preparation 绑定的 NetworkObserver；准备的 Own
 同时核对实际 owner 与网络准入。
+
+NoncesSafe 也固定绑定同一网络观察器，执行仓库的完整 nonce 扫描，不能
+由调用方提供另一套替代扫描。它在准备过程及激活前重复观察，不允许把
+准备时的旧快照作为激活时的安全证明；完整 collector/classifier 依赖仍需
+纳入 AdmitNetwork 的工具哈希与集群准入。集成测试确认扫描发生在故障
+观察前，且本地重复 hook 配置在集群变更前拒绝。
 
 故障观察仅能调用一次：具体 Active → Drops → 独立 Status → Active，
 Status 前后同时执行 CheckActive 和独立连接准入；原请求结果检查前后也

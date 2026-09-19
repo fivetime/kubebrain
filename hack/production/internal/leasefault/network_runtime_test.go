@@ -10,7 +10,7 @@ import (
 )
 
 func TestNetworkFaultRuntimeBinding(t *testing.T) {
-	for _, mode := range []string{"bound", "cluster", "old-member", "old-term", "same-observer", "prefilled-clock", "duration", "conflicting-ready", "conflicting-fault", "conflicting-recovery", "missing-admission", "bad-script", "bad-digest"} {
+	for _, mode := range []string{"bound", "cluster", "old-member", "old-term", "same-observer", "prefilled-clock", "duration", "conflicting-nonces", "conflicting-ready", "conflicting-fault", "conflicting-recovery", "missing-admission", "bad-script", "bad-digest"} {
 		t.Run(mode, func(t *testing.T) {
 			calls := 0
 			admit := func(context.Context) error { calls++; return nil }
@@ -36,6 +36,8 @@ func TestNetworkFaultRuntimeBinding(t *testing.T) {
 				r.CaptureSeconds = 10
 			case "conflicting-ready":
 				r.Lifecycle.Preparation.ReservedReady = admit
+			case "conflicting-nonces":
+				r.Lifecycle.Preparation.NoncesSafe = admit
 			case "conflicting-fault":
 				r.Lifecycle.ObserveFault = func(context.Context, time.Time) (uint64, error) { calls++; return 4, nil }
 			case "conflicting-recovery":
@@ -57,6 +59,7 @@ func TestNetworkFaultRuntimeBinding(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.NotNil(t, bound.Preparation.ReservedReady)
+			require.NotNil(t, bound.Preparation.NoncesSafe)
 			require.NotNil(t, bound.ObserveFault)
 			require.NotNil(t, bound.NetworkRestored)
 			require.NotNil(t, bound.IdentityRestored)
