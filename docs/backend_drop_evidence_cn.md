@@ -130,3 +130,26 @@ spec、输入哈希和调用方认领；不启动外部观察脚本，也不复�
 实现观察或 Drops 的报文门限。生产组装的 CheckIsolation 还须验证独立
 Status 连接的身份/来源。测试验证未激活、策略替换均拒绝，并验证一次
 成功检查后的策略替换会被下一次检查发现。
+
+## 具体网络生命周期组装
+
+`NetworkFaultRuntime.Run` 将现有原生 `FaultLifecycle` 与仓库网络观察器
+连接起来。调用方提供已有认领、原始探针/两个栈 worker、指标 hooks、
+独立连接准入、证据留存、恢复连接及 Join；本入口不发现身份、不获取或
+自动释放认领，也不替代 CI/镜像准入。
+
+组装时要求原生命周期留空 ReservedReady、ObserveFault、NetworkRestored
+和 IdentityRestored，避免静默覆盖或混入外部故障脚本。独立观察的 cluster、
+old leader、old term 必须与原探针初始身份相同，观察成员必须不同；不允许
+预填故障时钟。上述冲突在任何集群准备操作前失败。准备阶段、故障阶段
+和恢复阶段共用同一个由 Preparation 绑定的 NetworkObserver；准备的 Own
+同时核对实际 owner 与网络准入。
+
+故障观察仅能调用一次：具体 Active → Drops → 独立 Status → Active，
+Status 前后同时执行 CheckActive 和独立连接准入；原请求结果检查前后也
+重新执行 CheckActive，沿用唯一原时钟。恢复仍由原生命周期在 Join 后
+以独立预算执行，失败实验不能通过恢复转为验收成功。
+
+组装测试覆盖初始身份不一致、重复 hooks、无准入、非法绑定、预置时钟、
+提前 outcome 与重复执行的拒绝。它们是本地绑定测试，不证明在线全流程；
+独立命令行计划/配置加载和实际部署验收仍未完成。
