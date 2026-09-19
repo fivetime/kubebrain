@@ -15,6 +15,53 @@ import (
 // the SAME recovery deadline; fatal errors must not be converted to pending.
 var ErrObservationPending = errors.New("recovery observation pending")
 
+// WaitRecoveryObserver connects typed observations to a recovery-stage hook.
+// admit must revalidate independent inputs and exclusive ownership before EVERY
+// attempt. retain must durably preserve each attempt's output/status in private
+// evidence; retention failure is fatal, including after an otherwise matched
+// observation. Only exact ErrObservationPending retries, with the original ctx.
+// It retries reads, never a mutation; do not pass a fault/cleanup script here.
+func WaitRecoveryObserver(ctx context.Context, executable string, args, env []string, admit func(context.Context) error, retain func([]byte, error) error) error {
+	if ctx == nil || admit == nil || retain == nil {
+		return errors.New("observer wait requires context, admission and evidence retention")
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) > 5*time.Minute {
+		return errors.New("observer wait requires bounded recovery deadline")
+	}
+	// Copy caller-owned slices once so every attempt uses the same arguments.
+	args, env = append([]string{}, args...), append([]string{}, env...)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := admit(ctx); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		output, observed := RunRecoveryObserver(ctx, executable, args, env)
+		// Retain the result even if cancellation raced with the observation.
+		if err := retain(output, observed); err != nil {
+			return errors.Join(err, observed, ctx.Err())
+		}
+		if err := ctx.Err(); err != nil {
+			return errors.Join(err, observed)
+		}
+		if observed != ErrObservationPending {
+			return observed
+		}
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 // RunRecoveryObserver executes one independently admitted read-only observer.
 // executable/script hashes, arguments, live resource bindings and private evidence
 // paths must be verified by the caller. No shell interpolation, inherited environment,

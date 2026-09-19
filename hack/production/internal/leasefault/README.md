@@ -283,3 +283,16 @@ deadline cancellation with direct-child reaping. Callers must still bind scripts
 and arguments to admitted identities, persist output privately, and account for
 descendants that escape the process group. This adapter does not itself connect
 the cluster-specific hooks or execute a fault experiment.
+
+`WaitRecoveryObserver` can be used inside a recovery-stage observation hook. It
+rechecks caller admission before each read-only command, retains every attempt's
+output/status through a required evidence callback, and waits 200 ms only for the
+exact typed pending result. Fatal errors, lost admission, evidence retention
+failure and cancellation stop the stage; even a matched observation is rejected
+if its evidence cannot be retained. Every attempt uses the same original recovery
+context and copied arguments/environment. Tests cover pending-to-matched, fatal,
+ownership loss between attempts, evidence failure after pending or matched,
+cancellation and unchanged deadlines. This is not a mutation retry facility or
+a new fault acceptance clock. Admission/retention callbacks must be bounded and
+the retention implementation must preserve private evidence durably; concrete
+cluster hook configuration remains the complete coordinator's responsibility.
