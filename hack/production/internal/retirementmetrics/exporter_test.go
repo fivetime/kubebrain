@@ -39,6 +39,7 @@ func TestProductionExporterClusterBinding(t *testing.T) {
 	} {
 		for _, outcome := range stage.outcomes {
 			require.NoError(t, m.EmitCounter("leader.retirement."+stage.name+".result", 0, metrics.Tag("outcome", outcome)))
+			require.NoError(t, m.(metrics.HistogramRegistrar).RegisterHistogram("leader.retirement."+stage.name+".duration.seconds", metrics.Tag("outcome", outcome)))
 		}
 	}
 	scrape := func() []byte {
@@ -54,17 +55,26 @@ func TestProductionExporterClusterBinding(t *testing.T) {
 	for _, value := range before {
 		require.Zero(t, value)
 	}
+	beforeDurations, err := parseDurations(raw, "test")
+	require.NoError(t, err)
+	require.Len(t, beforeDurations, 8)
 	_, err = Parse(raw)
 	require.Error(t, err, "unbound parser must reject production labels")
 	_, err = ParseForCluster(raw, "other")
 	require.Error(t, err)
 	require.NoError(t, m.EmitCounter("leader.retirement.peer.result", 1, metrics.Tag("outcome", "confirmed")))
+	require.NoError(t, m.EmitHistogram("leader.retirement.peer.duration.seconds", .25, metrics.Tag("outcome", "confirmed")))
 	after, err := ParseForCluster(scrape(), "test")
 	require.NoError(t, err)
 	p := Process{PodUID: "pod", ContainerID: "container", StartedAt: "start", Cluster: "test"}
 	delta, err := Delta(before, after, Key{"peer", "confirmed"}, p, p)
 	require.NoError(t, err)
 	require.Equal(t, float64(1), delta)
+	afterDurations, err := parseDurations(scrape(), "test")
+	require.NoError(t, err)
+	d, err := SampleDurationDelta(Sample{counters: before, durations: beforeDurations, process: p, started: time.Unix(1, 0), completed: time.Unix(2, 0)}, Sample{counters: after, durations: afterDurations, process: p, started: time.Unix(3, 0), completed: time.Unix(4, 0)}, Key{"peer", "confirmed"})
+	require.NoError(t, err)
+	require.Equal(t, DurationDelta{Count: 1, Seconds: .25}, d)
 }
 
 func TestClusterLabelRejection(t *testing.T) {

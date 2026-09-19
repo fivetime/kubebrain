@@ -14,6 +14,15 @@ Required flags:
 --stage local|peer --outcome OUTCOME
 ```
 
+Add `--duration` to require the matching completed-operation histogram and emit
+`duration_delta: {count, seconds}`. This is the observed change in cumulative
+seconds for the selected stage/outcome, not a per-event timestamp or total
+failover latency. Floating-point sums retain exporter rounding limitations.
+Both snapshots must have matching result/histogram counts; a scrape between
+the two metric updates is rejected rather than silently reconciled.
+Bucket bounds must match, cumulative bucket deltas must be monotonic, and
+sum/count/bucket resets, missing components or duplicate samples are rejected.
+
 Use identities saved by the experiment's admission, not identities copied from
 the unverified capture just to make it pass. `spec-sha256` is SHA-256 of the
 admitted StatefulSet's **spec object only**, decoded case-sensitively with integer
@@ -42,7 +51,7 @@ retirement series; that is an **unknown delta**, not proof of zero events.
 
 The manifest is an integrity check, not a signature. The caller must retain the
 original experiment admission, tool/image provenance and fault timeline. This
-command does not verify those, histogram durations, the entire 30-second fault
+command does not verify those, the entire 30-second fault
 gate, successor readiness, or production readiness. Count changes do not locate
 individual events in time or explain latency. No live experiment is authorized
 merely because this offline check succeeds.

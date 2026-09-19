@@ -40,13 +40,13 @@ func TestCLIProcessHelper(t *testing.T) {
 }
 
 func TestCLICompletedCapturePair(t *testing.T) {
-	for _, scenario := range []string{"success", "missing-baseline", "reset", "changed-process", "reversed", "overlap", "tampered", "incomplete", "wrong-admission", "wrong-cluster", "missing-cluster"} {
+	for _, scenario := range []string{"success", "duration-success", "duration-missing", "missing-baseline", "reset", "changed-process", "reversed", "overlap", "tampered", "incomplete", "wrong-admission", "wrong-cluster", "missing-cluster"} {
 		t.Run(scenario, func(t *testing.T) {
 			baseline := 2
 			if scenario == "missing-baseline" {
 				baseline = -1
 			}
-			before, specHash := cliCaptureFixture(t, 1800000000, baseline, "process")
+			before, specHash := cliCaptureFixture(t, 1800000000, baseline, "process", scenario == "duration-success")
 			afterCount, afterTime, afterProcess := 5, int64(1800000020), "process"
 			if scenario == "reset" {
 				afterCount = 1
@@ -57,7 +57,7 @@ func TestCLICompletedCapturePair(t *testing.T) {
 			if scenario == "overlap" {
 				afterTime = 1800000000
 			}
-			after, _ := cliCaptureFixture(t, afterTime, afterCount, afterProcess)
+			after, _ := cliCaptureFixture(t, afterTime, afterCount, afterProcess, scenario == "duration-success")
 			if scenario == "reversed" {
 				before, after = after, before
 			}
@@ -79,6 +79,9 @@ func TestCLICompletedCapturePair(t *testing.T) {
 				cluster = ""
 			}
 			args := []string{"-test.run=^TestCLIProcessHelper$", "--", "--before", before, "--after", after, "--namespace-uid", "ns-uid", "--sts-uid", "sts-uid", "--pod-uid", podUID, "--spec-sha256", specHash, "--cluster", cluster, "--stage", "peer", "--outcome", "confirmed"}
+			if scenario == "duration-success" || scenario == "duration-missing" {
+				args = append(args, "--duration")
+			}
 			binary, err := os.Executable()
 			require.NoError(t, err)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -90,7 +93,7 @@ func TestCLICompletedCapturePair(t *testing.T) {
 			cmd.Stderr = &stderr
 			err = cmd.Run()
 			require.NoError(t, ctx.Err())
-			if scenario != "success" {
+			if scenario != "success" && scenario != "duration-success" {
 				var exit *exec.ExitError
 				require.ErrorAs(t, err, &exit)
 				require.Equal(t, 1, exit.ExitCode())
@@ -100,17 +103,29 @@ func TestCLICompletedCapturePair(t *testing.T) {
 			}
 			require.NoError(t, err, stderr.String())
 			require.Empty(t, stderr.String())
+			if scenario == "duration-success" {
+				require.JSONEq(t, `{"stage":"peer","outcome":"confirmed","count_delta":3,"duration_delta":{"count":3,"seconds":0.75},"scope":"same_process_retirement_completed_operations","fault_acceptance_proven":false,"successor_readiness_proven":false,"event_latency_proven":false}`, stdout.String())
+				return
+			}
 			require.JSONEq(t, `{"stage":"peer","outcome":"confirmed","count_delta":3,"scope":"same_process_retirement_counter_only","fault_acceptance_proven":false,"successor_readiness_proven":false,"event_latency_proven":false}`, stdout.String())
 		})
 	}
 }
 
-func cliCaptureFixture(t *testing.T, started int64, count int, process string) (string, string) {
+func cliCaptureFixture(t *testing.T, started int64, count int, process string, withDuration bool) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
 	raw := []byte(fmt.Sprintf("# TYPE leader_retirement_peer_result counter\nleader_retirement_peer_result{cluster=\"test\",outcome=\"confirmed\"} %d\n", count))
 	if count < 0 {
 		raw = []byte("unrelated 1\n")
+	}
+	if withDuration {
+		raw = append(raw, []byte(fmt.Sprintf(`# TYPE leader_retirement_peer_duration_seconds histogram
+leader_retirement_peer_duration_seconds_bucket{cluster="test",outcome="confirmed",le="1"} %d
+leader_retirement_peer_duration_seconds_bucket{cluster="test",outcome="confirmed",le="+Inf"} %d
+leader_retirement_peer_duration_seconds_sum{cluster="test",outcome="confirmed"} %g
+leader_retirement_peer_duration_seconds_count{cluster="test",outcome="confirmed"} %d
+`, count, count, float64(count)*.25, count))...)
 	}
 	hash := sha256.Sum256(raw)
 	summary, err := json.Marshal(map[string]any{"mode": "protected-metrics", "started": time.Unix(started, 0).UTC(), "completed": time.Unix(started+1, 0).UTC(), "metrics_bytes": len(raw), "metrics_sha256": fmt.Sprintf("%x", hash), "metrics_text_syntax_validated": true, "metric_semantics_proven": false, "readiness_checked": false, "pod_identity_proven": false, "fault_acceptance_proven": false})

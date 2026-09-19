@@ -221,6 +221,26 @@ diff-check 通过。未修改集群、未重跑故障验收；指标语义和同
 
 #### 生产导出标签联测发现并修复不匹配
 
+#### 退休阶段累计耗时差值
+
+离线工具增加可选 `--duration`：选定 local/peer 和 outcome 后，同时要求
+直方图与结果 counter 对应，输出完成操作的 count/seconds 差值。不输出
+总 failover latency，不覆盖 lifecycle join，也不能确定单个事件发生时刻。
+累计 sum 的浮点舍入限制仍存在。counter 与 histogram 分两次写入，因此
+抓取恰好发生在两次更新之间时可能不一致；校验器拒绝该样本，不自行补齐。
+
+检查固定阶段类型、准入 cluster/outcome、有限非负 sum、整数 count、
+完整 sum/count/+Inf 桶、桶累计单调与总数、跨样本桶边界一致及无回退。
+零 count 不允许非零 sum，零增量不允许新增 sum。Prometheus 文本解析器
+会合并直方图组件，为避免漏检重复 sum/count，另去除目标 TYPE 后按独立
+untyped 组件解析、逐项查重；数值等价的重复桶边界同样拒绝。
+
+真实产品适配器 `/metrics` 导出联测涵盖空 histogram 和一次 0.25 秒
+观测；CLI 入口子进程涵盖三个观测增加 0.75 秒及缺失 histogram 时不输出
+成功 JSON。库/CLI/探针三轮 race 分别通过（4.812s/8.315s/12.553s），
+相关 vet/diff-check 通过。未部署，旧候选两个 CI 仍运行；新增代码不在其
+验证范围，完整故障实验仍待新源码 CI、镜像核验及新准入。
+
 启动顺序补验：在真实 `NewServerWithPeerRetirement` 构造测试的后台
 PrevalidateLeadershipRevision 入口，复制指标注册快照，再进入原阻塞
 夹具；核对八个零 counter 与八个各一次的 histogram 注册均已完成。

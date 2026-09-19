@@ -16,6 +16,7 @@ import (
 // the probe. Hashes detect mismatched artifacts, not a forged capture bundle.
 type Sample struct {
 	counters           Counters
+	durations          map[Key]*durationHistogram
 	process            Process
 	started, completed time.Time
 	captureIdentity    string
@@ -96,7 +97,11 @@ func NewSample(raw, summary []byte, process Process) (Sample, error) {
 	if err != nil {
 		return Sample{}, err
 	}
-	return Sample{counters: counters, process: process, started: s.Started, completed: s.Completed}, nil
+	durations, err := parseDurations(raw, process.Cluster)
+	if err != nil {
+		return Sample{}, err
+	}
+	return Sample{counters: counters, durations: durations, process: process, started: s.Started, completed: s.Completed}, nil
 }
 
 // SampleDelta requires strictly ordered, nonoverlapping capture intervals.
