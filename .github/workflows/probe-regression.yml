@@ -8,6 +8,7 @@ name: Rollout probe regression
       - 'hack/production/cmd/pod-log-capture/**'
       - 'hack/production/cmd/lease-term-probe/**'
       - 'hack/production/cmd/lease-fault-response/**'
+      - 'hack/production/cmd/uid-delete/**'
       - 'hack/production/cmd/info-diagnostic-probe/**'
       - 'hack/production/cmd/retirement-metrics-delta/**'
       - 'hack/production/protected-stack-session.sh'
@@ -162,6 +163,8 @@ jobs:
           go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|MetricsSchedule|MetricsWorker|SessionHashVerificationHonorsFaultDeadline)'
           go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestFaultPolicyDeletePlan$'
           go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestFaultLabelRestorePlan$'
+          go vet ./hack/production/cmd/uid-delete
+          go test -race -count=1 -timeout=2m -v ./hack/production/cmd/uid-delete -run '^TestFaultPolicyPlanDeleteTransport$'
       - name: Race test all probe regressions
         run: |
           set -euo pipefail

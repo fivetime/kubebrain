@@ -71,3 +71,17 @@ remove `/metadata/labels/kubebrain.io~1fault-owner`，保留其他标签。
 结构分别完全相等。三轮计划 race 1.784s，diff-check 通过。没有执行
 删除、PATCH、旧驱动或其他集群命令；旧实验完整 30 秒验收失败结论
 不变，此项只证明历史数据格式及计划兼容性。
+
+## 删除请求传输衔接
+
+`cmd/uid-delete` 的 `TestFaultPolicyPlanDeleteTransport` 将仓库 jq
+生成的真实计划直接传给现有动态客户端删除函数，并由本地 HTTP
+测试服务器检查 Cilium API 路径、DELETE 方法以及同时存在的 UID
+和 resourceVersion 前置条件。资源版本使用超过 int64 范围
+的十进制字符串，验证从 jq 到请求 JSON 全程未转为浮点数。
+模拟成功、409 冲突和 404 缺席响应，后两者保留错误类别，三种情况
+均只发送一次请求，不在冲突后退化为无条件删除。
+
+该传输回归纳入 probe CI。它不调用真实集群，也不模拟 API 服务器
+实际执行前置条件，不能证明策略已消失或 Cilium 数据面已恢复。
+完整驱动仍需负责可信输入、独占恢复、准入及删除后的独立观察。
