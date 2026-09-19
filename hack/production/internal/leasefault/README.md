@@ -42,3 +42,24 @@ Tests include IDs above 2^53 and at uint64 limits, signed lease IDs, 1 ns bounda
 violations, term/identity mismatches, malformed records and a round trip through
 the actual probe encoder using an in-process gRPC fixture. That round trip uses
 a synthetic post-hoc origin only to verify schema compatibility, not fault timing.
+
+## Protocol recovery intent
+
+`ArmProtocolRecovery` persists a create-once private record, syncing both the file
+and its containing directory before returning success. The outer recovery owner
+must call it before granting the fixture lease, writing the owned key or arming
+the CORRUPT alarm. It binds owner, namespace/StatefulSet UIDs, cluster, alarm member,
+lease and acceptance key; it never records credentials or child PIDs. Recovery
+must conservatively reconcile all three protocol mutations, regardless of which
+child-local attempt flags were lost. Existing or partially written records are
+preserved and rejected for rearming, not silently replaced.
+
+`LoadProtocolRecovery` checks exact independently retained admission and rejects
+symlinks, non-regular/public files, oversized or malformed JSON, duplicate/unknown
+fields and identity mismatches. A bad/missing record means manual reconciliation,
+not permission to skip cleanup. The directory and admission must remain trusted;
+this is not a cross-process lock or authenticated manifest. These filesystem tests
+do not simulate storage hardware power failure or guarantee remote filesystem
+durability. Network-policy and Pod-label identities still need separate recovery
+records; this API does not perform RPCs, check live ownership or recreate healthy
+member tunnels. Neither API is yet connected to the real fault driver.
