@@ -94,6 +94,16 @@ It is not yet acquired on the actual test cluster. Fake API tests cover busy
 claims, lost CREATE response, scope/object/record changes, failed recovery and
 conditional deletion; no real cluster concurrency result is claimed.
 
+An additional HTTP regression uses two independent real client-go clients and a
+server-side barrier so both CREATE requests contend before either can commit.
+Exactly one caller obtains an owner; the loser receives AlreadyExists without
+adoption or deletion. If the committed CREATE returns an error instead of its
+receipt, neither caller obtains ownership and the server retains the claim for
+reconciliation. The test asserts exactly two CREATE requests (no hidden transport
+retry), private receipt absence for failed requests, and both DELETE preconditions
+on explicit winner release. The local server models atomic CREATE/conditional
+DELETE only; it does not exercise a real API server's admission or persistence.
+
 `RunFaultLifecycle` now requires the actual `FaultOwner` handle, bound to the
 same directory, owner, namespace and StatefulSet identity as preparation. It
 checks the claim before preparation, wraps the additional Own admission with
