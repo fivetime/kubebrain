@@ -5,7 +5,7 @@ umask 077
 [[ $# == 5 ]] || exit 2
 owner=$1; mode=$2; uid=$3; name=$4; expected=$5
 [[ $owner == /* && -d $owner && ! -L $owner && $(stat -c '%a:%u' "$owner") == "700:$EUID" &&
- ($mode == present || $mode == absent) && $uid =~ ^[A-Za-z0-9-]+$ &&
+ ($mode == present || $mode == absent || $mode == absent-unlabelled) && $uid =~ ^[A-Za-z0-9-]+$ &&
  $name =~ ^kb-term-[a-z0-9]+$ && $expected == /* && -f $expected && ! -L $expected ]] || exit 2
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 pod=$(jq -er '.metadata.name|select(test("^kubebrain-local-[012]$"))' "$expected") || exit 65
@@ -15,6 +15,10 @@ trap 'printf "%s\n" "$?" > "$out/observation.exit"' EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 sha256sum "$expected" > "$out/expected.sha256"
+# Post-label recovery is explicit: do not relax the original labelled observer.
+if [[ $mode == absent-unlabelled ]]; then
+ jq -e '((.metadata.labels//{})|has("kubebrain.io/fault-owner")|not)' "$expected" >/dev/null || exit 65
+fi
 rc=0
 timeout --foreground --kill-after=1s 30s bash "$here/capture-local-cilium-endpoint.sh" "$owner" "$pod" > "$out/capture.log" 2>&1 || rc=$?
 if [[ $rc != 0 ]]; then [[ $rc != 124 ]] || exit 124; exit 65; fi
@@ -26,6 +30,9 @@ for current in pod.json pod-after.json; do
  jq -n --slurpfile expected "$expected" --slurpfile current "$capture/$current" \
   'if ($expected|length)==1 and ($current|length)==1 then {expected:$expected[0],current:$current[0]} else error("one Pod per file required") end' |
   jq -e -f "$here/../../hack/production/same-pod-process.jq" >/dev/null || exit 65
+ if [[ $mode == absent-unlabelled ]]; then
+  jq -e '((.metadata.labels//{})|has("kubebrain.io/fault-owner")|not)' "$capture/$current" >/dev/null || exit 65
+ fi
 done
 jq -e --arg mode "$mode" --arg policy_uid "$uid" --arg policy_name "$name" \
  -f "$here/local-policy-observation.jq" "$capture/endpoint.json" > "$out/result.json" 2> "$out/classifier.stderr" || exit 65

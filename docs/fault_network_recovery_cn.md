@@ -102,3 +102,18 @@ HTTP 测试服务实际应用 JSON Patch，并模拟“激活已生效但返回 
 此回归不等于真实 Kubernetes/Cilium 测试。完整控制器仍须连接独占职责、
 实时身份准入、worker join、Cilium 数据面撤销、协议恢复和标签恢复；
 原 30 秒完整验收尚未通过。不得因本地组件测试成功启动未准入实验。
+
+## 撤回标签后的策略复查
+
+`deploy/test-cluster/observe-local-policy-state.sh` 新增显式模式
+`absent-unlabelled`，用于标签撤回且 identity 收敛后的策略复查。
+原 `absent` 模式仍要求 endpoint 带本次故障标签，不改变旧门限。
+新模式要求独立保留的预期 Pod 和采集前后 Pod 均无 fault-owner 标签，
+endpoint identity 中也不能有任何 fault-owner 标签；旧标签或其他 owner
+均拒绝。仍核对同一 Pod 进程、CEP/agent 绑定、ready 状态、策略修订号
+收敛以及原策略 name/UID 均已从 realized policy 消失。
+
+该模式不是放宽为“没有标签即成功”：策略仍在或修订号未收敛仍返回
+pending（75）；身份不一致返回 fatal（65）。观察器不证明数据包/RPC
+连通性。恢复入口的真实 hook 仍须选择正确阶段、执行独立连通性验证，
+并在整个恢复周期持有独占职责。新增回归使用模拟 kubectl，没有调用集群。

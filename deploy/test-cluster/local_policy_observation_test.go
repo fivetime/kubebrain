@@ -27,6 +27,8 @@ func TestLocalPolicyObserverAndRecoveryWait(t *testing.T) {
 		{"absent", 0}, {"ready-restored", 0}, {"present", 0}, {"pending", 75}, {"revision-pending", 75},
 		{"wrong-identity", 65}, {"conflicting-policy", 65}, {"malformed", 65},
 		{"backwards-revision", 65}, {"pod-restart", 65},
+		{"unlabelled-absent", 0}, {"unlabelled-stale-identity", 65}, {"unlabelled-policy-remains", 75},
+		{"unlabelled-foreign-identity", 65}, {"unlabelled-pod-labelled", 65},
 		{"wait-converges", 0}, {"wait-fatal", 65}, {"wait-drift-after-pending", 65},
 		{"wait-cancel", 124},
 	} {
@@ -50,6 +52,9 @@ func TestLocalPolicyObserverAndRecoveryWait(t *testing.T) {
 			mode := "absent"
 			if tc.name == "present" {
 				mode = "present"
+			}
+			if strings.HasPrefix(tc.name, "unlabelled-") {
+				mode = "absent-unlabelled"
 			}
 			cmd := exec.CommandContext(ctx, "bash", observer, dir, mode, "policy-uid", "kb-term-test", expected)
 			if strings.HasPrefix(tc.name, "wait-") {
@@ -123,11 +128,15 @@ if [[ $POLICY_SCENARIO == wait-drift-after-pending ]]; then
  fi
  if (( count >= 2 )); then export CAPTURE_SCENARIO=pod-uid-change; fi
 fi
+if [[ $POLICY_SCENARIO == unlabelled-pod-labelled && " $* " == *" get pod kubebrain-local-0 "* ]]; then
+ bash "$CAPTURE_FIXTURE/mock-api" "$@" | jq '.metadata.labels["kubebrain.io/fault-owner"]="term-test"'
+ exit
+fi
 if [[ " $* " != *" exec "* ]]; then exec bash "$CAPTURE_FIXTURE/mock-api" "$@"; fi
 if [[ $POLICY_SCENARIO == wait-cancel ]]; then printf '%s\n' "$BASHPID" > "$CAPTURE_FIXTURE/blocked.pid"; exec sleep 60; fi
 present=false
 case $POLICY_SCENARIO in
- present|pending) present=true;;
+ present|pending|unlabelled-policy-remains) present=true;;
  wait-converges|wait-drift-after-pending) if [[ ! -e $CAPTURE_FIXTURE/policy-seen ]]; then present=true; fi; touch "$CAPTURE_FIXTURE/policy-seen";;
 esac
 bash "$CAPTURE_FIXTURE/mock-api" "$@" |
@@ -135,7 +144,8 @@ bash "$CAPTURE_FIXTURE/mock-api" "$@" |
  .[0].status.identity.labels=["k8s:kubebrain.io/fault-owner=term-test"] |
  .[0].status.policy={spec:{"policy-revision":4},realized:{"policy-revision":4,l4:{ingress:[],egress:[]}}} |
  if $present then .[0].status.policy.realized.l4.egress=[{"derived-from-rules":[["k8s:io.cilium.k8s.policy.uid=policy-uid","k8s:io.cilium.k8s.policy.name=kb-term-test"]]}] else . end |
- if $scenario=="wrong-identity" or $scenario=="wait-fatal" then .[0].status.identity.labels=[]
+ if $scenario=="wrong-identity" or $scenario=="wait-fatal" or $scenario=="unlabelled-absent" or $scenario=="unlabelled-policy-remains" then .[0].status.identity.labels=[]
+ elif $scenario=="unlabelled-foreign-identity" then .[0].status.identity.labels=["k8s:kubebrain.io/fault-owner=foreign"]
  elif $scenario=="conflicting-policy" then .[0].status.policy.realized.l4.egress=[{"derived-from-rules":[["k8s:io.cilium.k8s.policy.name=kb-term-test"]]}]
  elif $scenario=="revision-pending" then .[0].status.policy.spec["policy-revision"]=5
  elif $scenario=="backwards-revision" then .[0].status.policy.spec["policy-revision"]=3
