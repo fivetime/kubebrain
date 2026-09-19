@@ -2,6 +2,9 @@ package production_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/retirementmetrics"
 	"github.com/stretchr/testify/require"
 )
 
@@ -77,6 +81,7 @@ func TestProtectedMetricsSession(t *testing.T) {
 
 func metricsProbeFixture() string {
 	probe := strings.ReplaceAll(stackProbeFixture, "--stack-output", "--metrics-output")
+	probe = strings.ReplaceAll(probe, "set -eu", "set -eu\nstarted=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)")
 	probe = strings.ReplaceAll(probe, "synthetic stack", "x 1")
 	probe = strings.ReplaceAll(probe, "mode=protected-stack", "mode=protected-metrics")
 	probe = strings.ReplaceAll(probe, `printf '{"mode":"%s","readiness_checked":false,"fault_acceptance_proven":false,"pod_identity_proven":false}\n' "$mode"`, `
@@ -84,7 +89,7 @@ hash=$(sha256sum "$2"); size=$(stat -c %s "$2")
 [[ $scenario != bad-hash ]] || hash=bad
 [[ $scenario != bad-size ]] || size=$((size+1))
 [[ $scenario != changed-body ]] || printf 'x 2\n' >> "$2"
-printf '{"mode":"%s","readiness_checked":false,"fault_acceptance_proven":false,"pod_identity_proven":false,"metric_semantics_proven":false,"metrics_text_syntax_validated":true,"metrics_bytes":%s,"metrics_sha256":"%s"}\n' "$mode" "$size" "${hash%% *}"`)
+printf '{"mode":"%s","readiness_checked":false,"fault_acceptance_proven":false,"pod_identity_proven":false,"metric_semantics_proven":false,"metrics_text_syntax_validated":true,"metrics_bytes":%s,"metrics_sha256":"%s","started":"%s","completed":"%s"}\n' "$mode" "$size" "${hash%% *}" "$started" "$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)"`)
 	return probe
 }
 
@@ -104,6 +109,23 @@ func testProtectedMetricsSession(t *testing.T, library, probe string) {
 			stacks, err := filepath.Glob(filepath.Join(owner, "metrics.*", "goroutines.txt"))
 			require.NoError(t, err)
 			require.Empty(t, stacks, "metrics capture must not produce a stack artifact")
+			if scenario == "success" {
+				raw, err := os.ReadFile(filepath.Join(owner, "diagnostic-spec.json"))
+				require.NoError(t, err)
+				var spec map[string]any
+				require.NoError(t, json.Unmarshal(raw, &spec))
+				canonical, err := json.Marshal(spec)
+				require.NoError(t, err)
+				hash := sha256.Sum256(canonical)
+				binding := retirementmetrics.CaptureBinding{NamespaceUID: "ns-uid", StatefulSetUID: "sts-uid", PodUID: "pod-uid", SpecSHA256: hex.EncodeToString(hash[:])}
+				captures, err := filepath.Glob(filepath.Join(owner, "metrics.*", "COMPLETE"))
+				require.NoError(t, err)
+				require.Len(t, captures, 2)
+				for _, complete := range captures {
+					_, err := retirementmetrics.LoadCapture(filepath.Dir(complete), binding)
+					require.NoError(t, err)
+				}
+			}
 		})
 	}
 }
@@ -125,7 +147,7 @@ mkdir "$stack_owner/deployment-claimed"
 [[ $scenario != consumed ]] || touch "$stack_owner/final-exit-code"
 spec='{"template":{"spec":{"containers":[{"name":"brain","image":"image@sha256:fixed","args":["--enable-pprof=true","--info-client-cert-auth=true"]}]}}}'
 printf '%s\n' "$spec" > "$stack_owner/diagnostic-spec.json"
-jq -n --argjson spec "$spec" '{metadata:{uid:"sts-uid",generation:1},spec:$spec,status:{observedGeneration:1}}' > "$stack_owner/sts.json"
+jq -n --argjson spec "$spec" '{metadata:{namespace:"test",uid:"sts-uid",generation:1},spec:$spec,status:{observedGeneration:1}}' > "$stack_owner/sts.json"
 jq -n --argjson spec "$spec" '{apiVersion:"v1",kind:"Pod",metadata:{name:"brain-0",namespace:"test",uid:"pod-uid",ownerReferences:[{kind:"StatefulSet",uid:"sts-uid",controller:true}]},spec:($spec.template.spec+{nodeName:"worker1"}),status:{podIP:"10.0.0.1",containerStatuses:[{name:"brain",containerID:"cri-o://process",imageID:"image@sha256:fixed",restartCount:0,ready:true,state:{running:{startedAt:"2026-09-18T22:49:32Z"}}}]}}' > "$stack_owner/pod.json"
 touch "$stack_owner/info.crt"
 sha256sum "$stack_owner/diagnostic-spec.json" "$stack_owner/info.crt" > "$stack_owner/diagnostic-inputs.sha256"
@@ -162,7 +184,7 @@ kubectl() {
  case $2 in
   namespace)
    if [[ $scenario == wrong-namespace ]]; then printf '{"metadata":{"uid":"wrong"}}'
-   else printf '{"metadata":{"uid":"ns-uid"}}'; fi;;
+   else printf '{"metadata":{"name":"test","uid":"ns-uid"}}'; fi;;
   sts)
    [[ $scenario != wrong-sts ]] || filter='.metadata.uid="wrong"'
    [[ $scenario != wrong-spec ]] || filter='.spec.template.spec.containers[0].image="other"'

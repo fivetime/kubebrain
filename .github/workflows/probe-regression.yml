@@ -8,6 +8,11 @@ name: Rollout probe regression
       - 'hack/production/cmd/pod-log-capture/**'
       - 'hack/production/cmd/lease-term-probe/**'
       - 'hack/production/cmd/info-diagnostic-probe/**'
+      - 'hack/production/cmd/retirement-metrics-delta/**'
+      - 'hack/production/protected-stack-session.sh'
+      - 'hack/production/protected_stack_session_test.go'
+      - 'hack/production/protected_session_hash_budget_test.go'
+      - 'hack/production/same-pod-process.jq'
       - 'hack/production/cmd/peer-retirement-scope/**'
       - 'hack/production/cmd/peer-retirement-test-pki/**'
       - 'hack/production/internal/**'
@@ -134,6 +139,12 @@ jobs:
           set -euo pipefail
           go vet ./hack/production/cmd/info-diagnostic-probe
           go test -race -count=1 -timeout=2m -v ./hack/production/cmd/info-diagnostic-probe
+      - name: Verify protected capture evidence and retirement deltas
+        run: |
+          set -euo pipefail
+          go vet ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta
+          go test -race -count=1 -timeout=2m -v ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta
+          go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|SessionHashVerificationHonorsFaultDeadline)'
       - name: Race test all probe regressions
         run: |
           set -euo pipefail

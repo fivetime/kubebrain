@@ -18,6 +18,7 @@ type Sample struct {
 	counters           Counters
 	process            Process
 	started, completed time.Time
+	captureIdentity    string
 }
 
 type probeSummary struct {
@@ -101,6 +102,9 @@ func NewSample(raw, summary []byte, process Process) (Sample, error) {
 // SampleDelta requires strictly ordered, nonoverlapping capture intervals.
 // It reports only an event-count change, never an event timestamp or latency.
 func SampleDelta(before, after Sample, key Key) (float64, error) {
+	if before.captureIdentity != after.captureIdentity {
+		return 0, errors.New("changed capture identity or mixed verification levels")
+	}
 	if before.completed.IsZero() || after.started.IsZero() || !after.started.After(before.completed) {
 		return 0, errors.New("unordered or overlapping metrics captures")
 	}

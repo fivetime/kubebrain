@@ -217,6 +217,30 @@ diff-check 通过。未修改集群、未重跑故障验收；指标语义和同
 
 ### 取消和写入失败边界回归
 
+#### 离线采集目录加载与命令
+
+新增 `retirementmetrics.LoadCapture` 与
+`hack/production/cmd/retirement-metrics-delta`（使用方式和限制见其 README）。
+加载器核对 COMPLETE、八个固定文件、原绝对路径清单及哈希；使用独立准入
+传入的 namespace/STS/Pod UID 和规范化 spec 摘要检查对象，并比较采集前后
+完整 Pod spec、地址、容器进程及镜像身份。允许 readiness 改变，不允许重启。
+逐阶段记录必须按序成功，探针摘要时间必须位于 protected-probe 阶段内；
+跨样本还要求身份一致、区间不重叠。命令只输出单个指定 outcome 的计数差值，
+不计算故障门限、直方图延迟或 successor readiness。
+
+首轮和随后三轮回归均暴露静态符号链接未被拒绝：仅向 os.Root.OpenFile
+传入 O_NOFOLLOW 不足以实现所需契约。已增加 Root.Lstat 普通文件检查和
+打开后 SameFile 比对；此前失败不计为通过。修复后校验库/新命令/真实探针
+三轮 race 通过（分别 1.201s / 1.034s / 12.379s），vet 通过。
+会话测试增加实际脚本产物到加载器的成功路径；完整受保护会话组（包含外部
+取消、重建取消及哈希截止）race 通过（110.668s），工作流 race 测试通过
+（2.616s）。新命令的 CLI 目前覆盖失败参数，成功加载由库与会话集成测试
+覆盖，不宣称 CLI 已做真实实验端到端验证。
+
+探针 CI 已加入对应路径触发和显式回归步骤。尚未执行新的集群故障实验；
+完整文件包的哈希一致性不等于来源认证，原始准入、工具/镜像来源与故障时钟
+仍须由实验驱动核验。旧指标首次出现仍为未知差值，不得补零或判通过。
+
 新增离线校验库 `hack/production/internal/retirementmetrics`：仅解释
 local/peer result counter，校验类型、唯一 outcome 标签、阶段对应的
 有限 outcome 集、有限非负整数及 float64 精确计数范围。拒绝重复序列
