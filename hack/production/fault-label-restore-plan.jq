@@ -18,7 +18,8 @@ if (($b.namespace | nonempty) != true or ($b.namespaceUID | nonempty) != true or
     ($p.metadata.resourceVersion | nonempty) != true or
     (($p.metadata.labels | type) != "object" and $p.metadata.labels != null))
 then error("refuse label cleanup: original/current identity or label provenance mismatch")
-elif ($policies.apiVersion != "cilium.io/v2" or $policies.kind != "CiliumNetworkPolicyList" or
+elif ((($policies.apiVersion == "cilium.io/v2" and $policies.kind == "CiliumNetworkPolicyList") or
+       ($policies.apiVersion == "v1" and $policies.kind == "List") | not) or
       ($policies.items | type) != "array" or
       ($policies.metadata.continue != null and $policies.metadata.continue != "") or
       any($policies.items[]; .apiVersion != "cilium.io/v2" or .kind != "CiliumNetworkPolicy" or

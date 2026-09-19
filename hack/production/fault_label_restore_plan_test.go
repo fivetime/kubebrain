@@ -11,7 +11,7 @@ import (
 )
 
 func TestFaultLabelRestorePlan(t *testing.T) {
-	for _, mode := range []string{"owned", "absent", "null-labels", "replacement", "namespace-replaced", "pod-deleting", "namespace-deleting", "original-owned-label", "label-changed", "missing-rv", "policy-remains", "nonce-remains", "paginated", "missing-policies", "invalid-list", "absent-with-policy"} {
+	for _, mode := range []string{"owned", "generic-list", "absent", "null-labels", "replacement", "namespace-replaced", "pod-deleting", "namespace-deleting", "original-owned-label", "label-changed", "missing-rv", "policy-remains", "nonce-remains", "paginated", "missing-policies", "invalid-list", "absent-with-policy", "generic-wrong-item"} {
 		t.Run(mode, func(t *testing.T) {
 			pod := func(labels any) map[string]any {
 				return map[string]any{"apiVersion": "v1", "kind": "Pod", "metadata": map[string]any{"namespace": "test-ns", "name": "target-0", "uid": "pod-uid", "resourceVersion": "9007199254740993", "labels": labels}}
@@ -25,6 +25,11 @@ func TestFaultLabelRestorePlan(t *testing.T) {
 			policy := map[string]any{"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy", "metadata": map[string]any{"namespace": "test-ns", "name": "owned-policy"}, "spec": map[string]any{}}
 			input := map[string]any{"binding": binding, "namespace": map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": nsMeta}, "expected": before, "current": current, "policies": policies}
 			switch mode {
+			case "generic-list":
+				policies["apiVersion"], policies["kind"] = "v1", "List"
+			case "generic-wrong-item":
+				policies["apiVersion"], policies["kind"] = "v1", "List"
+				policies["items"] = []any{current}
 			case "absent":
 				delete(labels, "kubebrain.io/fault-owner")
 			case "null-labels":
@@ -66,13 +71,13 @@ func TestFaultLabelRestorePlan(t *testing.T) {
 			var out, stderr bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &out, &stderr
 			err = cmd.Run()
-			if mode != "owned" && mode != "absent" && mode != "null-labels" {
+			if mode != "owned" && mode != "generic-list" && mode != "absent" && mode != "null-labels" {
 				require.Error(t, err)
 				require.Empty(t, out.String())
 				return
 			}
 			require.NoError(t, err, stderr.String())
-			if mode != "owned" {
+			if mode != "owned" && mode != "generic-list" {
 				require.JSONEq(t, `[]`, out.String())
 				return
 			}

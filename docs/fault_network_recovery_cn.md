@@ -35,7 +35,9 @@ Cilium enforcement 恢复，再进行协议恢复和标签撤回；完整驱动�
 
 `hack/production/fault-label-restore-plan.jq` 生成标签专用 JSON Patch，
 输入包含 binding、namespace、expected（变更前真实 Pod）、current
-（当前 Pod）、policies（完整的命名空间 CiliumNetworkPolicyList）。
+（当前 Pod）、policies（完整的命名空间策略列表）。列表接受
+`cilium.io/v2 / CiliumNetworkPolicyList`，以及 kubectl 输出的
+`v1 / List`；非空项仍必须逐项为本命名空间 CiliumNetworkPolicy。
 binding 含 namespace、namespaceUID、name（Pod）、uid（Pod）、nonce
 及 policyName。身份信息必须来自独立准入，不能由待修改对象反推。
 
@@ -55,3 +57,17 @@ remove `/metadata/labels/kubebrain.io~1fault-owner`，保留其他标签。
 原 Pod JSON、保留其他标签，并验证 UID、资源版本、owner 变化或标签
 被移除时旧补丁的 test 操作失败。这是本地补丁语义测试，不是 API
 服务器集成测试，也不能消除外层独占恢复和现场复查的要求。
+
+## 历史真实证据离线核验
+
+使用已退役 `fault-peer-budget.mjraWKki` 的
+`network-restore.NQxXLtn8` 和 `label-restore.AogktG2H` 保存对象做
+只读兼容核验，两份 evidence.sha256 均通过。真实空列表为 v1/List，
+据此修正了最初仅接受 CiliumNetworkPolicyList 的限制，并增加合法
+通用列表及包含错误资源类型时的拒绝回归。
+
+以历史独立 namespace/Pod 身份、批准 spec 和真实预留回执构造输入，
+新策略计划与原 delete-plan.json、新标签计划与原 patch.json 的 JSON
+结构分别完全相等。三轮计划 race 1.784s，diff-check 通过。没有执行
+删除、PATCH、旧驱动或其他集群命令；旧实验完整 30 秒验收失败结论
+不变，此项只证明历史数据格式及计划兼容性。
