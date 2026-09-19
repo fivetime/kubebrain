@@ -61,14 +61,20 @@ func TestCLIProcessHelper(t *testing.T) {
 }
 
 func TestCLICompletedCapturePair(t *testing.T) {
-	for _, scenario := range []string{"success", "duration-success", "duration-missing", "missing-baseline", "reset", "changed-process", "reversed", "overlap", "tampered", "incomplete", "wrong-admission", "wrong-cluster", "missing-cluster", "scheduled-success", "scheduled-duration-success", "scheduled-wrong-clock", "scheduled-wrong-offset", "scheduled-early", "scheduled-late", "scheduled-incomplete", "scheduled-tampered"} {
+	for _, scenario := range []string{"success", "duration-success", "duration-missing", "missing-baseline", "reset", "changed-process", "reversed", "overlap", "tampered", "incomplete", "wrong-admission", "wrong-cluster", "missing-cluster", "scheduled-success", "scheduled-duration-success", "scheduled-wrong-clock", "scheduled-wrong-offset", "scheduled-early", "scheduled-late", "scheduled-late-baseline", "scheduled-incomplete", "scheduled-tampered"} {
 		t.Run(scenario, func(t *testing.T) {
 			baseline := 2
 			if scenario == "missing-baseline" {
 				baseline = -1
 			}
 			withDuration := strings.HasSuffix(scenario, "duration-success")
-			before, specHash := cliCaptureFixture(t, 1800000000, baseline, "process", withDuration)
+			beforeTime := int64(1800000000)
+			if scenario == "scheduled-late-baseline" {
+				// Probe itself finishes before origin, but final identity stages
+				// finish afterward. The pair otherwise remains nonoverlapping.
+				beforeTime += 8
+			}
+			before, specHash := cliCaptureFixture(t, beforeTime, baseline, "process", withDuration)
 			afterCount, afterTime, afterProcess := 5, int64(1800000020), "process"
 			if scenario == "reset" {
 				afterCount = 1

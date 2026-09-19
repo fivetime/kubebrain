@@ -12,13 +12,37 @@ import (
 	"time"
 )
 
+// LoadPrefaultCapture binds the baseline's recorded capture stages to the
+// independently saved original clock. It does not timestamp manifest writes or
+// prove the local evidence is authentic.
+func LoadPrefaultCapture(capture string, binding CaptureBinding, origin time.Time) (Sample, error) {
+	if !validFaultOrigin(origin) {
+		return Sample{}, errors.New("invalid original fault clock")
+	}
+	sample, err := LoadCapture(capture, binding)
+	if err != nil {
+		return Sample{}, err
+	}
+	// Enclose the final microsecond-resolution stage timestamp conservatively.
+	// Prefault anonymous rearming is allowed, but must finish before origin too.
+	if !sample.captureCompleted.Add(time.Microsecond).Before(origin) {
+		return Sample{}, errors.New("baseline capture did not complete before original fault clock")
+	}
+	return sample, nil
+}
+
+func validFaultOrigin(origin time.Time) bool {
+	ns := origin.UnixNano()
+	return ns >= 1000000000000000000 && ns < 9000000000000000000 && time.Unix(0, ns).Equal(origin)
+}
+
 // LoadScheduledCapture checks the scheduler's exact manifest and the capture's
 // existing identity/integrity checks against independently supplied origin and
 // offset. It does not prove artifact authenticity, worker exit, or fault success.
 func LoadScheduledCapture(schedule, capture string, binding CaptureBinding, origin time.Time, offset time.Duration) (Sample, error) {
 	bad := func() (Sample, error) { return Sample{}, errors.New("invalid scheduled metrics evidence") }
 	ns := origin.UnixNano()
-	if ns < 1000000000000000000 || ns >= 9000000000000000000 || !time.Unix(0, ns).Equal(origin) || offset < 0 || offset >= 30*time.Second {
+	if !validFaultOrigin(origin) || offset < 0 || offset >= 30*time.Second {
 		return bad()
 	}
 	if filepath.Dir(schedule) != filepath.Dir(capture) || schedule == capture {

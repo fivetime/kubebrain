@@ -55,7 +55,13 @@ func run(args []string, output io.Writer) error {
 			return errors.New("scheduled mode requires schedule, canonical fault-origin-ns and offset-ns below 30 seconds")
 		}
 	}
-	a, err := retirementmetrics.LoadCapture(before, binding)
+	var a retirementmetrics.Sample
+	var err error
+	if scheduled {
+		a, err = retirementmetrics.LoadPrefaultCapture(before, binding, time.Unix(0, origin))
+	} else {
+		a, err = retirementmetrics.LoadCapture(before, binding)
+	}
 	if err != nil {
 		return fmt.Errorf("before capture: %w", err)
 	}

@@ -77,12 +77,16 @@ manifest, capture binding, completion marker, planned lower bound and original
 30-second upper bound, including capture stage times. Fault-time anonymous
 rearming is rejected. The schedule and later capture must be distinct sibling
 directories. Ordinary mode and `--duration` semantics are unchanged.
+It also calls `LoadPrefaultCapture` for `--before`: all recorded baseline stages,
+including any anonymous rearming, must finish before the original fault clock.
+The final microsecond-resolution timestamp is conservatively enclosed; checking
+only the earlier probe completion is insufficient.
 
 Successful scheduled output also includes `scheduled_capture_verified: true`,
 `fault_origin_ns` and `offset_ns`; the timestamps are JSON strings to preserve
 nanosecond precision. The existing fault/readiness/event-latency proof fields
-remain false. This does not prove the earlier capture preceded fault injection,
-that the worker exited successfully, that every artifact was flushed within
+remain false. This binds the recorded stages to the supplied clock, but does not
+authenticate that clock or prove that the worker exited successfully or every artifact was flushed within
 the deadline, or that the original request and successor gates passed. The
 experiment driver must enforce those requirements and join workers before
 restoration. This command remains an offline diagnostic, not the real fault

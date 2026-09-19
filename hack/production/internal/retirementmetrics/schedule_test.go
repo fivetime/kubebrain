@@ -79,3 +79,43 @@ func TestLoadScheduledCapture(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadPrefaultCapture(t *testing.T) {
+	for _, scenario := range []string{"success", "before-end", "equal-end", "inside-microsecond", "upper-bound", "invalid-origin", "wrong-binding", "rearmed-before", "rearmed-after"} {
+		t.Run(scenario, func(t *testing.T) {
+			capture, binding := captureFixture(t)
+			sample, err := LoadCapture(capture, binding)
+			require.NoError(t, err)
+			origin := sample.captureCompleted.Add(time.Second)
+			switch scenario {
+			case "before-end":
+				origin = sample.captureCompleted.Add(-time.Second)
+			case "equal-end":
+				origin = sample.captureCompleted
+			case "inside-microsecond":
+				origin = sample.captureCompleted.Add(500 * time.Nanosecond)
+			case "upper-bound":
+				origin = sample.captureCompleted.Add(time.Microsecond)
+			case "invalid-origin":
+				origin = time.Time{}
+			case "wrong-binding":
+				binding.PodUID = "other"
+			case "rearmed-before", "rearmed-after":
+				trace, err := os.ReadFile(filepath.Join(capture, "timing.tsv"))
+				require.NoError(t, err)
+				trace = append(trace, []byte("1800000006.000000\trearm-anonymous\tstart\t-\n1800000007.000000\trearm-anonymous\tend\t0\n")...)
+				require.NoError(t, os.WriteFile(filepath.Join(capture, "timing.tsv"), trace, 0600))
+				writeCaptureManifest(t, capture)
+				if scenario == "rearmed-before" {
+					origin = time.Unix(1800000008, 0)
+				}
+			}
+			_, err = LoadPrefaultCapture(capture, binding, origin)
+			if scenario == "success" || scenario == "rearmed-before" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+		})
+	}
+}
