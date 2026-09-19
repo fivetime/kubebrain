@@ -139,7 +139,22 @@ func newClient(c config, authenticated bool) (*http.Client, *handshakeEvidence, 
 	return &http.Client{Transport: tr, Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, evidence, nil
 }
 
-func request(ctx context.Context, client *http.Client, endpoint, path string, status, limit int) ([]byte, error) {
+// EOF, malformed content and transport failures can race with cancellation.
+// Preserve the caller's budget error and never publish response bytes afterward.
+// Check the absolute deadline too, rather than depending on timer scheduling.
+func finishProbeContext(ctx context.Context, body *[]byte, resultErr *error) {
+	cause := ctx.Err()
+	if deadline, ok := ctx.Deadline(); cause == nil && ok && !time.Now().Before(deadline) {
+		cause = context.DeadlineExceeded
+	}
+	if cause != nil {
+		*body = nil
+		*resultErr = errors.Join(*resultErr, cause)
+	}
+}
+
+func request(ctx context.Context, client *http.Client, endpoint, path string, status, limit int) (result []byte, resultErr error) {
+	defer finishProbeContext(ctx, &result, &resultErr)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+path, nil)
 	if err != nil {
 		return nil, err
@@ -166,7 +181,9 @@ func probe(ctx context.Context, c config) ([]byte, error) {
 	return probeWithDiagnostics(ctx, c, io.Discard)
 }
 
-func probeWithDiagnostics(ctx context.Context, c config, diagnostics io.Writer) ([]byte, error) {
+func probeWithDiagnostics(ctx context.Context, c config, diagnostics io.Writer) (result []byte, resultErr error) {
+	// Covers final parsing and diagnostics as well as HTTP response consumption.
+	defer finishProbeContext(ctx, &result, &resultErr)
 	origin := time.Now()
 	// Fixed phase names only: never log credentials, URLs, bodies or error text.
 	// Request errors include the expected anonymous TLS denial, not just failures.

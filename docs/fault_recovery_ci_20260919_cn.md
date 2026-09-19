@@ -241,3 +241,28 @@ Retry-After 响应后重复写请求；故障工具客户端逐请求设置 MaxR
 race 回归及两包 vet 通过。返回错误仍可能代表写入已提交，必须核对状态，
 不意味着服务端 exactly-once。真实集群仍未执行新故障实验，原 30 秒门限
 未通过；本轮 CI 成功不是部署、行为兼容或生产就绪的证明。
+
+## c0db8ffc 回归失败：诊断响应与取消竞态
+
+源码 `c0db8ffc136442eaf2f02929d969af8902163a9b` 的
+[回归工作流 35464458122](https://github.com/fivetime/kubebrain/actions/runs/35464458122)
+在 `Verify bounded authenticated info diagnostics` 步骤失败：
+`TestProtectedMetricsFailureDoesNotProduceSuccess/deadline-in-body`
+预期错误链包含 `context deadline exceeded`，实际为
+`empty or incomplete metrics body`。这是具体测试失败，不能归为 Runner
+故障，也不能宣告该源码回归通过。终态、作业列表、完整日志归档至
+`/root/.local/state/kubebrain/probe-ci-35464458122-failed.KMzxd1UQ`，源码、
+失败终态与 SHA256SUMS 已核验。镜像工作流 35464458147 此时仍在运行，
+未重启或取消任何工作流。
+
+原 TLS 用例在本地重复 20 次通过，未重现 CI 的精确调度顺序；新增可控
+transport/reader 测试则确定性复现请求层缺口：body 在上下文取消/超时后
+返回 EOF，仍可能得到成功字节；底层读取错误也可能不包含上下文错误。
+修复在请求和完整 probe 返回时复核上下文及绝对截止时间，清空失败响应
+字节并合并原始错误。另覆盖最终诊断日志写入时取消的 stack 路径，以及
+deadline 已到但 timer 通知尚未运行的边界。
+
+修复后相关定向 race 测试重复 20 次通过（21.742s），完整诊断包 race
+重复 3 次通过（12.681s），vet 通过。此为本地修复证据，不替代下一轮
+源码 CI。实时 nonce 采集脚本开发让位于此失败处理，本轮未修改集群，
+未执行新的故障实验，原 30 秒验收仍未通过。
