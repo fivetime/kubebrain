@@ -190,6 +190,7 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		NetworkRestored:  func(context.Context) error { require.True(t, joined); return nil },
 		IdentityRestored: func(context.Context) error { require.True(t, joined); return nil },
 	}
+	var concrete *NetworkFaultRuntime
 	if strings.HasPrefix(mode, "lifecycle-native-") {
 		lifecycle.Fault = metricsworker.Command{}
 		lifecycle.OriginalPending = nil
@@ -259,8 +260,18 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 			}
 			return 3, nil
 		}
+		if strings.HasPrefix(mode, "lifecycle-native-runtime-") {
+			r := nativeNetworkRuntimeFixture(t, lifecycle, release, func() bool { return joined }, mode)
+			concrete = &r
+		}
 	}
-	result, err := RunFaultLifecycle(ctx, lifecycle)
+	var result LifecycleResult
+	var err error
+	if concrete != nil {
+		result, err = concrete.Run(ctx)
+	} else {
+		result, err = RunFaultLifecycle(ctx, lifecycle)
+	}
 	if mode == "lifecycle-native-identity-mismatch" {
 		require.ErrorContains(t, err, "native observation protocol identity mismatch")
 		require.False(t, joined)
@@ -310,7 +321,7 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		require.NoError(t, result.RecoveryError)
 		return VerifyProtocolRecovery(ctx, prep.Protocol, prep.Connection)
 	}))
-	if mode == "lifecycle-success" || mode == "lifecycle-native-success" {
+	if mode == "lifecycle-success" || mode == "lifecycle-native-success" || mode == "lifecycle-native-runtime-success" {
 		require.NoError(t, err)
 		require.NoError(t, result.ExecutionError)
 		require.Len(t, result.Metrics, 1)
