@@ -98,6 +98,24 @@ Neither mode proves the Kubernetes policy object's state, protocol health or
 exclusive ownership. Those independent Go checks and lifecycle hooks remain
 mandatory. This shared observer is not a standalone experiment driver.
 
+`NetworkObserver.Prepared`, `.Restored` and `.Unlabelled` adapt that script to
+the three Go lifecycle hooks. Every pending observation rechecks API identities,
+label phase, unchanged actual reservation receipt, exact independently admitted
+Pod JSON and the independent targets digest. Inputs must be bounded private
+regular files named `observer-pod.json` and `observer-targets.json` in the owner
+directory. A successful observation is followed by the same admission checks.
+Only the recovery hook chooses between owned and absent label phases, using a
+fresh Pod read; it rejects foreign labels or a phase change during observation.
+
+The required Admit callback must enforce exclusive ownership and authenticate the
+whole script/dependency bundle, explicit environment and kubeconfig/cluster binding
+to the Go client. The required Retain callback must durably keep each output/status;
+retention failure cannot become success. Neither callback has a permissive default.
+Tests connect these adapters to protocol recovery with real KubeBrain RPCs, fake
+Kubernetes and a boundary-fixture shell, covering pending, changed inputs before
+and during observation, lost ownership and failed retention. They prove wiring
+and failure propagation, not real Cilium/TCP observations or script authentication.
+
 `ArmProtocolRecovery` persists a create-once private record, syncing both the file
 and its containing directory before returning success. The outer recovery owner
 must call it before granting the fixture lease, writing the owned key or arming
