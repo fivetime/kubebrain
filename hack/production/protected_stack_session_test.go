@@ -120,7 +120,7 @@ printf '{"mode":"%s","readiness_checked":false,"fault_acceptance_proven":false,"
 }
 
 func testProtectedMetricsSession(t *testing.T, library, probe string) {
-	for _, scenario := range []string{"success", "custom-ports", "same-ports", "invalid-port", "changed-ports", "anonymous-reset", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "expired", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe", "bad-hash", "bad-size", "changed-body"} {
+	for _, scenario := range []string{"success", "scheduled", "custom-ports", "same-ports", "invalid-port", "changed-ports", "anonymous-reset", "ready-before", "ready-after", "restart-before", "restart-after", "wrong-namespace", "wrong-sts", "wrong-spec", "probe-failed", "wrong-mode", "expired", "reset-origin", "reset-budget", "slow-probe", "consumed", "missing-binding", "tampered-probe", "bad-hash", "bad-size", "changed-body"} {
 		t.Run(scenario, func(t *testing.T) {
 			owner := t.TempDir()
 			require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
@@ -135,7 +135,7 @@ func testProtectedMetricsSession(t *testing.T, library, probe string) {
 			stacks, err := filepath.Glob(filepath.Join(owner, "metrics.*", "goroutines.txt"))
 			require.NoError(t, err)
 			require.Empty(t, stacks, "metrics capture must not produce a stack artifact")
-			if scenario == "success" {
+			if scenario == "success" || scenario == "scheduled" {
 				raw, err := os.ReadFile(filepath.Join(owner, "diagnostic-spec.json"))
 				require.NoError(t, err)
 				var spec map[string]any
@@ -267,7 +267,11 @@ exercise() {
   expected_forwards=4
  fi
  start=$(date -u +%s%N)
- stack_session_capture "$start" || return
+ if [[ $scenario == scheduled ]]; then
+  stack_session_capture_metrics_at "$start" 100000000 || return
+  [[ -s $stack_schedule/COMPLETE ]] || return
+  sha256sum -c "$stack_schedule/evidence.sha256" >/dev/null || return
+ else stack_session_capture "$start" || return; fi
  [[ $first != "$stack_capture" && $(wc -l < "$stack_owner/pids") == "$expected_forwards" && ${stack_pids[0]} == "$authenticated_pid" && $stack_fault_start == "$start" ]] || return
  [[ -s $stack_capture/COMPLETE ]] || return
  sha256sum -c "$stack_capture/evidence.sha256" >/dev/null || return
@@ -283,12 +287,12 @@ rc=0
 exercise || rc=$?
 stack_session_close
 case $scenario in
- success|custom-ports|anonymous-reset|repeated-anonymous-reset|ready-before|ready-after) [[ $rc == 0 ]];;
+ success|scheduled|custom-ports|anonymous-reset|repeated-anonymous-reset|ready-before|ready-after) [[ $rc == 0 ]];;
  expired|slow-probe) [[ $rc == 124 ]];;
  *) [[ $rc != 0 ]];;
 esac
 case $scenario in
- success|custom-ports|anonymous-reset|repeated-anonymous-reset|ready-before|ready-after|reset-origin|reset-budget) ;;
+ success|scheduled|custom-ports|anonymous-reset|repeated-anonymous-reset|ready-before|ready-after|reset-origin|reset-budget) ;;
  *) [[ -z $(find "$stack_owner" -name COMPLETE -print) ]];;
 esac
 if [[ -e $stack_owner/pids ]]; then

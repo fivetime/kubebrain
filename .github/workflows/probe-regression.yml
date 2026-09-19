@@ -12,6 +12,7 @@ name: Rollout probe regression
       - 'hack/production/protected-stack-session.sh'
       - 'hack/production/protected_stack_session_test.go'
       - 'hack/production/protected_session_hash_budget_test.go'
+      - 'hack/production/protected_metrics_schedule_test.go'
       - 'hack/production/same-pod-process.jq'
       - 'hack/production/cmd/peer-retirement-scope/**'
       - 'hack/production/cmd/peer-retirement-test-pki/**'
@@ -145,7 +146,7 @@ jobs:
           for tool in bash jq openssl timeout sha256sum grep date stat awk find wc dirname mktemp mkdir touch cat sleep cut; do command -v "$tool" >/dev/null; done
           go vet ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta
           go test -race -count=1 -timeout=2m -v ./hack/production/internal/retirementmetrics ./hack/production/cmd/retirement-metrics-delta
-          go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|SessionHashVerificationHonorsFaultDeadline)'
+          go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|MetricsSchedule|SessionHashVerificationHonorsFaultDeadline)'
       - name: Race test all probe regressions
         run: |
           set -euo pipefail

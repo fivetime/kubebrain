@@ -8,6 +8,7 @@ stack_info_port=${stack_info_port:-18584}
 stack_anonymous_port=${stack_anonymous_port:-18585}
 stack_bound_info_port=''
 stack_bound_anonymous_port=''
+stack_metrics_schedule_consumed=false
 
 stack_session_ports_unchanged() {
  [[ -n $stack_bound_info_port && -n $stack_bound_anonymous_port && $stack_info_port == "$stack_bound_info_port" && $stack_anonymous_port == "$stack_bound_anonymous_port" ]]
@@ -168,6 +169,40 @@ stack_session_capture() {
 
 stack_session_capture_metrics() {
  stack_session_capture_kind metrics "$@"
+}
+
+# One scheduled fault-time capture per independently prepared controller. The
+# caller owns process-group cancellation and must join this controller before
+# restoring/replacing the target Pod. This never waits for successor readiness.
+stack_session_capture_metrics_at() {
+ [[ $# == 2 && $1 =~ ^[1-8][0-9]{18}$ && $2 =~ ^(0|[1-9][0-9]{0,10})$ ]] || return 2
+ local origin=$1 offset=$2 now remaining delay
+ (( offset < 30000000000 )) || return 2
+ [[ $stack_metrics_schedule_consumed == false && ( -z $stack_fault_start || $stack_fault_start == "$origin" ) ]] || return 2
+ stack_session_ports_unchanged || return 2
+ [[ ${#stack_pids[@]} == 2 && -d $stack_session ]] || return 2
+ stack_metrics_schedule_consumed=true
+ stack_fault_start=$origin
+ # Preserve the requested schedule even when waiting or capture later fails.
+ stack_schedule=$(mktemp -d "$stack_owner/metrics-schedule.XXXXXXXX") || return
+ printf '%s\t%s\n' "$origin" "$offset" > "$stack_schedule/input.tsv" || return
+ while true; do
+  stack_session_budget || return
+  now=$(date -u +%s%N) || return
+  [[ $now =~ ^[1-8][0-9]{18}$ && $now -ge $origin ]] || return 2
+  remaining=$((origin+offset-now))
+  (( remaining > 0 )) || break
+  # Short sleeps recheck the original deadline; no single 25s wait truncates
+  # an intentional offset close to 30s, and no wait can reset that deadline.
+  (( remaining <= 1000000000 )) || remaining=1000000000
+  printf -v delay '%d.%09ds' "$((remaining/1000000000))" "$((remaining%1000000000))"
+  stack_session_run sleep "$delay" || return
+ done
+ stack_session_capture_metrics "$origin" || return
+ printf '%s\n' "$stack_capture" > "$stack_schedule/capture-path" || return
+ stack_session_run sha256sum "$stack_schedule/input.tsv" "$stack_schedule/capture-path" "$stack_capture/evidence.sha256" > "$stack_schedule/evidence.sha256" || return
+ stack_session_budget || return
+ printf 'SCHEDULE_COMPLETE_NOT_FAULT_ACCEPTANCE\n' > "$stack_schedule/COMPLETE"
 }
 
 stack_session_capture_kind() {
