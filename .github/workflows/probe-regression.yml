@@ -13,6 +13,8 @@ name: Rollout probe regression
       - 'hack/production/cmd/info-diagnostic-probe/**'
       - 'hack/production/cmd/retirement-metrics-delta/**'
       - 'hack/production/protected-stack-session.sh'
+      - 'hack/production/protected-wait-worker.sh'
+      - 'hack/production/protected_wait_worker_test.go'
       - 'hack/production/protected_stack_session_test.go'
       - 'hack/production/protected_session_hash_budget_test.go'
       - 'hack/production/protected_metrics_schedule_test.go'

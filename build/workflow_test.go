@@ -156,6 +156,8 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	for _, path := range []string{
 		"hack/production/cmd/retirement-metrics-delta/**",
 		"hack/production/protected-stack-session.sh",
+		"hack/production/protected-wait-worker.sh",
+		"hack/production/protected_wait_worker_test.go",
 		"hack/production/expired-lease-wait-frames.jq",
 		"hack/production/expired_lease_wait_frames_test.go",
 		"hack/production/protected_stack_session_test.go",

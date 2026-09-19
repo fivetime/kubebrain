@@ -404,3 +404,25 @@ shell 中等待自己启动的原探针，完成原始检查后输出带相同�
 故障期 rearm。需要激活前与降级后两次故障期栈采集时，必须在原故障
 时钟开始前准备独立的拥有者会话/独占端口，纳入统一进程监督和回收；
 不能假设同一个匿名通道可供第二次采集，或为第二次采集重开预算。
+
+`protected-wait-worker.sh POD SOURCE_SHA LEASE_FILE_SHA256 COUNT RECEIPT_DIR`
+提供上述会话的独立进程入口，协议兼容 `metricsworker.WithPreparedFault`。
+它在准备好通道后只输出 `FAULT_READY`，随后读取一次原始故障时钟，执行
+一次绑定采集，输出 `FAULT_DONE\tCLOCK` 并退出回收通道；它不执行故障
+注入，不能作为完整故障驱动使用。默认端口为 18588/18589，第二个会话
+必须通过独立环境分配不冲突的端口，并在原故障时钟开始前完成准备。
+
+调用方须预建 owner 的直接子目录 `stack-worker.XXXXXXXX`（8 位字母数字），
+目录归当前用户所有、权限 0700 且为空。worker 用 started 子目录防止复用，
+自身脚本及分类器均须在准入时冻结进 tools.sha256。其他环境与栈会话相同，
+没有隐式凭据。成功回执包含 capture-path、classification-path、origin-ns
+及退出时写入的 exit-code。缺失回执不是成功；强制终止时可能没有退出回执，
+必须以监督器的回收结果及独立清理审计为准。
+
+激活前接入方式是预先用 WithPreparedFault 准备 count=1 的 worker，在
+OriginalProbe.Pending 的观察回调中调用它提供的 capture(ctx, origin)，
+然后验证同一预分配目录的退出及分类证据。count=0 的降级后观察须预先
+准备另一 worker。还必须补齐实际当前 term、Pod 身份、独立认领准入及
+剩余故障门限；当前只有真实脚本+模拟 Kubernetes 输入的组合测试，尚无
+完整真实集群驱动闭环。测试覆盖成功、候选数错误、绑定缺失、探针失败
+和准备完成后控制器拒绝；它不把合成栈视作真实租约阻塞证明。
