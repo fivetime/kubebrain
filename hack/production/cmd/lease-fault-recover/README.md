@@ -49,7 +49,9 @@ cluster. It uses `/root/.kube/kubebrain-test-10.32.32.66.conf` and context
 plugins, credential-file indirection, insecure TLS or proxy. Native API/gRPC
 clients disable environmental proxy use. Kubernetes requests have a 15-second
 timeout and an explicit 20 QPS / 40 burst client limit, still within the same
-overall recovery context.
+overall recovery context. The Kubernetes client sets `MaxRetries(0)` on every
+request and rejects HTTP redirects: server `Retry-After` responses must not replay
+a mutation. Errors are returned for reconciliation without automatic retries.
 
 Children receive only `PATH=/usr/local/bin:/usr/bin:/bin`; the provisioned system
 toolchain at those paths remains part of trusted operator admission. Pinning the

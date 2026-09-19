@@ -73,6 +73,15 @@ They verify ordering/budget propagation, not a real term change or isolated stre
 
 ## Protocol recovery intent
 
+Real fault-tool clients should use `NewDynamicClient` with independently admitted
+REST configuration. It disables client-go retries on every request and rejects
+HTTP redirects. Merely avoiding a Go retry loop is insufficient: the default
+dynamic client repeats even mutations after retryable `Retry-After` responses.
+HTTP tests demonstrate that default behavior and check one request per call for
+GET/POST/PUT/PATCH/DELETE on 429, 503, 307 and 308 responses. Injected clients and
+custom transports remain the caller's responsibility; this is not a server-side
+exactly-once guarantee or proof that an errored mutation did not commit.
+
 The recovery-only command is documented in
 [`cmd/lease-fault-recover`](../../cmd/lease-fault-recover/README.md). It defaults
 to local plan/file verification and requires explicit execution. It is not the

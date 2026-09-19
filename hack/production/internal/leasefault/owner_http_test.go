@@ -125,7 +125,7 @@ func TestFaultOwnerConcurrentHTTPClaims(t *testing.T) {
 			}
 			results := make(chan attempt, 2)
 			for _, name := range []string{"attempt-a", "attempt-b"} {
-				client, err := dynamic.NewForConfig(&rest.Config{Host: server.URL})
+				client, err := NewDynamicClient(&rest.Config{Host: server.URL})
 				require.NoError(t, err)
 				dir := t.TempDir()
 				require.NoError(t, os.Chmod(dir, 0700))

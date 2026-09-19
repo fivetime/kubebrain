@@ -201,7 +201,7 @@ func clients(p plan) (dynamic.Interface, *grpc.ClientConn, error) {
 	cfg.Proxy = func(*http.Request) (*url.URL, error) { return nil, nil }
 	cfg.QPS = 20
 	cfg.Burst = 40
-	client, err := dynamic.NewForConfig(cfg)
+	client, err := leasefault.NewDynamicClient(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
