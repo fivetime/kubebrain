@@ -1689,8 +1689,14 @@ func (q *Queue) releaseInstanceLease(ctx context.Context, instance, holder strin
 		return ErrFenced
 	}
 	uid := existing.GetUID()
+	rv := existing.GetResourceVersion()
+	if uid == "" || rv == "" {
+		return errors.New("instance lease has incomplete server identity")
+	}
 	return q.leases.Delete(ctx, name, metav1.DeleteOptions{
-		Preconditions: &metav1.Preconditions{UID: &uid},
+		// Holder changes and renewals preserve UID. Bind the exact version read
+		// above so a stale finisher cannot delete a new holder's instance lock.
+		Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &rv},
 	})
 }
 

@@ -6487,7 +6487,7 @@ Operation；上述依赖故障退出 1，供 supervisor 使用 failure backoff �
 
 实例 claim 是 Lease 与 Operation status 的两阶段提交。Lease create/update 成功后，
 status CAS 若冲突、超时或失败，worker 必须用脱离原请求取消信号但最多 5 秒的 cleanup
-context，按 holder identity 和 Lease UID precondition 释放刚取得的实例锁。status 主错误
+context，按 holder identity 和 Lease UID、resourceVersion 双 precondition 释放刚取得的实例锁。status 主错误
 与 cleanup 错误必须同时返回；补偿失败时不能继续扫描其他候选。Requeue/Finish 已成功
 提交 Pending/终态 status 后也使用相同独立预算释放 Lease，并把释放失败暴露给调用方。
 调用方可用完全相同的 owner、attempt 和结果重试已提交的 Requeue/Finish；Queue 不重复
@@ -6495,10 +6495,16 @@ context，按 holder identity 和 Lease UID precondition 释放刚取得的实�
 message；Requeue 必须精确匹配 Pending phase、已清空 owner、原 attempt 和 message。
 任何不一致仍被 fencing 拒绝。重试清理发现 Lease 已不存在或 holder 已被替换时视为
 旧 holder 已完成清理，绝不删除替代 holder。
+Lease UID 在接管或续租时不变，因此释放请求必须同时绑定 GET 时看到的
+resourceVersion；缺少 UID 或 resourceVersion 时拒绝发出 DELETE。读取后发生的
+接管/续租应由 API 的版本 precondition 拒绝，冲突原样返回，不在本次释放中重试
+删除。回归覆盖接管、同 holder 续租、身份缺失及正常释放，并通过真实动态客户端
+与本地 HTTP 服务验证两个 precondition 均按字符串传输（含超过 2^53 的版本值）。
+该 HTTP 服务模拟 API 冲突语义，不等同于真实 Kubernetes 并发验收。
 Heartbeat 同样是先续租实例 Lease、再 CAS 更新 Operation status。status 请求失败后必须
 在独立 5 秒预算内重读 Operation：若 Running phase、owner、attempt 和目标
 `leaseUntilUnix` 精确匹配，则判定写入已提交，按成功返回并保留 Lease；否则按旧
-holder 和 Lease UID 清理后 fencing。若重读失败，必须同时返回 status 与重读错误并保留
+holder 和 Lease UID、resourceVersion 清理后 fencing。若重读失败，必须同时返回 status 与重读错误并保留
 Lease，不能在提交结果未知时开放同一实例给其他 Operation；Lease TTL 作为最终恢复边界。
 实例 Lease 自身的 Create/Update 也可能已提交但响应丢失。非 AlreadyExists 的 Create
 错误和任意 Update 错误必须在独立 5 秒预算内 GET 同名 Lease，并精确比较

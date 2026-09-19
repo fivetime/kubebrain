@@ -1202,7 +1202,9 @@ func TestClaimLeaseWriteReconciliationOutlivesCanceledParent(t *testing.T) {
 	client.PrependReactor("create", LeaseResource.Resource, func(
 		action clientgotesting.Action,
 	) (bool, runtime.Object, error) {
-		lease := action.(clientgotesting.CreateAction).GetObject()
+		lease := action.(clientgotesting.CreateAction).GetObject().(*unstructured.Unstructured)
+		lease.SetUID("committed-lease")
+		lease.SetResourceVersion("1")
 		require.NoError(t, client.Tracker().Create(LeaseResource, lease, "test"))
 		cancel()
 		return true, nil, ctx.Err()
@@ -2301,13 +2303,26 @@ func newFakeQueue() *Queue {
 }
 
 func fakeQueueClient() *dynamicfake.FakeDynamicClient {
-	return dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
 		runtime.NewScheme(), map[schema.GroupVersionResource]string{
 			Resource:       "KubeBrainOperationList",
 			LeaseResource:  "LeaseList",
 			SecretResource: "SecretList",
 		},
 	)
+	// The object tracker does not assign API-server identities. Lease deletion
+	// deliberately requires them rather than sending empty preconditions.
+	client.PrependReactor("create", LeaseResource.Resource, func(action clientgotesting.Action) (bool, runtime.Object, error) {
+		obj := action.(clientgotesting.CreateAction).GetObject().(*unstructured.Unstructured)
+		if obj.GetUID() == "" {
+			obj.SetUID(types.UID("fixture-" + obj.GetName()))
+		}
+		if obj.GetResourceVersion() == "" {
+			obj.SetResourceVersion("1")
+		}
+		return false, nil, nil
+	})
+	return client
 }
 
 func TestSetScanBudgetRejectsInvalidLimit(t *testing.T) {
