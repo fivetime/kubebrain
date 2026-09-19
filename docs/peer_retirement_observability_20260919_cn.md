@@ -87,3 +87,26 @@ SoftState 更新 leader/leadership 指标。KubeBrain 的 TiKV 锁选举及
 初始 API 记录均绑定该候选，尚无通过结论；证据目录
 `retirement-observability-ci.fjZ3pXP3`。没有重复手动触发、部署或
 故障注入，原集群基线保持。本节是启动记录，不是 CI 终态。
+
+## 完整本地释放回退链路的覆盖补充
+
+源码审查发现原 `TestPeerRetirementCampaignPartitionToStorageRelease`
+包装锁仅实现条件快照接口，没有暴露 `RetiredOwnershipReleaser`。
+因此它能验证 peer 的真实条件 CAS，但没有经过显式作用域配置下的
+“先本地释放，再通知 peer”分支。原测试保留，不追溯扩大其覆盖。
+
+新增 `TestPeerRetirementCampaignLocalTimeoutThenHealthyPeerRelease`：
+旧节点包装锁暴露真实作用域，本地释放等待上下文截止，健康 helper
+仍连接同一内存存储并通过真实 mTLS handler 执行条件 CAS。测试要求
+本地调用仅一次、预算不超过 RetryPeriod、结束后才通知 peer；同时
+保留生命周期 join、清理、不可重新激活、持有者清空等断言。
+
+新旧两条链路连续五轮 race 通过（3.936s）；全部
+`TestPeerRetirement*` race 通过（38.637s），`go vet ./pkg/server`
+通过。该测试只补覆盖，不改变产品行为，不模拟真实 TiKV 的延迟，
+也不能证明集群 30 秒门限已修复。
+
+三个候选 CI 已由排队转为运行；当前查到镜像在 Go 安全检查环境
+准备，后端和探针在 Go 环境准备，没有成功/失败终态。此处新增的
+测试尚未推送，避免取消正在运行的候选 `4aab067f` 工作流；不将它
+算作该候选 CI 的覆盖。

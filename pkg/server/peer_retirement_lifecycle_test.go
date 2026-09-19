@@ -46,17 +46,53 @@ type retirementLifecycleBackend struct {
 	lock resourcelock.Interface
 }
 
+// Expose the same scoped capability as the production lock, while only the
+// old holder's local release is blackholed. The healthy helper uses real CAS.
+type retirementScopedPartitionedLock struct {
+	*retirementPartitionedLock
+	calls    atomic.Int32
+	finished atomic.Bool
+	bounded  atomic.Bool
+}
+
+func (l *retirementScopedPartitionedLock) RetirementScope() string {
+	return l.Interface.(election.RetiredOwnershipReleaser).RetirementScope()
+}
+
+func (l *retirementScopedPartitionedLock) ReleaseRetiredOwnership(ctx context.Context, scope string, _ election.OwnershipCondition) error {
+	l.calls.Add(1)
+	deadline, ok := ctx.Deadline()
+	l.bounded.Store(ok && time.Until(deadline) <= 10*time.Millisecond && scope == l.RetirementScope() && l.partitioned.Load())
+	<-ctx.Done()
+	l.finished.Store(true)
+	return ctx.Err()
+}
+
 func (b *retirementLifecycleBackend) GetResourceLock() resourcelock.Interface { return b.lock }
 func (*retirementLifecycleBackend) InitializeLeadershipRevision(context.Context, uint64) error {
 	return nil
 }
 
 func TestPeerRetirementCampaignPartitionToStorageRelease(t *testing.T) {
+	testPeerRetirementCampaignPartition(t, false)
+}
+
+func TestPeerRetirementCampaignLocalTimeoutThenHealthyPeerRelease(t *testing.T) {
+	testPeerRetirementCampaignPartition(t, true)
+}
+
+func testPeerRetirementCampaignPartition(t *testing.T, scopedLocal bool) {
+	t.Helper()
 	kv := memkv.NewKvStorage()
 	t.Cleanup(func() { require.NoError(t, kv.Close()) })
 	store := retirementStorageFixture{kv, 42}
 	config := election.Config{Prefix: "/lifecycle-retirement", Keyspace: "tenant", Identity: "old", Timeout: time.Second}
 	old := &retirementPartitionedLock{Interface: election.NewResourceLockManager(config, store).GetResourceLock()}
+	scoped := &retirementScopedPartitionedLock{retirementPartitionedLock: old}
+	var campaignLock resourcelock.Interface = old
+	if scopedLocal {
+		campaignLock = scoped
+	}
 	config.Identity = "helper"
 	helper := election.NewResourceLockManager(config, store).GetResourceLock()
 	scope := helper.(election.RetiredOwnershipReleaser).RetirementScope()
@@ -74,13 +110,16 @@ func TestPeerRetirementCampaignPartitionToStorageRelease(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	observed := make(chan bool, 1)
 	var campaign leader.LeaderElection
-	campaign = leader.NewLeaderElectionWithRetirement(&retirementLifecycleBackend{lock: old}, metrics, nil,
+	campaign = leader.NewLeaderElectionWithRetirement(&retirementLifecycleBackend{lock: campaignLock}, metrics, nil,
 		func(ctx context.Context) { close(started); <-ctx.Done(); initializedJoined.Store(true) },
 		func() { cleaned.Store(initializedJoined.Load()) },
 		leader.Config{LeaseDuration: 30 * time.Second, RenewDeadline: 200 * time.Millisecond, RetryPeriod: 10 * time.Millisecond},
 		func(ctx context.Context, condition election.OwnershipCondition, available bool) {
 			_, fresh := campaign.EpochAndLeadingFresh()
 			valid := available && cleaned.Load() && !campaign.IsLeader() && !fresh && ctx.Err() == nil
+			if scopedLocal {
+				valid = valid && scoped.calls.Load() == 1 && scoped.finished.Load() && scoped.bounded.Load()
+			}
 			sender.onTermRetired(ctx, condition, available)
 			observed <- valid
 			cancel() // End this fixture, not a protocol reactivation decision.
@@ -112,4 +151,11 @@ func TestPeerRetirementCampaignPartitionToStorageRelease(t *testing.T) {
 	require.Empty(t, record.HolderIdentity, "helper must commit release despite old backend isolation")
 	require.True(t, old.partitioned.Load())
 	require.False(t, campaign.IsLeader())
+	if scopedLocal {
+		require.EqualValues(t, 1, scoped.calls.Load(), "local release must not retry")
+		require.True(t, scoped.finished.Load())
+		require.True(t, scoped.bounded.Load())
+	} else {
+		require.Zero(t, scoped.calls.Load(), "legacy fixture must remain separate")
+	}
 }
