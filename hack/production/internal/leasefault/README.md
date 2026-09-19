@@ -195,3 +195,18 @@ An ambiguous PATCH error requires recovery after joining workers, never assuming
 the policy remained inactive. Fake-client tests apply the actual JSON Patch and
 reject stale UID/resourceVersion/spec, missing receipt, lost ownership, reset
 budget and invalid responses; these are not real API/Cilium acceptance evidence.
+
+`RemoveNetworkPolicy` executes the API-removal portion of post-join recovery with
+an independent bounded context. It requires the durable actual CREATE receipt,
+rechecks it and live admission before deletion, and accepts only the exact
+approved active or inactive spec with the recorded UID. DELETE carries both UID
+and the freshly observed resourceVersion; conflicts and ambiguous errors are not
+retried. A subsequent GET must report NotFound, with admission checked again.
+An already absent object also requires receipt and admission checks. Missing
+receipts fail closed, including the unresolved CREATE-to-save crash window.
+Fake-client regressions cover both selectors, absence, replacement, changed spec,
+conflict, lingering objects, DELETE NotFound, lost ownership/receipt and cancellation.
+These tests inspect request preconditions, not server-side enforcement. API absence
+does not establish Cilium withdrawal: the complete coordinator must join workers
+before calling this function, then verify dataplane recovery before restoring
+protocol state and finally the Pod label. That wiring remains incomplete.

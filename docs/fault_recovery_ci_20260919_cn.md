@@ -114,3 +114,11 @@ race 回归通过（5.027s），metricsworker 回归通过（缓存），build �
 真实 API 准入、Cilium 隔离生效或完整 30 秒故障验收通过。
 归档时镜像工作流 35454989738 仍在构建推送。完整控制器接入仍未完成，
 本轮未操作测试集群。
+
+同源码镜像工作流 35454989738 随后终态成功。终态 API、全部作业及完整日志
+保存于 `/root/.local/state/kubebrain/image-ci-35454989738-terminal.RCnJmtgj`，
+源码、全部作业成功状态及 SHA256SUMS 均已核验。
+后续新增 `RemoveNetworkPolicy` API 删除恢复执行代码仅完成本地验证：
+定向 race 测试重复三次通过，全包 race 通过（5.124s），vet 通过。
+该代码不属于上述 CI 的验证范围；完整控制器、Cilium 撤销隔离与真实集群
+原 30 秒验收仍未完成。本轮没有修改测试集群。
