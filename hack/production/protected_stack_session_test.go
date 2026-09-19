@@ -131,7 +131,7 @@ timeout() {
  if [[ $4 == kubectl ]]; then shift 3; "$@"; else
   local rc=0
   /usr/bin/timeout "$@" || rc=$?
-  if [[ ( $scenario == anonymous-reset || $scenario == repeated-anonymous-reset ) && $rc == 0 ]]; then
+  if [[ $4 == "$stack_owner/bin/info-diagnostic-probe" && ( $scenario == anonymous-reset || $scenario == repeated-anonymous-reset ) && $rc == 0 ]]; then
    kill -TERM "${stack_pids[1]}"
    wait "${stack_pids[1]}" || true
   fi
@@ -186,7 +186,7 @@ exercise() {
  case $scenario in
   expired) start=$(($(date -u +%s%N)-30000000001));;
   future) start=$(($(date -u +%s%N)+30000000000));;
-  slow-probe) start=$(($(date -u +%s%N)-29000000000));;
+  slow-probe) start=$(($(date -u +%s%N)-28000000000));;
  esac
  stack_session_capture "$start" || return
  [[ -s $stack_capture/COMPLETE ]] || return

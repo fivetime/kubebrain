@@ -7,14 +7,14 @@ stack_fault_start=''
 
 stack_session_verify_inputs() {
  local bindings binding
- sha256sum -c "$stack_owner/diagnostic-inputs.sha256" "$stack_owner/tools.sha256" >/dev/null || return
- bindings=$(sha256sum "$stack_library_dir/protected-stack-session.sh" "$stack_library_dir/same-pod-process.jq" "$stack_owner/bin/info-diagnostic-probe") || return
+ stack_session_run sha256sum -c "$stack_owner/diagnostic-inputs.sha256" "$stack_owner/tools.sha256" >/dev/null || return
+ bindings=$(stack_session_run sha256sum "$stack_library_dir/protected-stack-session.sh" "$stack_library_dir/same-pod-process.jq" "$stack_owner/bin/info-diagnostic-probe") || return
  while IFS= read -r binding; do
-  rg --fixed-strings --line-regexp --quiet -- "$binding" "$stack_owner/tools.sha256" || return
+  stack_session_run rg --fixed-strings --line-regexp --quiet -- "$binding" "$stack_owner/tools.sha256" || return
  done <<< "$bindings"
- bindings=$(sha256sum "$stack_owner/diagnostic-spec.json" "$stack_owner/info.crt") || return
+ bindings=$(stack_session_run sha256sum "$stack_owner/diagnostic-spec.json" "$stack_owner/info.crt") || return
  while IFS= read -r binding; do
-  rg --fixed-strings --line-regexp --quiet -- "$binding" "$stack_owner/diagnostic-inputs.sha256" || return
+  stack_session_run rg --fixed-strings --line-regexp --quiet -- "$binding" "$stack_owner/diagnostic-inputs.sha256" || return
  done <<< "$bindings"
 }
 
