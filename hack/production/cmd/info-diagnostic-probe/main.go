@@ -21,6 +21,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 )
 
 const stackLimit = 8 << 20
@@ -238,10 +241,23 @@ func probeWithDiagnostics(ctx context.Context, c config, diagnostics io.Writer) 
 		if err != nil {
 			return nil, err
 		}
-		// This captures bounded raw exposition only. Metric presence, types,
-		// process identity and paired deltas require separate caller validation.
+		// Validate exposition syntax, not target metric presence/types, process
+		// identity, reset-free deltas or the meaning of a reported outcome.
 		if len(body) == 0 || !bytes.HasSuffix(body, []byte("\n")) {
 			return nil, errors.New("empty or incomplete metrics body")
+		}
+		parser := expfmt.NewTextParser(model.UTF8Validation)
+		families, parseErr := parser.TextToMetricFamilies(bytes.NewReader(body))
+		hasSamples := false
+		for _, family := range families {
+			hasSamples = hasSamples || len(family.Metric) > 0
+		}
+		if parseErr != nil || !hasSamples {
+			// Parser errors may embed metric names/values; never echo the body.
+			return nil, errors.New("invalid or empty Prometheus text exposition")
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 		return body, nil
 	}
@@ -300,6 +316,7 @@ func runWithDiagnostics(c config, output, diagnostics io.Writer) error {
 		delete(result, "stack_sha256")
 		result["metrics_bytes"], result["metrics_sha256"] = len(body), hex.EncodeToString(sum[:])
 		result["metric_semantics_proven"] = false
+		result["metrics_text_syntax_validated"] = true
 	}
 	return json.NewEncoder(output).Encode(result)
 }

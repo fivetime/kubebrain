@@ -180,3 +180,20 @@ CI 只读复查证据保存于 `retirement-observability-ci.fjZ3pXP3/`
 仍须补齐调用方的 Pod/进程身份前后核验、有限采样调度、指标语义及
 同进程差值校验，才能接入真实故障实验；本次没有部署或集群采集。
 候选 `4aab067f` 三项 CI 复查仍运行，本机新增工具改动不属于该 CI。
+
+### 原始采集的语法校验补强
+
+随后采集模式改为调用已有依赖中的 Prometheus 文本解析器，保存前
+要求格式可解析且至少含一个样本；拒绝 HTML、仅注释/类型声明、
+非法数值、非法标签和冲突 TYPE 声明。解析错误统一返回固定描述，
+不泄露指标名称或值。解析后重新检查总上下文是否已经到期。
+新增 `metrics_text_syntax_validated=true`，仍明确
+`metric_semantics_proven=false`：NaN/Inf、目标类型/标签、缺失 family
+以及跨进程重置需要专门语义验证，不因语法检查通过而获准做差值。
+最终完整探针包三轮 race 通过（9.120s），vet/diff-check 通过，未部署。
+
+候选 `4aab067f` 的后端协议 CI **35427286386 已成功结束**，精确 SHA、
+run/job API 和完整日志已保存在 `retirement-observability-ci.fjZ3pXP3/`
+`backend-terminal.CuWeti5w` 并生成摘要（会话 12356 退出 0）。镜像和
+探针 CI 最新仍运行，不能称三项全通过；本机未推送工具改动不在这次
+后端 CI 的验证范围内。

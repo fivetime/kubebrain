@@ -15,7 +15,7 @@ import (
 )
 
 func TestProtectedMetricsCapture(t *testing.T) {
-	for _, scenario := range []string{"success", "tls12", "unprotected", "wrong-pin", "wrong-name", "redirect", "empty", "truncated", "oversize", "existing-file", "same-tunnel"} {
+	for _, scenario := range []string{"success", "tls12", "unprotected", "wrong-pin", "wrong-name", "redirect", "empty", "truncated", "oversize", "existing-file", "same-tunnel", "html", "comments-only", "type-only", "bad-value", "bad-label", "conflicting-type"} {
 		t.Run(scenario, func(t *testing.T) {
 			auth, version := tls.RequireAndVerifyClientCert, uint16(tls.VersionTLS13)
 			if scenario == "unprotected" {
@@ -39,6 +39,18 @@ func TestProtectedMetricsCapture(t *testing.T) {
 						_, _ = io.WriteString(w, strings.TrimSuffix(body, "\n"))
 					case "oversize":
 						_, _ = io.WriteString(w, strings.Repeat("x", stackLimit+1)+"\n")
+					case "html":
+						_, _ = io.WriteString(w, "<html>not metrics</html>\n")
+					case "comments-only":
+						_, _ = io.WriteString(w, "# no samples\n")
+					case "type-only":
+						_, _ = io.WriteString(w, "# TYPE x counter\n")
+					case "bad-value":
+						_, _ = io.WriteString(w, "private_name private_value\n")
+					case "bad-label":
+						_, _ = io.WriteString(w, "x{label=unquoted} 1\n")
+					case "conflicting-type":
+						_, _ = io.WriteString(w, "# TYPE x counter\n# TYPE x gauge\nx 1\n")
 					default:
 						_, _ = io.WriteString(w, body)
 					}
@@ -65,6 +77,7 @@ func TestProtectedMetricsCapture(t *testing.T) {
 			err := run(c, &output)
 			if scenario != "success" && scenario != "tls12" {
 				require.Error(t, err)
+				require.NotContains(t, err.Error(), "private_value")
 				require.Empty(t, output.String())
 				if scenario == "existing-file" {
 					data, err := os.ReadFile(c.metricsOutput)
@@ -89,6 +102,7 @@ func TestProtectedMetricsCapture(t *testing.T) {
 				require.Equal(t, false, summary[key])
 			}
 			require.NotContains(t, summary, "stack_bytes")
+			require.Equal(t, true, summary["metrics_text_syntax_validated"])
 			require.EqualValues(t, len(body), summary["metrics_bytes"])
 		})
 	}
