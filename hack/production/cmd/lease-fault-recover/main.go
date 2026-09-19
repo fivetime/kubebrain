@@ -4,8 +4,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -25,6 +23,7 @@ import (
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/leasefault"
+	"github.com/kubewharf/kubebrain/hack/production/internal/planinput"
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 	"go.etcd.io/etcd/client/pkg/v3/transport"
 	"google.golang.org/grpc"
@@ -57,43 +56,10 @@ type plan struct {
 var observerFiles = []string{"observe-local-network-restored.sh", "observe-local-fault-label.sh", "observe-local-policy-state.sh", "observe-local-backend-tcp.sh", "capture-local-cilium-endpoint.sh", "local-label-identity-transition.jq", "local-policy-observation.jq", "../../hack/production/same-pod-process.jq"}
 
 func readFile(path string, private bool, limit int64) ([]byte, error) {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
-		return nil, errors.New("require canonical absolute file path")
-	}
-	before, err := os.Lstat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !before.Mode().IsRegular() || (private && before.Mode().Perm()&0077 != 0) || before.Size() > limit {
-		return nil, errors.New("unsafe or oversized input file")
-	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	opened, err := f.Stat()
-	if err != nil || !os.SameFile(before, opened) {
-		return nil, errors.New("input file changed while opening")
-	}
-	data, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
-		return nil, err
-	}
-	if int64(len(data)) > limit {
-		return nil, errors.New("oversized input file")
-	}
-	after, err := os.Lstat(path)
-	if err != nil || !os.SameFile(opened, after) {
-		return nil, errors.New("input file replaced")
-	}
-	return data, nil
+	return planinput.ReadFile(path, private, limit)
 }
-func digest(data []byte) string { sum := sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
-func validDigest(s string) bool {
-	b, err := hex.DecodeString(s)
-	return err == nil && len(b) == sha256.Size && hex.EncodeToString(b) == s
-}
+func digest(data []byte) string { return planinput.SHA256(data) }
+func validDigest(s string) bool { return planinput.ValidSHA256(s) }
 
 func loadPlan(path, approved string) (plan, error) {
 	var p plan

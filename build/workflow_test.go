@@ -143,6 +143,8 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	require.Contains(t, commands, "go vet ./hack/production/cmd/lease-term-probe\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/cmd/lease-term-probe\n")
 	require.Contains(t, commands, "go vet ./hack/production/internal/leasefault\n")
+	require.Contains(t, commands, "go vet ./hack/production/internal/planinput\n")
+	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/internal/planinput\n")
 	require.Contains(t, workflow.On["push"].Paths, "hack/production/cmd/uid-delete/**")
 	require.Contains(t, commands, "go vet ./hack/production/cmd/uid-delete\n")
 	require.Contains(t, commands, "go test -race -count=1 -timeout=2m -v ./hack/production/cmd/uid-delete -run '^TestFaultPolicyPlanDeleteTransport$'\n")

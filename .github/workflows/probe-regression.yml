@@ -157,6 +157,8 @@ jobs:
           go test -race -count=1 -timeout=2m -v ./hack/production/cmd/lease-fault-response
           go vet ./hack/production/cmd/lease-fault-recover
           go test -race -count=1 -timeout=2m -v ./hack/production/cmd/lease-fault-recover
+          go vet ./hack/production/internal/planinput
+          go test -race -count=1 -timeout=2m -v ./hack/production/internal/planinput
       - name: Verify bounded authenticated info diagnostics
         run: |
           set -euo pipefail
