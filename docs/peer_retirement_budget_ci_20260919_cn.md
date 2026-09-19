@@ -117,5 +117,12 @@ KeepAliveOnce 断言处收到 `context deadline exceeded`，最近认证 RPC
 `corrected-candidate-ci.C6iAqJeq/probe-failure.waKTM0rU`。
 
 保持原源码及单轮门限，启动该用例三次 race 复现（包级 5 分钟），
-会话 30045，私有目录 `stream-refresh-ci-repro.0VkOGeGE`；当前仍在
-运行，尚无复现结论。未重触发 CI、放宽断言或部署此失败候选。
+会话 30045，私有目录 `stream-refresh-ci-repro.0VkOGeGE`；现已终态
+退出 0，三次均通过（150.208 秒）。这表明本地定向运行尚未复现该
+CI 失败，不证明其原因或已修复。未重触发 CI、放宽断言或部署候选。
+
+进一步按 CI 相同参数运行完整探针包：`go test -race -count=1
+-timeout=20m -v ./hack/production/cmd/rollout-availability-probe`。
+会话 20464，私有目录 `stream-refresh-full-probe.drl79mJW`；启动前
+已确认包源码与模块文件相对候选无差异，当前仍在运行。此检查覆盖
+相同包内前序测试影响，但即使通过也不能单独证明 CI 运行负载是根因。
