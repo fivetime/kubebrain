@@ -254,3 +254,20 @@ exercise absent label maps, preserve unrelated labels, reject concurrent version
 wrong/active/missing reservation, policy remnants/references, pagination, foreign
 labels and unconfirmed protocol recovery. The complete cluster coordinator and
 original 30-second real fault acceptance remain outstanding.
+
+`RecoverFault` now composes the recovery half: join workers, bind both journals to
+the same owner/namespace/StatefulSet, remove the recorded policy, independently
+verify network withdrawal, restore protocol state, remove the owned Pod label,
+verify identity convergence, and perform final protocol/live identity checks.
+It uses one independent bounded recovery context, not a reset fault deadline.
+Network observation and ownership are repeated before protocol mutations; protocol
+verification is repeated before label mutation. A failed stage prevents subsequent
+stages, leaves all journals intact, and does not release lifecycle ownership.
+
+The caller must supply real Join/Own/NetworkRestored/IdentityRestored hooks and an
+authenticated recovery connection. These hooks are required evidence sources,
+not optional success defaults. Stage tests use fake Kubernetes and protocol clients
+to check ordering, exact conditional writes, failed joins, cross-owner plans,
+withdrawal/protocol failures and unconverged identity. They do not establish real
+worker teardown or Cilium recovery. This entry point does not yet supply the full
+preparation/fault-gate controller or prove the original 30-second acceptance.
