@@ -2,6 +2,15 @@
 
 ## 最新 CI 核验（2026-09-19）
 
+候选 c04e59c0 镜像 CI `35441571752` 已成功结束，包含发布后验证、
+标签更新和清理。API/jobs/完整日志归档至私有目录
+`image-ci-35441571752-terminal.ZUq21A67`，源码 SHA、所有作业成功
+终态及 SHA-256 核对通过；该候选的镜像与探针 CI 均成功。
+新 CLI 推送前组合 race 回归通过：CLI 1.036s、原探针 2.199s、
+leasefault 1.049s、metricsworker 10.792s、workflow 2.586s；
+实际 worker 即时/准备握手联动回归 34.043s，相关 vet/diff-check
+通过。下一候选仍需独立 CI；真实驱动及外层恢复尚未接入，未部署。
+
 候选 `c04e59c0289f9666bac5a9b040c31b8db2d9aa7a` 探针 CI
 `35441571766` 已成功结束，API/jobs/完整日志归档至私有目录
 `probe-ci-35441571766-terminal.Zxs8irzO`，源码 SHA、所有作业成功
