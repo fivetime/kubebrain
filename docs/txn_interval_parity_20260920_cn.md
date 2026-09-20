@@ -26,3 +26,22 @@ go test -race -count=3 -timeout=2m ./pkg/server/etcd -run '^TestTxnDeleteInterva
 
 范围限制：这是输入校验的边界对照，不是实际 TiKV 事务执行、任意深度
 嵌套事务、全部 etcd API 或真实故障验收的证明。原 30 秒验收仍未通过。
+
+## CI 失败与断言修正
+
+随后提交 `0a0b0dfd01f19a0e5dbebda65ebb37609d65764f` 的回归 CI
+`35491608346` 在 etcd 整包测试中失败，唯一失败测试为本新增边界测试。
+日志归档：`/root/.local/state/kubebrain/ci-35491608346-terminal.pxj6ZtN9`，
+包含终态、完整日志及 SHA256SUMS。不能将此前的孤立测试通过当作整包通过。
+
+失败差异位于 protobuf 私有 `atomicMessageInfo`：此前断言对整个 gRPC
+Status 做反射深比较，受之前测试是否触发消息缓存初始化影响。本地在
+循环前序列化预期 Status 后，旧断言稳定复现同样失败。因此保留这个
+预热条件，改为比较客户端可见的错误码、错误消息并要求无附加详情；
+不修改产品代码、不减少边界枚举，也不改动原 30 秒验收门限。
+
+修正后的定向竞态测试连续三次通过（1.191 秒），同包 `go vet` 与
+`git diff --check` 通过。另已启动与 CI 首轮相同范围的 etcd 整包测试
+（`-count=1 -timeout=10m`），输出目录
+`/root/.local/state/kubebrain/txn-parity-full-regression.ojiqTrTx`；记录时
+仍在执行，不能报告整包通过。远端镜像 CI 仍在运行，修正尚未推送。

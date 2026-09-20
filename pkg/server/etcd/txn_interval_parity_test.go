@@ -8,6 +8,7 @@ import (
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/pkg/v3/adt"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 )
 
 // etcd/server/etcdserver/api/v3rpc/key.go checkIntervals uses the upstream
@@ -15,6 +16,10 @@ import (
 // Compare binary boundaries against that implementation rather than assuming
 // that ordinary half-open range membership is equivalent for malformed ranges.
 func TestTxnDeleteIntervalParityWithEtcd(t *testing.T) {
+	// Earlier RPC tests may have initialized protobuf's private message cache.
+	// Exercise that order here rather than relying on an isolated cold process.
+	_, err := proto.Marshal(status.Convert(rpctypes.ErrGRPCDuplicateKey).Proto())
+	require.NoError(t, err)
 	keys := []string{"\x00", "\x00\x00", "a", "a\x00", "ab", "b", "\xff"}
 	for _, start := range keys {
 		for _, end := range append([]string{""}, keys...) {
@@ -34,7 +39,10 @@ func TestTxnDeleteIntervalParityWithEtcd(t *testing.T) {
 					for _, txn := range []*etcdserverpb.TxnRequest{{Success: ops}, {Failure: ops}} {
 						err := validateTxnRequest(txn)
 						if want {
-							require.Equal(t, status.Convert(rpctypes.ErrGRPCDuplicateKey), status.Convert(err))
+							wantStatus, gotStatus := status.Convert(rpctypes.ErrGRPCDuplicateKey), status.Convert(err)
+							require.Equal(t, wantStatus.Code(), gotStatus.Code())
+							require.Equal(t, wantStatus.Message(), gotStatus.Message())
+							require.Empty(t, gotStatus.Details())
 						} else {
 							require.NoError(t, err, "delete [%x,%x), put %x", start, end, key)
 						}
