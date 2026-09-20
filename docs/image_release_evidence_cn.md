@@ -254,3 +254,10 @@ UTF-8 后的字符串长度衡量二进制大小。
 在 auth_client_test.go:1966 收到 DeadlineExceeded，需进一步复现定位；
 不能将其归因为 Runner 或直接重跑宣布通过。该源码镜像 CI 仍在运行，
 不准入该源码候选。
+
+后续保持原测试时限不变，在本机运行该鉴权用例的竞态测试三次，全部
+通过（整次命令 2.014 秒）。再运行整个 `pkg/server/etcd` 包（与 CI
+非竞态阶段相同的 count=1、timeout=10m），退出 0，包耗时 149.671 秒；
+目标用例在完整顺序中耗时约 0.03 秒。原始 JSON 事件、stderr、退出码
+和校验清单在 `/root/.local/state/kubebrain/auth-maintenance-full.ccdLoOTa`。
+该结果未复现 CI 超时，不意味着已经修复；未修改测试或产品代码。
