@@ -7,7 +7,6 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -74,8 +73,10 @@ func recoveryService(t *testing.T) func() *grpc.ClientConn {
 }
 
 func TestRecoveryCommandCompletesOrRetainsFailure(t *testing.T) {
-	for _, identityFails := range []bool{false, true} {
-		t.Run(strconv.FormatBool(identityFails), func(t *testing.T) {
+	for _, mode := range []string{"retained", "identity-failed", "released", "release-proof-failed"} {
+		t.Run(mode, func(t *testing.T) {
+			identityFails, releaseFails := mode == "identity-failed", mode == "release-proof-failed"
+			release := mode == "released" || releaseFails
 			p := planFixture(t)
 			p.TimeoutSeconds = 15
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -121,11 +122,17 @@ func TestRecoveryCommandCompletesOrRetainsFailure(t *testing.T) {
 			// These scripts are boundary fixtures only: there are no real fault
 			// workers or Cilium endpoints in this test. Never deploy them.
 			require.NoError(t, os.WriteFile(p.JoinScript, []byte("set -eu\nprintf joined > \"$1/joined\"\n"), 0600))
+			if releaseFails {
+				require.NoError(t, os.WriteFile(p.JoinScript, []byte("set -eu\nif [[ -f $1/joined ]]; then touch \"$1/second-join\"; fi\nprintf joined > \"$1/joined\"\n"), 0600))
+			}
 			require.NoError(t, os.MkdirAll(p.ScriptDirectory, 0700))
 			observer := filepath.Join(p.ScriptDirectory, "observe-local-network-restored.sh")
 			script := "set -eu\n[[ -f $1/joined ]]\nprintf '%s\\n' \"$2\" >> \"$1/observations\"\n"
 			if identityFails {
 				script += "[[ $2 != absent-unlabelled ]] || exit 65\n"
+			}
+			if releaseFails {
+				script += "[[ ! -f $1/second-join ]] || exit 65\n"
 			}
 			script += "printf 'fixture observation\\n'\n"
 			require.NoError(t, os.WriteFile(observer, []byte(script), 0600))
@@ -142,7 +149,11 @@ func TestRecoveryCommandCompletesOrRetainsFailure(t *testing.T) {
 			}
 			path, approved := savePlan(t, p)
 			var out bytes.Buffer
-			err = runWith(ctx, []string{"--plan", path, "--approve-sha256", approved, "--execute"}, &out,
+			args := []string{"--plan", path, "--approve-sha256", approved, "--execute"}
+			if release {
+				args = append(args, "--release")
+			}
+			err = runWith(ctx, args, &out,
 				func(plan) (dynamic.Interface, *grpc.ClientConn, error) { return client, connectRPC(), nil },
 				func(ctx context.Context, p plan) error {
 					// Inject the fake transport/admitted fixture bundle instead of
@@ -150,15 +161,24 @@ func TestRecoveryCommandCompletesOrRetainsFailure(t *testing.T) {
 					p.Files = pins
 					return p.verifyFiles(ctx)
 				})
-			if identityFails {
+			executionErr := err
+			if identityFails || releaseFails {
 				require.Error(t, err)
 				require.Empty(t, out.String())
 			} else {
 				require.NoError(t, err)
-				require.Contains(t, out.String(), "RECOVERY_VERIFIED_OWNER_CLAIM_RETAINED_NOT_FAULT_ACCEPTANCE")
+				if release {
+					require.Contains(t, out.String(), "RECOVERY_VERIFIED_OWNER_CLAIM_RELEASED_NOT_FAULT_ACCEPTANCE")
+				} else {
+					require.Contains(t, out.String(), "RECOVERY_VERIFIED_OWNER_CLAIM_RETAINED_NOT_FAULT_ACCEPTANCE")
+				}
 			}
 			require.NoError(t, leasefault.VerifyProtocolRecovery(ctx, p.Protocol, control))
-			require.NoError(t, owner.Check(ctx), "command must retain ownership on success and failure")
+			if release && !releaseFails {
+				require.Error(t, owner.Check(ctx))
+			} else {
+				require.NoError(t, owner.Check(ctx), "default command must retain ownership on success and failure")
+			}
 			_, getErr := client.Resource(policies).Namespace(n.Namespace).Get(ctx, n.PolicyName, metav1.GetOptions{})
 			require.True(t, apierrors.IsNotFound(getErr))
 			current, err := client.Resource(pods).Namespace(n.Namespace).Get(ctx, n.PodName, metav1.GetOptions{})
@@ -168,6 +188,16 @@ func TestRecoveryCommandCompletesOrRetainsFailure(t *testing.T) {
 			require.NoError(t, err)
 			require.Contains(t, string(observations), "absent\n")
 			require.Contains(t, string(observations), "absent-unlabelled\n")
+			if release {
+				logs, err := filepath.Glob(filepath.Join(p.Directory, "recovery-release-return.*.json"))
+				require.NoError(t, err)
+				require.Len(t, logs, 1)
+				if releaseFails {
+					require.FileExists(t, filepath.Join(p.Directory, "second-join"))
+					require.ErrorContains(t, executionErr, "exit status 65")
+				}
+				return
+			}
 			logs, err := filepath.Glob(filepath.Join(p.Directory, "recovery-*.json"))
 			require.NoError(t, err)
 			require.Greater(t, len(logs), 1)

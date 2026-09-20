@@ -125,7 +125,7 @@ func TestDefaultModeDoesNotConstructClients(t *testing.T) {
 	require.Equal(t, 1, verified)
 	require.Zero(t, connected)
 	require.Contains(t, out.String(), "NO_CLUSTER_ACCESS")
-	for _, args := range [][]string{{"-execute"}, {"--execute=true"}, {"--execute", "--execute"}, {"--plan", path, "--plan", path}, {"--plan"}} {
+	for _, args := range [][]string{{"-execute"}, {"--execute=true"}, {"--execute", "--execute"}, {"--plan", path, "--plan", path}, {"--plan"}, {"--release"}, {"--execute", "--release", "--release"}, {"--release=true"}} {
 		out.Reset()
 		require.Error(t, runWith(context.Background(), args, &out, connect, func(context.Context, plan) error { return nil }))
 		require.Empty(t, out.String())

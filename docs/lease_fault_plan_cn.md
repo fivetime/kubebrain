@@ -611,3 +611,38 @@ Node、不运行 Join。该项是具体在线准入的一部分，不是完整�
 ghcr.io/fivetime/kubebrain@sha256:50b9938fe3e5ad379136957438abe3c2d4bf250dc6c5973c869e0ef1341d1537。
 这是一次时点查询，不是完整进程/协议准入，没有部署候选或执行故障。
 bc76eba3 的回归已进入 etcd/Watch 测试，镜像进入构建推送步骤，均未结束。
+
+### 恢复后显式重新验证并释放
+
+恢复命令新增独立的 `--release` 选项，必须与 `--execute` 一起提供。
+默认 `--execute` 的保留认领行为不变。只有 RecoverFault 完整成功后才
+进入 ReleaseRecovered，并在同一个有界恢复上下文内重新执行以下检查：
+
+1. 核对当前精确认领与独立文件/身份准入，重新运行已审核的 Join。
+2. 实际查询 namespace/StatefulSet/Pod，确认原 Pod 无故障标签、两个
+   nonce 不匹配任何 Pod，并确认原故障策略 GET 返回 NotFound。
+3. 重跑既有网络撤除与最终 Cilium 无标签身份观察器。
+4. 通过健康连接重新读取 Alarm(GET)、LeaseTimeToLive 和精确线性化
+   Range，确认协议残留为空；然后再查一次标签/选择器和策略缺失。
+5. 再次核对认领，仅用实际 claim UID 和 resourceVersion 前置条件
+   删除这个 ConfigMap，并 GET 确认 NotFound；不重试删除。
+
+各阶段重新执行独立准入并记录 recovery-release-*.json。失败保留认领，
+不通过重放旧成功标记放行。DELETE 后返回记录失败属于需人工对账的模糊
+结果，不能重试或推断认领仍存在。所有恢复/认领日志保留，不清空目录。
+释放成功输出 `RECOVERY_VERIFIED_OWNER_CLAIM_RELEASED_NOT_FAULT_ACCEPTANCE`，
+不是原始故障验收成功。该选项尚未在真实集群使用。
+
+库级反例覆盖 Join/网络/身份/准入失败、策略残留及中途重新出现、协议
+残留、缺失钩子、范围不符和 DELETE 错误。命令测试使用真实 KubeBrain
+内存后端 RPC、假 Kubernetes API 和明确不可部署的边界脚本，验证默认
+保留、显式释放、恢复失败保留、恢复成功但第二轮证明失败仍保留。测试
+脚本不证明真实 Cilium 或逃逸进程处置；真实执行仍需审核固定观察器。
+
+首次新增命令反例的断言误用了后续 GET 覆盖后的 err，失败后改为保存
+原命令返回错误再断言；未修改释放逻辑或放宽失败要求。
+
+leasefault 整包竞态通过（27.987 秒）；完成 CLI 接线和新增失败反例后，
+lease-fault-recover 整包竞态通过（3.436 秒），两包 go vet 和差异检查通过。
+完整故障执行 CLI 的具体在线准入及原定 30 秒真实验收仍未完成；本轮
+仅实现恢复命令的显式释放闭环，没有修改测试集群。

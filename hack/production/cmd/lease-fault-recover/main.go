@@ -1,5 +1,7 @@
 // lease-fault-recover restores an already admitted dedicated-test attempt.
 // It never acquires ownership, starts an experiment or reports fault acceptance.
+// Ownership is retained unless --execute --release explicitly requests fresh
+// post-recovery proof followed by UID/RV-preconditioned claim removal.
 package main
 
 import (
@@ -152,7 +154,7 @@ func retain(dir, stage string, output []byte, observed error) error {
 	return leasefault.RetainRecoveryObserver(dir, stage, output, observed)
 }
 
-func execute(ctx context.Context, p plan, client dynamic.Interface, conn grpc.ClientConnInterface, checkFiles func(context.Context) error) error {
+func execute(ctx context.Context, p plan, client dynamic.Interface, conn grpc.ClientConnInterface, checkFiles func(context.Context) error, release bool) error {
 	var owner *leasefault.FaultOwner
 	admit := func(ctx context.Context) error {
 		if err := checkFiles(ctx); err != nil {
@@ -174,7 +176,13 @@ func execute(ctx context.Context, p plan, client dynamic.Interface, conn grpc.Cl
 		// script. It must verify process identities and handle escaped descendants.
 		return leasefault.RunFaultJoin(ctx, p.Directory, p.JoinScript, checkFiles)
 	}
-	return leasefault.RecoverFault(ctx, leasefault.FaultRecovery{Directory: p.Directory, StatefulSetName: "kubebrain-local", Network: p.Network, Protocol: p.Protocol, Client: client, Connection: conn, Own: admit, Join: join, NetworkRestored: observer.Restored, IdentityRestored: observer.Unlabelled})
+	if err := leasefault.RecoverFault(ctx, leasefault.FaultRecovery{Directory: p.Directory, StatefulSetName: "kubebrain-local", Network: p.Network, Protocol: p.Protocol, Client: client, Connection: conn, Own: admit, Join: join, NetworkRestored: observer.Restored, IdentityRestored: observer.Unlabelled}); err != nil {
+		return err
+	}
+	if release {
+		return owner.ReleaseRecovered(ctx, leasefault.RecoveryReleaseProof{Network: p.Network, Protocol: p.Protocol, Connection: conn, Admit: admit, Join: join, NetworkRestored: observer.Restored, IdentityRestored: observer.Unlabelled})
+	}
+	return nil
 }
 
 func run(ctx context.Context, args []string, out io.Writer) error {
@@ -187,6 +195,7 @@ func runWith(ctx context.Context, args []string, out io.Writer, connect func(pla
 	path := f.String("plan", "", "private independently admitted JSON plan")
 	approved := f.String("approve-sha256", "", "independently approved plan SHA256; not proof of CI or runtime admission")
 	executeFlag := f.Bool("execute", false, "execute post-join recovery; retain owner claim")
+	releaseFlag := f.Bool("release", false, "after successful recovery, reverify and explicitly release the exact claim")
 	seen := map[string]bool{}
 	for i := 0; i < len(args); {
 		name := args[i]
@@ -200,7 +209,7 @@ func runWith(ctx context.Context, args []string, out io.Writer, connect func(pla
 				return errors.New("missing option value")
 			}
 			i += 2
-		case "--execute":
+		case "--execute", "--release":
 			i++
 		default:
 			return errors.New("unknown option or unsupported option form")
@@ -211,6 +220,9 @@ func runWith(ctx context.Context, args []string, out io.Writer, connect func(pla
 	}
 	if f.NArg() != 0 {
 		return errors.New("unexpected arguments")
+	}
+	if *releaseFlag && !*executeFlag {
+		return errors.New("--release requires --execute")
 	}
 	p, err := loadPlan(*path, *approved)
 	if err != nil {
@@ -240,7 +252,11 @@ func runWith(ctx context.Context, args []string, out io.Writer, connect func(pla
 		return err
 	}
 	defer conn.Close()
-	if err := execute(ctx, p, client, conn, check); err != nil {
+	if err := execute(ctx, p, client, conn, check, *releaseFlag); err != nil {
+		return err
+	}
+	if *releaseFlag {
+		_, err = fmt.Fprintln(out, "RECOVERY_VERIFIED_OWNER_CLAIM_RELEASED_NOT_FAULT_ACCEPTANCE")
 		return err
 	}
 	_, err = fmt.Fprintln(out, "RECOVERY_VERIFIED_OWNER_CLAIM_RETAINED_NOT_FAULT_ACCEPTANCE")
