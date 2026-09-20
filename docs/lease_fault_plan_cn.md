@@ -997,3 +997,21 @@ sha256:daba32fb01dfc8e8cb387f2dda115bbea4ad1e48bd601825a59ebf3e65007cb6。
 本轮仅核验 CI 日志与元数据，尚未通过真实 fetch-release 下载验证 ZIP。
 两项 0f17ae76 CI 已全部成功，但不覆盖后续本地工具包代码，也不证明
 候选部署、执行 Pod 或原定 30 秒真实故障验收；这些仍未完成。
+
+### 0f17ae76 发布产物真实下载验证
+
+真实执行 image-prepull --mode=fetch-release，下载并认证产物
+10603605216，退出 0，stderr 为空。记录目录
+/root/.local/state/kubebrain/release-cli-0f17ae76.E4bR51LN；批准计划摘要为
+66ffa0dff53bbc1ab8c03994c9edf48c7cc7aaab8a45e90aa074541be4ff23ef。
+精确 Git 对象中的 image.yml/probe-regression.yml 与已审核的 22d013b0
+版本无差异，两个摘要与固定快照一致。使用独立私有 gh 配置副本，不输出
+或提交凭据；计划仍绑定同一固定 gh 和配置摘要。
+
+七阶段（regression/run/artifact 前后及 archive）均 error 为空，返回
+source=0f17ae76d0e335b55f84cd728e964b4b1d75eb0b、run=35501836848/1、
+index=e39aba657b2519c8ef5d24ede24277104e1e100314b1cb1cb8a4a4b695548e50，
+amd64/arm64 摘要与上节 CI 记录一致。计划、工作流快照、结果、stderr、
+退出码与全部阶段证据的 SHA256SUMS 校验通过（不包含凭据内容）。
+这是发布来源验证，不是候选部署或运行时准入；完整故障执行入口及原定
+30 秒真实验收仍未完成。本轮未访问 Kubernetes，也未部署或注入故障。
