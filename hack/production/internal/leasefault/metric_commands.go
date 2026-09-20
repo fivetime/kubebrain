@@ -42,10 +42,22 @@ func (p ObservationCommandPlan) MetricCommands(executable string, targets []Metr
 		logs = append(logs, st)
 	}
 	commands := make([]metricsworker.Command, 0, len(targets))
+	// All workers run in the same namespace and admitted deployment. Repeated
+	// samples of one Pod are valid, contradictory name/UID mappings are not.
+	// Include the original network/probe target even when it has no metric.
+	names := map[string]string{p.Bindings.Network.PodName: p.Bindings.Network.PodUID}
+	uids := map[string]string{p.Bindings.Network.PodUID: p.Bindings.Network.PodName}
 	for i, target := range targets {
 		if !recoveryIdentity.MatchString(target.PodName) || target.PodUID != p.Bindings.Metrics[i].Binding.PodUID || target.Stderr == nil {
 			return nil, errors.New("metric target differs from admitted expectation")
 		}
+		if uid, exists := names[target.PodName]; exists && uid != target.PodUID {
+			return nil, errors.New("one metric Pod name cannot map to multiple UIDs")
+		}
+		if name, exists := uids[target.PodUID]; exists && name != target.PodName {
+			return nil, errors.New("one metric Pod UID cannot map to multiple names")
+		}
+		names[target.PodName], uids[target.PodUID] = target.PodUID, target.PodName
 		for _, port := range []int{target.InfoPort, target.AnonymousPort} {
 			if port < 1024 || port > 65535 || ports[port] {
 				return nil, errors.New("metric ports must be distinct from all observation ports")
