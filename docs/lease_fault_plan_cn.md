@@ -901,3 +901,27 @@ Kubernetes 对象、发起故障或声称协议验收通过。此证据证明的
 退出 255，未执行远端命令；这不是密码验证结果，也不是节点网络故障结论。
 执行器落点的认证访问与 Pod 网络仍需后续确认。两项 0f17ae76 CI 最近
 仍为 in_progress，本轮记录仅本地提交，不推送打断运行。
+
+### 执行位置：同命名空间网络可达性已验证
+
+使用既有用户授权密码通过交互式 SSH 成功登录 control1（10.32.32.66），
+未保存或输出密码。控制节点路由确认 240.16.6.205 经 cilium_host，源地址
+240.16.0.57；但对 3379 的五秒 TCP 检查退出 124。节点有 jq/openssl，
+command -v go 未找到；不能以之前 BatchMode 失败认定无法认证访问。
+
+只读查询发现 kubebrain-local-test-isolation（UID
+ef74ef0d-f697-46e8-a1d6-55b6c317e53d）选择本地 KubeBrain Pod，Ingress
+只允许本命名空间 podSelector，Egress 允许本命名空间 Pod 与 kube-system
+DNS。策略是外部/宿主机访问受限的合理解释，但本轮未做 Cilium 丢包归因，
+不能声称已精确定位全部超时原因。
+
+经现有同命名空间 kb-local-discovery-556c44cbb8-scnr8 执行只读 bash
+/dev/tcp 检查，240.16.6.205、240.16.10.109、240.16.7.126 的 3379
+均在各自三秒内连接成功，命令退出 0。没有复制工具/凭据、写容器文件、
+发起应用 RPC 或修改网络策略。本轮 TCP 探测未验证 TLS 或 etcd 语义。
+
+后续完整故障命令应准备同命名空间的独立执行 Pod，并独立审核其固定镜像、
+工具和凭据，不能为了从本机执行而放宽现有隔离，也不能把 discovery 容器
+临时当成已批准的故障执行器。执行 Pod 尚未创建，完整 CLI 仍待实现。
+最近回归 35501836856 正在 Verify etcd service and Watch regressions，
+镜像 35501836848 正在 Set up QEMU；均未结束，未推送打断。
