@@ -32,3 +32,19 @@
 Ready/Bound 只能证明此次资源状态，不能证明 etcd 协议兼容、磁盘延迟、
 候选镜像准入或原 30 秒故障验收通过。完整故障执行 CLI 的在线准入、
 其他证据留存、Join 和恢复后显式释放仍待实现与验证。
+
+## 04:09 UTC 进程身份复核
+
+2026-09-20T04:09:54Z 通过同一专用 kubeconfig/context 重新 GET Pod 列表，
+将九个本地存储实例 Pod 分别与 03:30 UTC 原始快照配对，实际执行仓库
+`hack/production/same-pod-process.jq`。三个 KubeBrain、三个 PD 和三个
+TiKV 的九次比较均返回 true：UID、完整 spec、Pod IP、容器 ID/imageID、
+重启次数及 running.startedAt 与先前快照一致。容器均 Ready，PD-0 的
+累计重启计数仍为 1，其余为 0；没有发现两次快照间进程身份变化。
+
+完整当前 Pod 列表、九份比较输入、九份结果、采集时间及 SHA-256 清单位于
+`/root/.local/state/kubebrain/readonly-process-recheck.Jt9TeLWq`。本次只有
+一次 Pod 列表读取，没有部署、协议或存储修改、故障注入或恢复操作。
+本次没有重新查询 PVC，因此不将此前 Bound 状态当成本次新观测结果。
+两次快照一致不是连续可用性监控，也不证明候选镜像、TLS、term、故障
+隔离或原 30 秒门限通过；集群仍是既有固定基线，不是尚在 CI 的候选版本。
