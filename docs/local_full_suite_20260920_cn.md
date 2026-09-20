@@ -31,3 +31,40 @@
 准确。原 10 分钟超时仍保留为失败记录；后续应按已有四组入口验证完整
 覆盖，而非根据超时现场认定某个用例死锁。该测试预算与真实故障的原
 30 秒验收门限无关，后者没有变更。
+
+四组完整验证结果（日志目录 `production-shards.5JTpA2TZ`）：分组校验
+确认 775 个顶层用例分别分配为 188、211、192、184 个。第 0、1、2 组
+退出 0，分别耗时 638.140、648.464、435.064 秒。第 3 组退出 1，
+在 900.024 秒达到原有 15 分钟包级预算；现场为
+`TestValidateInstanceReady`（58 秒），其
+`client_EndpointSlice_changes_during_validation` 子用例当时执行约 1 秒。
+因此四组验证仍未全部通过，不能以三个成功组代替完整结果。尚需收集
+逐用例耗时，区分分组累计时间与具体用例问题；未延长现有预算。
+
+超时现场 `TestValidateInstanceReady` 单独使用 3 分钟包预算复测通过，
+包耗时 106.202 秒，顶层测试 106.180 秒；219 个子用例均通过，最慢
+子用例 `tls_release_baseline` 为 1.250 秒。逐事件 JSON 和退出码保存在
+`ready-test-profile.PVvZ2XEW`。这支持累计耗时的判断，但尚不能证明
+第 3 组能在预算内完成。该组另以原 184 个用例、原 15 分钟预算采集
+逐用例 JSON 日志（`shard3-profile.X0Au36mP`），结果仍待收取。
+
+该组逐用例日志发现 `TestRolloutAvailabilityRunnerRejectsCleanupBoundToDifferentReceipt`
+通过但耗时 60.760 秒。检查确认：恢复的 owner receipt 引用一个已不存在的
+probe，而 fake kubectl 在无 probe 状态文件时，即使收到 `--ignore-not-found`
+也返回 1；退出清理将其视为读取失败，重试到默认 60 秒期限。这不是已证实
+的生产 API 故障，也不应通过缩短生产超时掩盖。
+
+夹具现对缺失 probe 的 `get --ignore-not-found` 返回空输出和成功，普通
+`get` 仍失败，显式配置的读取故障仍在缺失判定前生效。回执不匹配用例改用
+已有的进程组超时助手（10 秒外层保护），并断言不会出现 probe 删除失败；
+仍验证拒绝错误回执、不消费 cleanup 日志且保留 owner receipt。
+该用例连续三次通过，总耗时 2.829 秒。生产脚本、包级测试预算和原 30 秒
+真实故障验收门限均未修改；完整分组结果仍未证明通过。
+
+后续该用例竞态检测连续三次通过（3.898 秒）；相关回执、cleanup、瞬时
+删除失败、非所属 probe、已所属 probe 及 probe 删除失败场景合并复测
+通过（58.749 秒），命令为：
+
+```sh
+go test -count=1 -timeout=3m ./hack/production -run '^TestRolloutAvailabilityRunner.*(Receipt|Cleanup|Transient.*Delete|UnownedProbe|OwnedProbe|ProbeDeletionFails)'
+```

@@ -487,16 +487,16 @@ func TestRolloutAvailabilityRunnerRejectsCleanupBoundToDifferentReceipt(t *testi
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(logPath+".owner", encoded, 0o600))
 
-	command := exec.Command("bash", "run-kubebrain-rollout-availability.sh")
-	command.Env = append(os.Environ(),
-		"KUBECTL_BIN="+fake, "FAKE_KUBECTL_LOG="+logPath, "FAKE_KUBECTL_STATE="+statePath,
+	output, err := runProductionScriptCommandWithTimeout(t, "run-kubebrain-rollout-availability.sh", []string{
+		"KUBECTL_BIN=" + fake, "FAKE_KUBECTL_LOG=" + logPath, "FAKE_KUBECTL_STATE=" + statePath,
 		"FAKE_EXISTING_CLEANUP_POD=true", "FAKE_EXISTING_CLEANUP_RECEIPT_DRIFT=true",
 		"ALLOW_MUTATING_KUBEBRAIN_ROLLOUT=true", "OBSERVE_ONLY=true", "PROBE_ITERATIONS=6000",
-	)
-	output, err := command.CombinedOutput()
+	}, 10*time.Second)
 	require.Error(t, err)
 	require.Contains(t, string(output), "existing fixture cleanup Pod identity is malformed")
 	require.FileExists(t, logPath+".owner", "identity drift must preserve the terminating receipt")
+	require.NotContains(t, string(output), "failed to delete rollout availability probe Pod",
+		"the recovered receipt's absent probe must not trigger deletion retries")
 	require.NotContains(t, readOptionalFile(t, logPath), " logs kubebrain-rollout-availability-probe-cleanup ",
 		"identity drift must be rejected before consuming shared cleanup evidence")
 }
@@ -2855,7 +2855,10 @@ elif [[ " $* " == *" get pod kubebrain-rollout-availability-probe -o json "* ]];
     [[ " $* " == *" --ignore-not-found "* ]] && exit 0
     exit 1
   fi
-  [[ -e "$probe_state" ]] || exit 1
+  if [[ ! -e "$probe_state" ]]; then
+    [[ " $* " == *" --ignore-not-found "* ]] && exit 0
+    exit 1
+  fi
   if [[ -e "${FAKE_KUBECTL_LOG}.rollout-entered" && "${FAKE_ROLLOUT_REPLACE_PROBE:-false}" == true ]]; then
     jq -c '.metadata.uid="66666666-6666-4666-8666-666666666666"' "$probe_state" >"${probe_state}.next"
     mv -- "${probe_state}.next" "$probe_state"
