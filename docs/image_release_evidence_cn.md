@@ -316,3 +316,18 @@ CI 验证日志中的固定镜像为
 这完成该新产物的真实七阶段只读下载验证，未执行镜像预拉取、部署或
 故障注入。完整故障 CLI、进程/连接新鲜身份检查、恢复确认及原 30 秒
 真实验收仍不可省略，不能把发布产物校验当作总体任务完成。
+
+### bf4f1a28 集群预拉取准入 dry-run
+
+对专用测试命名空间和 kubebrain-local 的固定 UID、客户端 Service
+kubebrain-local-client 执行 image-prepull check-admission，使用已认证
+归档中的原始索引与两个平台摘要。命令退出 0，输出
+`PREPULL_ADMISSION_CONFIRMED dryRun=All containersExecuted=false`。
+该流程分别对预拉取 Job 和 Pod 发起 DryRunAll 并核对返回策略，不创建
+持久工作负载，也不证明镜像已缓存或可拉取。
+
+证据目录为 `/root/.local/state/kubebrain/prepull-dryrun-bf4f1a28.WwpM4OfD`，
+原始索引、输出、空 stderr 和本地收据的摘要均通过。最初误传收据名
+admission.json，在本地 DNS label 检查时退出，未创建收据；该失败记录
+保留在 `prepull-dryrun-bf4f1a28.kHJQwtio`，随后使用全新目录及合法名称
+admission，未覆盖失败证据。未部署候选或执行故障注入。
