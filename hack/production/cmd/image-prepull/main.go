@@ -33,7 +33,9 @@ func main() {
 func run(ctx context.Context, args []string, output io.Writer) (retErr error) {
 	flags := flag.NewFlagSet("image-prepull", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	mode := flags.String("mode", "", "verify-release, check-admission, prepare, verify, or recover-cleanup")
+	mode := flags.String("mode", "", "fetch-release, verify-release, check-admission, prepare, verify, or recover-cleanup")
+	releasePlan := flags.String("release-plan", "", "private independently reviewed release download plan")
+	releasePlanSHA := flags.String("release-plan-sha256", "", "independently approved release plan SHA256")
 	image := flags.String("image", "", "approved immutable OCI index image")
 	indexFile := flags.String("index-file", "", "absolute path to exact raw OCI index bytes")
 	amd64 := flags.String("amd64-digest", "", "independently reviewed CI amd64 manifest digest")
@@ -66,6 +68,8 @@ func run(ctx context.Context, args []string, output io.Writer) (retErr error) {
 		return err
 	}
 	switch *mode {
+	case "fetch-release":
+		return fetchRelease(ctx, *releasePlan, *releasePlanSHA, output)
 	case "verify-release":
 		data, err := readRegularFile(*indexFile, 1<<20, false)
 		if err != nil {

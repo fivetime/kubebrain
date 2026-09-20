@@ -203,3 +203,30 @@ receipt 的两个 runtime 平台摘要与索引唯一描述符匹配：
 本机没有 unzip，改用 Python 标准库 zipfile 在内存中检查，未解压到
 文件系统或安装工具。本节是人工编排的真实只读产物核对，不声称已运行
 Go 下载器七阶段认证/持久化流程，也不代表已部署或通过真实故障验收。
+
+## 只读命令入口
+
+现有 `image-prepull` 命令增加 `--mode=fetch-release`，搭配
+`--release-plan=/absolute/private/plan.json` 和
+`--release-plan-sha256=<独立审核的计划摘要>`。该模式不会创建 Kubernetes
+客户端或修改集群；成功只输出经过认证的 receipt 与限定范围说明。
+
+计划字段包括 source、image、run_id、run_attempt、regression_run_id、
+regression_attempt、artifact_id、gh、config_directory、evidence_directory、
+image_workflow、regression_workflow、files。两个 workflow 路径应指向从
+指定源码提取并经人工审查的快照；**命令不会把快照哈希自动等同于来源审核**。
+files 必须恰好固定五个不同文件：gh 可执行文件、独立凭据目录中的
+hosts.yml/config.yml、两个 workflow 快照。计划必须为私有普通文件，
+JSON 拒绝未知和重复字段。配置目录、证据目录必须分离且权限为 0700。
+应使用新的证据目录，不复用既有尝试。
+
+命令固定这两个目录身份，在每次请求前后重查目录、计划和五个文件摘要；
+凭据文件要求私有，不输出凭据内容。外层总时限 3 分钟，响应通过真实
+留存器保存到七个独占创建的阶段文件。失败保留部分证据且不输出候选
+结果；调用方仍需确保所有父目录可信，独立审核 workflow 与源码关系，
+不能仅自行计算一组哈希便宣布准入。
+
+完整命令子进程夹具覆盖七阶段成功、错误计划哈希、workflow 改动、
+凭据权限不安全、回归失败和目录复用拒绝。命令包竞态测试通过
+（6.633 秒），库包竞态通过（5.986 秒）。这是命令夹具验证，尚未通过
+该入口访问真实 GitHub。完整故障实验 CLI 及 30 秒真实验收仍未完成。
