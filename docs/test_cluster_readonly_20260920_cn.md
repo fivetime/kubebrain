@@ -48,3 +48,17 @@ TiKV 的九次比较均返回 true：UID、完整 spec、Pod IP、容器 ID/imag
 本次没有重新查询 PVC，因此不将此前 Bound 状态当成本次新观测结果。
 两次快照一致不是连续可用性监控，也不证明候选镜像、TLS、term、故障
 隔离或原 30 秒门限通过；集群仍是既有固定基线，不是尚在 CI 的候选版本。
+
+## 05:25 UTC 进程和 PVC 复核
+
+2026-09-20T05:25:46Z 再次读取 Pod 与 PVC 列表。将九个本地实例 Pod
+与 04:09 UTC 的原始 Pod 列表配对，执行同一 `same-pod-process.jq`，
+九次均为 true。本次重新确认 `kubebrain-local-lvm` 的 PVC 恰有 12 个，
+且全部 Bound。原始 JSON、配对输入、结果、时间和 SHA256SUMS 位于
+`/root/.local/state/kubebrain/readonly-process-recheck.0UYie8co`。
+
+另一次只读 StatefulSet 查询确认 `kubebrain-local` UID 仍为上述固定
+UID，模板仍为 `50b9938f...` 基线镜像。此时已成功发布的 `0e7e75ca`
+候选镜像没有部署；后续提交 `0a0b0dfd` 的两项 CI 尚在排队。资源状态
+和进程身份未见漂移，但它们不证明持续可用性、事务协议或故障验收。
+本次没有写入集群、操作磁盘、替换凭据、切换协议或注入故障。
