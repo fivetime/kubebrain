@@ -670,3 +670,17 @@ lease-fault-plan 1.107 秒、lease-fault-recover 3.503 秒、imageprepull
 补充超过 128 MiB 的稀疏文件反例后，工具大小专项竞态连续三次通过
 （1.962 秒）。最近 CI 回归进入 protected capture evidence/retirement
 deltas 步骤，镜像仍在构建推送，两项均未结束，本轮不推送打断作业。
+
+### bc76eba3 回归 CI 最终结果
+
+回归 35498089332（attempt 1）已 completed/success，源码确认为
+bc76eba38837514a378356510136d76cd17e04ae。原始 run.json、完整 run.log
+及 SHA256SUMS 保存在
+/root/.local/state/kubebrain/ci-35498089332-terminal.i5GRWEJS，摘要检查均通过。
+日志确认 leasefault、lease-fault-recover、lease-fault-plan 整包竞态分别
+通过（37.391、2.671、1.062 秒），工作流全量竞态步骤最终成功。
+
+该结果只覆盖 bc76eba3：9a97b162 及之后的执行适配、命令日志、实时 spec
+核验、显式释放和工具大小修复仍是本地提交，不能借此宣称它们通过 CI。
+镜像 35498089305 最近仍为 in_progress/Build and push TiKV test image；
+本轮只归档已结束的回归，不推送打断镜像作业，也未执行集群故障。
