@@ -163,3 +163,17 @@ artifact-after → run-after → regression-after。新增的两次认证 GET �
 `git diff --check` 通过。这是本地实现验证，不是新 artifact 的真实下载
 验收，更不是 30 秒真实故障验收。当前两项 CI 仍在运行，未推送打断，
 未修改测试集群。
+
+## 67e4329f 回归 CI 终态
+
+回归运行 `35492861895` 已完成且成功，精确源码为
+`67e4329ff3cd15b3bac5fc3642e9e6d81501c030`。已核对所有步骤均成功，
+包括此前失败过的 etcd service/Watch 回归，以及最后的全部探针竞态测试。
+原始运行元数据与完整日志归档于
+`/root/.local/state/kubebrain/ci-35492861895-terminal.dza9FkTp`，
+`SHA256SUMS` 两项均校验通过。
+
+该结果只覆盖上述源码，不覆盖后续尚未推送的本地提交。同源码镜像运行
+`35492861896` 此时仍在 Build and push TiKV test image 阶段，不能据此
+批准新镜像部署。真实发布产物验证、完整故障 CLI 及原 30 秒集群验收
+仍未完成。
