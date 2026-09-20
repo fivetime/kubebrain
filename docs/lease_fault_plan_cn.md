@@ -462,3 +462,22 @@ lease-fault-recover、imageprepull 和 image-prepull 五包，竞态测试全部
 PrepareArtifacts 后实际调用 RunVerified、恢复后独立确认并显式释放认领。
 现有 RunVerified 集成测试故意在准备阶段拒绝执行，不能用来证明原生
 探针与真实网络故障已经端到端跑通。
+
+### 命令连接组装
+
+ObservationCommandPlan.OpenConnections 从原始探针自身的 Endpoint、
+ServerName 和 TLS 文件字段生成初始/准备 RPC 连接；观察者使用相同
+固定客户端凭据及独立审核的 endpoint/server name。两个目标必须是
+不同的字面 IP，拒绝 DNS/Service 名称和同 IP 不同端口，避免将原 Pod
+误当作独立观察者。沿用 NewFaultConnections 的固定文件字节、内嵌
+mTLS kubeconfig、禁用代理/重试规则，创建的是惰性连接，不证明在线身份。
+
+返回句柄统一管理关闭；第二个连接构造失败时关闭第一个，不返回部分
+连接。Bind 只接受未安装 API/原始/后继/恢复连接的 runtime，绑定实际
+句柄，后续 RunVerified 复用后继连接执行恢复。上层仍必须固定配置、
+核对端点到实际 Pod 的映射并执行在线成员检查，不能以本地构造代替准入。
+
+测试覆盖实际 gRPC target、句柄复用、同 IP、DNS、缺失 TLS 身份、原始
+探针私钥路径错配及预配置 runtime 拒绝。整包竞态通过（27.560 秒），
+go vet 和差异检查通过。此为执行入口的连接组装部件，完整 JSON CLI
+和端到端原生故障测试仍未完成，未修改集群。
