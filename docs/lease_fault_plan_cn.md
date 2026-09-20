@@ -401,3 +401,12 @@ imageID 猜测。CI 成功状态、源码到镜像的对应关系、Node/Pod 映
 新增镜像依赖与两个现有命令兼容，不表示这些命令已经提供完整实验入口。
 同期远端 `0e7e75ca` 的镜像构建仍在 Build and push TiKV test image，
 回归已推进到 Verify leadership freshness regressions，未推送打断 CI。
+
+### 候选提交回归 CI 终态（2026-09-20 05:19 UTC）
+
+回归 run `35490241952` 已于 `2026-09-20T05:19:17Z` 成功完成，
+核验 head SHA 为 `0e7e75caebd96e2bb39ac2e0dc970a42c4923988`。
+终态 JSON、完整日志及 SHA256SUMS 保存在
+`/root/.local/state/kubebrain/ci-35490241952-terminal.qxPO3ebu`。
+该结果不覆盖之后尚未推送的本地提交。记录时镜像 run `35490241957`
+仍为 in_progress；未中断它，也未据此部署镜像或执行故障实验。
