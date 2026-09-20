@@ -66,10 +66,16 @@ func RunNativeCommand(ctx context.Context, path, digest string, admission Comman
 		if err := checkPlan(ctx); err != nil {
 			return err
 		}
+		if err := p.VerifyFiles(ctx); err != nil {
+			return err
+		}
 		if err := admission.Tools(ctx); err != nil {
 			return err
 		}
-		return checkPlan(ctx)
+		if err := checkPlan(ctx); err != nil {
+			return err
+		}
+		return p.VerifyFiles(ctx)
 	}
 	if err = tools(ctx); err != nil {
 		return result, err

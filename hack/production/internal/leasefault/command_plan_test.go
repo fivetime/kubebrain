@@ -2,6 +2,7 @@ package leasefault
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -34,6 +35,16 @@ func serializedCommandFixture(t *testing.T) NativeCommandPlan {
 	p := NativeCommandPlan{Version: 1, Bindings: o.Bindings, OwnerDirectory: o.OwnerDirectory, StatefulSetName: "brain", ProbeExecutable: tool("probe"), StackExecutable: tool("stack"), MetricExecutable: tool("metrics"), JoinScript: tool("join"), Endpoint: c.Endpoint, ServerName: c.ServerName, ObserverEndpoint: "127.0.0.2:2379", ObserverServerName: c.ServerName, CA: c.CA, Certificate: c.Certificate, Key: c.Key, Kubeconfig: c.Kubeconfig, KubeContext: c.Context, APIServer: c.APIServer, BeforeDirectory: o.BeforeDirectory, AfterDirectory: o.AfterDirectory, Duration: "2m", RecoveryTimeout: "30s", CaptureSeconds: 1, TargetsSHA256: strings.Repeat("a", 64), Env: o.Env, Release: release, Files: c.Files, Targets: []CommandPlanTarget{{PodName: "brain-0", PodUID: "pod-uid", InfoPort: 18600, AnonymousPort: 18601}}}
 	p.Processes = CommandProcessInputs{JQ: tool("jq"), Predicate: tool("predicate"), Observer: pod("brain-1", "observer-uid", "127.0.0.2"), Metrics: []json.RawMessage{o.Bindings.Network.PodBefore}}
 	return p
+}
+
+func TestCommandFileVerificationHonorsCancellation(t *testing.T) {
+	p := serializedCommandFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p.Files["/does-not-exist"] = strings.Repeat("a", 64)
+	// Cancellation wins before attempting to read even a missing input.
+	require.ErrorIs(t, p.VerifyFiles(ctx), context.Canceled)
+	require.Error(t, p.VerifyFiles(nil))
 }
 
 func TestNativeCommandPlanLoad(t *testing.T) {

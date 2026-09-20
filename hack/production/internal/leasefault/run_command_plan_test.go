@@ -14,7 +14,7 @@ import (
 )
 
 func TestRunNativeCommandRefusesBeforeClusterRequests(t *testing.T) {
-	for _, mode := range []string{"missing-gate", "pre-admit", "preclaim-admit", "changed-plan", "changed-plan-after-setup", "cancelled"} {
+	for _, mode := range []string{"missing-gate", "pre-admit", "preclaim-admit", "changed-plan", "changed-plan-after-setup", "changed-tool", "changed-tool-after-setup", "public-key", "non-executable", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			p := serializedCommandFixture(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -28,6 +28,18 @@ func TestRunNativeCommandRefusesBeforeClusterRequests(t *testing.T) {
 			a := CommandAdmission{Own: check, Original: check, Network: check, Successor: check, Metrics: check, Outcome: check, Stack: func(context.Context, string) error { return nil }}
 			a.Tools = func(context.Context) error {
 				calls++
+				if mode == "changed-tool" || (mode == "changed-tool-after-setup" && calls == 2) {
+					require.NoError(t, os.WriteFile(p.ProbeExecutable, []byte("changed executable"), 0700))
+					return nil
+				}
+				if mode == "public-key" {
+					require.NoError(t, os.Chmod(p.Key, 0644))
+					return nil
+				}
+				if mode == "non-executable" {
+					require.NoError(t, os.Chmod(p.ProbeExecutable, 0600))
+					return nil
+				}
 				if mode == "changed-plan" || (mode == "changed-plan-after-setup" && calls == 2) {
 					require.NoError(t, os.WriteFile(path, append(data, '\n'), 0600))
 					return nil
@@ -55,7 +67,10 @@ func TestRunNativeCommandRefusesBeforeClusterRequests(t *testing.T) {
 			if mode == "changed-plan" || mode == "changed-plan-after-setup" {
 				require.Contains(t, err.Error(), "command plan changed")
 			}
-			if mode == "preclaim-admit" || mode == "changed-plan-after-setup" {
+			if mode == "changed-tool" || mode == "changed-tool-after-setup" {
+				require.ErrorContains(t, err, "command input differs from admission")
+			}
+			if mode == "preclaim-admit" || mode == "changed-plan-after-setup" || mode == "changed-tool-after-setup" {
 				require.Equal(t, 2, calls, "real RunVerified reaches preclaim tools gate")
 				require.FileExists(t, filepath.Join(p.OwnerDirectory, "probe.stderr"))
 				require.DirExists(t, p.BeforeDirectory)

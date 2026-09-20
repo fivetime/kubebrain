@@ -1,8 +1,10 @@
 package leasefault
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/planinput"
@@ -115,31 +117,8 @@ func (p NativeCommandPlan) CheckLocal() error {
 			return errors.New("missing pinned command input")
 		}
 	}
-	for path, digest := range p.Files {
-		if !planinput.ValidSHA256(digest) {
-			return errors.New("invalid command input digest")
-		}
-		// Additional pinned dependencies include Bash and kubectl, not just
-		// the original probe and jq. Real Bash already exceeds 1 MiB. Keep
-		// data/script inputs tight, while admitting bounded tool binaries.
-		limit := int64(128 << 20)
-		for _, dataPath := range []string{p.CA, p.Certificate, p.Key, p.Kubeconfig, p.StackExecutable, p.MetricExecutable, p.JoinScript, p.Processes.Predicate, filepath.Join(p.OwnerDirectory, "observer-pod.json"), filepath.Join(p.OwnerDirectory, "observer-targets.json")} {
-			if path == dataPath {
-				limit = 1 << 20
-			}
-		}
-		data, err := planinput.ReadFile(path, path == p.Key || path == p.Kubeconfig, limit)
-		if err != nil {
-			return err
-		}
-		if planinput.SHA256(data) != digest {
-			return errors.New("command input differs from admission")
-		}
-	}
-	for _, path := range []string{p.ProbeExecutable, p.StackExecutable, p.MetricExecutable, p.Processes.JQ} {
-		if err := processgroup.ValidateExecutable(path); err != nil {
-			return err
-		}
+	if err := p.VerifyFiles(context.Background()); err != nil {
+		return err
 	}
 	if len(p.Targets) != len(p.Bindings.Metrics) || len(p.Processes.Metrics) != len(p.Targets) {
 		return errors.New("command metric count mismatch")
@@ -179,4 +158,59 @@ func (p NativeCommandPlan) CheckLocal() error {
 		err = o.CheckCommandEndpoints(r, p.Processes)
 	}
 	return errors.Join(err, connections.Close())
+}
+
+// VerifyFiles rechecks the frozen plan's pinned bytes and executable/private
+// modes without constructing clients. It is integrity checking, not CI or live
+// process admission. Cancellation is checked before and after each bounded read;
+// no retry, cached hash, deadline extension or inherited tool path is used.
+func (p NativeCommandPlan) VerifyFiles(ctx context.Context) error {
+	if ctx == nil || len(p.Files) == 0 || len(p.Files) > 128 {
+		return errors.New("file verification requires context and bounded inputs")
+	}
+	paths := make([]string, 0, len(p.Files))
+	for path := range p.Files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		digest := p.Files[path]
+		if !planinput.ValidSHA256(digest) {
+			return errors.New("invalid command input digest")
+		}
+		// Additional binaries include Bash and kubectl. Known data and script
+		// inputs retain their tighter limit; all reads remain bounded.
+		limit := int64(128 << 20)
+		for _, dataPath := range []string{p.CA, p.Certificate, p.Key, p.Kubeconfig, p.StackExecutable, p.MetricExecutable, p.JoinScript, p.Processes.Predicate, filepath.Join(p.OwnerDirectory, "observer-pod.json"), filepath.Join(p.OwnerDirectory, "observer-targets.json")} {
+			if path == dataPath {
+				limit = 1 << 20
+			}
+		}
+		private := path == p.Key || path == p.Kubeconfig || path == filepath.Join(p.OwnerDirectory, "observer-pod.json") || path == filepath.Join(p.OwnerDirectory, "observer-targets.json")
+		data, err := planinput.ReadFile(path, private, limit)
+		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if planinput.SHA256(data) != digest {
+			return errors.New("command input differs from admission")
+		}
+	}
+	for _, path := range []string{p.ProbeExecutable, p.StackExecutable, p.MetricExecutable, p.Processes.JQ} {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !planinput.ValidSHA256(p.Files[path]) {
+			return errors.New("missing pinned executable input")
+		}
+		if err := processgroup.ValidateExecutable(path); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
 }
