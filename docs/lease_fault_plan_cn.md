@@ -392,3 +392,12 @@ imageID 猜测。CI 成功状态、源码到镜像的对应关系、Node/Pod 映
 确认错误索引在任何 Kubernetes API 调用前拒绝。整包竞态测试通过
 （27.039 秒）；随后补上指标数量边界，最终定向竞态连续三次通过
 （2.084 秒），`go vet` 和 `git diff --check` 通过。未操作真实集群。
+
+提交 `957196d0` 上再次联合执行 `go test -race -count=1 -timeout=2m`
+覆盖 `internal/leasefault`、`cmd/lease-fault-plan`、`cmd/lease-fault-recover`
+和 `internal/imageprepull`（均位于 `hack/production`），四包全部通过，
+分别耗时 27.330、1.113、2.225、4.912 秒；四包联合 `go vet` 通过。
+同一提交的 `TestExpiredLeaseWait` 竞态测试也通过（1.253 秒）。这验证
+新增镜像依赖与两个现有命令兼容，不表示这些命令已经提供完整实验入口。
+同期远端 `0e7e75ca` 的镜像构建仍在 Build and push TiKV test image，
+回归已推进到 Verify leadership freshness regressions，未推送打断 CI。
