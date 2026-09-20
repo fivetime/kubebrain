@@ -89,3 +89,11 @@ receipt 目录，核验环境内的集群身份，并提供在线准入、留存
 `go vet ./hack/production/internal/leasefault`、`git diff --check` 通过。
 测试还覆盖八个独立构造器并发仅一个成功、保留部分回执、拒绝软链接、
 所有权丢失、取消以及目录替换；未执行真实故障注入。
+
+`TestDurableOriginSupervisorBarrier` 进一步通过真实 Bash 子进程和
+`metricsworker.Run` 验证时钟回调的运行顺序：baseline 后才能选时钟，
+激活回调执行前回执必须可读，worker 和完成回调收到同一时间；已有回执、
+同步后所有权丢失、同步后耗尽调用者预算（即使所有权回调返回 nil）都禁止
+激活和时钟下发，并确认 supervisor 已回收 worker。该集成测试竞态运行
+连续三次通过（7.174 秒）。子进程是协议夹具，不是实际指标采集或集群故障。
+随后 `leasefault` 整包竞态回归通过（27.172 秒），`git diff --check` 通过。
