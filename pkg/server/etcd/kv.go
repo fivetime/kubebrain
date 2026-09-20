@@ -998,6 +998,12 @@ func isFromKeyRangeEnd(rangeEnd []byte) bool {
 func (s *RPCServer) Txn(ctx context.Context, txn *etcdserverpb.TxnRequest) (*etcdserverpb.TxnResponse, error) {
 	emitEtcdMVCCTxnCounter(s.metricCli, 1)
 	if txn != nil && txnIsReadonly(txn) && txnIsSerializable(txn) {
+		// Reject malformed reads before consulting leadership or storage, as
+		// upstream's KV RPC validator does. Write transactions still enter
+		// txnOnce so their outer-quota error precedence remains unchanged.
+		if err := validateTxnRequestWithMaxOps(txn, s.maxTxnOps); err != nil {
+			return nil, err
+		}
 		_, leadingFresh := s.peers.EpochAndLeadingFresh()
 		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
 			if leadingFresh {
