@@ -1,5 +1,30 @@
 # 原生故障实验身份配置校验
 
+## 2026-09-20：a47b99d7 回归 CI 已通过，真实验收仍未完成
+
+提交 `a47b99d7681f043e45b58e3e6b94f79e3e0fd56c` 的回归运行
+`35503646708`（attempt 1）已成功。完整日志确认双向 TLS 代理租约测试
+在普通及 race 路径通过，Pod 初始 controller 绑定和在线重启／替换／
+重新归属／API 拒绝测试通过，`leasefault` race 37.038 秒；最后的
+`rollout-availability-probe` race 336.536 秒通过。
+
+原始运行元数据、完整日志及 `SHA256SUMS` 已保存并校验于
+`/root/.local/state/kubebrain/ci-35503646708-terminal.SyjGUaiG/`。
+这不是集群故障证据。记录时同源码镜像运行 `35503646753` 仍在进行
+发布后镜像核验，尚未取得最终成功结论；不能以回归通过代替镜像准入。
+
+后续本地提交 `ed528e9e`（流式工具摘要）和 `ba253952`（a47 精确栈
+分类绑定）不在上述 CI 覆盖范围。流式摘要保留逐次完整读取及文件安全
+检查，没有摘要缓存；本地 planinput／leasefault race 和 vet 通过。
+16 MiB 微基准的约 36 MB→34 KB 单次分配改善，不是 30 秒验收证明。
+
+只读集群复核仍为原固定 `50b9938f…` 镜像，StatefulSet generation／
+observedGeneration 均为 138、3 个就绪副本。本轮未部署候选或注入故障。
+完整执行 CLI 的具体在线校验、独立运行环境及 Join 仍须完成；原 30 秒
+真实故障门限尚未通过。下文各阶段的历史记录不应理解为整体完成声明。
+
+## 接口与实现记录
+
 `hack/production/cmd/lease-fault-plan` 只校验实验计划的身份和指标预期部分，
 不连接集群、不启动子进程、不获取认领，也没有 `--execute`。它不是完整
 故障执行 CLI；成功输出明确为 `LOCAL_BINDINGS_VALID_NOT_EXPERIMENT_ADMISSION`。
