@@ -49,3 +49,31 @@ CLI 接入仍待完成。
 测试实际执行 Bash 生成器并由 Go 解析结果，覆盖超大整数 ID 精度，另有
 18 类错误输入反例。镜像预拉取整包竞态测试通过（4.946 秒），同包
 `go vet`、`git diff --check` 通过；未操作集群。
+
+## GitHub 运行身份查询
+
+`VerifyGitHubReleaseRun` 通过已准入的 gh 可执行文件和凭据目录，对固定
+`github.com` 执行一次 GET，路径固定为仓库中指定 run 的指定 attempt。
+它要求有界上下文，单次最多 20 秒、不重试；前后检查工具/凭据准入，
+响应及错误由强制留存回调保存，进程输出上限 1 MiB。环境不继承 GH_HOST、
+GH_TOKEN、调试输出或 shell 启动钩子。
+
+核对仓库及 head repository 的固定 ID `1285006877` 和全名、dbaas
+分支、push/workflow_dispatch 事件、image.yml 路径、完整源码、run、
+attempt 及 completed/success。字段依据认证 gh 对已成功运行
+`35490241957/attempts/1` 的实际只读查询核实。API 可以增加无关字段，
+但身份字段不接受大小写别名或重复字段。
+
+该函数只核验运行元数据，不下载 artifact，也不证明 workflow 内容、
+artifact 所属或镜像来源。工具与凭据目录仍需独立准入，留存回调也必须
+提供真正持久化；完整认证下载和 CLI 仍未接完。
+
+测试覆盖身份字段不符、重复/别名/尾随 JSON，并以实际子进程夹具核对
+固定 GET argv、环境隔离、进程失败、留存失败和读后准入失败。整包竞态
+通过（4.985 秒），同包 `go vet` 与差异检查通过，未操作集群。
+
+同期镜像 CI `35491608335` 已成功，对应源码
+`0a0b0dfd01f19a0e5dbebda65ebb37609d65764f`，终态和日志归档在
+`/root/.local/state/kubebrain/ci-35491608335-terminal.txA9VgeD`。
+该源码的回归 CI `35491608346` 仍为失败（断言问题详见事务边界对照
+记录）；不能将仅镜像成功当作候选版本完整准入。后续修复需重新验证。
