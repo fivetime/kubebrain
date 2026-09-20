@@ -1,5 +1,28 @@
 # 过期租约续租等待的任期退出
 
+## 2026-09-20：双向 TLS 与生产 peer 转发器回归
+
+新增 `TestClientExpiredLeaseKeepAliveRoutesOverMutualTLSProxy`，覆盖正常任期
+取消与 stopped-leading 回调延迟。沿用原来的确定性过期等待观察点和一秒
+退出断言，但客户端到入口改为真实 TCP/mTLS，入口转发改为生产
+`etcdproxy.NewEtcdProxy`，连接第二个要求客户端证书的 TCP/gRPC 服务。
+原 bufconn 用例保留；不改变产品代码或放宽时限。
+
+新用例要求原客户端只有一条 KeepAlive 流、一个请求，转发函数和 peer 实际
+收到的请求均恰好一次；响应保持原 ID、TTL=37、peer term=125，不能被入口
+缓存 term=124 覆盖。正常调用路径关闭客户端、服务、监听器及生产代理；
+请求失败路径取消并 join 原调用协程。
+
+边界：存储仍为内存，选主状态由测试控制，第二个服务只提供确定性响应，
+不是运行真实 KubeBrain/TiKV 的新 leader；测试证书为临时回环信任，不证明
+生产证书角色配置或故障网络生效。这补齐真实转发连接路径，不关闭专用
+集群的精确故障竞态及原 30 秒验收缺口。
+
+普通相关测试通过（0.317 秒）。首次编译发现 EtcdProxy 接口未暴露 Close，
+改为断言其实现 io.Closer 并在结束时关闭，未修改产品接口。
+相关官方客户端任期退出测试随后 `-race -count=20` 通过（9.429 秒），
+`go vet ./pkg/server/etcd` 通过。新用例由既有 Lease CI 筛选覆盖。
+
 2026-09-17，在已完成 `31c0a1fb` 集群验收之后继续对照固定参考
 `/root/etcd`（`5cd9f4ee13801e18825d661e5005ae599460bc3a`）。
 etcd `server/lease/lessor.go:Renew` 等待过期租约撤销时，同时监听 `demotec`
