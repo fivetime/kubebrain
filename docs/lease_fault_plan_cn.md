@@ -724,3 +724,21 @@ leasefault 整包竞态通过（27.975 秒），go vet 和差异检查通过。�
 22d013b0 的回归 35499489483 与镜像 35499489484 均在 Go 环境准备步骤；
 本轮改动先留本地，不推送打断。未部署候选或注入故障，完整故障 CLI
 的在线来源/身份准入及原定 30 秒真实验收仍未完成。
+
+### bc76eba3 发布产物真实下载验证
+
+使用真实 image-prepull --mode=fetch-release 下载并验证发布产物
+10600669248，退出 0，stderr 为空。私有记录目录为
+/root/.local/state/kubebrain/release-cli-bc76eba3.EbDfC00m；批准计划摘要为
+d482194cc5c77f7b1501db524d9e6998ab4fed0b1594b12310ea0e4fe05249cd。
+两份工作流的 bc76eba3 Git 对象摘要与先前审核的 bf4f1a28 快照一致，
+差异为空；gh 二进制和独立私有配置副本的固定摘要由命令逐次复核。
+凭据副本仅保存在该目录的 config 内，未写入仓库或输出凭据内容。
+
+七个真实 GitHub 阶段（regression-before、run-before、artifact-before、
+archive、artifact-after、run-after、regression-after）全部成功，返回的
+source 为 bc76eba38837514a378356510136d76cd17e04ae，run 为 35498089305/1，
+镜像 index 为 70c3e7c0e30d18e72933ae5895904f0b7002875c7dda48895f7adf1a7c614ade，
+amd64/arm64 子摘要与上述 CI 记录一致。计划、工作流、输出及各阶段证据
+的 SHA256SUMS 全部校验通过。该验证不访问 Kubernetes，不证明预拉取、
+部署、实际进程或原始 30 秒故障验收；22d013b0 的两项 CI 最近仍在运行。
