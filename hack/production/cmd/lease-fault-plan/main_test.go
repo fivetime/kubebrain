@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +15,52 @@ import (
 	"github.com/kubewharf/kubebrain/hack/production/internal/retirementmetrics"
 	"github.com/stretchr/testify/require"
 )
+
+func TestOnlineReleasePreflightDispatch(t *testing.T) {
+	for _, mode := range []string{"success", "refused", "missing-hash", "missing-plan", "bindings-only"} {
+		t.Run(mode, func(t *testing.T) {
+			args := []string{"--command-plan", "/command.json", "--approve-sha256", "command-hash"}
+			if mode == "bindings-only" {
+				args[0] = "--bindings"
+			}
+			if mode != "missing-plan" {
+				args = append(args, "--release-plan", "/release.json")
+			}
+			if mode != "missing-hash" {
+				args = append(args, "--release-approve-sha256", "release-hash")
+			}
+			calls := 0
+			refused := errors.New("release authentication refused")
+			// Isolate option dispatch only. Real plan/download validation is not
+			// bypassable through CLI options and is tested in the internal packages.
+			auth := func(ctx context.Context, path, digest, release, releaseDigest string) error {
+				calls++
+				require.Equal(t, t.Context(), ctx)
+				require.Equal(t, []string{"/command.json", "command-hash", "/release.json", "release-hash"}, []string{path, digest, release, releaseDigest})
+				if mode == "refused" {
+					return refused
+				}
+				return nil
+			}
+			var out bytes.Buffer
+			err := runWithRelease(t.Context(), args, &out, auth)
+			if mode == "success" {
+				require.NoError(t, err)
+				require.Equal(t, 1, calls)
+				require.Equal(t, "COMMAND_RELEASE_AUTHENTICATED_NOT_LIVE_OR_FAULT_ADMISSION\n", out.String())
+			} else {
+				require.Error(t, err)
+				require.Empty(t, out.String())
+				if mode == "refused" {
+					require.ErrorIs(t, err, refused)
+					require.Equal(t, 1, calls)
+				} else {
+					require.Zero(t, calls)
+				}
+			}
+		})
+	}
+}
 
 func TestLocalBindingsMarker(t *testing.T) {
 	minimum := uint64(1)

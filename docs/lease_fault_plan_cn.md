@@ -825,3 +825,29 @@ image 和平台摘要并保留七份证据；回归未通过时返回空 receipt
 6.718 秒），go vet 通过。测试使用本地 GitHub 响应夹具，不是新一次真实
 GitHub 下载。尚未将此接口接入完整故障 CLI；也不将一次发布认证视为
 全过程在线身份、工具或网络准入。未修改集群、未推送或触发 CI。
+
+### 故障计划命令接入真实发布认证
+
+lease-fault-plan 新增可选在线发布预检，调用复用的真实 GitHub 下载接口：
+
+```sh
+go run ./hack/production/cmd/lease-fault-plan \
+  --command-plan /absolute/command.json --approve-sha256 COMMAND_SHA256 \
+  --release-plan /absolute/release.json --release-approve-sha256 RELEASE_SHA256
+```
+
+两份计划摘要均需独立批准；release.json 使用 image-prepull 相同格式和
+全新私有证据目录，不能向同一目录重试。命令先完整验证本地命令输入，
+再认证 CI/产物，并要求 source、image、原始 OCI index、全部 reviewed
+平台摘要与命令计划完全一致；下载后重新校验同一计划摘要和固定输入。
+成功仅输出 COMMAND_RELEASE_AUTHENTICATED_NOT_LIVE_OR_FAULT_ADMISSION。
+未提供发布选项时维持原本纯本地行为；发布选项不能与 bindings-only 混用。
+主命令支持 SIGINT/SIGTERM 取消下载。该入口不请求 Kubernetes、不获取
+fault claim、不部署、不注入故障，也不替代 SourceHash/完整工具依赖、
+在线进程、TLS、网络及执行阶段持续准入。
+
+测试覆盖来源/镜像/index/平台不匹配、下载失败、下载期间计划或工具变化，
+以及命令参数分派、拒绝后无成功标识。整包竞态 leasefault/lease-fault-plan
+通过（28.831/1.103 秒），随后新增的复核路径定向竞态通过（1.337 秒），
+go vet 通过。在线调用使用已实测下载器，但本轮新入口仅进行了夹具测试，
+尚未对真实候选命令计划执行。完整故障执行 CLI 和原定 30 秒验收仍未完成。
