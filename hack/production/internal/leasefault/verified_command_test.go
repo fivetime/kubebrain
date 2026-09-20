@@ -19,7 +19,7 @@ import (
 )
 
 func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
-	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim"} {
+	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -57,9 +57,21 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			original, healthy := connection(p.Bindings.Protocol.AlarmMemberID), connection(p.Bindings.ObserverMemberID)
 			check := func(context.Context) error { return nil }
 			r := MeasuredNetworkFaultRuntime{Network: NetworkFaultRuntime{
-				Lifecycle:       FaultLifecycle{Preparation: FaultPreparation{Directory: p.OwnerDirectory, StatefulSetName: "brain", Network: p.Bindings.Network, Protocol: p.Bindings.Protocol, Client: client, Connection: original, Own: func(context.Context) error { return errors.New("preparation deliberately refused") }}, OutcomeAdmit: check, RecoveryConnection: healthy, RecoveryTimeout: time.Second},
+				Lifecycle:       FaultLifecycle{Preparation: FaultPreparation{Directory: p.OwnerDirectory, StatefulSetName: "brain", Network: p.Bindings.Network, Protocol: p.Bindings.Protocol, Client: client, Connection: original, Own: func(context.Context) error { return errors.New("preparation deliberately refused") }}, OutcomeAdmit: check, RecoveryTimeout: time.Second},
 				ScriptDirectory: "/bin", TargetsSHA256: strings.Repeat("a", 64), AdmitNetwork: check, SuccessorConnection: healthy, AdmitSuccessor: check, CaptureSeconds: 1,
 			}, AdmitMetrics: check}
+			if mode == "preconfigured-recovery" {
+				r.Network.Lifecycle.RecoveryConnection = healthy
+			}
+			if mode == "wrong-preparation-member" {
+				r.Network.Lifecycle.Preparation.Connection = healthy
+			}
+			if mode == "missing-preparation" {
+				r.Network.Lifecycle.Preparation.Connection = nil
+			}
+			if mode == "missing-successor" {
+				r.Network.SuccessorConnection = nil
+			}
 			h := ObservationHooks{AdmitOriginal: check, AdmitStack: func(context.Context, string) error { return nil }}
 			predicate, err := filepath.Abs("../../same-pod-process.jq")
 			require.NoError(t, err)
@@ -81,14 +93,18 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 				}
 				return nil
 			}
-			result, err := p.RunVerified(ctx, r, h, VerifiedCommandInputs{Processes: CommandProcessInputs{JQ: "/usr/bin/jq", Predicate: predicate, Observer: observerRaw, Metrics: []json.RawMessage{p.Bindings.Network.PodBefore}}, MetricExecutable: "/bin/bash", JoinScript: join, Targets: artifacts.Targets, OriginalConnection: original, AdmitTools: toolsAdmit})
+			result, err := p.RunVerified(ctx, r, h, VerifiedCommandInputs{Processes: CommandProcessInputs{JQ: "/usr/bin/jq", Predicate: predicate, Observer: observerRaw, Metrics: []json.RawMessage{p.Bindings.Network.PodBefore}}, MetricExecutable: "/bin/bash", JoinScript: join, Targets: artifacts.Targets, AdmitTools: toolsAdmit})
 			require.Error(t, err)
 			joins, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "recovery-join.*.json"))
 			require.NoError(t, globErr)
-			if mode == "wrong-member" {
+			staticFailure := mode == "preconfigured-recovery" || mode == "missing-preparation" || mode == "missing-successor"
+			if mode == "wrong-member" || mode == "wrong-preparation-member" || staticFailure {
 				require.Zero(t, creates)
 				require.Nil(t, result.Owner)
 				require.Empty(t, joins)
+				if staticFailure {
+					require.Empty(t, client.Actions(), "reject conflicting runtime before cluster access")
+				}
 			} else {
 				require.Equal(t, 1, creates)
 				require.NotNil(t, result.Owner)
