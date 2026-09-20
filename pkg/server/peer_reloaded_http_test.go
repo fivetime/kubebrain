@@ -22,10 +22,14 @@ func TestReloadedControlHTTPRefreshesEveryRequest(t *testing.T) {
 	})
 	require.NoError(t, err)
 	var releases, requests atomic.Int32
+	// This fixture checks credential refresh, not request pacing. Each of the
+	// seven modes makes two immediate calls; give the shared handler enough
+	// initial tokens so fast TLS handshakes cannot turn valid rotations into
+	// HTTP 429 responses. Handler rate/concurrency rejection is tested separately.
 	limits, err := newPeerRetirementHandler(auth, func(context.Context, election.OwnershipCondition) error {
 		releases.Add(1)
 		return nil
-	}, time.Second, time.Second, 2, 100)
+	}, time.Second, time.Second, 14, 100)
 	require.NoError(t, err)
 	successor := &peerSuccessorHandler{limits: limits, holder: "next", ready: func() bool { return true }}
 	serials := make(chan string, 16)
