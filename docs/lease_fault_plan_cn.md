@@ -742,3 +742,16 @@ source 为 bc76eba38837514a378356510136d76cd17e04ae，run 为 35498089305/1，
 amd64/arm64 子摘要与上述 CI 记录一致。计划、工作流、输出及各阶段证据
 的 SHA256SUMS 全部校验通过。该验证不访问 Kubernetes，不证明预拉取、
 部署、实际进程或原始 30 秒故障验收；22d013b0 的两项 CI 最近仍在运行。
+
+### 22d013b0 回归 CI 最终结果
+
+回归 35499489483（attempt 1）已 completed/success，head_sha 确认为
+22d013b085eed019f1ebc07c98422f5b2e98cbc9。run.json、完整 run.log 和
+SHA256SUMS 保存在 /root/.local/state/kubebrain/ci-35499489483-terminal.U7Q5A7ca，
+摘要检查通过。日志确认 leasefault、lease-fault-recover、lease-fault-plan
+整包竞态分别通过（34.068、4.323、1.059 秒），工作流最终全量竞态也通过。
+
+该源码包括执行适配、外层命令记录、实时 StatefulSet spec 核验、恢复命令
+显式释放及工具大小上限修复；不包括后续 564f2134 的阶段文件复核改动。
+镜像 35499489484 最近仍在 Build and push TiKV test image 步骤，未完成。
+本轮只归档回归结果，不推送打断镜像作业，不将 CI 通过计作真实故障验收。
