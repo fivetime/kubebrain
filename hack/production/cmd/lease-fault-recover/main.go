@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -152,29 +151,7 @@ func clients(p plan) (dynamic.Interface, *grpc.ClientConn, error) {
 }
 
 func retain(dir, stage string, output []byte, observed error) error {
-	f, err := os.CreateTemp(dir, "recovery-"+stage+".*.json")
-	if err != nil {
-		return err
-	}
-	message := ""
-	if observed != nil {
-		message = observed.Error()
-	}
-	writeErr := json.NewEncoder(f).Encode(struct {
-		Output []byte    `json:"output"`
-		Error  string    `json:"error"`
-		At     time.Time `json:"at"`
-	}{output, message, time.Now().UTC()})
-	syncErr := f.Sync()
-	closeErr := f.Close()
-	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
-		return err
-	}
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	return errors.Join(d.Sync(), d.Close())
+	return leasefault.RetainRecoveryObserver(dir, stage, output, observed)
 }
 
 func execute(ctx context.Context, p plan, client dynamic.Interface, conn grpc.ClientConnInterface, checkFiles func(context.Context) error) error {

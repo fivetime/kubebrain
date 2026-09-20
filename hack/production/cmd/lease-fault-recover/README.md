@@ -66,6 +66,15 @@ errors stop the process with no success marker; partial changes require explicit
 reconciliation. Success reports `RECOVERY_VERIFIED_OWNER_CLAIM_RETAINED_NOT_FAULT_ACCEPTANCE`.
 Claim release remains a separate explicit step after fresh full recovery proof.
 
+Observer retention uses `leasefault.RetainRecoveryObserver`: it opens one private
+owner-directory handle and creates an exclusive, non-overwriting 0600 record
+relative to that handle. Both file and directory are synced before success; a
+replaced or newly public owner path is rejected. Partial/original-directory
+records remain for reconciliation. Stage names are bounded identifiers, output
+is limited to the process supervisor's 1 MiB cap, and error text to 64 KiB.
+An observed error is preserved as data; callers must still reject the failed
+observation independently. Saving a log is not proof of recovery or admission.
+
 Tests cover strict parsing, pinned private files, no-client default mode, failed
 join and missing-record ordering with injected client/admission fixtures. An
 execution-path test also prepares and recovers a real KubeBrain RPC service over
