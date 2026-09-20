@@ -300,3 +300,19 @@ CI 验证日志中的固定镜像为
 `ghcr.io/fivetime/kubebrain@sha256:9994ee9282ac2fc6b895a9cd037b002ccf6699138bfb3b8e692727839cc6e08b`。
 此处只完成终态与发布元数据归档，尚需对该新 artifact 运行下载校验；
 不复用旧源码下载结果，不因两项 CI 成功而宣布真实故障验收通过。
+
+本轮新建私有尝试目录
+`/root/.local/state/kubebrain/release-cli-bf4f1a28.5dWhapNm`，从 bf4f1a28
+提取两个 workflow 快照，确认与前次已审核版本无差异；工具与配置摘要
+重新核对后执行 fetch-release，退出 0。七阶段响应均已持久化且观察错误
+为空，stderr 为空，结果绑定精确源码/run/固定镜像，所有证据摘要通过。
+本次运行包含工作目录隔离修正，仓库未再出现 gh 的 .local 状态目录。
+
+已验证的索引对应 runtime 子摘要：
+
+- linux/amd64：`sha256:1a901f364f33403b24a29cc6aa2d642f10e54e61c8fa68f2e73d39019bf2f6e5`
+- linux/arm64：`sha256:3f75ca8c5efaada24148f4b566f8cd9b7365f9a08be803062b3a21e69aa2080d`
+
+这完成该新产物的真实七阶段只读下载验证，未执行镜像预拉取、部署或
+故障注入。完整故障 CLI、进程/连接新鲜身份检查、恢复确认及原 30 秒
+真实验收仍不可省略，不能把发布产物校验当作总体任务完成。
