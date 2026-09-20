@@ -331,3 +331,20 @@ kubebrain-local-client 执行 image-prepull check-admission，使用已认证
 admission.json，在本地 DNS label 检查时退出，未创建收据；该失败记录
 保留在 `prepull-dryrun-bf4f1a28.kHJQwtio`，随后使用全新目录及合法名称
 admission，未覆盖失败证据。未部署候选或执行故障注入。
+
+### 三节点实际预拉取与清理
+
+随后使用全新尝试目录
+`/root/.local/state/kubebrain/prepull-live-bf4f1a28.7CoDZtZM`，在同一固定
+namespace/StatefulSet UID 范围执行 prepare → verify → recover-cleanup。
+三个隔离 Job 前缀为 `kb-prepull-685c73b8a68aa189fca7d988d7b0ea69-`，
+分别调度到 worker1、worker2、worker3。prepare 和独立 verify 都退出 0，
+分别输出 PREPULL_READY、PREPULL_VERIFIED。固定镜像与平台摘要同上，
+没有修改业务 StatefulSet、Service 或 PVC。
+
+退出处理随后按持久收据清理，退出 0 且输出 PREPULL_CLEANUP_CONFIRMED。
+另行 GET Job/Pod 列表，确认该精确前缀资源数为零；原始 after.json、
+脚本、收据及各阶段输出/退出码的 SHA256SUMS 全部通过。清理仅删除
+本次三个临时 Job 及其 Pod，镜像可重新拉取；本地证据仍保留。
+这证明当时三个节点能拉取并验证候选镜像，不保证缓存永久保留；正式
+部署前仍须刷新检查。未部署候选或进行真实故障注入，30 秒验收未完成。
