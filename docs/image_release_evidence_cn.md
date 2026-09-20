@@ -289,3 +289,14 @@ SHA256SUMS 均通过。因同源码回归 `35494231418` 失败，不批准该候
 186 毫秒，共享 5 秒预算分别还剩约 4.919 秒和 4.716 秒，context 均无
 错误。该轮未复现旧超时；没有放宽截止时间，也不能反推旧失败根因已解决。
 同源码镜像 `35495594714` 此时仍在运行，尚未开展新候选部署或故障实验。
+
+同源码镜像 `35495594714` 随后 completed/success。元数据、完整日志及
+artifact 列表归档于
+`/root/.local/state/kubebrain/ci-35495594714-terminal.1hI0B221`，三个文件
+摘要均通过。发布 artifact ID 为 `10601620246`，名称
+`dbaas-release-35495594714-1`，API 摘要
+`sha256:9d6e71efa9bb75178d89ffcd791bf6b10af17e09bfee7f8cd57a3f6023d2363e`。
+CI 验证日志中的固定镜像为
+`ghcr.io/fivetime/kubebrain@sha256:9994ee9282ac2fc6b895a9cd037b002ccf6699138bfb3b8e692727839cc6e08b`。
+此处只完成终态与发布元数据归档，尚需对该新 artifact 运行下载校验；
+不复用旧源码下载结果，不因两项 CI 成功而宣布真实故障验收通过。
