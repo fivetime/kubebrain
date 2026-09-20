@@ -1,0 +1,33 @@
+# Build context MUST be a new private directory containing only the generated
+# bundle/ and a separately reviewed static gh executable. Never use $HOME or
+# a directory containing plans/credentials as the context. No network in RUN.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER 0:0
+ARG BASE_IMAGE
+ARG BUNDLE_SHA256
+ARG GH_SHA256
+ARG TOOLS_SOURCE
+COPY bundle/ /opt/kubebrain-fault/
+COPY gh /usr/local/bin/gh
+RUN printf '%s\n' "$BASE_IMAGE" | grep -Eq '^ghcr.io/fivetime/kubebrain@sha256:[0-9a-f]{64}$' \
+    && printf '%s\n' "$TOOLS_SOURCE" | grep -Eq '^[0-9a-f]{40}$' \
+    && for digest in "$BUNDLE_SHA256" "$GH_SHA256"; do \
+      printf '%s\n' "$digest" | grep -Eq '^[0-9a-f]{64}$' || exit 1; done
+RUN test -n "$BUNDLE_SHA256" && test -n "$GH_SHA256" \
+    && printf '%s  %s\n' "$BUNDLE_SHA256" /opt/kubebrain-fault/SHA256SUMS | sha256sum -c - \
+    && printf '%s  %s\n' "$GH_SHA256" /usr/local/bin/gh | sha256sum -c - \
+    && cd /opt/kubebrain-fault && sha256sum -c SHA256SUMS \
+    && chmod 0755 /usr/local/bin/gh \
+    && /usr/local/bin/gh --version \
+    && /usr/local/bin/kubectl version --client \
+    && bash --version && jq --version && timeout --version \
+    && for tool in find grep stat date sha256sum mktemp sort; do command -v "$tool" || exit 1; done
+LABEL org.opencontainers.image.title="KubeBrain dedicated lease fault test tools" \
+      org.opencontainers.image.revision="$TOOLS_SOURCE" \
+      io.kubebrain.fault-tools.bundle-sha256="$BUNDLE_SHA256" \
+      io.kubebrain.fault-tools.gh-sha256="$GH_SHA256" \
+      io.kubebrain.fault-tools.base-image="$BASE_IMAGE"
+# No experiment starts by default; absent an approved plan this exits nonzero.
+# Recovery still requires explicit arguments and its own independent admission.
+ENTRYPOINT ["/opt/kubebrain-fault/bin/lease-fault-plan"]

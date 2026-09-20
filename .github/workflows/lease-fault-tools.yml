@@ -1,0 +1,186 @@
+name: Build dedicated lease fault tools
+
+# Build/publish only. This workflow has no cluster credentials or fault execution.
+on:
+  # Register this branch workflow without building/publishing on push. Once a
+  # workflow has run, GitHub permits API dispatch against its branch reference.
+  push:
+    branches: [dbaas]
+    paths: ['.github/workflows/lease-fault-tools.yml']
+  workflow_dispatch:
+    inputs:
+      base_image:
+        description: Independently verified KubeBrain image digest (not a tag)
+        required: true
+        type: string
+      gh_sha256:
+        description: Independently reviewed SHA256 of the runner gh executable
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: lease-fault-tools-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  register:
+    if: github.event_name == 'push'
+    runs-on: self-hosted
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - name: Register manual build entry without publishing
+        run: echo 'Registered workflow; image build requires reviewed dispatch inputs.'
+
+  build-tools:
+    if: github.ref == 'refs/heads/dbaas' && github.event_name == 'workflow_dispatch'
+    runs-on: self-hosted
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact tool source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate independently reviewed inputs
+        id: inputs
+        env:
+          BASE_IMAGE: ${{ inputs.base_image }}
+          GH_SHA256: ${{ inputs.gh_sha256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$BASE_IMAGE" =~ ^ghcr.io/fivetime/kubebrain@sha256:[0-9a-f]{64}$ ]]
+          [[ "$GH_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$RUNNER_ARCH" = X64
+          test "$(uname -m)" = x86_64
+          gh_path="$(command -v gh)"
+          test "$(sha256sum "$gh_path" | cut -d ' ' -f 1)" = "$GH_SHA256"
+          context_dir="$(mktemp -d "$RUNNER_TEMP/lease-fault-tools.XXXXXXXX")"
+          mkdir "$context_dir/bundle" "$context_dir/evidence"
+          cp "$gh_path" "$context_dir/gh"
+          cp hack/production/lease-fault-tools.dockerignore "$context_dir/.dockerignore"
+          printf 'context=%s\n' "$context_dir" >> "$GITHUB_OUTPUT"
+          printf 'image=ghcr.io/fivetime/kubebrain:fault-tools-%s-%s-%s\n' \
+            "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26.8'
+          cache-dependency-path: go.sum
+
+      - name: Test and build pinned bundle
+        env:
+          CONTEXT_DIR: ${{ steps.inputs.outputs.context }}
+        run: |
+          set -euo pipefail
+          go mod download
+          go mod verify
+          go test -race ./hack/production/internal/planinput ./hack/production/internal/leasefault -count=1 -timeout=5m
+          go test ./hack/production -run '^TestLeaseFaultTool' -count=1
+          bash hack/production/build-lease-fault-tools.sh "$CONTEXT_DIR/bundle" amd64
+          for binary in "$CONTEXT_DIR/bundle/bin/"*; do
+            go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -mode=binary "$binary"
+          done
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build runtime without network in build steps
+        env:
+          CONTEXT_DIR: ${{ steps.inputs.outputs.context }}
+          IMAGE: ${{ steps.inputs.outputs.image }}
+          BASE_IMAGE: ${{ inputs.base_image }}
+          GH_SHA256: ${{ inputs.gh_sha256 }}
+        run: |
+          set -euo pipefail
+          bundle_sha="$(sha256sum "$CONTEXT_DIR/bundle/SHA256SUMS" | cut -d ' ' -f 1)"
+          docker buildx build --load --platform linux/amd64 --network=none \
+            --file hack/production/Dockerfile.lease-fault-tools \
+            --build-arg "BASE_IMAGE=$BASE_IMAGE" --build-arg "TOOLS_SOURCE=$GITHUB_SHA" \
+            --build-arg "GH_SHA256=$GH_SHA256" --build-arg "BUNDLE_SHA256=$bundle_sha" \
+            --tag "$IMAGE" "$CONTEXT_DIR"
+
+      - name: Smoke test before publishing
+        env:
+          CONTEXT_DIR: ${{ steps.inputs.outputs.context }}
+          IMAGE: ${{ steps.inputs.outputs.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network=none --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges --entrypoint /bin/bash "$IMAGE" -c \
+            'set -e; cd /opt/kubebrain-fault; sha256sum -c SHA256SUMS; gh --version; kubectl version --client' \
+            > "$CONTEXT_DIR/evidence/smoke.log" 2>&1
+          if docker run --rm --network=none --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges "$IMAGE" \
+            > "$CONTEXT_DIR/evidence/default.log" 2>&1; then
+            echo 'default entrypoint unexpectedly succeeded without an approved plan' >&2
+            exit 1
+          else
+            test "$?" -eq 1
+          fi
+          grep -F 'require exactly one of --bindings or --command-plan' "$CONTEXT_DIR/evidence/default.log"
+
+      - name: Publish separate immutable-run tag and evidence
+        env:
+          CONTEXT_DIR: ${{ steps.inputs.outputs.context }}
+          IMAGE: ${{ steps.inputs.outputs.image }}
+          BASE_IMAGE: ${{ inputs.base_image }}
+          GH_SHA256: ${{ inputs.gh_sha256 }}
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE"
+          docker buildx imagetools inspect --raw "$IMAGE" > "$CONTEXT_DIR/evidence/manifest.json"
+          digest="$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Manifest}}' | jq -r .digest)"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "sha256:$(sha256sum "$CONTEXT_DIR/evidence/manifest.json" | cut -d ' ' -f 1)" = "$digest"
+          bundle_sha="$(sha256sum "$CONTEXT_DIR/bundle/SHA256SUMS" | cut -d ' ' -f 1)"
+          jq -n --arg source "$GITHUB_SHA" --arg base "$BASE_IMAGE" --arg gh "$GH_SHA256" \
+            --arg bundle "$bundle_sha" --arg image "ghcr.io/fivetime/kubebrain@$digest" \
+            --arg run "$GITHUB_RUN_ID" --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            '{source:$source,base_image:$base,gh_sha256:$gh,bundle_sha256:$bundle,image:$image,
+              platform:"linux/amd64",run_id:$run,run_attempt:$attempt,
+              scope:"tool runtime build and smoke only; not fault admission or acceptance"}' \
+            > "$CONTEXT_DIR/evidence/runtime.json"
+          cp "$CONTEXT_DIR/bundle/SHA256SUMS" "$CONTEXT_DIR/evidence/bundle.sha256"
+          (cd "$CONTEXT_DIR/evidence" && sha256sum smoke.log default.log manifest.json runtime.json bundle.sha256 > SHA256SUMS)
+
+      - name: Archive runtime evidence
+        if: always() && steps.inputs.outputs.context != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lease-fault-tools-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.inputs.outputs.context }}/evidence/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove this run's local image tag
+        if: always() && steps.inputs.outputs.image != ''
+        env:
+          IMAGE: ${{ steps.inputs.outputs.image }}
+        run: |
+          set -euo pipefail
+          if docker image inspect "$IMAGE" >/dev/null 2>&1; then
+            docker image rm "$IMAGE"
+          fi
