@@ -979,3 +979,21 @@ UTC 成功结束，不是仅凭中间步骤推断整体成功。
 该回归不包括后续本地工具包构建入口及其测试。镜像 35501836848 最近
 仍在 Build and push TiKV test image，尚无终态。没有部署候选或执行
 原定 30 秒故障验收，整体任务仍未完成。
+
+### 0f17ae76 镜像 CI 完整成功
+
+35501836848（attempt 1）现已 completed/success，head_sha 为
+0f17ae76d0e335b55f84cd728e964b4b1d75eb0b。run.json、完整 run.log、
+artifacts.json 和 SHA256SUMS 保存在
+/root/.local/state/kubebrain/ci-35501836848-terminal.QWU1j2lr，摘要复核通过。
+日志记录验证发布并推广的 OCI index 为
+ghcr.io/fivetime/kubebrain@sha256:e39aba657b2519c8ef5d24ede24277104e1e100314b1cb1cb8a4a4b695548e50，
+amd64 子摘要 4f2c443e73d397d0531a123b0ee1b3a385ba649cf1ba18c3a8f74f8400bb49af，
+arm64 子摘要 c2419ada1603bf70713233a7da654bf7ccf7578240ec99e04ac32574506af5b9。
+
+产物 dbaas-release-35501836848-1 的 ID 为 10603605216，大小 1040
+字节，expired=false，API 摘要为
+sha256:daba32fb01dfc8e8cb387f2dda115bbea4ad1e48bd601825a59ebf3e65007cb6。
+本轮仅核验 CI 日志与元数据，尚未通过真实 fetch-release 下载验证 ZIP。
+两项 0f17ae76 CI 已全部成功，但不覆盖后续本地工具包代码，也不证明
+候选部署、执行 Pod 或原定 30 秒真实故障验收；这些仍未完成。
