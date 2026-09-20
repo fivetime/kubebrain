@@ -57,6 +57,9 @@ type LifecycleResult struct {
 	Metrics                       []metricsworker.Result
 	ExecutionError, RecoveryError error
 	Outcome                       *OriginalOutcome
+	// False for failures before the recovery path is entered. A nil
+	// RecoveryError alone must never be interpreted as recovery success.
+	RecoveryAttempted bool
 	// API acknowledgement only, never Cilium enforcement or acceptance. False
 	// after an error does not imply the PATCH had no effect.
 	ActivationAcknowledged bool
@@ -238,6 +241,7 @@ func runAdmittedFaultLifecycle(ctx context.Context, l FaultLifecycle) (Lifecycle
 	recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), l.RecoveryTimeout)
 	defer cancel()
 	p = l.Preparation
+	result.RecoveryAttempted = true
 	result.RecoveryError = RecoverFault(recoveryCtx, FaultRecovery{
 		Directory: p.Directory, StatefulSetName: p.StatefulSetName, Network: p.Network, Protocol: p.Protocol,
 		Client: p.Client, Connection: l.RecoveryConnection, Own: p.Own, Join: l.Join,

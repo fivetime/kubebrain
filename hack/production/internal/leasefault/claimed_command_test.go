@@ -2,6 +2,7 @@ package leasefault
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,7 +19,7 @@ import (
 )
 
 func TestClaimingCommandPreflightAndRetainedOwnership(t *testing.T) {
-	for _, mode := range []string{"execution-refused", "ambiguous-create", "invalid-tool", "invalid-recovery", "existing-marker", "existing-intent", "preclaim-rejected", "preclaim-cancelled", "preclaim-held", "preclaim-directory-replaced", "missing-preclaim", "existing-owner", "custom-retention"} {
+	for _, mode := range []string{"execution-refused", "execution-retention-failed", "ambiguous-create", "invalid-tool", "invalid-recovery", "existing-marker", "existing-intent", "preclaim-rejected", "preclaim-cancelled", "preclaim-held", "preclaim-directory-replaced", "missing-preclaim", "existing-owner", "custom-retention"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -42,7 +43,13 @@ func TestClaimingCommandPreflightAndRetainedOwnership(t *testing.T) {
 				return true, u, nil
 			})
 			check := func(context.Context) error { return nil }
-			refuse := func(context.Context) error { liveChecks++; return errors.New("live preparation refused") }
+			refuse := func(context.Context) error {
+				liveChecks++
+				if mode == "execution-retention-failed" {
+					require.NoError(t, os.Chmod(p.OwnerDirectory, 0755))
+				}
+				return errors.New("live preparation refused")
+			}
 			conn := &successorConnection{}
 			r := MeasuredNetworkFaultRuntime{Network: NetworkFaultRuntime{
 				Lifecycle: FaultLifecycle{
@@ -91,22 +98,53 @@ func TestClaimingCommandPreflightAndRetainedOwnership(t *testing.T) {
 			}
 			result, err := p.ClaimAndRun(ctx, r, h, "/bin/bash", metricTargets(t, p), admit)
 			require.Error(t, err)
-			if mode == "execution-refused" || mode == "ambiguous-create" {
+			if strings.HasPrefix(mode, "execution-") || mode == "ambiguous-create" {
 				require.Equal(t, 1, creates)
 				_, getErr := client.Resource(ownerResource).Namespace(n.Namespace).Get(context.Background(), faultOwnerName, metav1.GetOptions{})
 				require.NoError(t, getErr, "claim must remain on any failure")
-				if mode == "execution-refused" {
+				if strings.HasPrefix(mode, "execution-") {
 					require.NotNil(t, result.Owner)
 					require.Error(t, result.Lifecycle.ExecutionError)
 					require.Error(t, result.Lifecycle.RecoveryError)
+					require.True(t, result.Lifecycle.RecoveryAttempted)
 					require.Positive(t, liveChecks)
 					require.DirExists(t, filepath.Join(p.OwnerDirectory, "deployment-claimed"))
+					files, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "experiment-lifecycle.*.json"))
+					require.NoError(t, globErr)
+					if mode == "execution-refused" {
+						require.Len(t, files, 1)
+						data, readErr := os.ReadFile(files[0])
+						require.NoError(t, readErr)
+						var record struct {
+							Output []byte
+							Error  string
+						}
+						require.NoError(t, json.Unmarshal(data, &record))
+						require.Contains(t, record.Error, "live preparation refused")
+						var payload struct {
+							ClaimUID          string `json:"claim_uid"`
+							RecoveryAttempted bool   `json:"recovery_attempted"`
+							ExecutionError    string `json:"execution_error"`
+							RecoveryError     string `json:"recovery_error"`
+						}
+						require.NoError(t, json.Unmarshal(record.Output, &payload))
+						require.Equal(t, "claim-uid", payload.ClaimUID)
+						require.True(t, payload.RecoveryAttempted)
+						require.NotEmpty(t, payload.ExecutionError)
+						require.NotEmpty(t, payload.RecoveryError)
+					} else {
+						require.Empty(t, files)
+						require.Contains(t, err.Error(), "live preparation refused")
+						require.Contains(t, err.Error(), "recovery owner must be a private directory")
+					}
 				} else {
 					require.Nil(t, result.Owner)
+					require.False(t, result.Lifecycle.RecoveryAttempted)
 					require.Zero(t, liveChecks)
 				}
 			} else {
 				require.Nil(t, result.Owner)
+				require.False(t, result.Lifecycle.RecoveryAttempted)
 				require.Zero(t, creates)
 				require.Zero(t, liveChecks)
 				require.Empty(t, client.Actions())

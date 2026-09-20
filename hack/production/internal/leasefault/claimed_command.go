@@ -2,8 +2,11 @@ package leasefault
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
+
+	"github.com/kubewharf/kubebrain/hack/production/internal/metricsworker"
 )
 
 // ClaimedCommandResult returns ownership even when execution/recovery fails.
@@ -96,5 +99,37 @@ func (p ObservationCommandPlan) ClaimAndRun(ctx context.Context, r MeasuredNetwo
 	// Run repeats local validation and fresh ownership checks before preparing
 	// anything; its existing post-child recovery runs on its independent budget.
 	result.Lifecycle, err = RunFaultLifecycle(ctx, l)
-	return result, err
+	// Archive even an expired/failed run, without treating archiving as a new
+	// fault budget or successful recovery. Keep both errors and the claim.
+	current, statErr := os.Lstat(p.OwnerDirectory)
+	if statErr != nil || !current.IsDir() || !os.SameFile(identity, current) {
+		return result, errors.Join(err, errors.New("lifecycle result owner directory changed"))
+	}
+	return result, errors.Join(err, retainClaimedLifecycle(p.OwnerDirectory, owner, result.Lifecycle, err))
+}
+
+// This is a lifecycle return record, not COMPLETE or permission to release.
+// Preserve partial protocol results and explicit error strings (JSON marshaling
+// an error interface would otherwise silently produce {}).
+func retainClaimedLifecycle(directory string, owner *FaultOwner, result LifecycleResult, runErr error) error {
+	message := func(err error) string {
+		if err == nil {
+			return ""
+		}
+		return err.Error()
+	}
+	data, err := json.Marshal(struct {
+		Owner                  FaultOwnerBinding      `json:"owner"`
+		ClaimUID               string                 `json:"claim_uid"`
+		RecoveryAttempted      bool                   `json:"recovery_attempted"`
+		ExecutionError         string                 `json:"execution_error"`
+		RecoveryError          string                 `json:"recovery_error"`
+		ActivationAcknowledged bool                   `json:"activation_acknowledged"`
+		Metrics                []metricsworker.Result `json:"metrics"`
+		Outcome                *OriginalOutcome       `json:"outcome"`
+	}{owner.binding, owner.uid, result.RecoveryAttempted, message(result.ExecutionError), message(result.RecoveryError), result.ActivationAcknowledged, result.Metrics, result.Outcome})
+	if err != nil {
+		return err
+	}
+	return retainObserver(directory, "experiment", "lifecycle", data, runErr)
 }
