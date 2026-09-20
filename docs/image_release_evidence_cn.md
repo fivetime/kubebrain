@@ -230,3 +230,27 @@ JSON 拒绝未知和重复字段。配置目录、证据目录必须分离且权
 凭据权限不安全、回归失败和目录复用拒绝。命令包竞态测试通过
 （6.633 秒），库包竞态通过（5.986 秒）。这是命令夹具验证，尚未通过
 该入口访问真实 GitHub。完整故障实验 CLI 及 30 秒真实验收仍未完成。
+
+## 只读入口真实 GitHub 验证
+
+使用本地命令源码 `663d2a34` 对已通过两项 CI 的 `67e4329f` 发布执行
+`fetch-release`，进程退出 0。尝试目录为
+`/root/.local/state/kubebrain/release-cli-67e4329f.ih7zBwQj`。
+其中 result.json 输出精确固定镜像与源码，七个阶段文件均存在且观察错误
+为空，stderr.log 为空；计划、两个工作流快照、结果、stderr 及七阶段
+文件的 SHA256SUMS 均通过。ZIP 使用 base64 无损留存，不能用解码为
+UTF-8 后的字符串长度衡量二进制大小。
+
+运行前从精确 Git 提交提取两个 workflow，核对 checkout/revision、
+构建和镜像验证、成功后发布证据的顺序，以及回归实际测试命令；与当前
+工作树版本无差异。固定 gh 可执行文件及独立 0700 凭据目录内配置的
+摘要，在七次真实认证 API 请求前后重新检查。凭据副本仅位于私有本地
+配置目录，不写入仓库、日志或文档。此结果证明实际下载流程可用，仍不
+代表候选部署或真实故障验收，也不覆盖后续源码。
+
+与此同时，新源码 `4ce4dc16` 的回归 CI `35494231418` 失败，证据在
+`/root/.local/state/kubebrain/ci-35494231418-terminal.zR8MqVk4`，原始日志
+与元数据摘要均通过。失败为 `TestClientAuthPrivilegedMaintenanceAuthorization`
+在 auth_client_test.go:1966 收到 DeadlineExceeded，需进一步复现定位；
+不能将其归因为 Runner 或直接重跑宣布通过。该源码镜像 CI 仍在运行，
+不准入该源码候选。
