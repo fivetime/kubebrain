@@ -19,8 +19,15 @@ import (
 // admit must pin the executable and credential configuration. retain must save
 // the exact bounded API response even on failure, without publishing credentials.
 func VerifyGitHubReleaseRun(ctx context.Context, gh, configDirectory string, wanted ReleaseIdentity, admit func(context.Context) error, retain func([]byte, error) error) error {
-	if ctx == nil || admit == nil || retain == nil || !releaseSource.MatchString(wanted.Source) || !releaseRunID.MatchString(wanted.RunID) || !releaseAttempt.MatchString(wanted.RunAttempt) || !filepath.IsAbs(configDirectory) || filepath.Clean(configDirectory) != configDirectory || configDirectory == "/" {
+	if !releaseSource.MatchString(wanted.Source) || !releaseRunID.MatchString(wanted.RunID) || !releaseAttempt.MatchString(wanted.RunAttempt) {
 		return errors.New("invalid GitHub release run admission")
+	}
+	return githubReleaseRequest(ctx, gh, configDirectory, "repos/fivetime/kubebrain/actions/runs/"+wanted.RunID+"/attempts/"+wanted.RunAttempt, 1<<20, func(raw []byte) error { return checkGitHubReleaseRun(raw, wanted) }, admit, retain)
+}
+
+func githubReleaseRequest(ctx context.Context, gh, configDirectory, endpoint string, limit int64, check func([]byte) error, admit func(context.Context) error, retain func([]byte, error) error) error {
+	if ctx == nil || admit == nil || retain == nil || check == nil || !filepath.IsAbs(configDirectory) || filepath.Clean(configDirectory) != configDirectory || configDirectory == "/" || limit < 1 || limit > 2<<20 {
+		return errors.New("invalid GitHub request admission")
 	}
 	deadline, ok := ctx.Deadline()
 	if !ok || time.Until(deadline) > 5*time.Minute {
@@ -40,19 +47,19 @@ func VerifyGitHubReleaseRun(ctx context.Context, gh, configDirectory string, wan
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(requestCtx, gh, "api", "--hostname", "github.com", "--method", "GET", "repos/fivetime/kubebrain/actions/runs/"+wanted.RunID+"/attempts/"+wanted.RunAttempt)
+	cmd := exec.CommandContext(requestCtx, gh, "api", "--hostname", "github.com", "--method", "GET", endpoint)
 	// Do not inherit GH_HOST, GH_TOKEN, debug logging or shell startup hooks.
 	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "GH_CONFIG_DIR=" + configDirectory, "GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "GH_NO_EXTENSION_UPDATE_NOTIFIER=1"}
 	processgroup.Configure(cmd)
 	cmd.WaitDelay = processgroup.DefaultWaitDelay
-	raw, observed := processgroup.CombinedOutput(cmd, 1<<20)
+	raw, observed := processgroup.CombinedOutput(cmd, limit)
 	observed = errors.Join(observed, requestCtx.Err())
 	requestDeadline, _ := requestCtx.Deadline()
 	if !time.Now().Before(requestDeadline) {
 		observed = errors.Join(observed, context.DeadlineExceeded)
 	}
 	if observed == nil {
-		observed = checkGitHubReleaseRun(raw, wanted)
+		observed = check(raw)
 	}
 	if err := errors.Join(observed, retain(raw, observed), ctx.Err()); err != nil {
 		return err
