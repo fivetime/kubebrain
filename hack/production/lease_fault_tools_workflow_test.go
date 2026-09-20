@@ -127,3 +127,25 @@ func TestLeaseFaultToolsWorkflowInputAdmission(t *testing.T) {
 		})
 	}
 }
+
+func TestLeaseFaultToolsRegistrationDoesNotReadCredentials(t *testing.T) {
+	w := readFaultToolsWorkflow(t)
+	steps := w.Jobs["register"].Steps
+	require.Len(t, steps, 1)
+	dir := t.TempDir()
+	gh := []byte("#!/bin/sh\n[ \"$#\" -eq 1 ] && [ \"$1\" = --version ] || exit 77\necho fixture-gh-version\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), gh, 0700))
+	cmd := exec.Command("bash", "-c", steps[0].Run)
+	cmd.Env = []string{"PATH=" + dir + ":/usr/bin:/bin"}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "fixture-gh-version")
+	require.Contains(t, string(out), fmt.Sprintf("%x", sha256.Sum256(gh)))
+	require.NotContains(t, steps[0].Run, "docker")
+	require.NotContains(t, steps[0].Run, "hosts.yml")
+	missing := exec.Command("bash", "-c", steps[0].Run)
+	missing.Env = []string{"PATH=" + t.TempDir()}
+	out, err = missing.CombinedOutput()
+	require.NoError(t, err, string(out))
+	require.Contains(t, string(out), "GH_UNAVAILABLE")
+}

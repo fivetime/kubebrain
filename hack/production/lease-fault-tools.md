@@ -70,9 +70,13 @@ the runtime digest and checksums. Deployment must use the subsequently reviewed
 digest, not the tag. Runtime provenance must be reviewed separately from product
 release provenance; this is not the `image.yml` product release artifact schema.
 
-A push changing this workflow on `dbaas` runs only a registration message job;
+A push changing this workflow on `dbaas` runs only a registration/preflight job;
 the image job is explicitly disabled for push events. This allows the branch
 workflow to be registered before API dispatch without modifying `main`.
+The preflight prints the runner's gh version and executable SHA256 (or reports
+it unavailable), never gh authentication/configuration. Review this identity
+before selecting the dispatch digest; do not assume the runner matches the
+developer machine or blindly substitute whatever digest is observed.
 [GitHub documents](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
 that a workflow which has run can be dispatched against another branch via API.
 Actual registration and dispatch still need verification after this file is pushed.

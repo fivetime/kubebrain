@@ -39,7 +39,16 @@ jobs:
       contents: read
     steps:
       - name: Register manual build entry without publishing
-        run: echo 'Registered workflow; image build requires reviewed dispatch inputs.'
+        run: |
+          set -euo pipefail
+          echo 'Registered workflow; image build requires reviewed dispatch inputs.'
+          # Public tool identity only: never read gh auth/configuration here.
+          if gh_path="$(command -v gh)"; then
+            "$gh_path" --version
+            sha256sum "$gh_path"
+          else
+            echo 'GH_UNAVAILABLE: supply a reviewed gh executable on the runner before dispatch.'
+          fi
 
   build-tools:
     if: github.ref == 'refs/heads/dbaas' && github.event_name == 'workflow_dispatch'
