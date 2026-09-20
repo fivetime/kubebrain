@@ -165,7 +165,7 @@ func (p NativeCommandPlan) CheckLocal() error {
 
 // VerifyFiles rechecks the frozen plan's pinned bytes and executable/private
 // modes without constructing clients. It is integrity checking, not CI or live
-// process admission. Cancellation is checked before and after each bounded read;
+// process admission. Cancellation is checked between streaming reads;
 // no retry, cached hash, deadline extension or inherited tool path is used.
 func (p NativeCommandPlan) VerifyFiles(ctx context.Context) error {
 	if ctx == nil || len(p.Files) == 0 || len(p.Files) > 128 {
@@ -193,14 +193,14 @@ func (p NativeCommandPlan) VerifyFiles(ctx context.Context) error {
 			}
 		}
 		private := path == p.Key || path == p.Kubeconfig || path == filepath.Join(p.OwnerDirectory, "observer-pod.json") || path == filepath.Join(p.OwnerDirectory, "observer-targets.json")
-		data, err := planinput.ReadFile(path, private, limit)
+		actual, err := planinput.FileSHA256(ctx, path, private, limit)
 		if err != nil {
 			return err
 		}
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if planinput.SHA256(data) != digest {
+		if actual != digest {
 			return errors.New("command input differs from admission")
 		}
 	}
