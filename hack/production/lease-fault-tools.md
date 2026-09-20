@@ -52,6 +52,15 @@ Before starting workers, capture `OWNER/join-namespace.tsv` (0600, in the admitt
 v1<TAB>PID_NAMESPACE_DEVICE:INODE<TAB>BOOT_UUID<TAB>INIT_START_TICKS<TAB>OWNER_DEVICE:INODE
 ```
 
+The Linux `leasefault.CaptureIsolatedJoinIdentity` startup API now produces this
+file directly, without starting subprocesses. It requires PID 1, procfs, no other
+visible processes, and an empty, private, caller-owned directory. It creates the
+file exclusively, syncs the file and directory, rechecks the named directory,
+and returns its digest only after successful readback validation. Failures retain
+partial output. It must run in the same long-lived driver that later executes the
+plan and Join: a short-lived helper would capture the wrong process lifetime.
+This startup API is not yet exposed by a complete execution CLI.
+
 The namespace identity comes from dereferencing `/proc/1/ns/pid`; start ticks
 are field 22 of `/proc/1/stat`; boot UUID comes from
 `/proc/sys/kernel/random/boot_id`. Pin this exact file in the command plan's
@@ -77,6 +86,11 @@ Local integration tests create real isolated PID namespaces using `unshare`;
 the clean case passes and an actual `setsid` child is rejected. Identity,
 permissions and parent mismatches are rejected too. Environments denying PID
 namespace creation explicitly skip that integration test, not claim coverage.
+Additional Go integration tests run the test process as PID 1 and connect the
+real startup capture, `RunFaultJoin`, and packaged checker. They cover durable
+capture and Join success, an escaped-session child after capture (Join refuses
+and retains failure without killing the child), preexisting files/children, and
+cancellation. This does not test cluster mutation or the full fault lifecycle.
 The previously verified image below predates this script and does not contain it.
 
 ## Runtime image (build verified; fault execution still incomplete)
