@@ -56,5 +56,11 @@ go test -race -count=1 -timeout=3m ./pkg/server/etcd -run 'TestSerializableTxnVa
 
 修正后 `go test -count=1 -timeout=3m ./pkg/server/etcd -run
 'TestTxn|TestSerializableTxnValidationBeforeBackend|TestQuota'` 通过（2.608 秒），
-`go vet ./pkg/server/etcd` 和 `git diff --check` 通过。另启动 etcd 包全包
-竞态回归并保存 JSON 日志，终态结果仍待收取；上述局部通过不代表全包通过。
+`go vet ./pkg/server/etcd` 和 `git diff --check` 通过。
+
+包含两项 Txn 校验顺序修复的 etcd 包全包竞态回归已完成：
+`go test -json -race -count=1 -timeout=12m ./pkg/server/etcd` 退出 0，
+JSON 包级终态 `pass`，耗时 354.095 秒。日志、退出码及启动时的源码差异
+保存在私有目录 `txn-validation-full-race.YLJTIK7d`；启动时清除了
+`KUBEBRAIN_*` 环境变量，未以该回归替代需要显式连接配置的真实 TiKV/PD
+实验。此结果不代表 production 分组、候选镜像 CI 或原 30 秒故障验收通过。
