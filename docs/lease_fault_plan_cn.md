@@ -33,6 +33,19 @@ observedGeneration 均为 138、3 个就绪副本。本轮未部署候选或注�
 这是 CI 日志和 API 元数据记录；本轮尚未完成该 artifact 的独立认证下载、
 候选部署或真实故障验收，不将元数据当作已校验产物内容。
 
+后续已用真实 `image-prepull --mode=fetch-release` 完成独立认证下载，
+退出 0、stderr 为空，七个 GitHub 认证步骤均无错误。审阅计划摘要为
+`d406ff04ab7aaada07d37355baf08b11aef214aa4dc6c317ce02da2937acc08d`；
+源提交的两份工作流与此前已审阅 0f17ae76 版本逐字相同，工具及私有配置
+摘要也一致。结果确认上述镜像索引，以及 amd64 子清单
+`sha256:b1591a9c259e4aeae9bafadfe987fa8216421794b1bb0d89bc9edbc782e2f720`、
+arm64 子清单
+`sha256:75202058cd64c894d33acb33962722a3f1cf6d13df47e8765389d898288ed486`。
+证据保存在 `/root/.local/state/kubebrain/release-cli-a47b99d7.t05aJyhY/`，
+计划、工作流、结果、退出状态及七个响应记录的 `SHA256SUMS` 全部通过。
+私有 gh 凭据只保留在该私有目录，不进入仓库；本次没有镜像拉取、集群
+预拉取、候选部署或故障注入，完整执行入口及原 30 秒验收仍未完成。
+
 ## 接口与实现记录
 
 `hack/production/cmd/lease-fault-plan` 只校验实验计划的身份和指标预期部分，
