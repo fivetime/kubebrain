@@ -755,3 +755,21 @@ SHA256SUMS 保存在 /root/.local/state/kubebrain/ci-35499489483-terminal.U7Q5A7
 显式释放及工具大小上限修复；不包括后续 564f2134 的阶段文件复核改动。
 镜像 35499489484 最近仍在 Build and push TiKV test image 步骤，未完成。
 本轮只归档回归结果，不推送打断镜像作业，不将 CI 通过计作真实故障验收。
+
+### 22d013b0 镜像 CI 最终结果
+
+镜像 35499489484（attempt 1）现已 completed/success，head_sha 为
+22d013b085eed019f1ebc07c98422f5b2e98cbc9。run.json、完整 run.log、
+artifacts.json 和 SHA256SUMS 保存在
+/root/.local/state/kubebrain/ci-35499489484-terminal.xgBtJ3B2，摘要检查通过。
+日志记载的固定镜像为
+ghcr.io/fivetime/kubebrain@sha256:1bd7ce7ba719d2268bc76acc4e1a2165c1ef78c65597d6290b62f9dbf80e2790，
+amd64 子摘要为 14901b4a7238efc24d9188f17342706a54aee9f2274b411e30a793a046e1b718，
+arm64 子摘要为 cc28403d7bc32af2c4e5177e63af9769dd9b221013c495312af5edf61860b568。
+
+发布产物 dbaas-release-35499489484-1 的 ID 为 10602496470，大小 1037
+字节，API 摘要为
+sha256:89fe24b53ef797c1423cedb92ced24c5b83b53f05b128ead52bff7fe5614b734，
+expired=false。本轮仅归档 CI 和元数据，尚未以 fetch-release 下载验证
+该 ZIP，未部署候选或执行真实故障。22d013b0 两项 CI 均成功，但本地
+564f2134 仍未推送，不在此结论覆盖范围内。
