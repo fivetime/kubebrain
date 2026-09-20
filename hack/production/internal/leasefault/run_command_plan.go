@@ -74,6 +74,13 @@ func RunNativeCommand(ctx context.Context, path, digest string, admission Comman
 	if err = tools(ctx); err != nil {
 		return result, err
 	}
+	finish, err := beginCommandJournal(p, digest)
+	if err != nil {
+		return result, err
+	}
+	// Registered before connection/artifact cleanup so their errors are also
+	// present in the final record. Retention failure remains a returned error.
+	defer func() { err = errors.Join(err, finish(result, err)) }()
 	o, err := p.ObservationPlan()
 	if err != nil {
 		return result, err

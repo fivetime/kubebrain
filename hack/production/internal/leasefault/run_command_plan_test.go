@@ -59,7 +59,14 @@ func TestRunNativeCommandRefusesBeforeClusterRequests(t *testing.T) {
 				require.Equal(t, 2, calls, "real RunVerified reaches preclaim tools gate")
 				require.FileExists(t, filepath.Join(p.OwnerDirectory, "probe.stderr"))
 				require.DirExists(t, p.BeforeDirectory)
+				raw, readErr := os.ReadFile(filepath.Join(p.OwnerDirectory, commandReturnFile))
+				require.NoError(t, readErr)
+				var record map[string]any
+				require.NoError(t, json.Unmarshal(raw, &record))
+				require.Equal(t, err.Error(), record["error"])
+				require.Equal(t, planinput.SHA256(data), record["plan_sha256"])
 			} else {
+				require.NoFileExists(t, filepath.Join(p.OwnerDirectory, commandAttemptFile))
 				require.NoFileExists(t, filepath.Join(p.OwnerDirectory, "probe.stderr"))
 				require.NoDirExists(t, p.BeforeDirectory)
 			}
