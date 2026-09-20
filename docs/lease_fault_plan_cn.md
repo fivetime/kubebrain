@@ -36,3 +36,19 @@ go run ./hack/production/cmd/lease-fault-plan \
 源码/镜像/Pod/任期准入、实际认领、证据持久化、子进程 Join、故障后恢复
 和恢复验证后的显式释放。此命令不替代这些要求，也不代表原 30 秒真实
 验收已通过。测试覆盖本地配置及 CLI，不接触专用测试集群。
+
+`leasefault.ObservationCommandPlan.Build` 提供执行入口所需的原始探针及
+两次栈采集命令组装：身份 ID 保留整数精度，探针显式等待租约过期后仅发送
+原始续约；before/after 分别绑定计数 1/0、独立 receipt 目录及四个端口。
+命令使用 argv 和完整显式环境，拒绝重复环境变量、shell 启动钩子、端口
+覆盖以及共享或非私有 stderr 文件。构造过程不创建目录、不执行命令。
+
+`ObservationCommandPlan.Observation` 将上述命令直接绑定为现有
+`FaultLifecycle.Observation` 所需的 `OriginalObservation`：身份取同一
+配置，前后目录、源码摘要和计数不再由调用方重复填写。它强制要求原始
+探针及栈采集的在线准入和持久化回调，按 before/after 路由回执，且原样
+传播回调错误；构造时不会执行这些回调，也不会获取认领或启动实验。
+
+该组装器尚未接入执行 CLI。调用方仍须审阅工具/凭据哈希，准备私有空
+receipt 目录，核验环境内的集群身份，并提供在线准入、留存和恢复逻辑；
+仅成功构造 argv 不构成实验许可或真实验收。

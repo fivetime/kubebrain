@@ -18,3 +18,7 @@ RangeStream 共享同一个校验函数，保持空 key、非法排序枚举、�
 本地验证：新增用例通过；`go test -race ./pkg/server/etcd -run
 'TestRange' -count=1` 通过（3.667 秒）；`go vet ./pkg/server/etcd`
 和 `git diff --check` 通过。以上不是新镜像的 CI 或在线验收结果。
+
+提交 `bb30bfad14eccb88793b14ef9605a3df74cb5958` 的补充验证：
+`go test -race ./pkg/server/etcd -count=1` 全包通过，耗时 351.129 秒。
+这是本地服务包回归结果，不替代镜像来源校验或真实集群故障验收。
