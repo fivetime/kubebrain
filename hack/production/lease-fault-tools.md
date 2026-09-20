@@ -110,3 +110,30 @@ This establishes a built/tested tool runtime only. No executor Pod has been
 created and no candidate deployment or fault injection occurred in this run.
 Online fault admission, owner-specific Join, recovery acceptance and the original
 30-second real-cluster result remain open. This is not an ARM runtime build.
+
+### Dedicated-cluster connectivity check: 2026-09-20
+
+A separate short-lived Pod `kb-fault-runtime-tls-35506632638`, UID
+`a91612d7-6d43-41e7-92a3-073ad25ffc03`, ran the verified tool image on
+`k8s3-worker3` in `kubebrain-dbaas-test`. It was not a fault executor. It had a
+180-second deadline, no host network/PID/IPC, no ServiceAccount token, a read-only
+root filesystem, all capabilities dropped and bounded CPU/memory/storage.
+Only the existing probe TLS Secret was mounted read-only; no Kubernetes admin
+configuration or GitHub credentials were provided.
+
+TLS 1.2 handshakes with the probe client certificate succeeded directly to
+`240.16.6.205:3379`, `240.16.10.109:3379` and `240.16.7.126:3379`, verifying the
+CA chain and `kubebrain-local-client.kubebrain-dbaas-test.svc` peer name. The
+container exited 0 without restarts, and its actual imageID matched the reviewed
+`9b2508e5…` digest. This exercised the real namespace network path, not a host
+port-forward. It sent no application RPC and proves neither term behavior nor
+fault recovery; no NetworkPolicy or workload configuration was changed.
+
+Target Pod UIDs, IPs, container IDs, restart counts, readiness and images matched
+before/after. The StatefulSet remained generation/observedGeneration 138 with
+three ready replicas on fixed baseline `50b9938f…`. The diagnostic Pod was
+deleted with a UID precondition and a subsequent GET confirmed absence.
+Manifests, admission response, terminal status, TLS logs, target comparisons,
+delete response and final namespace/StatefulSet observations are retained with
+verified checksums at
+`/root/.local/state/kubebrain/tool-runtime-tls.0nSJMpRV/`.
