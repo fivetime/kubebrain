@@ -105,3 +105,39 @@ func TestNativeCommandPlanLoad(t *testing.T) {
 		})
 	}
 }
+
+func TestCommandPlanAdmitsBoundedToolDependencies(t *testing.T) {
+	for _, mode := range []string{"large-tool", "changed-tool", "oversized-tool", "large-config", "large-script"} {
+		t.Run(mode, func(t *testing.T) {
+			p := serializedCommandFixture(t)
+			path := filepath.Join(t.TempDir(), "dependency")
+			switch mode {
+			case "large-config":
+				path = p.Kubeconfig
+			case "large-script":
+				path = p.JoinScript
+			}
+			data := bytes.Repeat([]byte("x"), 2<<20)
+			require.NoError(t, os.WriteFile(path, data, 0700))
+			p.Files[path] = planinput.SHA256(data)
+			if mode == "oversized-tool" {
+				require.NoError(t, os.Truncate(path, (128<<20)+1))
+			}
+			if mode == "changed-tool" {
+				data[0] = 'y'
+				require.NoError(t, os.WriteFile(path, data, 0700))
+			}
+			err := p.CheckLocal()
+			if mode == "large-tool" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				if mode == "changed-tool" {
+					require.ErrorContains(t, err, "differs from admission")
+				} else {
+					require.ErrorContains(t, err, "oversized input")
+				}
+			}
+		})
+	}
+}

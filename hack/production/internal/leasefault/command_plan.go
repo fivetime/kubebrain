@@ -119,9 +119,14 @@ func (p NativeCommandPlan) CheckLocal() error {
 		if !planinput.ValidSHA256(digest) {
 			return errors.New("invalid command input digest")
 		}
-		limit := int64(1 << 20)
-		if path == p.ProbeExecutable || path == p.Processes.JQ {
-			limit = 128 << 20
+		// Additional pinned dependencies include Bash and kubectl, not just
+		// the original probe and jq. Real Bash already exceeds 1 MiB. Keep
+		// data/script inputs tight, while admitting bounded tool binaries.
+		limit := int64(128 << 20)
+		for _, dataPath := range []string{p.CA, p.Certificate, p.Key, p.Kubeconfig, p.StackExecutable, p.MetricExecutable, p.JoinScript, p.Processes.Predicate, filepath.Join(p.OwnerDirectory, "observer-pod.json"), filepath.Join(p.OwnerDirectory, "observer-targets.json")} {
+			if path == dataPath {
+				limit = 1 << 20
+			}
 		}
 		data, err := planinput.ReadFile(path, path == p.Key || path == p.Kubeconfig, limit)
 		if err != nil {
