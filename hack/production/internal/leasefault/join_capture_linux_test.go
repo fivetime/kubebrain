@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -41,7 +42,7 @@ func TestCaptureIsolatedJoinRealNamespace(t *testing.T) {
 	require.NoError(t, err)
 	script, err := filepath.Abs("../../" + IsolatedJoinScript)
 	require.NoError(t, err)
-	for _, mode := range []string{"capture-and-join", "escaped-child-after-capture", "existing-file", "live-child", "cancelled"} {
+	for _, mode := range []string{"capture-and-join", "escaped-child-after-capture", "adopted-zombie", "reap-live", "reap-wrong-identity", "reap-cancelled", "existing-file", "live-child", "cancelled"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
@@ -77,7 +78,7 @@ func TestCaptureIsolatedJoinHelper(t *testing.T) {
 		cancel()
 	}
 	digest, err := CaptureIsolatedJoinIdentity(ctx, dir)
-	if mode != "capture-and-join" && mode != "escaped-child-after-capture" {
+	if mode == "existing-file" || mode == "live-child" || mode == "cancelled" {
 		require.Error(t, err)
 		require.Empty(t, digest)
 		if mode == "existing-file" {
@@ -95,6 +96,50 @@ func TestCaptureIsolatedJoinHelper(t *testing.T) {
 	require.Equal(t, planinput.SHA256(data), digest)
 	files := map[string]string{identity: digest}
 	admit := func(ctx context.Context) error { return VerifyJoinInputs(ctx, dir, script, files) }
+	if mode == "capture-and-join" {
+		reaped, err := ReapIsolatedJoinZombies(ctx, dir, digest)
+		require.NoError(t, err)
+		require.Empty(t, reaped)
+	}
+	if mode == "adopted-zombie" || mode == "reap-wrong-identity" || mode == "reap-cancelled" {
+		pid := adoptedJoinZombie(t, ctx, dir)
+		if mode == "reap-wrong-identity" {
+			fields := strings.Split(string(data), "\t")
+			fields[1] = "0:0"
+			changed := []byte(strings.Join(fields, "\t"))
+			require.NoError(t, os.WriteFile(identity, changed, 0600))
+			reaped, err := ReapIsolatedJoinZombies(ctx, dir, planinput.SHA256(changed))
+			require.ErrorContains(t, err, "live isolated Join identity differs")
+			require.Empty(t, reaped)
+			require.FileExists(t, "/proc/"+strconv.Itoa(pid)+"/stat", "wrong identity must not consume exit status")
+			require.NoError(t, os.WriteFile(identity, data, 0600))
+		}
+		if mode == "reap-cancelled" {
+			cancelled, stop := context.WithCancel(ctx)
+			stop()
+			reaped, err := ReapIsolatedJoinZombies(cancelled, dir, digest)
+			require.ErrorIs(t, err, context.Canceled)
+			require.Empty(t, reaped)
+			require.FileExists(t, "/proc/"+strconv.Itoa(pid)+"/stat")
+		}
+		reaped, err := ReapIsolatedJoinZombies(ctx, dir, digest)
+		require.NoError(t, err)
+		require.Len(t, reaped, 1)
+		require.Equal(t, pid, reaped[0].PID)
+		require.Equal(t, 23, syscall.WaitStatus(reaped[0].Status).ExitStatus(), "retain nonzero orphan exit status")
+		require.ErrorIs(t, syscall.Kill(pid, 0), syscall.ESRCH)
+	}
+	if mode == "reap-live" {
+		child := exec.Command("/bin/sleep", "30")
+		require.NoError(t, child.Start())
+		defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
+		reaped, err := ReapIsolatedJoinZombies(ctx, dir, digest)
+		require.ErrorContains(t, err, "live children")
+		require.Empty(t, reaped)
+		require.NoError(t, child.Process.Signal(syscall.Signal(0)))
+		require.NoError(t, child.Process.Kill())
+		require.Error(t, child.Wait())
+	}
 	// This uses the actual Go Join runner and packaged Bash checker, with the
 	// Go test process as PID 1. No shell fixture fabricates the recorded identity.
 	if mode == "escaped-child-after-capture" {
@@ -121,4 +166,27 @@ func TestCaptureIsolatedJoinHelper(t *testing.T) {
 	after, err := os.ReadFile(identity)
 	require.NoError(t, err)
 	require.Equal(t, data, after)
+}
+
+func adoptedJoinZombie(t *testing.T, ctx context.Context, directory string) int {
+	t.Helper()
+	// Wait for the managed intermediate parent normally. Its child is adopted
+	// by this PID-1 Go process, exits 23, and is deliberately not waited yet.
+	parent := exec.CommandContext(ctx, "/bin/bash", "-c", `/bin/bash -c 'while [[ ! -f "$1/release-orphan" ]]; do /bin/sleep 0.01; done; exit 23' orphan "$1" >/dev/null 2>&1 & printf '%s\n' "$!"`, "parent", directory)
+	out, err := parent.Output()
+	require.NoError(t, err)
+	pid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	require.NoError(t, err)
+	require.Greater(t, pid, 1)
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "release-orphan"), nil, 0600))
+	for {
+		require.NoError(t, ctx.Err())
+		data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+		require.NoError(t, err)
+		fields := strings.Fields(string(data)[strings.LastIndex(string(data), ") ")+2:])
+		if fields[0] == "Z" && fields[1] == "1" {
+			return pid
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

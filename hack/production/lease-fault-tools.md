@@ -61,6 +61,19 @@ partial output. It must run in the same long-lived driver that later executes th
 plan and Join: a short-lived helper would capture the wrong process lifetime.
 This startup API is not yet exposed by a complete execution CLI.
 
+The matching `ReapIsolatedJoinZombies` API is for the same admitted PID-1 driver,
+**only after all managed `exec.Cmd.Wait` calls and command-launching goroutines
+have completed**. It rechecks the pinned startup bytes and live namespace,
+boot, init start ticks and owner inode before consuming exit statuses. It uses
+nonblocking `wait4(-1, WNOHANG)`, sends no signals, returns an error when live
+children remain, and returns all consumed PID/status pairs even on partial
+failure (bounded to 4096). The future executor must retain these statuses without
+overriding earlier worker failures, then still run the independent inventory
+Join. It must never race Go's normal child waiters. This ordering is not yet
+wired into a complete execution CLI. See the Linux documentation for
+[wait semantics](https://man7.org/linux/man-pages/man2/wait.2.html) and
+[namespace init/adoption](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html).
+
 The namespace identity comes from dereferencing `/proc/1/ns/pid`; start ticks
 are field 22 of `/proc/1/stat`; boot UUID comes from
 `/proc/sys/kernel/random/boot_id`. Pin this exact file in the command plan's
@@ -91,6 +104,9 @@ real startup capture, `RunFaultJoin`, and packaged checker. They cover durable
 capture and Join success, an escaped-session child after capture (Join refuses
 and retains failure without killing the child), preexisting files/children, and
 cancellation. This does not test cluster mutation or the full fault lifecycle.
+The same tests now also create an actual adopted zombie, verify its nonzero exit
+status survives reaping, and verify identity/cancellation refusals leave its exit
+status available while the live-child refusal does not signal the child.
 The previously verified image below predates this script and does not contain it.
 
 ## Runtime image (build verified; fault execution still incomplete)

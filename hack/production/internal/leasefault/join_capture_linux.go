@@ -54,37 +54,9 @@ func CaptureIsolatedJoinIdentity(ctx context.Context, directory string) (string,
 	if len(entries) != 0 || !errors.Is(err, io.EOF) {
 		return "", errors.New("isolated Join capture requires a fresh empty owner directory")
 	}
-	namespace, err := os.Stat("/proc/self/ns/pid")
+	data, err := currentIsolatedJoinRecord(owner)
 	if err != nil {
 		return "", err
-	}
-	initNamespace, err := os.Stat("/proc/1/ns/pid")
-	if err != nil || !os.SameFile(namespace, initNamespace) {
-		return "", errors.New("proc PID namespace differs from driver")
-	}
-	nsStat, ok := namespace.Sys().(*syscall.Stat_t)
-	if !ok {
-		return "", errors.New("missing PID namespace inode")
-	}
-	boot, err := planinput.ReadFile("/proc/sys/kernel/random/boot_id", false, 64)
-	if err != nil {
-		return "", err
-	}
-	initStat, err := planinput.ReadFile("/proc/1/stat", false, 4096)
-	if err != nil {
-		return "", err
-	}
-	end := strings.LastIndex(string(initStat), ") ")
-	if end < 0 {
-		return "", errors.New("invalid init process stat")
-	}
-	fields := strings.Fields(string(initStat)[end+2:])
-	if len(fields) < 20 {
-		return "", errors.New("missing init start ticks")
-	}
-	data := []byte(fmt.Sprintf("v1\t%d:%d\t%s\t%s\t%d:%d\n", nsStat.Dev, nsStat.Ino, strings.TrimSuffix(string(boot), "\n"), fields[19], stat.Dev, stat.Ino))
-	if len(data) > 256 || !isolatedJoinRecord.Match(data) {
-		return "", errors.New("invalid captured Join identity")
 	}
 	processes, err := os.ReadDir("/proc")
 	if err != nil {
@@ -119,4 +91,50 @@ func CaptureIsolatedJoinIdentity(ctx context.Context, directory string) (string,
 		return "", err
 	}
 	return digest, nil
+}
+
+// Shared by startup capture and the post-managed-Wait orphan reaper. Reading
+// current identity never updates the independently pinned startup file.
+func currentIsolatedJoinRecord(owner os.FileInfo) ([]byte, error) {
+	stat, ok := owner.Sys().(*syscall.Stat_t)
+	if os.Getpid() != 1 || !ok || !owner.IsDir() || owner.Mode().Perm() != 0700 || stat.Uid != uint32(os.Geteuid()) {
+		return nil, errors.New("isolated Join requires PID 1 and owned private directory")
+	}
+	var fs unix.Statfs_t
+	if err := unix.Statfs("/proc", &fs); err != nil || fs.Type != unix.PROC_SUPER_MAGIC {
+		return nil, errors.New("isolated Join requires procfs")
+	}
+	namespace, err := os.Stat("/proc/self/ns/pid")
+	if err != nil {
+		return nil, err
+	}
+	initNamespace, err := os.Stat("/proc/1/ns/pid")
+	if err != nil || !os.SameFile(namespace, initNamespace) {
+		return nil, errors.New("proc PID namespace differs from driver")
+	}
+	nsStat, ok := namespace.Sys().(*syscall.Stat_t)
+	if !ok {
+		return nil, errors.New("missing PID namespace inode")
+	}
+	boot, err := planinput.ReadFile("/proc/sys/kernel/random/boot_id", false, 64)
+	if err != nil {
+		return nil, err
+	}
+	initStat, err := planinput.ReadFile("/proc/1/stat", false, 4096)
+	if err != nil {
+		return nil, err
+	}
+	end := strings.LastIndex(string(initStat), ") ")
+	if end < 0 {
+		return nil, errors.New("invalid init process stat")
+	}
+	fields := strings.Fields(string(initStat)[end+2:])
+	if len(fields) < 20 {
+		return nil, errors.New("missing init start ticks")
+	}
+	data := []byte(fmt.Sprintf("v1\t%d:%d\t%s\t%s\t%d:%d\n", nsStat.Dev, nsStat.Ino, strings.TrimSuffix(string(boot), "\n"), fields[19], stat.Dev, stat.Ino))
+	if len(data) > 256 || !isolatedJoinRecord.Match(data) {
+		return nil, errors.New("invalid captured Join identity")
+	}
+	return data, nil
 }
