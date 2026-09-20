@@ -945,3 +945,20 @@ hack/production/lease-fault-tools.md，显式编译六个静态 Go 工具，复�
 Join 与诊断输入布局、完整故障执行 CLI/持续在线准入。尚未创建执行 Pod，
 也未上传工具包或启动实验。当前 0f17ae76 两项 CI 均仍在运行，故本轮
 实现仅本地提交，不推送打断，不声称被当前 CI 覆盖。
+
+### 工具包 arm64 实际构建与组装回归
+
+arm64 交叉编译实际退出 0，产物位于
+/root/.local/state/kubebrain/lease-fault-tools-arm64.0EForzMJ。六个二进制经
+file 确认为静态 AArch64 ELF，生成包全部 SHA256SUMS 校验通过。
+未在 ARM 机器或模拟器执行，不能将交叉编译当作目标架构运行验证。
+
+补充工具包正向组装/编译失败测试，使用明确的编译器替身检查 Linux/arm64/
+CGO_ENABLED=0 参数、27 项文件摘要、两个脚本目录副本逐字一致，以及编译
+失败保留部分产物、不输出成功标识、不生成完成摘要。该替身测试不冒充真实
+Go 构建；真实两架构构建记录独立如上。所有工具包测试 race 通过（1.340 秒）。
+
+CI 35501836856 的 Verify etcd service and Watch regressions 已于
+2026-09-20 09:28:44 UTC completed/success，随后进入 endpoint 检查。
+回归整体与镜像 35501836848 最近仍 in_progress；不把单步骤成功当作整条
+CI 成功。本轮未创建执行 Pod、未运行故障、未推送打断 CI。
