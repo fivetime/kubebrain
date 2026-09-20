@@ -30,4 +30,8 @@ go test -count=1 -timeout=3m ./pkg/server/etcd -run 'TestSerializableTxnValidati
 操作数上限测试；不是全包或真实集群验收结果。
 
 新增校验用例连续 20 次通过（0.059 秒），`go vet ./pkg/server/etcd` 和
-`git diff --check` 通过。相同回归范围的竞态检测已启动，结果待收取。
+`git diff --check` 通过。相同回归范围的竞态检测也通过（41.468 秒）：
+
+```sh
+go test -race -count=1 -timeout=3m ./pkg/server/etcd -run 'TestSerializableTxnValidationBeforeBackend|Test.*Serializable.*Txn|Test.*Txn.*Serializable|TestQuota|TestTxnRejectsTooMany'
+```
