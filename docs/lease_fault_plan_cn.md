@@ -1015,3 +1015,21 @@ amd64/arm64 摘要与上节 CI 记录一致。计划、工作流快照、结果�
 退出码与全部阶段证据的 SHA256SUMS 校验通过（不包含凭据内容）。
 这是发布来源验证，不是候选部署或运行时准入；完整故障执行入口及原定
 30 秒真实验收仍未完成。本轮未访问 Kubernetes，也未部署或注入故障。
+
+### 在线进程准入拒绝 Pod 归属变化
+
+CheckLivePodProcess 现在比较实时 Pod 与独立批准快照的 ownerReferences，
+变化时保留失败证据并拒绝继续。此前 canonical jq 谓词只比较进程/spec，
+Pod UID、IP、容器都未变时会漏过归属变化。本修改复用原来的同一次 GET，
+不增加 API 请求、重试或时限，不把 ownerReferences 等同于 fault claim
+的独占所有权；它也不替代批准初始控制器归属的检查。
+
+真实 TLS/API 命令测试新增 observer-reparented：先通过原 Pod 检查，再
+向观察 Pod 增加外部 StatefulSet controller 引用，必须在第二次 GET 后
+失败；没有 claim CREATE/故障写入/恢复尝试，并保留 process 与返回记录。
+定向 race 通过（1.612 秒）。私有 overlay 仅移除此比较后，同一测试失败
+（0.091 秒）：旧路径漏过引用变化并继续请求 StatefulSet，遇到夹具的
+unexpected API operation；这不是编译失败。overlay 位于
+/root/.local/state/kubebrain/owner-ref-negative.RZfrLnqr，真实产品文件未替换。
+最终整包 leasefault race 通过（29.203 秒），go vet 通过。
+本修改尚未推送，不属于已成功的 0f17ae76 CI/镜像；没有访问测试集群。

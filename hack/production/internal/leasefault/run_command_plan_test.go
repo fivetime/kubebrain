@@ -26,7 +26,7 @@ import (
 // client and canonical jq predicate. Successful fixture hooks are NOT production
 // admission; they let the test isolate the mandatory built-in process checks.
 func TestRunNativeCommandLiveProcessRefusal(t *testing.T) {
-	for _, mode := range []string{"original-restarted", "observer-replaced", "api-forbidden"} {
+	for _, mode := range []string{"original-restarted", "observer-replaced", "observer-reparented", "api-forbidden"} {
 		t.Run(mode, func(t *testing.T) {
 			p := serializedCommandFixture(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -65,7 +65,12 @@ func TestRunNativeCommandLiveProcessRefusal(t *testing.T) {
 				}
 				raw := string(p.Bindings.Network.PodBefore)
 				if strings.HasSuffix(r.URL.Path, "/brain-1") {
-					raw = strings.Replace(string(p.Processes.Observer), `"uid":"observer-uid"`, `"uid":"replacement-uid"`, 1)
+					raw = string(p.Processes.Observer)
+					if mode == "observer-reparented" {
+						raw = strings.Replace(raw, `"metadata":{`, `"metadata":{"ownerReferences":[{"apiVersion":"apps/v1","kind":"StatefulSet","name":"foreign","uid":"foreign-uid","controller":true}],`, 1)
+					} else {
+						raw = strings.Replace(raw, `"uid":"observer-uid"`, `"uid":"replacement-uid"`, 1)
+					}
 				} else if mode == "original-restarted" {
 					raw = strings.Replace(raw, `"restartCount":0`, `"restartCount":1`, 1)
 				}
@@ -101,11 +106,13 @@ func TestRunNativeCommandLiveProcessRefusal(t *testing.T) {
 			require.False(t, result.Lifecycle.RecoveryAttempted)
 			if mode == "api-forbidden" {
 				require.True(t, apierrors.IsForbidden(err), "preserve Kubernetes status reason")
+			} else if mode == "observer-reparented" {
+				require.ErrorContains(t, err, "owner references differ")
 			} else {
 				require.ErrorContains(t, err, "exit status 1")
 			}
 			want := []string{"GET /api/v1/namespaces/test-ns/pods/brain-0"}
-			if mode == "observer-replaced" {
+			if mode == "observer-replaced" || mode == "observer-reparented" {
 				want = append(want, "GET /api/v1/namespaces/test-ns/pods/brain-1")
 			}
 			mu.Lock()

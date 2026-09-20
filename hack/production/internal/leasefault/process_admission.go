@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,6 +56,12 @@ func CheckLivePodProcess(ctx context.Context, client dynamic.Interface, expected
 	}
 	var output []byte
 	observed := getErr
+	// Process bytes can remain unchanged while Kubernetes ownership changes.
+	// The independently admitted owner references must survive this live read;
+	// the jq predicate deliberately focuses on process identity, not ownership.
+	if observed == nil && (current == nil || !reflect.DeepEqual(before.GetOwnerReferences(), current.GetOwnerReferences())) {
+		observed = errors.New("live Pod owner references differ from admission")
+	}
 	if observed == nil {
 		cmd := exec.CommandContext(ctx, jq, "-e", "-f", predicate)
 		cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin"}
