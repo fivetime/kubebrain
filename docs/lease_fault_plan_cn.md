@@ -791,3 +791,20 @@ ghcr.io/fivetime/kubebrain@sha256:1bd7ce7ba719d2268bc76acc4e1a2165c1ef78c65597d6
 SHA256SUMS 校验通过。该命令仅验证发布及回归来源，不访问 Kubernetes，
 不证明预拉取、部署、在线进程或原定 30 秒故障验收；后续本地文件复核
 改动仍不在 22d013b0 的 CI 覆盖范围内。
+
+### 命令入口的真实 TLS/API 进程拒绝测试
+
+新增 TestRunNativeCommandLiveProcessRefusal，直接调用序列化计划入口
+RunNativeCommand，使用要求客户端证书的本地 TLS API 服务、实际 dynamic
+client、系统 jq 和仓库 same-pod-process.jq；不替换入口的连接构造或进程检查。
+覆盖原容器 restartCount 变化、观察 Pod UID 替换、API 返回 Forbidden。
+观察 Pod 替换用例先通过原 Pod 的真实进程检查，再在第二次 GET 后拒绝。
+各用例断言精确 GET 序列、无重试或写 API、未取得 claim、未开始恢复，且
+保留对应 process 证据及包含返回错误的 command-return.json。
+
+本地整个 leasefault 包 go test -race -count=1 通过（29.178 秒），go vet
+通过。初次测试对无 message 的 Forbidden Status 错误文本作了错误假设；
+改为 apierrors.IsForbidden 检查结构化原因后通过，未改产品逻辑。
+测试中的独立 admission 回调只是隔离被测内置检查的夹具，不是可部署的
+在线准入。完整故障 CLI、成功执行全链路及原定 30 秒真实验收仍未完成；
+本轮没有访问或修改测试集群，也没有推送或触发 CI。
