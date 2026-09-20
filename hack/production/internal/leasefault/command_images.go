@@ -18,6 +18,7 @@ type CommandRelease struct {
 	Index     []byte
 	Reviewed  map[string]string
 	Platforms map[string]string
+	NodeUIDs  map[string]string // independently admitted node name -> UID
 	Container string
 }
 
@@ -34,6 +35,7 @@ func (p ObservationCommandPlan) CheckProcessImages(inputs CommandProcessInputs, 
 	}
 	snapshots := append([]json.RawMessage{p.Bindings.Network.PodBefore, inputs.Observer}, inputs.Metrics...)
 	seen := map[string]bool{}
+	nodes := map[string]string{}
 	repository, _, _ := strings.Cut(p.Bindings.Image, "@")
 	for _, raw := range snapshots {
 		var pod corev1.Pod
@@ -50,6 +52,14 @@ func (p ObservationCommandPlan) CheckProcessImages(inputs CommandProcessInputs, 
 			return errors.New("missing admitted Pod platform")
 		}
 		seen[uid] = true
+		if release.NodeUIDs[pod.Spec.NodeName] == "" {
+			return errors.New("missing admitted Node UID")
+		}
+		platform := release.Platforms[uid]
+		if previous, ok := nodes[pod.Spec.NodeName]; ok && previous != platform {
+			return errors.New("contradictory platforms for one Node")
+		}
+		nodes[pod.Spec.NodeName] = platform
 		containers, statuses := 0, 0
 		for _, c := range pod.Spec.Containers {
 			if c.Name == release.Container {
@@ -80,6 +90,9 @@ func (p ObservationCommandPlan) CheckProcessImages(inputs CommandProcessInputs, 
 	}
 	if len(seen) != len(release.Platforms) {
 		return errors.New("platform map contains unrelated Pods")
+	}
+	if len(nodes) != len(release.NodeUIDs) {
+		return errors.New("Node map contains unrelated Nodes")
 	}
 	return nil
 }

@@ -19,7 +19,7 @@ import (
 )
 
 func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
-	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release"} {
+	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release", "node-uid", "node-platform", "node-api", "node-post-admit"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -43,7 +43,22 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			require.NoError(t, err)
 			ns := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": "test-ns", "uid": "ns-uid", "resourceVersion": "1"}}}
 			sts := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": map[string]any{"name": "brain", "namespace": "test-ns", "uid": "sts-uid", "resourceVersion": "1"}}}
-			client := fake.NewSimpleDynamicClient(runtime.NewScheme(), pod, observer, ns, sts)
+			node := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Node", "metadata": map[string]any{"name": "worker1", "uid": "node-uid"}, "status": map[string]any{"nodeInfo": map[string]any{"operatingSystem": "linux", "architecture": "amd64"}}}}
+			if mode == "node-uid" {
+				node.SetUID("replaced-node")
+			}
+			if mode == "node-platform" {
+				require.NoError(t, unstructured.SetNestedField(node.Object, "arm64", "status", "nodeInfo", "architecture"))
+			}
+			client := fake.NewSimpleDynamicClient(runtime.NewScheme(), pod, observer, ns, sts, node)
+			nodeGets := 0
+			client.PrependReactor("get", "nodes", func(a ktesting.Action) (bool, runtime.Object, error) {
+				nodeGets++
+				if mode == "node-api" {
+					return true, nil, errors.New("node lookup refused")
+				}
+				return false, nil, nil
+			})
 			creates := 0
 			client.PrependReactor("create", "configmaps", func(a ktesting.Action) (bool, runtime.Object, error) {
 				creates++
@@ -95,6 +110,9 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			defer cancel()
 			changed := errors.New("approved tools changed after claim")
 			toolsAdmit := func(context.Context) error {
+				if mode == "node-post-admit" && nodeGets > 0 {
+					return changed
+				}
 				if mode == "tools-changed-after-claim" && creates != 0 {
 					return changed
 				}
@@ -105,7 +123,7 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			joins, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "recovery-join.*.json"))
 			require.NoError(t, globErr)
 			staticFailure := mode == "preconfigured-recovery" || mode == "missing-preparation" || mode == "missing-successor" || mode == "wrong-release"
-			if mode == "wrong-member" || mode == "wrong-preparation-member" || staticFailure {
+			if mode == "wrong-member" || mode == "wrong-preparation-member" || staticFailure || strings.HasPrefix(mode, "node-") {
 				require.Zero(t, creates)
 				require.Nil(t, result.Owner)
 				require.Empty(t, joins)
@@ -123,6 +141,15 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 					require.Len(t, joins, 1)
 					require.Contains(t, err.Error(), "preparation deliberately refused")
 				}
+			}
+			nodeEvidence, nodeErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "experiment-node-platform.*.json"))
+			require.NoError(t, nodeErr)
+			if staticFailure {
+				require.Zero(t, nodeGets)
+				require.Empty(t, nodeEvidence)
+			} else {
+				require.Equal(t, 1, nodeGets, "one GET for all snapshots on the same Node; no retry")
+				require.Len(t, nodeEvidence, 1)
 			}
 			for _, action := range client.Actions() {
 				require.NotEqual(t, "delete", action.GetVerb())

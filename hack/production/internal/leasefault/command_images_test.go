@@ -14,12 +14,13 @@ import (
 func commandReleaseFixture(t *testing.T) (string, CommandRelease) {
 	t.Helper()
 	r := CommandRelease{Container: "brain", Reviewed: map[string]string{"linux/amd64": "sha256:" + strings.Repeat("a", 64), "linux/arm64": "sha256:" + strings.Repeat("b", 64)}, Platforms: map[string]string{"pod-uid": "linux/amd64", "observer-uid": "linux/amd64"}}
+	r.NodeUIDs = map[string]string{"worker1": "node-uid"}
 	r.Index = []byte(fmt.Sprintf(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":%q,"size":123,"platform":{"os":"linux","architecture":"amd64"}},{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":%q,"size":123,"platform":{"os":"linux","architecture":"arm64"}}]}`, r.Reviewed["linux/amd64"], r.Reviewed["linux/arm64"]))
 	return "ghcr.io/fivetime/kubebrain@sha256:" + planinput.SHA256(r.Index), r
 }
 
 func TestCommandProcessImages(t *testing.T) {
-	for _, mode := range []string{"valid", "index-id", "wrong-architecture", "tag", "wrong-index", "unknown-platform", "extra-pod", "missing-container", "duplicate-status", "not-running", "metric-image", "duplicate-json"} {
+	for _, mode := range []string{"valid", "index-id", "wrong-architecture", "tag", "wrong-index", "unknown-platform", "extra-pod", "missing-container", "duplicate-status", "not-running", "metric-image", "duplicate-json", "missing-node", "extra-node"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			image, release := commandReleaseFixture(t)
@@ -32,6 +33,10 @@ func TestCommandProcessImages(t *testing.T) {
 			status := statuses[0].(map[string]any)
 			status["imageID"] = release.Reviewed["linux/amd64"]
 			switch mode {
+			case "missing-node":
+				delete(release.NodeUIDs, "worker1")
+			case "extra-node":
+				release.NodeUIDs["worker2"] = "other"
 			case "index-id":
 				status["imageID"] = "cri-o://" + strings.Split(image, "@")[1]
 			case "wrong-architecture":

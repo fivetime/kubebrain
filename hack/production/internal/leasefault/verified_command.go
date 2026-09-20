@@ -100,6 +100,9 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 		if err := r.AdmitMetrics(ctx); err != nil {
 			return err
 		}
+		if err := p.VerifyProcessPlatforms(ctx, r.Network.Lifecycle.Preparation.Client, inputs.Processes, inputs.Release, inputs.AdmitTools); err != nil {
+			return err
+		}
 		return p.VerifyInitialMembers(ctx, r.Network.Lifecycle.Preparation.Connection, r.Network.SuccessorConnection, initialAdmit)
 	}
 	return p.ClaimAndRun(ctx, r, h, inputs.MetricExecutable, inputs.Targets, preclaim)
