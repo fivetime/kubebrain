@@ -19,7 +19,7 @@ import (
 )
 
 func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
-	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor"} {
+	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -27,6 +27,13 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			pod := &unstructured.Unstructured{}
 			require.NoError(t, pod.UnmarshalJSON([]byte(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"brain-0","namespace":"test-ns","uid":"pod-uid","resourceVersion":"1"},"spec":{"nodeName":"worker1","containers":[{"name":"brain","image":"pinned"}]},"status":{"podIP":"10.0.0.1","containerStatuses":[{"name":"brain","containerID":"containerd://one","imageID":"sha256:one","restartCount":0,"state":{"running":{"startedAt":"2026-09-20T00:00:00Z"}}}]}}`)))
 			var err error
+			image, release := commandReleaseFixture(t)
+			if mode == "wrong-release" {
+				release.Index = append(release.Index, '\n')
+			}
+			p.Bindings.Image = image
+			pod.Object["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["image"] = image
+			pod.Object["status"].(map[string]any)["containerStatuses"].([]any)[0].(map[string]any)["imageID"] = release.Reviewed["linux/amd64"]
 			p.Bindings.Network.PodBefore, err = pod.MarshalJSON()
 			require.NoError(t, err)
 			observer := pod.DeepCopy()
@@ -93,11 +100,11 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 				}
 				return nil
 			}
-			result, err := p.RunVerified(ctx, r, h, VerifiedCommandInputs{Processes: CommandProcessInputs{JQ: "/usr/bin/jq", Predicate: predicate, Observer: observerRaw, Metrics: []json.RawMessage{p.Bindings.Network.PodBefore}}, MetricExecutable: "/bin/bash", JoinScript: join, Targets: artifacts.Targets, AdmitTools: toolsAdmit})
+			result, err := p.RunVerified(ctx, r, h, VerifiedCommandInputs{Release: release, Processes: CommandProcessInputs{JQ: "/usr/bin/jq", Predicate: predicate, Observer: observerRaw, Metrics: []json.RawMessage{p.Bindings.Network.PodBefore}}, MetricExecutable: "/bin/bash", JoinScript: join, Targets: artifacts.Targets, AdmitTools: toolsAdmit})
 			require.Error(t, err)
 			joins, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "recovery-join.*.json"))
 			require.NoError(t, globErr)
-			staticFailure := mode == "preconfigured-recovery" || mode == "missing-preparation" || mode == "missing-successor"
+			staticFailure := mode == "preconfigured-recovery" || mode == "missing-preparation" || mode == "missing-successor" || mode == "wrong-release"
 			if mode == "wrong-member" || mode == "wrong-preparation-member" || staticFailure {
 				require.Zero(t, creates)
 				require.Nil(t, result.Owner)

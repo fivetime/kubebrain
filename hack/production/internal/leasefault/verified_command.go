@@ -13,6 +13,7 @@ import (
 // acquired claim or an unchanged initial term during later recovery.
 type VerifiedCommandInputs struct {
 	Processes                    CommandProcessInputs
+	Release                      CommandRelease
 	MetricExecutable, JoinScript string
 	Targets                      []MetricCommandTarget
 	AdmitTools                   func(context.Context) error
@@ -34,6 +35,9 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 		return result, errors.New("verified command requires preparation/successor connections and tool admission, without preconfigured Join or recovery connection")
 	}
 	r.Network.Lifecycle.RecoveryConnection = r.Network.SuccessorConnection
+	if err := p.CheckProcessImages(inputs.Processes, inputs.Release); err != nil {
+		return result, err
+	}
 	if _, err := planinput.ReadFile(inputs.JoinScript, false, 1<<20); err != nil {
 		return result, err
 	}
