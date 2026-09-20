@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kubewharf/kubebrain/hack/production/internal/retirementmetrics"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -19,7 +18,7 @@ import (
 )
 
 func TestClaimingCommandPreflightAndRetainedOwnership(t *testing.T) {
-	for _, mode := range []string{"execution-refused", "ambiguous-create", "invalid-tool", "invalid-recovery", "existing-marker", "existing-intent", "preclaim-rejected", "preclaim-cancelled", "preclaim-held", "preclaim-directory-replaced", "missing-preclaim", "existing-owner"} {
+	for _, mode := range []string{"execution-refused", "ambiguous-create", "invalid-tool", "invalid-recovery", "existing-marker", "existing-intent", "preclaim-rejected", "preclaim-cancelled", "preclaim-held", "preclaim-directory-replaced", "missing-preclaim", "existing-owner", "custom-retention"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -51,10 +50,9 @@ func TestClaimingCommandPreflightAndRetainedOwnership(t *testing.T) {
 					OutcomeAdmit: check, Join: check, RecoveryConnection: conn, RecoveryTimeout: time.Second,
 				},
 				ScriptDirectory: "/bin", TargetsSHA256: strings.Repeat("a", 64), AdmitNetwork: check,
-				RetainNetwork: func(string, []byte, error) error { return nil }, SuccessorConnection: conn,
-				AdmitSuccessor: check, RetainStatus: func(context.Context, SuccessorSample) error { return nil }, CaptureSeconds: 1,
-			}, AdmitMetrics: check, RetainMetrics: func(context.Context, int, retirementmetrics.WorkerMeasurement) error { return nil }}
-			h := ObservationHooks{AdmitOriginal: check, AdmitStack: func(context.Context, string) error { return nil }, RetainOriginal: func(context.Context, string, Binding, []byte, error) error { return nil }, RetainStack: func(context.Context, string, WaitReceipt, error) error { return nil }}
+				SuccessorConnection: conn, AdmitSuccessor: check, CaptureSeconds: 1,
+			}, AdmitMetrics: check}
+			h := ObservationHooks{AdmitOriginal: check, AdmitStack: func(context.Context, string) error { return nil }}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			admit := func(context.Context) error {
@@ -88,6 +86,8 @@ func TestClaimingCommandPreflightAndRetainedOwnership(t *testing.T) {
 				admit = nil
 			case "existing-owner":
 				r.Network.Lifecycle.Owner = &FaultOwner{}
+			case "custom-retention":
+				r.Network.RetainStatus = func(context.Context, SuccessorSample) error { return nil }
 			}
 			result, err := p.ClaimAndRun(ctx, r, h, "/bin/bash", metricTargets(t, p), admit)
 			require.Error(t, err)

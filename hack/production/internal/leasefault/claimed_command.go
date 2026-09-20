@@ -19,12 +19,18 @@ type ClaimedCommandResult struct {
 // admit must authenticate source/image/tools/credentials and all live targets;
 // it must not acquire ownership or mutate the cluster. The supplied runtime must
 // have no Owner. Its live hooks remain mandatory throughout execution/recovery.
+// Retention callbacks must be unset: this entry installs the plan's concrete
+// durable evidence writers rather than accepting no-op retention from callers.
 // Callers must prepare private receipt directories and logs beforehand, retain
 // the returned result, and explicitly release only after fresh recovery proof.
 func (p ObservationCommandPlan) ClaimAndRun(ctx context.Context, r MeasuredNetworkFaultRuntime, h ObservationHooks, metricExecutable string, targets []MetricCommandTarget, admit func(context.Context) error) (ClaimedCommandResult, error) {
 	var result ClaimedCommandResult
 	if r.Network.Lifecycle.Owner != nil || admit == nil {
 		return result, errors.New("claiming command requires preclaim admission and no existing owner")
+	}
+	r, h, err := p.BindEvidence(r, h)
+	if err != nil {
+		return result, err
 	}
 	prep := r.Network.Lifecycle.Preparation
 	binding := FaultOwnerBinding{Owner: p.Bindings.Network.Owner, Namespace: p.Bindings.Network.Namespace, NamespaceUID: p.Bindings.Network.NamespaceUID, StatefulSetName: prep.StatefulSetName, StatefulSetUID: p.Bindings.Network.StatefulSetUID}

@@ -8,9 +8,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/retirementmetrics"
 	"github.com/stretchr/testify/require"
+	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestCommandEvidenceCallbacks(t *testing.T) {
@@ -78,4 +81,46 @@ func TestCommandEvidenceCallbacks(t *testing.T) {
 	entries, err := os.ReadDir(p.OwnerDirectory)
 	require.NoError(t, err)
 	require.Empty(t, entries)
+}
+
+func TestCommandEvidenceRealSuccessorRPC(t *testing.T) {
+	p := commandPlan(t)
+	require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
+	r, _, err := p.BindEvidence(MeasuredNetworkFaultRuntime{}, ObservationHooks{})
+	require.NoError(t, err)
+	conn := recoveryGRPCFixtureAtTerm(t, 3)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	initial, err := pb.NewMaintenanceClient(conn).Status(ctx, &pb.StatusRequest{})
+	require.NoError(t, err)
+	old := initial.Leader + 1
+	if old == 0 {
+		old = 1
+	}
+	result, err := ObserveSuccessor(ctx, conn, SuccessorBinding{
+		ClusterID: initial.Header.ClusterId, ObserverMemberID: initial.Header.MemberId,
+		OldLeaderID: old, OldTerm: 2, Origin: time.Now(),
+	}, func(context.Context) error { return nil }, r.Network.RetainStatus)
+	require.NoError(t, err)
+	files, err := filepath.Glob(filepath.Join(p.OwnerDirectory, "experiment-successor.*.json"))
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	data, err := os.ReadFile(files[0])
+	require.NoError(t, err)
+	var record struct {
+		Output []byte
+		Error  string
+	}
+	require.NoError(t, json.Unmarshal(data, &record))
+	require.Empty(t, record.Error)
+	var envelope struct {
+		Payload struct {
+			Started, Completed time.Time
+			Status             *pb.StatusResponse
+		} `json:"payload"`
+	}
+	require.NoError(t, json.Unmarshal(record.Output, &envelope))
+	require.True(t, proto.Equal(result, envelope.Payload.Status))
+	require.False(t, envelope.Payload.Started.IsZero())
+	require.False(t, envelope.Payload.Completed.Before(envelope.Payload.Started))
 }
