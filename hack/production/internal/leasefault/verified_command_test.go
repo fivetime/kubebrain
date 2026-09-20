@@ -65,6 +65,13 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			require.NoError(t, err)
 			join := filepath.Join(t.TempDir(), "join.sh")
 			require.NoError(t, os.WriteFile(join, []byte("printf 'joined fixture\\n'\n"), 0600))
+			// Exercise the public artifact-to-runtime path, not manually supplied
+			// descriptors or precreated worker directories from a fixture.
+			p.ProbeLog, p.BeforeLog, p.AfterLog = nil, nil, nil
+			artifacts, err := p.PrepareArtifacts("/bin/bash", []MetricCommandTarget{{PodName: p.Bindings.Network.PodName, PodUID: p.Bindings.Network.PodUID, InfoPort: 18600, AnonymousPort: 18601}})
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, artifacts.Close()) })
+			p = artifacts.Plan
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			changed := errors.New("approved tools changed after claim")
@@ -74,7 +81,7 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 				}
 				return nil
 			}
-			result, err := p.RunVerified(ctx, r, h, VerifiedCommandInputs{Processes: CommandProcessInputs{JQ: "/usr/bin/jq", Predicate: predicate, Observer: observerRaw, Metrics: []json.RawMessage{p.Bindings.Network.PodBefore}}, MetricExecutable: "/bin/bash", JoinScript: join, Targets: metricTargets(t, p), OriginalConnection: original, AdmitTools: toolsAdmit})
+			result, err := p.RunVerified(ctx, r, h, VerifiedCommandInputs{Processes: CommandProcessInputs{JQ: "/usr/bin/jq", Predicate: predicate, Observer: observerRaw, Metrics: []json.RawMessage{p.Bindings.Network.PodBefore}}, MetricExecutable: "/bin/bash", JoinScript: join, Targets: artifacts.Targets, OriginalConnection: original, AdmitTools: toolsAdmit})
 			require.Error(t, err)
 			joins, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "recovery-join.*.json"))
 			require.NoError(t, globErr)
@@ -96,6 +103,15 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			}
 			for _, action := range client.Actions() {
 				require.NotEqual(t, "delete", action.GetVerb())
+			}
+			// All cases stop before native children start. Closing the parent
+			// resources must preserve the evidence and never permit attempt reuse.
+			require.NoError(t, artifacts.Close())
+			require.FileExists(t, filepath.Join(p.OwnerDirectory, "probe.stderr"))
+			for _, dir := range []string{p.BeforeDirectory, p.AfterDirectory} {
+				entries, readErr := os.ReadDir(dir)
+				require.NoError(t, readErr)
+				require.Empty(t, entries)
 			}
 		})
 	}
