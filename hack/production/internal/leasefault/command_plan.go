@@ -171,6 +171,9 @@ func (p NativeCommandPlan) VerifyFiles(ctx context.Context) error {
 	if ctx == nil || len(p.Files) == 0 || len(p.Files) > 128 {
 		return errors.New("file verification requires context and bounded inputs")
 	}
+	if err := VerifyJoinInputs(ctx, p.OwnerDirectory, p.JoinScript, p.Files); err != nil {
+		return err
+	}
 	paths := make([]string, 0, len(p.Files))
 	for path := range p.Files {
 		paths = append(paths, path)
@@ -193,6 +196,9 @@ func (p NativeCommandPlan) VerifyFiles(ctx context.Context) error {
 			}
 		}
 		private := path == p.Key || path == p.Kubeconfig || path == filepath.Join(p.OwnerDirectory, "observer-pod.json") || path == filepath.Join(p.OwnerDirectory, "observer-targets.json")
+		if path == filepath.Join(p.OwnerDirectory, IsolatedJoinIdentity) {
+			private, limit = true, 256
+		}
 		actual, err := planinput.FileSHA256(ctx, path, private, limit)
 		if err != nil {
 			return err

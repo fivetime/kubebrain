@@ -59,6 +59,14 @@ are field 22 of `/proc/1/stat`; boot UUID comes from
 or replace it during recovery. A namespace restart or owner-directory replacement
 must refuse this Join; an independent recovery flow is then required.
 
+For the packaged script name, both `NativeCommandPlan` and
+`lease-fault-recover` now require this pin and recheck the private, regular,
+at-most-256-byte identity record at every file gate. These checks validate the
+record's format and digest without invoking a child or accessing the cluster;
+the Join script still checks the live namespace and process inventory. Renaming
+the script does not confer admission: custom Join scripts still need independent
+review of their own complete input contract.
+
 Join checks its parent is PID 1 and validates the pinned identities. It then
 uses only Bash builtins to scan `/proc`: any PID other than init and Join itself
 (including escaped sessions and zombies) returns 75, not success. The generic

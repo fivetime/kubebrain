@@ -120,10 +120,16 @@ func loadPlan(path, approved string) (plan, error) {
 	if p.Files[filepath.Join(p.Directory, "observer-pod.json")] != digest(n.PodBefore) || p.Files[filepath.Join(p.Directory, "observer-targets.json")] != p.TargetsSHA256 {
 		return p, errors.New("observer snapshots must be pinned to independent admission")
 	}
+	if err := leasefault.VerifyJoinInputs(context.Background(), p.Directory, p.JoinScript, p.Files); err != nil {
+		return p, err
+	}
 	return p, nil
 }
 
 func (p plan) verifyFiles(ctx context.Context) error {
+	if err := leasefault.VerifyJoinInputs(ctx, p.Directory, p.JoinScript, p.Files); err != nil {
+		return err
+	}
 	for path, wanted := range p.Files {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -131,7 +137,12 @@ func (p plan) verifyFiles(ctx context.Context) error {
 		if !validDigest(wanted) {
 			return errors.New("invalid file digest")
 		}
-		data, err := readFile(path, path == testKubeconfig || path == p.Key || path == filepath.Join(p.Directory, "observer-pod.json") || path == filepath.Join(p.Directory, "observer-targets.json"), 128<<20)
+		private := path == testKubeconfig || path == p.Key || path == filepath.Join(p.Directory, "observer-pod.json") || path == filepath.Join(p.Directory, "observer-targets.json")
+		limit := int64(128 << 20)
+		if path == filepath.Join(p.Directory, leasefault.IsolatedJoinIdentity) {
+			private, limit = true, 256
+		}
+		data, err := readFile(path, private, limit)
 		if err != nil {
 			return err
 		}

@@ -111,6 +111,34 @@ func TestFilesRequireExactPrivateRegularInputs(t *testing.T) {
 	require.Error(t, p.verifyFiles(context.Background()))
 }
 
+func TestRecoveryPinsIsolatedJoinIdentity(t *testing.T) {
+	p := planFixture(t)
+	delete(p.Files, p.JoinScript)
+	p.JoinScript = filepath.Join(p.ScriptDirectory, leasefault.IsolatedJoinScript)
+	p.Files[p.JoinScript] = strings.Repeat("a", 64)
+	path, approved := savePlan(t, p)
+	_, err := loadPlan(path, approved)
+	require.ErrorContains(t, err, "requires pinned namespace identity")
+	identity := filepath.Join(p.Directory, leasefault.IsolatedJoinIdentity)
+	data := []byte("v1\t4:12345\t11111111-2222-3333-4444-555555555555\t12345\t6:789\n")
+	require.NoError(t, os.WriteFile(identity, data, 0600))
+	p.Files[identity] = digest(data)
+	path, approved = savePlan(t, p)
+	_, err = loadPlan(path, approved)
+	require.NoError(t, err, "static check does not claim live PID namespace admission")
+	// Exercise the actual repeated recovery file gate using only this input;
+	// the static fixture's other pins deliberately are not host credentials.
+	p.Files = map[string]string{identity: digest(data)}
+	require.NoError(t, p.verifyFiles(context.Background()))
+	require.NoError(t, os.Chmod(identity, 0644))
+	require.Error(t, p.verifyFiles(context.Background()))
+	require.NoError(t, os.Chmod(identity, 0600))
+	require.NoError(t, os.WriteFile(identity, append(data, '\n'), 0600))
+	require.ErrorContains(t, p.verifyFiles(context.Background()), "identity differs")
+	delete(p.Files, identity)
+	require.ErrorContains(t, p.verifyFiles(context.Background()), "requires pinned namespace identity")
+}
+
 func TestDefaultModeDoesNotConstructClients(t *testing.T) {
 	p := planFixture(t)
 	path, approved := savePlan(t, p)
