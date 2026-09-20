@@ -16,7 +16,7 @@ import (
 )
 
 func TestFetchReleaseCommand(t *testing.T) {
-	for _, mode := range []string{"success", "wrong-plan-hash", "workflow-changed", "public-credentials", "regression-failed", "reuse"} {
+	for _, mode := range []string{"success", "library", "library-failure", "wrong-plan-hash", "workflow-changed", "public-credentials", "regression-failed", "reuse"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			config, evidence := filepath.Join(dir, "config"), filepath.Join(dir, "evidence")
@@ -53,7 +53,7 @@ func TestFetchReleaseCommand(t *testing.T) {
 			repo := map[string]any{"id": 1285006877, "full_name": "fivetime/kubebrain"}
 			for id, workflow := range map[int]string{123: "image.yml", 456: "probe-regression.yml"} {
 				conclusion := "success"
-				if mode == "regression-failed" && id == 456 {
+				if (mode == "regression-failed" || mode == "library-failure") && id == 456 {
 					conclusion = "failure"
 				}
 				write(filepath.Join(config, fmt.Sprintf("%d.json", id)), encode(map[string]any{"id": id, "run_attempt": 1, "head_sha": p.Source, "head_branch": "dbaas", "event": "push", "path": ".github/workflows/" + workflow, "status": "completed", "conclusion": conclusion, "repository": repo, "head_repository": repo}))
@@ -92,6 +92,24 @@ esac
 				require.NoError(t, os.Chmod(filepath.Join(config, "hosts.yml"), 0644))
 			}
 			args := []string{"--mode=fetch-release", "--release-plan=" + plan, "--release-plan-sha256=" + digest}
+			if mode == "library" || mode == "library-failure" {
+				got, rawIndex, err := imageprepull.FetchReleasePlan(t.Context(), plan, digest)
+				if mode == "library-failure" {
+					require.Error(t, err)
+					require.Equal(t, imageprepull.ReleaseEvidence{}, got)
+					require.Nil(t, rawIndex, "no partially authenticated index may escape")
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, index, rawIndex, "preserve verified raw OCI bytes, not reserialized JSON")
+				require.Equal(t, p.Source, got.Source)
+				require.Equal(t, p.Image, got.Image)
+				require.Equal(t, platforms, got.Platforms)
+				entries, err := os.ReadDir(evidence)
+				require.NoError(t, err)
+				require.Len(t, entries, 7)
+				return
+			}
 			var output bytes.Buffer
 			err := run(t.Context(), args, &output)
 			if mode == "success" || mode == "reuse" {
