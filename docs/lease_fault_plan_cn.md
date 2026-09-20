@@ -410,3 +410,12 @@ imageID 猜测。CI 成功状态、源码到镜像的对应关系、Node/Pod 映
 `/root/.local/state/kubebrain/ci-35490241952-terminal.qxPO3ebu`。
 该结果不覆盖之后尚未推送的本地提交。记录时镜像 run `35490241957`
 仍为 in_progress；未中断它，也未据此部署镜像或执行故障实验。
+
+镜像 run `35490241957` 随后于 `2026-09-20T05:23:41Z` 成功完成，
+head SHA 同为 `0e7e75caebd96e2bb39ac2e0dc970a42c4923988`。
+终态、完整日志和 SHA256SUMS 已归档到
+`/root/.local/state/kubebrain/ci-35490241957-terminal.GNnSpAeu`。
+日志中的校验及推广步骤指向不可变镜像
+`ghcr.io/fivetime/kubebrain@sha256:6dac8c87d80ce629c9d1c75b3bb94e106fc7788da02656b156792f0c54083798`。
+该成功结果不覆盖后续本地提交，也不证明测试集群已部署此镜像或通过
+真实故障验收。确认 dbaas 无运行中工作流后才推送后续提交。
