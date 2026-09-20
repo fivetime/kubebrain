@@ -69,18 +69,33 @@ type LifecycleResult struct {
 // it cannot turn a failed original fault into acceptance or extend its 30s budget.
 func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, error) {
 	var result LifecycleResult
-	if ctx == nil || l.RecoveryConnection == nil || l.RecoveryTimeout <= 0 || l.RecoveryTimeout > 5*time.Minute || l.Join == nil || l.NetworkRestored == nil || l.IdentityRestored == nil || l.Metrics.Baseline == nil || l.Metrics.Origin == nil || l.Metrics.Completed == nil || l.Metrics.Inject != nil || len(l.Workers) == 0 || len(l.Workers) > 16 {
-		return result, errors.New("incomplete fault lifecycle configuration")
-	}
-	if err := l.Preparation.validate(ctx); err != nil {
+	if err := ValidateFaultLifecycleConfiguration(ctx, l); err != nil {
 		return result, err
 	}
 	p := l.Preparation
 	if l.Owner == nil || l.Owner.directory != p.Directory || l.Owner.binding != (FaultOwnerBinding{Owner: p.Network.Owner, Namespace: p.Network.Namespace, NamespaceUID: p.Network.NamespaceUID, StatefulSetName: p.StatefulSetName, StatefulSetUID: p.Network.StatefulSetUID}) {
 		return result, errors.New("fault lifecycle owner does not match preparation")
 	}
+	if err := l.Owner.Check(ctx); err != nil {
+		return result, err
+	}
+	return runAdmittedFaultLifecycle(ctx, l)
+}
+
+// ValidateFaultLifecycleConfiguration checks local tools, logs, bounds and
+// configured identities without calling hooks, contacting the cluster, starting
+// children or requiring an acquired claim. It is NOT online admission. Run must
+// repeat it and verify the actual owner before any preparation/mutation.
+func ValidateFaultLifecycleConfiguration(ctx context.Context, l FaultLifecycle) error {
+	if ctx == nil || l.RecoveryConnection == nil || l.RecoveryTimeout <= 0 || l.RecoveryTimeout > 5*time.Minute || l.Join == nil || l.NetworkRestored == nil || l.IdentityRestored == nil || l.Metrics.Baseline == nil || l.Metrics.Origin == nil || l.Metrics.Completed == nil || l.Metrics.Inject != nil || len(l.Workers) == 0 || len(l.Workers) > 16 {
+		return errors.New("incomplete fault lifecycle configuration")
+	}
+	if err := l.Preparation.validate(ctx); err != nil {
+		return err
+	}
+	p := l.Preparation
 	if l.OutcomeAdmit == nil {
-		return result, errors.New("original outcome evidence and admission are required")
+		return errors.New("original outcome evidence and admission are required")
 	}
 	// Reject invalid local tools before any cluster preparation. A private log
 	// is mandatory for every child; no implicit credential environment is added.
@@ -88,33 +103,36 @@ func RunFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, 
 	if l.Observation != nil {
 		o := *l.Observation
 		if l.Fault.Executable != "" || len(l.Fault.Args) != 0 || len(l.Fault.Env) != 0 || l.Fault.Stderr != nil || l.OriginalEvidence != nil || l.OriginalPending != nil || l.ObserveFault == nil {
-			return result, errors.New("native observation cannot mix external fault/evidence callbacks")
+			return errors.New("native observation cannot mix external fault/evidence callbacks")
 		}
 		if err := o.validate(); err != nil {
-			return result, err
+			return err
 		}
 		if o.Initial.LeaseID != p.Protocol.LeaseID || o.Initial.ClusterID != p.Protocol.ClusterID || o.Initial.InitialMemberID != p.Protocol.AlarmMemberID {
-			return result, errors.New("native observation protocol identity mismatch")
+			return errors.New("native observation protocol identity mismatch")
 		}
 		commands = append([]metricsworker.Command{o.Probe, o.Before.Command, o.After.Command}, l.Workers...)
 	} else if l.OriginalEvidence == nil || l.OriginalPending == nil || l.ObserveFault != nil {
-		return result, errors.New("external fault requires original pending/outcome evidence")
+		return errors.New("external fault requires original pending/outcome evidence")
 	}
 	for _, c := range commands {
 		if err := processgroup.ValidateExecutable(c.Executable); err != nil {
-			return result, err
+			return err
 		}
 		if c.Stderr == nil {
-			return result, errors.New("lifecycle child requires private evidence log")
+			return errors.New("lifecycle child requires private evidence log")
 		}
 		st, err := c.Stderr.Stat()
 		if err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0077 != 0 {
-			return result, errors.New("invalid lifecycle evidence log")
+			return errors.New("invalid lifecycle evidence log")
 		}
 	}
-	if err := l.Owner.Check(ctx); err != nil {
-		return result, err
-	}
+	return ctx.Err()
+}
+
+func runAdmittedFaultLifecycle(ctx context.Context, l FaultLifecycle) (LifecycleResult, error) {
+	var result LifecycleResult
+	p := l.Preparation
 	additionalAdmission := l.Preparation.Own
 	l.Preparation.Own = func(ctx context.Context) error {
 		if err := l.Owner.Check(ctx); err != nil {
