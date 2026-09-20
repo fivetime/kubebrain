@@ -499,3 +499,38 @@ RunVerified 在任何 API 请求和认领操作前调用 CheckCommandEndpoints�
 本轮 leasefault、lease-fault-plan、lease-fault-recover 三包竞态测试
 通过（31.302、1.111、2.527 秒），对应 go vet 与差异检查通过。测试耗时
 不是故障验收耗时；本轮没有访问或修改真实测试集群。
+
+### 序列化命令输入（仍非故障执行入口）
+
+`lease-fault-plan --command-plan /absolute/private/command.json
+--approve-sha256 <独立审核的完整文件摘要>` 新增命令输入检查模式，与
+`--bindings` 互斥。成功仅输出
+`LOCAL_COMMAND_INPUTS_VALID_NOT_EXPERIMENT_ADMISSION`，不接受 `--execute`。
+
+NativeCommandPlan 的 version 为 1，包含 bindings、原始和观察者 TLS
+端点、Kubernetes 连接信息、工具路径和 files 摘要表、Pod 进程快照、
+release、指标目标、显式环境和恢复参数。duration/recovery_timeout
+使用 `2m`/`30s` 一类带单位字符串；不允许数字隐含时间单位。term/member
+继续沿用绑定中的字符串 uint64 编码，避免 JSON 浮点精度损失。
+release.index 是原始 OCI index 字节的 base64，而非重新序列化的对象；
+processes.observer/metrics 则为 Pod JSON 对象。文件描述符、回调、
+已取得的认领以及预设故障起点不属于可序列化输入。
+
+载入要求私有、非符号链接、最多 4 MiB 的绝对路径文件及匹配摘要；
+拒绝未知/重复字段。使用与实际命令构造共用的配置检查验证环境、路径、
+观测预算；验证指标端口不重叠、目标 UID 对应期望，检查必需文件摘要、
+私钥和 kubeconfig 权限、执行文件权限、镜像/平台快照及实际连接端点。
+连接仅惰性构造并关闭，不调用 API/RPC，不执行子进程，不创建日志或目录。
+
+ObservationPlan 和 MetricTargets 转换结果不带日志句柄，供后续
+PrepareArtifacts 接线使用。加载成功不是在线来源证明；files 表也不是
+完整的传递依赖沙箱。运行前/运行中仍须独立核验 CI、工具依赖、环境和
+实时身份，并串联实际 RunVerified、恢复确认与显式释放认领。当前尚未
+提供执行这些动作的 JSON CLI，未将本地有效性检查计为故障验收。
+
+三包整包竞态测试通过（leasefault 27.979 秒、lease-fault-plan 1.107 秒、
+lease-fault-recover 2.259 秒）；随后补齐指标快照与目标映射的检查及反例，
+两包定向竞态连续三次通过（1.675、1.102 秒）。go vet 与差异检查通过。
+覆盖错误摘要、公共文件、符号链接、工具变更、缺失文件固定摘要、未知/
+重复字段、数值 duration、伪造描述符、错误绑定、端口冲突、快照错配、
+端点错配、恢复预算越界和 shell 启动钩子；载入前后 owner 目录内容不变。

@@ -33,6 +33,8 @@ func TestRejectIncompleteOrExecutingPlan(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, data, 0600))
 	for _, args := range [][]string{
 		nil, {"--bindings", path}, {"--bindings", path, "--approve-sha256", planinput.SHA256(data)},
+		{"--command-plan", path}, {"--command-plan", path, "--approve-sha256", planinput.SHA256(data)},
+		{"--bindings", path, "--command-plan", path, "--approve-sha256", planinput.SHA256(data)},
 		{"--execute"}, {"extra"},
 	} {
 		var out bytes.Buffer

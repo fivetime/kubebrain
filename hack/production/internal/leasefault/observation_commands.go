@@ -73,29 +73,38 @@ var commandEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (p ObservationCommandPlan) Build() (ObservationCommands, error) {
 	var out ObservationCommands
-	if err := p.Bindings.Validate(); err != nil {
+	if err := p.validateConfiguration(); err != nil {
 		return out, err
+	}
+	return p.buildWithLogs()
+}
+
+// validateConfiguration is shared with the serialized plan loader, before any
+// artifact is created. Descriptor checks remain in the actual command builder.
+func (p ObservationCommandPlan) validateConfiguration() error {
+	if err := p.Bindings.Validate(); err != nil {
+		return err
 	}
 	for _, path := range []string{p.OwnerDirectory, p.ProbeExecutable, p.StackExecutable, p.CA, p.Certificate, p.Key, p.BeforeDirectory, p.AfterDirectory} {
 		if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" || strings.ContainsAny(path, "\x00\n\r\t") {
-			return out, errors.New("invalid observation command path")
+			return errors.New("invalid observation command path")
 		}
 	}
 	for _, dir := range []string{p.BeforeDirectory, p.AfterDirectory} {
 		if filepath.Dir(dir) != p.OwnerDirectory || !stackWorkerName.MatchString(filepath.Base(dir)) {
-			return out, errors.New("stack receipt must be a direct owner child")
+			return errors.New("stack receipt must be a direct owner child")
 		}
 	}
 	host, port, err := net.SplitHostPort(p.Endpoint)
 	n, portErr := strconv.Atoi(port)
 	if err != nil || portErr != nil || host == "" || n < 1 || n > 65535 || p.ServerName == "" || strings.ContainsAny(p.Endpoint+p.ServerName, "\x00\n\r\t ") || p.Duration <= 0 || p.Duration > 5*time.Minute || p.BeforeDirectory == p.AfterDirectory {
-		return out, errors.New("invalid observation endpoint, duration or receipt isolation")
+		return errors.New("invalid observation endpoint, duration or receipt isolation")
 	}
 	seen := map[string]bool{}
 	for _, entry := range p.Env {
 		name, _, ok := strings.Cut(entry, "=")
 		if !ok || !commandEnvName.MatchString(name) || strings.ContainsRune(entry, 0) || seen[name] || name == "stack_info_port" || name == "stack_anonymous_port" || name == "BASH_ENV" || name == "ENV" || name == "SHELLOPTS" || name == "BASHOPTS" {
-			return out, errors.New("ambiguous or conflicting observation environment")
+			return errors.New("ambiguous or conflicting observation environment")
 		}
 		seen[name] = true
 	}
@@ -106,8 +115,13 @@ func (p ObservationCommandPlan) Build() (ObservationCommands, error) {
 		}
 	}
 	if !ownerFound {
-		return out, errors.New("observation environment must bind owner directory")
+		return errors.New("observation environment must bind owner directory")
 	}
+	return nil
+}
+
+func (p ObservationCommandPlan) buildWithLogs() (ObservationCommands, error) {
+	var out ObservationCommands
 	var logFiles []os.FileInfo
 	for _, log := range []*os.File{p.ProbeLog, p.BeforeLog, p.AfterLog} {
 		if log == nil {

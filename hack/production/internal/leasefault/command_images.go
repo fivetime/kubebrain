@@ -15,11 +15,11 @@ import (
 // must authenticate this mapping and CI source binding; arbitrary JSON is not
 // CI approval. Container identifies the KubeBrain container in every snapshot.
 type CommandRelease struct {
-	Index     []byte
-	Reviewed  map[string]string
-	Platforms map[string]string
-	NodeUIDs  map[string]string // independently admitted node name -> UID
-	Container string
+	Index     []byte            `json:"index"`
+	Reviewed  map[string]string `json:"reviewed"`
+	Platforms map[string]string `json:"platforms"`
+	NodeUIDs  map[string]string `json:"node_uids"` // independently admitted node name -> UID
+	Container string            `json:"container"`
 }
 
 // CheckProcessImages binds command snapshots to an immutable release and its

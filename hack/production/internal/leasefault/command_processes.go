@@ -19,9 +19,10 @@ import (
 // successor admission must additionally bind Observer to ObserverMemberID via
 // authenticated RPC; a Pod object cannot prove an etcd member ID.
 type CommandProcessInputs struct {
-	JQ, Predicate string
-	Observer      json.RawMessage
-	Metrics       []json.RawMessage
+	JQ        string            `json:"jq"`
+	Predicate string            `json:"predicate"`
+	Observer  json.RawMessage   `json:"observer"`
+	Metrics   []json.RawMessage `json:"metrics"`
 }
 
 // BindProcessAdmission adds fresh process comparisons to existing mandatory
