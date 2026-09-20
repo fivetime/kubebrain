@@ -925,3 +925,23 @@ DNS。策略是外部/宿主机访问受限的合理解释，但本轮未做 Cil
 临时当成已批准的故障执行器。执行 Pod 尚未创建，完整 CLI 仍待实现。
 最近回归 35501836856 正在 Verify etcd service and Watch regressions，
 镜像 35501836848 正在 Set up QEMU；均未结束，未推送打断。
+
+### 独立测试工具包构建入口
+
+新增 hack/production/build-lease-fault-tools.sh 和使用说明
+hack/production/lease-fault-tools.md，显式编译六个静态 Go 工具，复制固定
+观察脚本/谓词并生成 SHA256SUMS。要求仓库外既有空 0700 目录，拒绝
+根目录、相对路径、符号链接、非空/公开目录和不支持的架构；不自动清理
+失败输出，不复制凭据或从集群生成计划。生成包同时满足网络脚本相对路径
+与命令适配器共享脚本目录要求，生成副本不成为第二份源码。
+
+实际最终 amd64 构建退出 0，六个文件经 file 确认为静态 x86-64 ELF，
+全部摘要校验通过，重复谓词 cmp 一致。最终目录
+/root/.local/state/kubebrain/lease-fault-tools-amd64.mRbdCiVK 保留（约 190 MB）；
+首版重复构建目录 lease-fault-tools-amd64.QwOffflu 已删除，可从源码重建。
+输出目录拒绝测试 race 通过，bash -n 通过；arm64 尚未实际构建验证。
+
+该包不是执行器镜像，仍缺经审核的系统工具/gh/kubectl 运行环境、专属
+Join 与诊断输入布局、完整故障执行 CLI/持续在线准入。尚未创建执行 Pod，
+也未上传工具包或启动实验。当前 0f17ae76 两项 CI 均仍在运行，故本轮
+实现仅本地提交，不推送打断，不声称被当前 CI 覆盖。
