@@ -218,3 +218,23 @@ jobs:
             jq -r '.digest')" = "${{ steps.build.outputs.digest }}"
           printf 'Verified DBaaS test image: `%s`\n\nCommit: `%s`\n' \
             "$reference" "${{ steps.vars.outputs.revision }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prepare verified release evidence
+        run: |
+          set -euo pipefail
+          release_dir="$RUNNER_TEMP/dbaas-release-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -m 0700 "$release_dir"
+          cp "$RUNNER_TEMP/dbaas-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-manifest.json" "$release_dir/index.json"
+          bash build/image-release-evidence.sh \
+            "${{ steps.vars.outputs.image }}@${{ steps.build.outputs.digest }}" \
+            "$release_dir/index.json" "${{ steps.vars.outputs.revision }}" \
+            "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            > "$release_dir/release.json"
+
+      - name: Upload verified release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dbaas-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dbaas-release-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 30
