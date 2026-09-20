@@ -36,6 +36,40 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 	if _, err := planinput.ReadFile(inputs.JoinScript, false, 1<<20); err != nil {
 		return result, err
 	}
+	// Uniform provenance checks must continue after acquisition, including
+	// preparation, observation and recovery. Keep missing stage admission nil
+	// so static validation still rejects it rather than masking it with tools.
+	guard := func(stage func(context.Context) error) func(context.Context) error {
+		if stage == nil {
+			return nil
+		}
+		return func(ctx context.Context) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := inputs.AdmitTools(ctx); err != nil {
+				return err
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := stage(ctx); err != nil {
+				return err
+			}
+			return errors.Join(inputs.AdmitTools(ctx), ctx.Err())
+		}
+	}
+	r.Network.Lifecycle.Preparation.Own = guard(r.Network.Lifecycle.Preparation.Own)
+	r.Network.Lifecycle.OutcomeAdmit = guard(r.Network.Lifecycle.OutcomeAdmit)
+	r.Network.AdmitNetwork = guard(r.Network.AdmitNetwork)
+	r.Network.AdmitSuccessor = guard(r.Network.AdmitSuccessor)
+	r.AdmitMetrics = guard(r.AdmitMetrics)
+	h.AdmitOriginal = guard(h.AdmitOriginal)
+	if stack := h.AdmitStack; stack != nil {
+		h.AdmitStack = func(ctx context.Context, stage string) error {
+			return guard(func(ctx context.Context) error { return stack(ctx, stage) })(ctx)
+		}
+	}
 	r, h, err := p.BindProcessAdmission(r, h, inputs.Targets, inputs.Processes)
 	if err != nil {
 		return result, err

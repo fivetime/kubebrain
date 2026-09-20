@@ -19,7 +19,7 @@ import (
 )
 
 func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
-	for _, mode := range []string{"execution-refused", "wrong-member"} {
+	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -67,7 +67,14 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			require.NoError(t, os.WriteFile(join, []byte("printf 'joined fixture\\n'\n"), 0600))
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			result, err := p.RunVerified(ctx, r, h, VerifiedCommandInputs{Processes: CommandProcessInputs{JQ: "/usr/bin/jq", Predicate: predicate, Observer: observerRaw, Metrics: []json.RawMessage{p.Bindings.Network.PodBefore}}, MetricExecutable: "/bin/bash", JoinScript: join, Targets: metricTargets(t, p), OriginalConnection: original, AdmitTools: check})
+			changed := errors.New("approved tools changed after claim")
+			toolsAdmit := func(context.Context) error {
+				if mode == "tools-changed-after-claim" && creates != 0 {
+					return changed
+				}
+				return nil
+			}
+			result, err := p.RunVerified(ctx, r, h, VerifiedCommandInputs{Processes: CommandProcessInputs{JQ: "/usr/bin/jq", Predicate: predicate, Observer: observerRaw, Metrics: []json.RawMessage{p.Bindings.Network.PodBefore}}, MetricExecutable: "/bin/bash", JoinScript: join, Targets: metricTargets(t, p), OriginalConnection: original, AdmitTools: toolsAdmit})
 			require.Error(t, err)
 			joins, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "recovery-join.*.json"))
 			require.NoError(t, globErr)
@@ -79,8 +86,13 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 				require.Equal(t, 1, creates)
 				require.NotNil(t, result.Owner)
 				require.True(t, result.Lifecycle.RecoveryAttempted)
-				require.Len(t, joins, 1)
-				require.Contains(t, err.Error(), "preparation deliberately refused")
+				if mode == "tools-changed-after-claim" {
+					require.ErrorIs(t, result.Lifecycle.ExecutionError, changed)
+					require.Empty(t, joins, "never execute a changed Join script")
+				} else {
+					require.Len(t, joins, 1)
+					require.Contains(t, err.Error(), "preparation deliberately refused")
+				}
 			}
 			for _, action := range client.Actions() {
 				require.NotEqual(t, "delete", action.GetVerb())
