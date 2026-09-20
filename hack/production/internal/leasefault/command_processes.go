@@ -37,6 +37,9 @@ func (p ObservationCommandPlan) BindProcessAdmission(r MeasuredNetworkFaultRunti
 	if err := p.Bindings.Validate(); err != nil {
 		return r, h, err
 	}
+	if err := p.CheckCommandControllers(inputs, r.Network.Lifecycle.Preparation.StatefulSetName); err != nil {
+		return r, h, err
+	}
 	if err := processgroup.ValidateExecutable(inputs.JQ); err != nil {
 		return r, h, err
 	}

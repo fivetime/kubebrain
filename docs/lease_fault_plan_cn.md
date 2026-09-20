@@ -1033,3 +1033,20 @@ unexpected API operation；这不是编译失败。overlay 位于
 /root/.local/state/kubebrain/owner-ref-negative.RZfrLnqr，真实产品文件未替换。
 最终整包 leasefault race 通过（29.203 秒），go vet 通过。
 本修改尚未推送，不属于已成功的 0f17ae76 CI/镜像；没有访问测试集群。
+
+### 初始 Pod 控制器归属绑定
+
+新增 CheckCommandControllers，并接入 NativeCommandPlan.CheckLocal 和
+实际 BindProcessAdmission。原请求、观察者和全部指标快照必须是目标
+命名空间的未删除 Pod，且恰好一个 controller=true 的引用，其
+apps/v1、StatefulSet、名称和 UID 均匹配计划。普通非 controller 的其他
+owner 引用可保留；不能把它误当成第二个控制器。随后在线 GET 的引用
+一致性校验持续检查这一初始绑定，不只检查一个可能原本就错误的引用未变。
+
+新增 3 类 Pod × 10 种情形的本地计划测试，覆盖控制器 UID/name/kind/
+API 错误、缺失、多个、非 controller、错误 namespace 及允许的非控制器
+引用；更新正向夹具为真实形状的 controller 引用。命令组装及真实 TLS/API
+定向测试通过（0.607 秒），最终整包 leasefault race 通过（29.581 秒），
+go vet 通过。此静态步骤不增加 API 调用，不取得 claim，不替代实时
+StatefulSet spec/身份或来源认证。未访问集群、未推送；完整故障 CLI 与
+原定 30 秒真实验收仍未完成。

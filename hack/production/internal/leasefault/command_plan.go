@@ -149,6 +149,9 @@ func (p NativeCommandPlan) CheckLocal() error {
 	if err := o.CheckProcessImages(p.Processes, p.Release); err != nil {
 		return err
 	}
+	if err := o.CheckCommandControllers(p.Processes, p.StatefulSetName); err != nil {
+		return err
+	}
 	connections, err := o.OpenConnections(p.Kubeconfig, p.KubeContext, p.APIServer, p.ObserverEndpoint, p.ObserverServerName, p.Files)
 	if err != nil {
 		return err

@@ -22,6 +22,7 @@ func TestCommandProcessAdmission(t *testing.T) {
 			pod := &unstructured.Unstructured{}
 			require.NoError(t, pod.UnmarshalJSON([]byte(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"brain-0","namespace":"test-ns","uid":"pod-uid"},"spec":{"nodeName":"worker1","containers":[{"name":"brain","image":"pinned"}]},"status":{"podIP":"10.0.0.1","containerStatuses":[{"name":"brain","containerID":"containerd://one","imageID":"sha256:one","restartCount":0,"state":{"running":{"startedAt":"2026-09-20T00:00:00Z"}}}]}}`)))
 			pod.SetResourceVersion("1")
+			pod.Object["metadata"].(map[string]any)["ownerReferences"] = []any{map[string]any{"apiVersion": "apps/v1", "kind": "StatefulSet", "name": "brain", "uid": "sts-uid", "controller": true}}
 			var err error
 			p.Bindings.Network.PodBefore, err = pod.MarshalJSON()
 			require.NoError(t, err)
@@ -33,7 +34,7 @@ func TestCommandProcessAdmission(t *testing.T) {
 			client := fake.NewSimpleDynamicClient(runtime.NewScheme(), pod, observer)
 			calls := 0
 			admit := func(context.Context) error { calls++; return nil }
-			r := MeasuredNetworkFaultRuntime{Network: NetworkFaultRuntime{Lifecycle: FaultLifecycle{Preparation: FaultPreparation{Client: client}, OutcomeAdmit: admit}, AdmitSuccessor: admit}, AdmitMetrics: admit}
+			r := MeasuredNetworkFaultRuntime{Network: NetworkFaultRuntime{Lifecycle: FaultLifecycle{Preparation: FaultPreparation{Client: client, StatefulSetName: "brain"}, OutcomeAdmit: admit}, AdmitSuccessor: admit}, AdmitMetrics: admit}
 			h := ObservationHooks{AdmitOriginal: admit, AdmitStack: func(context.Context, string) error { calls++; return nil }}
 			predicate, err := filepath.Abs("../../same-pod-process.jq")
 			require.NoError(t, err)

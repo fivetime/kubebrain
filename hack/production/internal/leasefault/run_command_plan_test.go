@@ -67,7 +67,7 @@ func TestRunNativeCommandLiveProcessRefusal(t *testing.T) {
 				if strings.HasSuffix(r.URL.Path, "/brain-1") {
 					raw = string(p.Processes.Observer)
 					if mode == "observer-reparented" {
-						raw = strings.Replace(raw, `"metadata":{`, `"metadata":{"ownerReferences":[{"apiVersion":"apps/v1","kind":"StatefulSet","name":"foreign","uid":"foreign-uid","controller":true}],`, 1)
+						raw = strings.Replace(raw, `"uid":"sts-uid"`, `"uid":"foreign-uid"`, 1)
 					} else {
 						raw = strings.Replace(raw, `"uid":"observer-uid"`, `"uid":"replacement-uid"`, 1)
 					}
