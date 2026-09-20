@@ -112,13 +112,13 @@ jobs:
           go test -race ./pkg/server/service/etcdproxy ./pkg/storage/tikv ./cmd/option
 
   production-test-shards:
-    name: Production tests (${{ matrix.shard }}/4)
+    name: Production tests (${{ matrix.shard }}/8)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -135,10 +135,10 @@ jobs:
         run: go mod download
 
       - name: Verify shard partition
-        run: hack/production/test-shard.sh --verify 4
+        run: hack/production/test-shard.sh --verify 8
 
       - name: Run production test shard
-        run: hack/production/test-shard.sh "${{ matrix.shard }}" 4
+        run: hack/production/test-shard.sh "${{ matrix.shard }}" 8
 
   build:
     name: Build binaries and images
