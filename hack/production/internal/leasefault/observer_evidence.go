@@ -21,6 +21,10 @@ var observerEvidenceStage = regexp.MustCompile(`^[a-z][a-z0-9-]{0,63}$`)
 // All file operations use one directory handle. A replaced owner path fails
 // closed after persistence; preserve partial records on any error.
 func RetainRecoveryObserver(directory, stage string, output []byte, observed error) error {
+	return retainObserver(directory, "recovery", stage, output, observed)
+}
+
+func retainObserver(directory, prefix, stage string, output []byte, observed error) error {
 	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || directory == "/" || !observerEvidenceStage.MatchString(stage) || len(output) > processgroup.DefaultOutputLimitBytes {
 		return errors.New("invalid recovery observer evidence scope or size")
 	}
@@ -48,7 +52,7 @@ func RetainRecoveryObserver(directory, stage string, output []byte, observed err
 	if err != nil {
 		return err
 	}
-	name := "recovery-" + stage + "." + rand.Text() + ".json"
+	name := prefix + "-" + stage + "." + rand.Text() + ".json"
 	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return err
