@@ -773,3 +773,21 @@ sha256:89fe24b53ef797c1423cedb92ced24c5b83b53f05b128ead52bff7fe5614b734，
 expired=false。本轮仅归档 CI 和元数据，尚未以 fetch-release 下载验证
 该 ZIP，未部署候选或执行真实故障。22d013b0 两项 CI 均成功，但本地
 564f2134 仍未推送，不在此结论覆盖范围内。
+
+### 22d013b0 发布产物真实下载验证
+
+实际执行 image-prepull --mode=fetch-release 下载验证产物 10602496470，
+退出 0、stderr 为空。记录目录为
+/root/.local/state/kubebrain/release-cli-22d013b0.uuVERqj2，批准计划摘要为
+63eff94af6583af63ad2fd1749d0522e6f372dfc65251d42b5f9be016d7c0c62。
+精确 Git 对象中的两份工作流与已审核 bc76eba3 快照无差异，摘要相同。
+命令使用独立私有配置副本和固定 gh 摘要，凭据内容未输出或提交仓库。
+
+七阶段真实请求（回归前后、镜像 run 前后、artifact 元数据前后及 ZIP
+下载）全部 error 为空。返回 source 为
+22d013b085eed019f1ebc07c98422f5b2e98cbc9，镜像为
+ghcr.io/fivetime/kubebrain@sha256:1bd7ce7ba719d2268bc76acc4e1a2165c1ef78c65597d6290b62f9dbf80e2790，
+两个平台子摘要与上述 CI 日志一致。计划、工作流、输出和全部阶段证据
+SHA256SUMS 校验通过。该命令仅验证发布及回归来源，不访问 Kubernetes，
+不证明预拉取、部署、在线进程或原定 30 秒故障验收；后续本地文件复核
+改动仍不在 22d013b0 的 CI 覆盖范围内。
