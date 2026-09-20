@@ -35,3 +35,26 @@ go test -count=1 -timeout=3m ./pkg/server/etcd -run 'TestSerializableTxnValidati
 ```sh
 go test -race -count=1 -timeout=3m ./pkg/server/etcd -run 'TestSerializableTxnValidationBeforeBackend|Test.*Serializable.*Txn|Test.*Txn.*Serializable|TestQuota|TestTxnRejectsTooMany'
 ```
+
+## 嵌套事务：完整请求校验先于重复 key
+
+同一上游文件的 `checkTxnRequest` 只递归检查请求和操作数；公共 `Txn`
+在该检查全部成功后才调用 `checkIntervals`。KubeBrain 原先在递归校验
+子事务时就检查其 key 重叠，导致嵌套重复 key 遮蔽后续分支的非法请求。
+新增用例在修复前复现：父事务 failure 分支含空 key 时，预期
+`etcdserver: key is not provided`，实际却为
+`etcdserver: duplicate key given in txn request`；多层嵌套亦可复现。
+
+现将递归结构/操作数校验与区间检查拆成两个阶段。只有整棵请求树通过
+第一阶段，才递归检查成功、失败分支的 key 重叠；原区间规则和配额入口
+保持不变，也避免为每个祖先重复检查同一子树的区间。
+
+`TestTxnValidatesWholeTreeBeforeNestedDuplicateKeys` 检查空 key、非法排序、
+空操作、嵌套操作数超限以及“合法结构仍拒绝重复 key”五类情况，分别放在
+父事务 failure、后续 sibling、多层嵌套外层 failure 三种位置，共 15 个
+场景；同时验证校验函数和实际 `Txn` 处理入口的状态码、消息及空响应。
+
+修正后 `go test -count=1 -timeout=3m ./pkg/server/etcd -run
+'TestTxn|TestSerializableTxnValidationBeforeBackend|TestQuota'` 通过（2.608 秒），
+`go vet ./pkg/server/etcd` 和 `git diff --check` 通过。另启动 etcd 包全包
+竞态回归并保存 JSON 日志，终态结果仍待收取；上述局部通过不代表全包通过。

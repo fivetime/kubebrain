@@ -1569,6 +1569,19 @@ func validateTxnRequest(txn *etcdserverpb.TxnRequest) error {
 }
 
 func validateTxnRequestWithMaxOps(txn *etcdserverpb.TxnRequest, maxTxnOps int) error {
+	// Upstream validates the entire request tree before walking key intervals.
+	// A duplicate in a child must not mask malformed later siblings/branches,
+	// and interval work must not start before recursive operation bounds pass.
+	if err := validateTxnRequestShape(txn, maxTxnOps); err != nil {
+		return err
+	}
+	if err := validateTxnIntervals(txn.Success); err != nil {
+		return err
+	}
+	return validateTxnIntervals(txn.Failure)
+}
+
+func validateTxnRequestShape(txn *etcdserverpb.TxnRequest, maxTxnOps int) error {
 	opc := len(txn.Compare)
 	if opc < len(txn.Success) {
 		opc = len(txn.Success)
@@ -1595,12 +1608,6 @@ func validateTxnRequestWithMaxOps(txn *etcdserverpb.TxnRequest, maxTxnOps int) e
 			return err
 		}
 	}
-	if err := validateTxnIntervals(txn.Success); err != nil {
-		return err
-	}
-	if err := validateTxnIntervals(txn.Failure); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -1616,7 +1623,7 @@ func validateTxnRequestOp(op *etcdserverpb.RequestOp, maxTxnOps int) error {
 	case op.GetRequestDeleteRange() != nil:
 		return validateDeleteRangeRequest(op.GetRequestDeleteRange())
 	case op.GetRequestTxn() != nil:
-		return validateTxnRequestWithMaxOps(op.GetRequestTxn(), maxTxnOps)
+		return validateTxnRequestShape(op.GetRequestTxn(), maxTxnOps)
 	default:
 		return txnKeyNotFoundError()
 	}

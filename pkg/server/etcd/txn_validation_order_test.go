@@ -48,3 +48,49 @@ func TestSerializableTxnValidationBeforeBackend(t *testing.T) {
 		})
 	}
 }
+
+func TestTxnValidatesWholeTreeBeforeNestedDuplicateKeys(t *testing.T) {
+	put := &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{
+		RequestPut: &etcdserverpb.PutRequest{Key: []byte("duplicate")},
+	}}
+	nested := func(ops ...*etcdserverpb.RequestOp) *etcdserverpb.RequestOp {
+		return &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestTxn{
+			RequestTxn: &etcdserverpb.TxnRequest{Success: ops},
+		}}
+	}
+	duplicate := nested(put, put)
+	for _, tc := range []struct {
+		name string
+		op   *etcdserverpb.RequestOp
+		want error
+	}{
+		{"empty-key", &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestPut{RequestPut: &etcdserverpb.PutRequest{}}}, rpctypes.ErrGRPCEmptyKey},
+		{"sort", &etcdserverpb.RequestOp{Request: &etcdserverpb.RequestOp_RequestRange{RequestRange: &etcdserverpb.RangeRequest{Key: []byte("k"), SortOrder: 99}}}, rpctypes.ErrGRPCInvalidSortOption},
+		{"empty-op", &etcdserverpb.RequestOp{}, rpctypes.ErrGRPCKeyNotFound},
+		{"nested-budget", nested(make([]*etcdserverpb.RequestOp, defaultMaxTxnOps)...), rpctypes.ErrGRPCTooManyOps},
+		{"valid-request-still-rejects-duplicate", put, rpctypes.ErrGRPCDuplicateKey},
+	} {
+		for _, shape := range []string{"parent-failure", "later-sibling", "deep-parent-failure"} {
+			t.Run(tc.name+"/"+shape, func(t *testing.T) {
+				req := &etcdserverpb.TxnRequest{Success: []*etcdserverpb.RequestOp{duplicate}, Failure: []*etcdserverpb.RequestOp{tc.op}}
+				if shape == "later-sibling" {
+					req.Success = append(req.Success, tc.op)
+					req.Failure = nil
+				} else if shape == "deep-parent-failure" {
+					req.Success = []*etcdserverpb.RequestOp{nested(duplicate)}
+				}
+				check := func(err error) {
+					t.Helper()
+					require.Equal(t, status.Code(tc.want), status.Code(err))
+					require.Equal(t, status.Convert(tc.want).Message(), status.Convert(err).Message())
+				}
+				check(validateTxnRequest(req))
+				s, closeFn := newTestRPCServer(t)
+				defer closeFn()
+				resp, err := s.Txn(context.Background(), req)
+				check(err)
+				require.Nil(t, resp)
+			})
+		}
+	}
+}

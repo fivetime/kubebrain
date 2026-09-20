@@ -68,3 +68,15 @@ probe，而 fake kubectl 在无 probe 状态文件时，即使收到 `--ignore-n
 ```sh
 go test -count=1 -timeout=3m ./hack/production -run '^TestRolloutAvailabilityRunner.*(Receipt|Cleanup|Transient.*Delete|UnownedProbe|OwnedProbe|ProbeDeletionFails)'
 ```
+
+原始第 3 组耗时采集已终止：仍在 900.026 秒达到包级预算，退出 1，
+完整 JSON 与退出码位于 `shard3-profile.X0Au36mP`。该进程在夹具修正前
+编译启动，因此仍包含 60.760 秒的旧回执用例，不能用于评判修正后分组。
+其中 `TestValidateDataplaneReadonlyProbe` 的 433 个子用例全部通过，
+顶层耗时 310.730 秒；超时现场再次为 `TestValidateInstanceReady`。
+这支持累计耗时因素，但不能证明所有剩余用例正确或修正后预算足够。
+
+此前 `ed20263b77468c9eda2597643794e10b13e8c113` 的回归 CI
+`35483393491` 和镜像 CI `35483393445` 均成功，终态日志分别归档至
+`ci-35483393491-terminal.7FweZeS1`、`ci-35483393445-terminal.5U9OuN3O`。
+这些工作流的成功不抹去本地完整 production 分组失败。
