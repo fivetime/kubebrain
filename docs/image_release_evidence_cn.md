@@ -32,3 +32,20 @@ API 确认仓库、预期工作流、head SHA、run/attempt 和最终 success，
 
 记录时此变更仅在本地；运行中的 `0a0b0dfd` CI 不包含它，历史成功构建
 也没有此 artifact。完整实验 CLI 对 artifact 的认证下载和消费仍待接入。
+
+## 读取校验
+
+`imageprepull.ParseReleaseEvidence` 读取不超过 32 KiB 的严格 UTF-8 JSON，
+拒绝未知、重复、大小写别名字段和尾随 JSON。调用方必须另外提供从已
+认证 CI/产物归属得到的 `ReleaseIdentity`；解析器逐项核对源码、运行
+ID、attempt、固定仓库/工作流、镜像及索引摘要，再调用既有
+`ApprovedRuntimeDigests` 校验原始索引与双架构摘要。不一致时不返回
+部分已解析结果。ID 全程保留字符串，不经过浮点数。
+
+该接口没有网络访问，不能自行确认工作流成功、artifact 归属或源码
+可信度，也不把 `ReleaseIdentity` 类型本身当作认证。认证下载与完整
+CLI 接入仍待完成。
+
+测试实际执行 Bash 生成器并由 Go 解析结果，覆盖超大整数 ID 精度，另有
+18 类错误输入反例。镜像预拉取整包竞态测试通过（4.946 秒），同包
+`go vet`、`git diff --check` 通过；未操作集群。
