@@ -333,3 +333,24 @@ Plan 与 Targets 传给 `RunVerified`，不再使用手工日志句柄。覆盖�
 终止；测试确认关闭本次句柄后 stderr 文件保留，两次栈目录仍为空，认领
 不会被删除。该串联测试定向竞态连续三次通过（1.927 秒），`go vet` 与
 `git diff --check` 通过。它不证明实际故障子进程成功或完整 CLI 可用。
+
+### 当前候选构建的等待点源码绑定（2026-09-20）
+
+对候选提交 `0e7e75caebd96e2bb39ac2e0dc970a42c4923988` 的 Git 对象
+单独读取 `pkg/server/etcd/lease.go`，SHA256 为
+`3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88`。
+与已审查提交 `71bddd9a6de10723157ae5526797146e6a221407` 的该文件
+执行 `git diff --exit-code` 返回 0；检查过期续租分支确认第 1645 行
+仍为等待 revoked、termDone、请求取消和 freshness tick 的 `select`。
+
+据此为 `expired-lease-wait-frames.jq` 添加该完整提交的精确绑定，未使用
+短 SHA、分支名或通配规则。测试覆盖正常分类、错误文件摘要、短 SHA
+拒绝，以及相邻行号不能匹配；现有 checked-out source 测试同时校验
+实际文件摘要与等待点。命令
+`go test -race -count=3 -timeout=2m ./hack/production -run '^TestExpiredLeaseWait'`
+通过（1.525 秒），`git diff --check` 通过。
+
+这只是候选栈帧的源码定位审查，不是 CI、镜像、运行容器或原始 RPC 的
+准入证明。记录时该提交的镜像 CI `35490241957` 与回归 CI
+`35490241952` 均仍在运行，未部署候选镜像、未执行集群故障实验；
+原 30 秒真实故障验收仍未通过。
