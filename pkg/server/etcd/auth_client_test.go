@@ -1941,25 +1941,41 @@ func TestClientAuthPrivilegedMaintenanceAuthorization(t *testing.T) {
 	require.NotEmpty(t, rawStatus.Version)
 	rawRootMaintenance := etcdserverpb.NewMaintenanceClient(root.ActiveConnection())
 
+	// Keep the shared five-second deadline: record where its budget is spent
+	// without retrying, extending it, or printing authentication/snapshot data.
+	snapshotPhaseStarted := time.Now()
+	logSnapshotPhase := func(phase string) {
+		t.Helper()
+		deadline, _ := ctx.Deadline()
+		t.Logf("maintenance auth phase=%s elapsed=%s remaining=%s context=%v", phase, time.Since(snapshotPhaseStarted), time.Until(deadline), ctx.Err())
+	}
+	defer logSnapshotPhase("test-return")
+	logSnapshotPhase("before-snapshots")
 	snapshotReader, userSnapshotErr := alice.SnapshotWithVersion(ctx)
+	logSnapshotPhase("user-snapshot-open-returned")
 	if snapshotReader != nil && snapshotReader.Snapshot != nil {
 		require.NoError(t, snapshotReader.Snapshot.Close())
 	}
 	requireAuthClientError(t, userSnapshotErr, codes.PermissionDenied, "etcdserver: permission denied")
 	rootSnapshot, rootSnapshotErr := root.SnapshotWithVersion(ctx)
+	logSnapshotPhase("root-snapshot-open-returned")
 	require.NoError(t, rootSnapshotErr)
 	require.Equal(t, Version, rootSnapshot.Version)
 	rootSnapshotBytes, err := io.ReadAll(rootSnapshot.Snapshot)
+	logSnapshotPhase("root-snapshot-read-returned")
 	require.NoError(t, err)
 	requireSnapshotIntegrityHash(t, rootSnapshotBytes)
 	require.NoError(t, rootSnapshot.Snapshot.Close())
 	rawSnapshotErr := func(client etcdserverpb.MaintenanceClient) error {
 		t.Helper()
+		logSnapshotPhase("raw-snapshot-before-open")
 		stream, streamErr := client.Snapshot(ctx, &etcdserverpb.SnapshotRequest{})
+		logSnapshotPhase("raw-snapshot-open-returned")
 		if streamErr != nil {
 			return streamErr
 		}
 		_, recvErr := stream.Recv()
+		logSnapshotPhase("raw-snapshot-recv-returned")
 		return recvErr
 	}
 	requireAuthClientError(t, rawSnapshotErr(rawAliceMaintenance), codes.PermissionDenied, "etcdserver: permission denied")

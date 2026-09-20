@@ -48,6 +48,9 @@ func githubReleaseRequest(ctx context.Context, gh, configDirectory, endpoint str
 	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(requestCtx, gh, "api", "--hostname", "github.com", "--method", "GET", endpoint)
+	// gh may persist a device ID using a relative state path when HOME is
+	// deliberately absent. Keep that local state out of the caller's worktree.
+	cmd.Dir = configDirectory
 	// Do not inherit GH_HOST, GH_TOKEN, debug logging or shell startup hooks.
 	cmd.Env = []string{"PATH=/usr/local/bin:/usr/bin:/bin", "GH_CONFIG_DIR=" + configDirectory, "GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1", "GH_NO_EXTENSION_UPDATE_NOTIFIER=1"}
 	processgroup.Configure(cmd)

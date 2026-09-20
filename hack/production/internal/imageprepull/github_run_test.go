@@ -47,6 +47,7 @@ func TestVerifyGitHubReleaseRunCommand(t *testing.T) {
 			dir := t.TempDir()
 			gh := filepath.Join(dir, "gh")
 			script := "#!/bin/sh\nset -eu\ntest \"$*\" = 'api --hostname github.com --method GET repos/fivetime/kubebrain/actions/runs/123/attempts/2'\ntest -z \"${GH_TOKEN-}\"\nprintf '%s' '" + string(raw) + "'\n"
+			script += "test \"$PWD\" = \"$GH_CONFIG_DIR\"\n"
 			if mode == "process-error" {
 				script += "exit 1\n"
 			}
