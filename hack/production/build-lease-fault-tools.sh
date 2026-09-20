@@ -23,7 +23,7 @@ done
 for name in capture-local-cilium-drops.sh capture-local-cilium-endpoint.sh observe-local-backend-drops.sh observe-local-backend-tcp.sh observe-local-fault-label.sh observe-local-network-restored.sh observe-local-nonces.sh observe-local-policy-state.sh local-label-identity-transition.jq local-policy-observation.jq local-nonce-endpoints.jq; do
  cp -- "deploy/test-cluster/$name" "$bundle/deploy/test-cluster/$name"
 done
-for name in protected-wait-worker.sh protected-metrics-worker.sh protected-stack-session.sh same-pod-process.jq expired-lease-wait-frames.jq; do
+for name in protected-wait-worker.sh protected-metrics-worker.sh protected-stack-session.sh join-isolated-fault-workers.sh same-pod-process.jq expired-lease-wait-frames.jq; do
  cp -- "hack/production/$name" "$bundle/hack/production/$name"
  # NativeCommandPlan currently shares one directory for stack/metrics/network
  # scripts. Generated copies satisfy that contract; preserve the original

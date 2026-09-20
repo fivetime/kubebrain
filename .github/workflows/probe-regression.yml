@@ -15,6 +15,8 @@ name: Rollout probe regression
       - 'hack/production/cmd/retirement-metrics-delta/**'
       - 'hack/production/protected-stack-session.sh'
       - 'hack/production/protected-wait-worker.sh'
+      - 'hack/production/join-isolated-fault-workers.sh'
+      - 'hack/production/join_isolated_fault_workers_test.go'
       - 'hack/production/protected_wait_worker_test.go'
       - 'hack/production/protected_stack_session_test.go'
       - 'hack/production/protected_session_hash_budget_test.go'
@@ -178,6 +180,7 @@ jobs:
           go test -race -count=1 -timeout=5m -v ./hack/production -run '^TestProtected((Metrics|Stack)Session|MetricsSchedule|MetricsWorker|SessionHashVerificationHonorsFaultDeadline)'
           go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestFaultPolicyDeletePlan$'
           go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestFaultLabelRestorePlan$'
+          go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestIsolatedFaultJoin'
           go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestExpiredLeaseWait'
           go test -race -count=1 -timeout=2m -v ./hack/production -run '^TestBackendPolicyDropEvidence$'
           go vet ./hack/production/cmd/uid-delete

@@ -25,7 +25,7 @@ This is not a self-contained runtime image. The separately admitted execution
 environment still needs Bash, GNU coreutils (including timeout/date/stat), find,
 grep, jq, kubectl, and gh for online release authentication, plus their runtime
 dependencies. It also needs pinned private credentials, an owner-specific audited
-Join script, the protected diagnostic input layout (including owner/bin), and
+Join identity/admission, the protected diagnostic input layout (including owner/bin), and
 the complete execution CLI/online gates. The builder does not manufacture these.
 The existing source-specific stack classifier must approve the exact tested
 source; packaging it does not add a candidate to its allowlist.
@@ -34,6 +34,42 @@ In the dedicated cluster, use a separately reviewed execution Pod in the test
 namespace. Do not relax workload isolation to enable host access and do not run
 the experiment inside an existing discovery/service container. Neither a bundle
 build nor its checksum verification proves the original 30-second acceptance.
+
+## Isolated PID namespace Join (not yet wired to a complete executor)
+
+`join-isolated-fault-workers.sh OWNER` is a read-only final check, packaged in
+both script directories. It does not kill or reap processes. The future executor
+must run as PID 1 in its own non-host, non-shared PID namespace, stop and wait
+its managed children, reap adopted orphans, and synchronously invoke Join with
+no other goroutine launching commands. Admission must exclude concurrent exec
+sessions, sidecars, and masked/restricted proc mounts; the script cannot prove
+those external conditions. Never use it as a host cleanup script.
+
+Before starting workers, capture `OWNER/join-namespace.tsv` (0600, in the admitted
+0700 owner directory). Its one newline-terminated, tab-separated record is:
+
+```text
+v1<TAB>PID_NAMESPACE_DEVICE:INODE<TAB>BOOT_UUID<TAB>INIT_START_TICKS<TAB>OWNER_DEVICE:INODE
+```
+
+The namespace identity comes from dereferencing `/proc/1/ns/pid`; start ticks
+are field 22 of `/proc/1/stat`; boot UUID comes from
+`/proc/sys/kernel/random/boot_id`. Pin this exact file in the command plan's
+`Files` map and independently admit its capture before execution. Do not create
+or replace it during recovery. A namespace restart or owner-directory replacement
+must refuse this Join; an independent recovery flow is then required.
+
+Join checks its parent is PID 1 and validates the pinned identities. It then
+uses only Bash builtins to scan `/proc`: any PID other than init and Join itself
+(including escaped sessions and zombies) returns 75, not success. The generic
+Join runner does not retry that status. This checker is not an orphan reaper,
+source/image admission, or proof of the 30-second fault requirement.
+
+Local integration tests create real isolated PID namespaces using `unshare`;
+the clean case passes and an actual `setsid` child is rejected. Identity,
+permissions and parent mismatches are rejected too. Environments denying PID
+namespace creation explicitly skip that integration test, not claim coverage.
+The previously verified image below predates this script and does not contain it.
 
 ## Runtime image (build verified; fault execution still incomplete)
 
