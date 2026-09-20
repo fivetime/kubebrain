@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -22,7 +21,6 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/leasefault"
 	"github.com/kubewharf/kubebrain/hack/production/internal/planinput"
-	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
 	"google.golang.org/grpc"
 	"k8s.io/client-go/dynamic"
 	strictjson "sigs.k8s.io/json"
@@ -174,15 +172,7 @@ func execute(ctx context.Context, p plan, client dynamic.Interface, conn grpc.Cl
 	join := func(ctx context.Context) error {
 		// Join only through an independently audited and pinned owner-specific
 		// script. It must verify process identities and handle escaped descendants.
-		if err := checkFiles(ctx); err != nil {
-			return err
-		}
-		cmd := exec.CommandContext(ctx, "/bin/bash", p.JoinScript, p.Directory)
-		cmd.Env = env
-		processgroup.Configure(cmd)
-		cmd.WaitDelay = processgroup.DefaultWaitDelay
-		out, err := processgroup.CombinedOutput(cmd, processgroup.DefaultOutputLimitBytes)
-		return errors.Join(err, ctx.Err(), retain(p.Directory, "join", out, err))
+		return leasefault.RunFaultJoin(ctx, p.Directory, p.JoinScript, checkFiles)
 	}
 	return leasefault.RecoverFault(ctx, leasefault.FaultRecovery{Directory: p.Directory, StatefulSetName: "kubebrain-local", Network: p.Network, Protocol: p.Protocol, Client: client, Connection: conn, Own: admit, Join: join, NetworkRestored: observer.Restored, IdentityRestored: observer.Unlabelled})
 }
