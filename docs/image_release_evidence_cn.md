@@ -177,3 +177,29 @@ artifact-after → run-after → regression-after。新增的两次认证 GET �
 `35492861896` 此时仍在 Build and push TiKV test image 阶段，不能据此
 批准新镜像部署。真实发布产物验证、完整故障 CLI 及原 30 秒集群验收
 仍未完成。
+
+## 67e4329f 镜像成功与首份真实发布产物
+
+镜像运行 `35492861896` 已完成且成功，与成功回归 `35492861895` 同为
+源码 `67e4329ff3cd15b3bac5fc3642e9e6d81501c030`。运行元数据、完整日志及
+artifact 列表在 `/root/.local/state/kubebrain/ci-35492861896-terminal.DdNpMFrx`，
+三个文件的 SHA256SUMS 均校验通过。
+
+通过已登录 gh 的只读 API 下载首份真实发布产物 `10600181944`，名称
+`dbaas-release-35492861896-1`。元数据与原始 ZIP 保存在
+`/root/.local/state/kubebrain/release-10600181944.02LkqvlH`。ZIP 大小
+1041 字节，与 API 一致，摘要为
+`sha256:4047c298e09256f2f5dae331d744f27f99c534c5a9a77bc881791fdb84f52210`，
+与 API 及上传日志均一致；仓库/head 仓库 ID、分支、源码、run 归属匹配，
+未过期。归档恰好包含 index.json 和 release.json，CRC 检查通过。
+
+索引原始字节 SHA256、receipt 中镜像和 CI 验证日志一致：
+`ghcr.io/fivetime/kubebrain@sha256:9c052ce86fdbe7c16847049b09cb54d15a07e12fb5ba2822ac162a006fa72382`。
+receipt 的两个 runtime 平台摘要与索引唯一描述符匹配：
+
+- linux/amd64：`sha256:997532304c8729d678e714e2c5c3acf07548b6b99bd5544b208cb2783d186ac4`
+- linux/arm64：`sha256:2d53c587d2265de1e2bcbc79125499cbb63bbd23aae64ae631144889cc208a58`
+
+本机没有 unzip，改用 Python 标准库 zipfile 在内存中检查，未解压到
+文件系统或安装工具。本节是人工编排的真实只读产物核对，不声称已运行
+Go 下载器七阶段认证/持久化流程，也不代表已部署或通过真实故障验收。
