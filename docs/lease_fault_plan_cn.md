@@ -481,3 +481,21 @@ mTLS kubeconfig、禁用代理/重试规则，创建的是惰性连接，不证�
 探针私钥路径错配及预配置 runtime 拒绝。整包竞态通过（27.560 秒），
 go vet 和差异检查通过。此为执行入口的连接组装部件，完整 JSON CLI
 和端到端原生故障测试仍未完成，未修改集群。
+
+### 实际连接与 Pod 端点绑定
+
+RunVerified 在任何 API 请求和认领操作前调用 CheckCommandEndpoints：
+读取两个实际传输的 Target，要求 passthrough 字面 IP 和合法数字端口，
+分别匹配已审核原始/观察者 Pod 快照的 status.podIP；原始目标还必须
+与原始探针 Endpoint 完全一致。拒绝缺少目标信息的传输、DNS resolver、
+错接观察者、同 IP 的两份快照及 hostNetwork Pod。快照自身仍须匹配
+命名空间、原始名称/UID，并且两个 Pod 的名称和 UID 不同。
+
+该项为强制本地一致性检查，不替代独立来源准入、实时进程比较和
+认证成员 RPC 检查。集成反例检查端点错误时 API action 为空、没有
+创建认领、没有运行 Join。正常夹具仍通过认领并在准备阶段故意退出，
+不将其计为原生故障端到端成功。完整 JSON CLI 和真实 30 秒验收仍未完成。
+
+本轮 leasefault、lease-fault-plan、lease-fault-recover 三包竞态测试
+通过（31.302、1.111、2.527 秒），对应 go vet 与差异检查通过。测试耗时
+不是故障验收耗时；本轮没有访问或修改真实测试集群。

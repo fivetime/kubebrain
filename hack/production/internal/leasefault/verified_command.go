@@ -35,6 +35,9 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 		return result, errors.New("verified command requires preparation/successor connections and tool admission, without preconfigured Join or recovery connection")
 	}
 	r.Network.Lifecycle.RecoveryConnection = r.Network.SuccessorConnection
+	if err := p.CheckCommandEndpoints(r, inputs.Processes); err != nil {
+		return result, err
+	}
 	if err := p.CheckProcessImages(inputs.Processes, inputs.Release); err != nil {
 		return result, err
 	}

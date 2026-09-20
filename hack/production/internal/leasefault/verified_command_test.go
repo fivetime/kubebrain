@@ -18,8 +18,15 @@ import (
 	ktesting "k8s.io/client-go/testing"
 )
 
+type targetedSuccessorConnection struct {
+	*successorConnection
+	target string
+}
+
+func (c *targetedSuccessorConnection) Target() string { return c.target }
+
 func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
-	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release", "node-uid", "node-platform", "node-api", "node-post-admit"} {
+	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release", "node-uid", "node-platform", "node-api", "node-post-admit", "endpoint-original", "endpoint-observer", "endpoint-dns", "endpoint-port", "endpoint-probe", "endpoint-no-target", "endpoint-shared-ip", "endpoint-host-network"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -39,6 +46,13 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			observer := pod.DeepCopy()
 			observer.SetName("brain-1")
 			observer.SetUID("observer-uid")
+			require.NoError(t, unstructured.SetNestedField(observer.Object, "10.0.0.2", "status", "podIP"))
+			if mode == "endpoint-shared-ip" {
+				require.NoError(t, unstructured.SetNestedField(observer.Object, "10.0.0.1", "status", "podIP"))
+			}
+			if mode == "endpoint-host-network" {
+				require.NoError(t, unstructured.SetNestedField(observer.Object, true, "spec", "hostNetwork"))
+			}
 			observerRaw, err := observer.MarshalJSON()
 			require.NoError(t, err)
 			ns := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": "test-ns", "uid": "ns-uid", "resourceVersion": "1"}}}
@@ -76,17 +90,33 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 					return &pb.StatusResponse{Header: &pb.ResponseHeader{ClusterId: p.Bindings.Protocol.ClusterID, MemberId: member, RaftTerm: p.Bindings.InitialTerm}, Leader: p.Bindings.Protocol.AlarmMemberID}, nil
 				}}
 			}
-			original, healthy := connection(p.Bindings.Protocol.AlarmMemberID), connection(p.Bindings.ObserverMemberID)
+			p.Endpoint = "10.0.0.1:2379"
+			original := &targetedSuccessorConnection{connection(p.Bindings.Protocol.AlarmMemberID), "passthrough:///" + p.Endpoint}
+			healthy := &targetedSuccessorConnection{connection(p.Bindings.ObserverMemberID), "passthrough:///10.0.0.2:2379"}
 			check := func(context.Context) error { return nil }
 			r := MeasuredNetworkFaultRuntime{Network: NetworkFaultRuntime{
 				Lifecycle:       FaultLifecycle{Preparation: FaultPreparation{Directory: p.OwnerDirectory, StatefulSetName: "brain", Network: p.Bindings.Network, Protocol: p.Bindings.Protocol, Client: client, Connection: original, Own: func(context.Context) error { return errors.New("preparation deliberately refused") }}, OutcomeAdmit: check, RecoveryTimeout: time.Second},
 				ScriptDirectory: "/bin", TargetsSHA256: strings.Repeat("a", 64), AdmitNetwork: check, SuccessorConnection: healthy, AdmitSuccessor: check, CaptureSeconds: 1,
 			}, AdmitMetrics: check}
+			switch mode {
+			case "endpoint-original":
+				original.target = healthy.target
+			case "endpoint-observer":
+				healthy.target = original.target
+			case "endpoint-dns":
+				healthy.target = "dns:///10.0.0.2:2379"
+			case "endpoint-port":
+				healthy.target = "passthrough:///10.0.0.2:0"
+			case "endpoint-probe":
+				p.Endpoint = "10.0.0.3:2379"
+			case "endpoint-no-target":
+				r.Network.SuccessorConnection = healthy.successorConnection
+			}
 			if mode == "preconfigured-recovery" {
 				r.Network.Lifecycle.RecoveryConnection = healthy
 			}
 			if mode == "wrong-preparation-member" {
-				r.Network.Lifecycle.Preparation.Connection = healthy
+				r.Network.Lifecycle.Preparation.Connection = &targetedSuccessorConnection{connection(p.Bindings.ObserverMemberID), original.target}
 			}
 			if mode == "missing-preparation" {
 				r.Network.Lifecycle.Preparation.Connection = nil
@@ -122,7 +152,7 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			require.Error(t, err)
 			joins, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "recovery-join.*.json"))
 			require.NoError(t, globErr)
-			staticFailure := mode == "preconfigured-recovery" || mode == "missing-preparation" || mode == "missing-successor" || mode == "wrong-release"
+			staticFailure := mode == "preconfigured-recovery" || mode == "missing-preparation" || mode == "missing-successor" || mode == "wrong-release" || strings.HasPrefix(mode, "endpoint-")
 			if mode == "wrong-member" || mode == "wrong-preparation-member" || staticFailure || strings.HasPrefix(mode, "node-") {
 				require.Zero(t, creates)
 				require.Nil(t, result.Owner)
