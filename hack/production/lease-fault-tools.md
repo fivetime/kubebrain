@@ -35,9 +35,9 @@ namespace. Do not relax workload isolation to enable host access and do not run
 the experiment inside an existing discovery/service container. Neither a bundle
 build nor its checksum verification proves the original 30-second acceptance.
 
-## Runtime image (not yet validated)
+## Runtime image (build verified; fault execution still incomplete)
 
-`Dockerfile.lease-fault-tools` is a separate test-runtime draft, not the product
+`Dockerfile.lease-fault-tools` is a separate test runtime, not the product
 image or an experiment launcher. Its build context must contain only `bundle/`
 (the generated bundle) and `gh` (a separately reviewed static Linux executable
 for the target architecture). Never send credentials, kubeconfig, plans or an
@@ -54,9 +54,10 @@ The image checks the bundle inventory, gh digest and runtime dependencies.
 These checks do not authenticate CI provenance. Its default entrypoint only
 validates a plan; it does not execute a fault.
 
-No successful image build or container smoke test has been recorded for this
-draft. Do not deploy it as the fault executor until those checks, source and
-image admission, and the missing complete execution CLI are finished.
+The first successful build and container smoke run is recorded below. This
+does not supply the missing complete execution CLI or its concrete online
+admission and owner-specific Join. Do not treat the runtime as a completed
+fault executor.
 
 `.github/workflows/lease-fault-tools.yml` provides a **manual-only** self-hosted
 build path for Linux amd64. The operator must independently verify `base_image`
@@ -79,8 +80,33 @@ before selecting the dispatch digest; do not assume the runner matches the
 developer machine or blindly substitute whatever digest is observed.
 [GitHub documents](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch)
 that a workflow which has run can be dispatched against another branch via API.
-Actual registration and dispatch still need verification after this file is pushed.
+Registration and API dispatch were verified by the runs recorded below.
 
-This workflow has not yet been executed. Its successful completion would only
-establish a built/tested tool runtime, not the missing online fault admission,
-owner-specific Join, recovery acceptance or the original 30-second result.
+### Verified first build: 2026-09-20
+
+Registration run `35506567911` succeeded, skipped the image job as intended, and
+reported gh 2.100.0 with the reviewed executable digest
+`553949e2efa12842771efe6012aa4de21f1d591530ec17fc435f610f10e017ee`.
+Manual run `35506632638`, attempt 1, then succeeded for exact tool source
+`5292255aedd9a51bf6aef6f66e734c7b0c6c765f`. It used the independently authenticated
+a47 product base image
+`ghcr.io/fivetime/kubebrain@sha256:a4512a5e4d589b943950f3ab0ee2b3b50c0fafb7b2a242b0e8f09ce53b17085b`.
+
+The Linux amd64 tool image is
+`ghcr.io/fivetime/kubebrain@sha256:9b2508e5bf6a6114d6355630c70de408b01ccbcd873fc0b6bb29e8a6847eb0a8`.
+Its bundle manifest digest is
+`1a60a10b328f9634f57299cbfdff678f2080f3a780d7f105ccd77aaa9b6a5710`.
+Artifact `10604830603`, named `lease-fault-tools-35506632638-1`, was independently
+downloaded and its ZIP digest verified as
+`54b869c33a5bb5d611dd401d8d74209a549bcd6c24b88a6b9f23c1b8ac4b61ea`.
+The six-entry archive was read without extraction; all internal checksums,
+source/base/tool/bundle bindings and the default-entrypoint refusal were checked.
+The registry manifest was fetched separately and matched the published image
+digest. Run success, source, attempt and artifact digest/availability were
+rechecked after download. Raw evidence and verified `SHA256SUMS` are retained at
+`/root/.local/state/kubebrain/tool-runtime-35506632638.JMK9Whfg/`.
+
+This establishes a built/tested tool runtime only. No executor Pod has been
+created and no candidate deployment or fault injection occurred in this run.
+Online fault admission, owner-specific Join, recovery acceptance and the original
+30-second real-cluster result remain open. This is not an ARM runtime build.
