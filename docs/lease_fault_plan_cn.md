@@ -962,3 +962,20 @@ CI 35501836856 的 Verify etcd service and Watch regressions 已于
 2026-09-20 09:28:44 UTC completed/success，随后进入 endpoint 检查。
 回归整体与镜像 35501836848 最近仍 in_progress；不把单步骤成功当作整条
 CI 成功。本轮未创建执行 Pod、未运行故障、未推送打断 CI。
+
+### 0f17ae76 回归 CI 完整成功
+
+35501836856（attempt 1）已 completed/success，head_sha 精确为
+0f17ae76d0e335b55f84cd728e964b4b1d75eb0b，作业于 2026-09-20
+09:42:38 UTC 完成。run.json、完整 run.log、SHA256SUMS 保存在
+/root/.local/state/kubebrain/ci-35501836856-terminal.NGBmrlh6，摘要复核通过。
+
+日志确认 TestClientExpiredLeaseKeepAliveRoutesOverMutualTLSProxy 的两种
+任期退出用例在普通和竞态运行均 PASS；真实 TLS/API 进程拒绝、发布预检
+期间输入变化以及 CLI 在线预检分派用例均 PASS。leasefault 整包竞态
+36.537 秒通过，最后的 Race test all probe regressions 于 09:42:31
+UTC 成功结束，不是仅凭中间步骤推断整体成功。
+
+该回归不包括后续本地工具包构建入口及其测试。镜像 35501836848 最近
+仍在 Build and push TiKV test image，尚无终态。没有部署候选或执行
+原定 30 秒故障验收，整体任务仍未完成。
