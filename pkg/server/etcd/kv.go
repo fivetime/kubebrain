@@ -67,6 +67,9 @@ func (s *RPCServer) rangeWithAfterRead(
 	r *etcdserverpb.RangeRequest,
 	afterRead func(*etcdserverpb.RangeResponse) error,
 ) (response *etcdserverpb.RangeResponse, retErr error) {
+	if err := validateRangeRequest(r); err != nil {
+		return nil, err
+	}
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
 	if afterRead == nil && r != nil && r.Serializable && r.Revision <= 0 {
 		if checkpoint, checkpointErr := s.backend.GetSerializableCheckpoint(); checkpointErr == nil {
@@ -136,10 +139,10 @@ func (s *RPCServer) rangeWithAfterReadOnce(
 	afterRead func(*etcdserverpb.RangeResponse) error,
 ) (response *etcdserverpb.RangeResponse, retErr error) {
 	startTime := time.Now()
-	klog.V(4).InfoS("RANGE", "key", util.LoggedKey(r.Key), "rangeEnd", util.LoggedKey(r.RangeEnd), "countOnly", r.CountOnly)
 	if err := validateRangeRequest(r); err != nil {
 		return nil, err
 	}
+	klog.V(4).InfoS("RANGE", "key", util.LoggedKey(r.Key), "rangeEnd", util.LoggedKey(r.RangeEnd), "countOnly", r.CountOnly)
 	// An upstream etcd follower serves an explicitly serializable latest Range
 	// from its local applied backend even while it cannot reach quorum. A
 	// KubeBrain follower has no bbolt replica, so use its GC-protected TiKV
@@ -317,6 +320,9 @@ func isSerializableLiveReadFallbackError(err error) bool {
 // rather than treating a partial stream as complete.
 func (s *RPCServer) RangeStream(r *etcdserverpb.RangeRequest, rs etcdserverpb.KV_RangeStreamServer) error {
 	emitEtcdMVCCRangeCounter(s.metricCli, 1)
+	if err := validateRangeStreamRequest(r); err != nil {
+		return err
+	}
 	startTime := time.Now()
 	ctx := rs.Context()
 	_, leadingFresh := s.peers.EpochAndLeadingFresh()
@@ -372,22 +378,16 @@ func (s *RPCServer) rangeStreamOnce(
 	rs etcdserverpb.KV_RangeStreamServer,
 	startTime time.Time,
 ) (retErr error) {
-	ctx := rs.Context()
-	klog.V(4).InfoS("RANGE STREAM", "key", util.LoggedKey(r.Key), "rangeEnd", util.LoggedKey(r.RangeEnd), "rev", r.Revision)
-	if err := validateRangeRequest(r); err != nil {
+	if err := validateRangeStreamRequest(r); err != nil {
 		return err
 	}
+	ctx := rs.Context()
+	klog.V(4).InfoS("RANGE STREAM", "key", util.LoggedKey(r.Key), "rangeEnd", util.LoggedKey(r.RangeEnd), "rev", r.Revision)
 	// Match etcd's checkRangeStreamRequest: NONE and explicit ASCEND+KEY are
 	// accepted. Upstream's Range implementation promotes NONE with a non-KEY
 	// target to ascending order for that target; the exceptional shape is
 	// delegated to the unary result path below because it cannot be produced by
 	// the ordinary ascending-key partition stream.
-	if !isDefaultRangeStreamOrdering(r) {
-		return status.Error(codes.Unimplemented, "RangeStream does not support custom sort orders")
-	}
-	if hasRangeRevisionFilters(r) {
-		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
-	}
 	_, protectedSerializable := backend.SerializableCheckpointFromContext(ctx)
 	proxyLatestSerializable := r.Serializable && r.Revision <= 0 && !protectedSerializable && !s.peers.IsLeader()
 	if (!r.Serializable || proxyLatestSerializable) && s.peers.EtcdProxyEnabled() {
@@ -962,7 +962,7 @@ func projectRangeKeysOnly(kv *mvccpb.KeyValue, r *etcdserverpb.RangeRequest) {
 }
 
 func validateRangeRequest(r *etcdserverpb.RangeRequest) error {
-	if len(r.Key) == 0 {
+	if r == nil || len(r.Key) == 0 {
 		return status.Error(codes.InvalidArgument, "etcdserver: key is not provided")
 	}
 	if _, ok := etcdserverpb.RangeRequest_SortOrder_name[int32(r.SortOrder)]; !ok {
@@ -970,6 +970,19 @@ func validateRangeRequest(r *etcdserverpb.RangeRequest) error {
 	}
 	if _, ok := etcdserverpb.RangeRequest_SortTarget_name[int32(r.SortTarget)]; !ok {
 		return status.Error(codes.InvalidArgument, "etcdserver: invalid sort option")
+	}
+	return nil
+}
+
+func validateRangeStreamRequest(r *etcdserverpb.RangeRequest) error {
+	if err := validateRangeRequest(r); err != nil {
+		return err
+	}
+	if !isDefaultRangeStreamOrdering(r) {
+		return status.Error(codes.Unimplemented, "RangeStream does not support custom sort orders")
+	}
+	if hasRangeRevisionFilters(r) {
+		return status.Error(codes.Unimplemented, "RangeStream does not support revision filters")
 	}
 	return nil
 }
