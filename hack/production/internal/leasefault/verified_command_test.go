@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubewharf/kubebrain/hack/production/internal/planinput"
 	"github.com/stretchr/testify/require"
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -26,7 +27,7 @@ type targetedSuccessorConnection struct {
 func (c *targetedSuccessorConnection) Target() string { return c.target }
 
 func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
-	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release", "node-uid", "node-platform", "node-api", "node-post-admit", "endpoint-original", "endpoint-observer", "endpoint-dns", "endpoint-port", "endpoint-probe", "endpoint-no-target", "endpoint-shared-ip", "endpoint-host-network"} {
+	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release", "node-uid", "node-platform", "node-api", "node-post-admit", "endpoint-original", "endpoint-observer", "endpoint-dns", "endpoint-port", "endpoint-probe", "endpoint-no-target", "endpoint-shared-ip", "endpoint-host-network", "deployment-spec", "deployment-generation", "deployment-uid", "deployment-api"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -57,6 +58,20 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			require.NoError(t, err)
 			ns := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]any{"name": "test-ns", "uid": "ns-uid", "resourceVersion": "1"}}}
 			sts := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": map[string]any{"name": "brain", "namespace": "test-ns", "uid": "sts-uid", "resourceVersion": "1"}}}
+			sts.SetGeneration(1)
+			sts.Object["status"] = map[string]any{"observedGeneration": int64(1)}
+			sts.Object["spec"] = map[string]any{"replicas": int64(3)}
+			spec, err := json.Marshal(sts.Object["spec"])
+			require.NoError(t, err)
+			p.Bindings.Metrics[0].Binding.SpecSHA256 = planinput.SHA256(spec)
+			switch mode {
+			case "deployment-spec":
+				sts.Object["spec"].(map[string]any)["replicas"] = int64(4)
+			case "deployment-generation":
+				sts.SetGeneration(2)
+			case "deployment-uid":
+				sts.SetUID("replaced-sts")
+			}
 			node := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Node", "metadata": map[string]any{"name": "worker1", "uid": "node-uid"}, "status": map[string]any{"nodeInfo": map[string]any{"operatingSystem": "linux", "architecture": "amd64"}}}}
 			if mode == "node-uid" {
 				node.SetUID("replaced-node")
@@ -65,6 +80,14 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 				require.NoError(t, unstructured.SetNestedField(node.Object, "arm64", "status", "nodeInfo", "architecture"))
 			}
 			client := fake.NewSimpleDynamicClient(runtime.NewScheme(), pod, observer, ns, sts, node)
+			deploymentGets := 0
+			client.PrependReactor("get", "statefulsets", func(a ktesting.Action) (bool, runtime.Object, error) {
+				deploymentGets++
+				if mode == "deployment-api" {
+					return true, nil, errors.New("deployment lookup refused")
+				}
+				return false, nil, nil
+			})
 			nodeGets := 0
 			client.PrependReactor("get", "nodes", func(a ktesting.Action) (bool, runtime.Object, error) {
 				nodeGets++
@@ -153,7 +176,7 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			joins, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "recovery-join.*.json"))
 			require.NoError(t, globErr)
 			staticFailure := mode == "preconfigured-recovery" || mode == "missing-preparation" || mode == "missing-successor" || mode == "wrong-release" || strings.HasPrefix(mode, "endpoint-")
-			if mode == "wrong-member" || mode == "wrong-preparation-member" || staticFailure || strings.HasPrefix(mode, "node-") {
+			if mode == "wrong-member" || mode == "wrong-preparation-member" || staticFailure || strings.HasPrefix(mode, "node-") || strings.HasPrefix(mode, "deployment-") {
 				require.Zero(t, creates)
 				require.Nil(t, result.Owner)
 				require.Empty(t, joins)
@@ -174,12 +197,23 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			}
 			nodeEvidence, nodeErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "experiment-node-platform.*.json"))
 			require.NoError(t, nodeErr)
-			if staticFailure {
+			if staticFailure || strings.HasPrefix(mode, "deployment-") {
 				require.Zero(t, nodeGets)
 				require.Empty(t, nodeEvidence)
 			} else {
 				require.Equal(t, 1, nodeGets, "one GET for all snapshots on the same Node; no retry")
 				require.Len(t, nodeEvidence, 1)
+			}
+			deploymentEvidence, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "experiment-deployment.*.json"))
+			require.NoError(t, globErr)
+			if staticFailure {
+				require.Empty(t, deploymentEvidence)
+				require.Zero(t, deploymentGets)
+			} else {
+				require.Len(t, deploymentEvidence, 1)
+				if strings.HasPrefix(mode, "deployment-") {
+					require.Equal(t, 1, deploymentGets, "one failing GET without retry or claim")
+				}
 			}
 			for _, action := range client.Actions() {
 				require.NotEqual(t, "delete", action.GetVerb())

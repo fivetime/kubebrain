@@ -583,3 +583,31 @@ inode；目录替换时拒绝将记录写到新目录，已有部分证据保留
 本轮 leasefault 整包竞态测试通过（27.842 秒），go vet 和差异检查通过。
 未操作真实集群；外层日志补齐不改变原始 30 秒故障预算，也不代替尚缺的
 具体在线准入、恢复后释放和真实故障验收。
+
+### 认领前真实 StatefulSet 配置核验
+
+RunVerified 的认领前路径新增 VerifyCommandDeployment，对计划中的
+StatefulSet 执行一次实际 GET（每次最多 5 秒且受外层剩余预算限制），
+在请求前后执行独立工具/来源准入。除了类型、名称、命名空间、UID、
+resourceVersion 和未删除状态，还要求 generation 为正且等于
+status.observedGeneration，并将实时 spec 以 encoding/json 编码后
+计算 SHA256，与所有指标期望共用的 SpecSHA256 核对。整数保留规则与
+retirementmetrics.LoadCapture 相同，不新增另一份可漂移的配置摘要。
+
+这会提前拒绝“UID 未变但配置变了”或控制器尚未观察最新配置的情况，
+不重试、不等待 rollout，不将读取成功视为配置已被持续锁定。Namespace
+UID 仍由认领与 Own 路径检查；后续进程与指标证据检查继续保留。
+
+请求起止、预期/实际 UID、generation 和配置摘要留存为
+experiment-deployment.*.json，不记录 Pod 模板的环境变量或凭据内容。
+整合反例覆盖 spec 改动、未观察 generation、UID 替换和 API 拒绝；这些
+情况必须恰有一次 StatefulSet GET 和一份失败证据，不创建认领、不查询
+Node、不运行 Join。该项是具体在线准入的一部分，不是完整故障验收。
+
+本轮 leasefault 整包竞态测试通过（28.148 秒），go vet 和差异检查通过。
+只读查询专用集群：kubebrain-local UID 仍为
+7d760f53-5bb5-4429-a2f8-651b89665616，generation/observedGeneration
+均为 138，readyReplicas 为 3，模板镜像仍为固定基线
+ghcr.io/fivetime/kubebrain@sha256:50b9938fe3e5ad379136957438abe3c2d4bf250dc6c5973c869e0ef1341d1537。
+这是一次时点查询，不是完整进程/协议准入，没有部署候选或执行故障。
+bc76eba3 的回归已进入 etcd/Watch 测试，镜像进入构建推送步骤，均未结束。

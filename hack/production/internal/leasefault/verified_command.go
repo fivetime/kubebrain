@@ -103,6 +103,9 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 		if err := r.AdmitMetrics(ctx); err != nil {
 			return err
 		}
+		if err := p.VerifyCommandDeployment(ctx, r.Network.Lifecycle.Preparation.Client, r.Network.Lifecycle.Preparation.StatefulSetName, inputs.AdmitTools); err != nil {
+			return err
+		}
 		if err := p.VerifyProcessPlatforms(ctx, r.Network.Lifecycle.Preparation.Client, inputs.Processes, inputs.Release, inputs.AdmitTools); err != nil {
 			return err
 		}
