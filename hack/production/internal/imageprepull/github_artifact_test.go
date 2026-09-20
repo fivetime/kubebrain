@@ -38,6 +38,7 @@ func TestFetchGitHubReleaseEvidence(t *testing.T) {
 			archive := buffer.Bytes()
 			metadata := map[string]any{"id": 7, "name": "dbaas-release-123-2", "size_in_bytes": len(archive), "digest": fmt.Sprintf("sha256:%x", sha256.Sum256(archive)), "expired": false, "workflow_run": map[string]any{"id": 123, "repository_id": 1285006877, "head_repository_id": 1285006877, "head_branch": "dbaas", "head_sha": wanted.Source}}
 			dir := t.TempDir()
+			require.NoError(t, os.Chmod(dir, 0700))
 			writeMeta := func() {
 				data, err := json.Marshal(metadata)
 				require.NoError(t, err)
@@ -91,7 +92,7 @@ esac
 				if mode == "retention" && stage == "archive" {
 					return errors.New("disk failed")
 				}
-				return nil
+				return RetainReleaseResponse(dir, stage, data, observed)
 			})
 			if mode == "success" {
 				require.NoError(t, err)
@@ -108,6 +109,12 @@ esac
 			requests, readErr := os.ReadFile(filepath.Join(dir, "requests"))
 			require.NoError(t, readErr)
 			require.Equal(t, count, strings.Count(string(requests), "\n"), "one request per phase, without retries")
+			for _, stage := range stages {
+				if mode == "retention" && stage == "archive" {
+					continue
+				}
+				require.FileExists(t, filepath.Join(dir, "github-"+stage+".json"))
+			}
 		})
 	}
 }
