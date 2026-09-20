@@ -142,3 +142,24 @@ ZIP 最多 2 MiB，错误文本最多 64 KiB。输出以 JSON/base64 无损保�
 往返、重复写不覆盖、目录/文件符号链接、不安全阶段和大小边界测试后，
 整包竞态通过（5.774 秒），`go vet` 和差异检查通过。真实 artifact
 端到端验证及完整 CLI 仍未完成，本轮没有集群写入。
+
+## 同源码回归 CI 强制门限
+
+下载入口现在强制接收独立的 `RegressionIdentity`（run ID、attempt），
+不再把回归 CI 检查留给调用方自行选择。回归源码只能取自镜像的
+`ReleaseIdentity.Source`，不能另外传入一个更旧但成功的源码。运行 ID
+必须与镜像工作流不同；非法或缺失标识在发起请求前拒绝。
+
+顺序现为 regression-before → run-before → artifact-before → archive →
+artifact-after → run-after → regression-after。新增的两次认证 GET 固定
+检查 `.github/workflows/probe-regression.yml`、dbaas 分支、仓库及 head
+仓库身份、精确源码/run/attempt 和 completed/success。复用原有有界
+请求、工具准入与持久化；最后的回归检查失败也不返回部分候选结果。
+调用方仍须审查并固定两个 workflow 的源码，成功运行元数据不替代该审查。
+
+子进程集成测试验证七阶段顺序、十四次工具准入、回归失败、源码不符、
+错误工作流、下载后回归状态变化，以及非法标识零请求拒绝。失败响应
+也通过真实留存器保存。最终整包竞态通过（5.982 秒），`go vet` 与
+`git diff --check` 通过。这是本地实现验证，不是新 artifact 的真实下载
+验收，更不是 30 秒真实故障验收。当前两项 CI 仍在运行，未推送打断，
+未修改测试集群。

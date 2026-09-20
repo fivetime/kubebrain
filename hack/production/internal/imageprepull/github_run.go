@@ -68,6 +68,10 @@ func githubReleaseRequest(ctx context.Context, gh, configDirectory, endpoint str
 }
 
 func checkGitHubReleaseRun(raw []byte, wanted ReleaseIdentity) error {
+	return checkGitHubWorkflowRun(raw, wanted, ".github/workflows/image.yml")
+}
+
+func checkGitHubWorkflowRun(raw []byte, wanted ReleaseIdentity, workflow string) error {
 	if len(raw) == 0 || len(raw) > 1<<20 {
 		return errors.New("invalid GitHub run response size")
 	}
@@ -110,7 +114,7 @@ func checkGitHubReleaseRun(raw []byte, wanted ReleaseIdentity) error {
 		return errors.New("invalid GitHub run JSON")
 	}
 	expectedRepo := repository{ID: 1285006877, FullName: "fivetime/kubebrain"}
-	if strconv.FormatUint(run.ID, 10) != wanted.RunID || strconv.FormatUint(run.Attempt, 10) != wanted.RunAttempt || run.Source != wanted.Source || run.Branch != "dbaas" || (run.Event != "push" && run.Event != "workflow_dispatch") || run.Path != ".github/workflows/image.yml" || run.Status != "completed" || run.Conclusion != "success" || run.Repository != expectedRepo || run.HeadRepository != expectedRepo {
+	if strconv.FormatUint(run.ID, 10) != wanted.RunID || strconv.FormatUint(run.Attempt, 10) != wanted.RunAttempt || run.Source != wanted.Source || run.Branch != "dbaas" || (run.Event != "push" && run.Event != "workflow_dispatch") || run.Path != workflow || run.Status != "completed" || run.Conclusion != "success" || run.Repository != expectedRepo || run.HeadRepository != expectedRepo {
 		return errors.New("GitHub run does not match successful admitted release attempt")
 	}
 	return nil

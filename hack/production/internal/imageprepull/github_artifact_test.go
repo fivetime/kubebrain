@@ -18,7 +18,7 @@ import (
 )
 
 func TestFetchGitHubReleaseEvidence(t *testing.T) {
-	for _, mode := range []string{"success", "run-before", "artifact-before", "archive", "artifact-after", "run-after", "retention", "post-admission"} {
+	for _, mode := range []string{"success", "regression-before", "regression-source", "regression-workflow", "regression-after", "run-before", "artifact-before", "archive", "artifact-after", "run-after", "retention", "post-admission"} {
 		t.Run(mode, func(t *testing.T) {
 			run, wanted := githubRunFixture(t)
 			object, platforms := releaseFixture(t)
@@ -39,6 +39,17 @@ func TestFetchGitHubReleaseEvidence(t *testing.T) {
 			metadata := map[string]any{"id": 7, "name": "dbaas-release-123-2", "size_in_bytes": len(archive), "digest": fmt.Sprintf("sha256:%x", sha256.Sum256(archive)), "expired": false, "workflow_run": map[string]any{"id": 123, "repository_id": 1285006877, "head_repository_id": 1285006877, "head_branch": "dbaas", "head_sha": wanted.Source}}
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
+			regression := bytes.ReplaceAll(run, []byte(`"id":123`), []byte(`"id":456`))
+			regression = bytes.ReplaceAll(regression, []byte("image.yml"), []byte("probe-regression.yml"))
+			switch mode {
+			case "regression-before":
+				regression = bytes.Replace(regression, []byte(`"success"`), []byte(`"failure"`), 1)
+			case "regression-source":
+				regression = bytes.Replace(regression, []byte(wanted.Source), []byte(strings.Repeat("b", 40)), 1)
+			case "regression-workflow":
+				regression = bytes.Replace(regression, []byte("probe-regression.yml"), []byte("image.yml"), 1)
+			}
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "regression.json"), regression, 0600))
 			writeMeta := func() {
 				data, err := json.Marshal(metadata)
 				require.NoError(t, err)
@@ -62,6 +73,7 @@ set -eu
 test "$1 $2 $3 $4 $5" = 'api --hostname github.com --method GET'
 printf '%s\n' "$6" >> "$GH_CONFIG_DIR/requests"
 case "$6" in
+repos/fivetime/kubebrain/actions/runs/456/attempts/2) cat "$GH_CONFIG_DIR/regression.json" ;;
 repos/fivetime/kubebrain/actions/runs/123/attempts/2) cat "$GH_CONFIG_DIR/run.json" ;;
 repos/fivetime/kubebrain/actions/artifacts/7) cat "$GH_CONFIG_DIR/artifact.json" ;;
 repos/fivetime/kubebrain/actions/artifacts/7/zip) cat "$GH_CONFIG_DIR/archive.zip" ;;
@@ -73,15 +85,18 @@ esac
 			defer cancel()
 			var stages []string
 			admissions := 0
-			got, gotIndex, err := FetchGitHubReleaseEvidence(ctx, gh, dir, "7", wanted, func(context.Context) error {
+			got, gotIndex, err := FetchGitHubReleaseEvidence(ctx, gh, dir, "7", wanted, RegressionIdentity{RunID: "456", RunAttempt: "2"}, func(context.Context) error {
 				admissions++
-				if mode == "post-admission" && admissions == 6 {
+				if mode == "post-admission" && admissions == 8 {
 					return errors.New("changed inputs")
 				}
 				return nil
 			}, func(stage string, data []byte, observed error) error {
 				stages = append(stages, stage)
 				require.NotEmpty(t, data)
+				if mode == "regression-after" && stage == "run-after" {
+					require.NoError(t, os.WriteFile(filepath.Join(dir, "regression.json"), bytes.Replace(regression, []byte(`"success"`), []byte(`"failure"`), 1), 0600))
+				}
 				if mode == "artifact-after" && stage == "archive" {
 					metadata["digest"] = "sha256:" + strings.Repeat("b", 64)
 					writeMeta()
@@ -98,14 +113,14 @@ esac
 				require.NoError(t, err)
 				require.Equal(t, index, gotIndex)
 				require.Equal(t, platforms, got.Platforms)
-				require.Equal(t, 10, admissions)
+				require.Equal(t, 14, admissions)
 			} else {
 				require.Error(t, err)
 				require.Nil(t, gotIndex)
 				require.Equal(t, ReleaseEvidence{}, got)
 			}
-			count := map[string]int{"success": 5, "run-before": 1, "artifact-before": 2, "archive": 3, "artifact-after": 4, "run-after": 5, "retention": 3, "post-admission": 3}[mode]
-			require.Equal(t, []string{"run-before", "artifact-before", "archive", "artifact-after", "run-after"}[:count], stages)
+			count := map[string]int{"success": 7, "regression-before": 1, "regression-source": 1, "regression-workflow": 1, "regression-after": 7, "run-before": 2, "artifact-before": 3, "archive": 4, "artifact-after": 5, "run-after": 6, "retention": 4, "post-admission": 4}[mode]
+			require.Equal(t, []string{"regression-before", "run-before", "artifact-before", "archive", "artifact-after", "run-after", "regression-after"}[:count], stages)
 			requests, readErr := os.ReadFile(filepath.Join(dir, "requests"))
 			require.NoError(t, readErr)
 			require.Equal(t, count, strings.Count(string(requests), "\n"), "one request per phase, without retries")
@@ -148,5 +163,22 @@ func TestReleaseArtifactOwnershipMetadata(t *testing.T) {
 				require.Equal(t, releaseArtifactBinding{}, result)
 			}
 		})
+	}
+}
+
+func TestFetchRejectsInvalidRegressionIdentityBeforeRequests(t *testing.T) {
+	_, wanted := githubRunFixture(t)
+	wanted.Image = "ghcr.io/fivetime/kubebrain@sha256:" + strings.Repeat("a", 64)
+	for _, regression := range []RegressionIdentity{{}, {RunID: "456"}, {RunID: "../456", RunAttempt: "1"}, {RunID: "456", RunAttempt: "01"}, {RunID: wanted.RunID, RunAttempt: "3"}} {
+		got, index, err := FetchGitHubReleaseEvidence(t.Context(), "/not-invoked", "/not-used", "7", wanted, regression, func(context.Context) error {
+			t.Fatal("invalid regression identity must fail before tool admission")
+			return nil
+		}, func(string, []byte, error) error {
+			t.Fatal("invalid regression identity must not initiate requests")
+			return nil
+		})
+		require.ErrorContains(t, err, "invalid release download binding")
+		require.Equal(t, ReleaseEvidence{}, got)
+		require.Nil(t, index)
 	}
 }

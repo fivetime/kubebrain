@@ -18,7 +18,7 @@ import (
 func RetainReleaseResponse(directory, stage string, output []byte, observed error) error {
 	limit := 1 << 20
 	switch stage {
-	case "run-before", "run-after", "artifact-before", "artifact-after":
+	case "run-before", "run-after", "artifact-before", "artifact-after", "regression-before", "regression-after":
 	case "archive":
 		limit = 2 << 20
 	default:
