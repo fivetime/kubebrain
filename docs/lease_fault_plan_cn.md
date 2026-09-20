@@ -52,3 +52,10 @@ go run ./hack/production/cmd/lease-fault-plan \
 该组装器尚未接入执行 CLI。调用方仍须审阅工具/凭据哈希，准备私有空
 receipt 目录，核验环境内的集群身份，并提供在线准入、留存和恢复逻辑；
 仅成功构造 argv 不构成实验许可或真实验收。
+
+`ObservationCommandPlan.MetricCommands` 按同一配置的指标预期顺序组装
+`protected-metrics-worker.sh`，以纳秒十进制参数传递对应 `Offset`，不再
+接收另一份采集偏移。目标 Pod UID 必须匹配预期；所有指标 worker 的两
+个端口必须彼此独立，也不得占用前后栈会话的四个端口。指标 stderr 必须
+私有且与原始探针、栈会话和其他指标 worker 分离。目标 Pod 名称与 UID
+的在线映射以及工具来源仍由执行入口准入检查，构造器不连接集群。
