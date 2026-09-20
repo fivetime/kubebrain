@@ -23,6 +23,16 @@ observedGeneration 均为 138、3 个就绪副本。本轮未部署候选或注�
 完整执行 CLI 的具体在线校验、独立运行环境及 Join 仍须完成；原 30 秒
 真实故障门限尚未通过。下文各阶段的历史记录不应理解为整体完成声明。
 
+随后镜像运行 `35503646753`（attempt 1）也以 success 结束，提交仍为
+上述完整 a47 SHA。元数据、日志、artifact 列表及摘要已归档并验证于
+`/root/.local/state/kubebrain/ci-35503646753-terminal.6jI7Jz5B/`。
+发布记录中的索引为
+`sha256:a4512a5e4d589b943950f3ab0ee2b3b50c0fafb7b2a242b0e8f09ce53b17085b`；
+发布 artifact `10603642587`（`dbaas-release-35503646753-1`）的 ZIP
+摘要为 `sha256:d090eee159cfdfebfba65b2b4ca6304ae30fcd78d16dcfa88bb629954bdc0cee`。
+这是 CI 日志和 API 元数据记录；本轮尚未完成该 artifact 的独立认证下载、
+候选部署或真实故障验收，不将元数据当作已校验产物内容。
+
 ## 接口与实现记录
 
 `hack/production/cmd/lease-fault-plan` 只校验实验计划的身份和指标预期部分，
