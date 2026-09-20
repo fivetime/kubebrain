@@ -851,3 +851,27 @@ fault claim、不部署、不注入故障，也不替代 SourceHash/完整工具
 通过（28.831/1.103 秒），随后新增的复核路径定向竞态通过（1.337 秒），
 go vet 通过。在线调用使用已实测下载器，但本轮新入口仅进行了夹具测试，
 尚未对真实候选命令计划执行。完整故障执行 CLI 和原定 30 秒验收仍未完成。
+
+### 0f17ae76 CI 启动及集群只读复核
+
+已推送 0f17ae76d0e335b55f84cd728e964b4b1d75eb0b，镜像工作流
+35501836848 与回归 35501836856 均实际进入 in_progress（2026-09-20
+09:16 UTC 启动）。两项结论尚未产生，运行期间不再推送以免触发并发取消。
+
+同轮只读 Kubernetes 查询确认 kubebrain-local UID 仍为
+7d760f53-5bb5-4429-a2f8-651b89665616，generation/observedGeneration
+均为 138，Ready 副本 3，仍部署固定
+ghcr.io/fivetime/kubebrain@sha256:50b9938fe3e5ad379136957438abe3c2d4bf250dc6c5973c869e0ef1341d1537。
+本地盘实例的三个 KubeBrain、三个 PD、三个 TiKV 全 Ready，KubeBrain/TiKV
+重启数 0，PD-0 重启数 1；12 个 kubebrain-local-lvm PVC 均 Bound。
+同命名空间旧 Ceph 实例继续保留，没有清理或改动。
+
+直接读取 StatefulSet 引用的 Secret **证书字段**（未输出私钥）确认：
+kubebrain-local-client-tls 的 SHA256 指纹为
+E6:76:64:BC:C0:B6:F8:1A:B1:CE:5C:12:06:85:2A:31:74:C6:16:9A:2A:39:97:5C:7B:F0:C0:F0:A3:33:53:85，
+对应本地 local-tls/client-direct.crt，而非 client.crt 或 client-dual.crt，
+到期时间 2026-09-23 21:48:19 UTC。peer Secret 对应 peer.crt，指纹为
+FE:10:AA:62:29:B2:23:5E:F1:AE:C4:76:2C:2B:2F:AF:13:E6:DC:4D:00:F4:F4:E9:E7:C3:35:9B:58:B2:AA:1C，
+到期时间 2026-09-23 21:45:05 UTC。不能把本地 client.crt 的日期与摘要
+当作实际服务证书。此检查尚未证明进程已加载 Secret 当前字节、在线 TLS
+握手或协议默认值；不构成完整在线准入，也未部署或注入任何故障。
