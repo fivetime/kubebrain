@@ -684,3 +684,21 @@ bc76eba38837514a378356510136d76cd17e04ae。原始 run.json、完整 run.log
 核验、显式释放和工具大小修复仍是本地提交，不能借此宣称它们通过 CI。
 镜像 35498089305 最近仍为 in_progress/Build and push TiKV test image；
 本轮只归档已结束的回归，不推送打断镜像作业，也未执行集群故障。
+
+### bc76eba3 镜像 CI 最终结果
+
+镜像 35498089305（attempt 1）现已 completed/success，源码确认为
+bc76eba38837514a378356510136d76cd17e04ae。run.json、完整 run.log、
+artifacts.json 及 SHA256SUMS 已归档至
+/root/.local/state/kubebrain/ci-35498089305-terminal.Gv7hX6xd，摘要检查通过。
+日志记载验证并提升的固定镜像为
+ghcr.io/fivetime/kubebrain@sha256:70c3e7c0e30d18e72933ae5895904f0b7002875c7dda48895f7adf1a7c614ade；
+amd64 子摘要为 6bc3caafa2a3fd82cf2610fffb0e968bc47b281aa9e1251d05e0a28a8da44c13，
+arm64 子摘要为 371f47813f8feedc04b8f463e78617470c870eeaedaf635d8a7b95423f00005e。
+
+发布产物 dbaas-release-35498089305-1 的 ID 为 10600669248，大小 1038
+字节，API 摘要为
+sha256:e3baad8bd4011f3874533bd2ee0c9c5e9f10b39cebc84bba946326b481d0139a，
+expired=false。本轮只是归档 CI 与产物元数据，尚未通过 fetch-release
+下载验证此 ZIP，未将它作为实际部署或故障验收证据。两项作业均已结束，
+后续本地改动可单独推送接受新的 CI；bc76eba3 成功不覆盖这些后续改动。
