@@ -77,3 +77,24 @@ artifact 所属或镜像来源。工具与凭据目录仍需独立准入，留�
 `/root/.local/state/kubebrain/ci-35491608335-terminal.txA9VgeD`。
 该源码的回归 CI `35491608346` 仍为失败（断言问题详见事务边界对照
 记录）；不能将仅镜像成功当作候选版本完整准入。后续修复需重新验证。
+
+## 下载字节与 ZIP 内容边界
+
+`ParseReleaseArchive` 接收最多 2 MiB 的 ZIP 字节及来自已认证产物元数据
+的 SHA256。先核对整个归档摘要，只允许恰好两个普通文件：`index.json`
+（最多 1 MiB）和 `release.json`（最多 32 KiB）。拒绝其他路径、目录、
+符号链接、重复成员、超限内容、大小不一致或 ZIP CRC 错误，随后调用严格
+发布证据解析器。只在内存中读取，不将成员路径解压到文件系统；失败时不
+返回部分内容。
+
+只读查询并下载现有构建 artifact `10599169857`，确认其 GitHub
+`digest` 与下载 ZIP 原始字节的 SHA256 相同。元数据、ZIP 和摘要清单在
+`/root/.local/state/kubebrain/artifact-digest-check.zMhji1h2`。该样本是
+Docker build 记录，不是新发布证据，不能用于候选镜像准入。观察到的
+`workflow_run` 含 run ID、两个 repository ID、head branch 和 head SHA；
+新 artifact 的认证获取仍需核对这些归属字段及期望名称/attempt。
+
+ZIP 解析测试覆盖摘要错误、路径穿越、缺失/额外/重复文件、符号链接、
+超限成员、索引改动、CRC 损坏和非 ZIP 输入。整包竞态测试通过
+（5.030 秒），`go vet` 与差异检查通过。本轮没有向 GitHub 或集群写入
+状态；新增代码仅本地提交，仍未完成认证下载与完整实验 CLI。
