@@ -109,3 +109,13 @@ production 矩阵因此由 4 组拆为 8 组：沿用完整发现后的 SHA-256 
 观察脚本、故障注入场景及全部断言不变。`TestObserveLocalNonces` 连续
 20 次通过，耗时 53.813 秒。已另启该包完整复测并保存 JSON 日志，
 结果仍待收取；局部复测不能抹去原全仓库失败。
+
+上述非 production 全仓库回归现已结束，退出 1；逐事件结果中唯一失败
+包为 `deploy/test-cluster`，唯一失败叶子用例为上述
+`TestObserveLocalNonces/agent-restart`。最后结束的包通过不代表整条命令
+通过，应以保存的 `exit-code` 及所有包终态判断。修正后的该包完整复测
+仍在独立执行，不能将两次不同源码状态的结果合并成一次全仓库通过。
+
+修正后的 `deploy/test-cluster` 整包复测已退出 0，包级 pass，耗时
+96.321 秒，日志目录 `test-cluster-fixture-fixed.u1jsV4NU`。随后在包含
+夹具修正的统一源码上重新启动同一非 production 全仓库命令，结果待收取。
