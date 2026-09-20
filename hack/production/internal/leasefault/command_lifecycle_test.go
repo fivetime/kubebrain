@@ -13,7 +13,7 @@ import (
 )
 
 func TestCommandLifecycleBinding(t *testing.T) {
-	for _, mode := range []string{"bound", "directory", "network", "protocol", "tools", "metric-tools", "observation", "workers", "external-fault", "external-evidence", "external-pending", "expected", "successor", "env", "missing-owner", "missing-metric-admit", "missing-origin"} {
+	for _, mode := range []string{"bound", "directory", "network", "protocol", "tools", "metric-tools", "observation", "workers", "external-fault", "external-evidence", "external-pending", "expected", "successor", "env", "missing-owner", "missing-metric-admit", "external-origin"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			targets := metricTargets(t, p)
@@ -22,7 +22,7 @@ func TestCommandLifecycleBinding(t *testing.T) {
 			h := ObservationHooks{AdmitOriginal: admit, AdmitStack: func(context.Context, string) error { calls++; return nil }, RetainOriginal: func(context.Context, string, Binding, []byte, error) error { calls++; return nil }, RetainStack: func(context.Context, string, WaitReceipt, error) error { calls++; return nil }}
 			r := MeasuredNetworkFaultRuntime{
 				Network: NetworkFaultRuntime{
-					Lifecycle:       FaultLifecycle{Owner: &FaultOwner{}, Preparation: FaultPreparation{Directory: p.OwnerDirectory, Network: p.Bindings.Network, Protocol: p.Bindings.Protocol, Own: admit}, OutcomeAdmit: admit, Metrics: metricsworker.Hooks{Origin: func(context.Context) (time.Time, error) { calls++; return time.Now(), nil }}},
+					Lifecycle:       FaultLifecycle{Owner: &FaultOwner{}, Preparation: FaultPreparation{Directory: p.OwnerDirectory, Network: p.Bindings.Network, Protocol: p.Bindings.Protocol, Own: admit}, OutcomeAdmit: admit},
 					ScriptDirectory: filepath.Dir(p.StackExecutable), TargetsSHA256: strings.Repeat("a", 64), AdmitNetwork: admit, RetainNetwork: func(string, []byte, error) error { calls++; return nil }, SuccessorConnection: &successorConnection{}, AdmitSuccessor: admit, RetainStatus: func(context.Context, SuccessorSample) error { calls++; return nil }, CaptureSeconds: 1,
 				}, AdmitMetrics: admit, RetainMetrics: func(context.Context, int, retirementmetrics.WorkerMeasurement) error { calls++; return nil },
 			}
@@ -58,8 +58,8 @@ func TestCommandLifecycleBinding(t *testing.T) {
 				r.Network.Lifecycle.Owner = nil
 			case "missing-metric-admit":
 				r.AdmitMetrics = nil
-			case "missing-origin":
-				r.Network.Lifecycle.Metrics.Origin = nil
+			case "external-origin":
+				r.Network.Lifecycle.Metrics.Origin = func(context.Context) (time.Time, error) { return time.Now(), nil }
 			}
 			l, err := p.BindLifecycle(r, h, exe, targets)
 			if mode != "bound" {
@@ -76,6 +76,7 @@ func TestCommandLifecycleBinding(t *testing.T) {
 			require.NotNil(t, l.ObserveFault)
 			require.NotNil(t, l.Metrics.Baseline)
 			require.NotNil(t, l.Metrics.Completed)
+			require.NotNil(t, l.Metrics.Origin)
 			require.NotNil(t, l.NetworkRestored)
 			require.NotNil(t, l.IdentityRestored)
 			require.Nil(t, r.Network.Lifecycle.Observation)
