@@ -147,3 +147,20 @@ production 矩阵因此由 4 组拆为 8 组：沿用完整发现后的 SHA-256 
 不保证不同 Runner 的相同耗时。此验证仅覆盖 production 包；上述统一
 源码非 production 回归与 etcd 全包竞态结果分别保留其来源和执行范围。
 它们都不证明真实故障实验入口完整，也不代表原 30 秒在线验收通过。
+
+## 后续 production 命令包竞态回归
+
+在 `1c6f118a` 对全部 50 个 `hack/production/cmd/...` 包执行
+`go test -json -race -count=1 -timeout=5m`，结果退出 1。39 个包通过、
+10 个包无测试，唯一失败包为 `rollout-availability-probe`，在 300.383 秒
+达到累计包级超时。现场为客户端 TLS 快照恢复中使用证书管理员的子用例，
+该子用例当时仅执行 22 秒；没有已报告的其他用例断言失败。证据目录
+`production-commands-regression.tekzvx9W` 保留提交号、包清单、JSON 输出
+及退出码，不将局部通过合并成整轮通过。
+
+检查 `.github/workflows/probe-regression.yml` 确认该探针包原有完整竞态
+入口使用 `-timeout=20m`。上面的本地统一 5 分钟不是 CI 的既有预算，
+不能据此断言生产代码死锁。现以同一源码、完整 50 包集合和原 CI 的
+20 分钟预算重新运行竞态验证，证据目录为
+`production-commands-ci-budget.T02ncEpy`；结果仍待收取。没有修改测试
+代码或断言，没有改变真实故障的原 30 秒门限。
