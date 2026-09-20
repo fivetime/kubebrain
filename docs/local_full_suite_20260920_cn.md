@@ -96,3 +96,16 @@ production 矩阵因此由 4 组拆为 8 组：沿用完整发现后的 SHA-256 
 775 个顶层用例分配到八个非空分组，数量为 108、107、101、101、80、
 104、91、83，总数不变。随后按新配置启动完整八组验证，本地最多同时
 运行四组，保存各组日志和退出码；不将仍在执行的组记为通过。
+
+在 `408c86d6` 按标准 CI 包集合（`go list ./...` 排除唯一的
+`/hack/production` 包）启动全仓库非 production 回归，清除测试子进程的
+`KUBEBRAIN_*` 环境变量。日志位于 `nonproduction-full-suite.dieGr3nV`。
+该轮已发现 `deploy/test-cluster` 的 `TestObserveLocalNonces/agent-restart`
+失败：启动刚写入的 fake kubectl 生成初始 Pod 夹具时，`exec` 返回
+`text file busy`，尚未进入观察器和 agent 重启断言。不能将该失败解释为
+真实集群重启观察失败，也不能把该轮记为全仓库通过。
+
+修正仅让该初始夹具由 Bash 读取执行，避免直接执行新写入的脚本 inode；
+观察脚本、故障注入场景及全部断言不变。`TestObserveLocalNonces` 连续
+20 次通过，耗时 53.813 秒。已另启该包完整复测并保存 JSON 日志，
+结果仍待收取；局部复测不能抹去原全仓库失败。

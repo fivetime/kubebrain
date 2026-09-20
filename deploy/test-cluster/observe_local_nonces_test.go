@@ -26,7 +26,10 @@ func TestObserveLocalNonces(t *testing.T) {
 			mock := filepath.Join(bin, "kubectl")
 			require.NoError(t, os.WriteFile(mock, []byte(nonceCaptureMock), 0700))
 			env := append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "NONCE_FIXTURE="+owner, "NONCE_MODE="+mode)
-			fixture := exec.Command(mock, "fixture-pod")
+			// Read the freshly written shell fixture through its interpreter.
+			// Executing the script inode itself can return ETXTBSY while another
+			// parallel fork still holds an inherited writer before exec closes it.
+			fixture := exec.Command("bash", mock, "fixture-pod")
 			fixture.Env = env
 			pod, err := fixture.Output()
 			require.NoError(t, err)
