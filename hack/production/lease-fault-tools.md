@@ -13,7 +13,7 @@ nonempty, public, symlinked or repository-local destination. Failed builds leave
 their partial output for inspection; do not reuse it. No credentials, kubeconfig,
 owner plans or running-cluster discovery are copied into the bundle.
 
-The bundle contains six static Go binaries in `bin`, the versioned network
+The current bundle contains seven static Go binaries in `bin`, the versioned network
 observers under `deploy/test-cluster`, and the protected stack/metrics scripts
 and predicates under `hack/production`. Generated copies of the latter are also
 placed alongside network observers to satisfy the current command adapter's
@@ -35,7 +35,18 @@ namespace. Do not relax workload isolation to enable host access and do not run
 the experiment inside an existing discovery/service container. Neither a bundle
 build nor its checksum verification proves the original 30-second acceptance.
 
-## Isolated PID namespace Join (not yet wired to a complete executor)
+## Current execution entry
+
+`cmd/lease-fault-run` now supplies the dedicated-case PID-1 command and concrete
+live admission, calls the native execution adapter once, and requests fresh
+post-recovery claim release without overwriting fault failure. It also connects
+the existing orphan reaper to the post-managed-worker Join. See its
+[operating contract](cmd/lease-fault-run/README.md). The two Cilium drop predicates
+used by the actual observer are now included in the bundle. This source change
+does not update the previously published runtime image or prove real-cluster
+execution; the historical verification records below retain their original scope.
+
+## Isolated PID namespace Join (historical design and local validation)
 
 `join-isolated-fault-workers.sh OWNER` is a read-only final check, packaged in
 both script directories. It does not kill or reap processes. The future executor

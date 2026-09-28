@@ -2,7 +2,10 @@ package leasefault
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
+	"syscall"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/planinput"
 )
@@ -17,6 +20,9 @@ type VerifiedCommandInputs struct {
 	MetricExecutable, JoinScript string
 	Targets                      []MetricCommandTarget
 	AdmitTools                   func(context.Context) error
+	// Required only for the packaged PID-1 Join. RunNativeCommand supplies the
+	// independently pinned startup digest, never a digest discovered at cleanup.
+	IsolatedJoinSHA256 string
 }
 
 // RunVerified composes process/initial-member admission, one durable claim,
@@ -43,6 +49,13 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 	}
 	if _, err := planinput.ReadFile(inputs.JoinScript, false, 1<<20); err != nil {
 		return result, err
+	}
+	if filepath.Base(inputs.JoinScript) == IsolatedJoinScript {
+		if err := VerifyJoinInputs(ctx, p.OwnerDirectory, inputs.JoinScript, map[string]string{
+			filepath.Join(p.OwnerDirectory, IsolatedJoinIdentity): inputs.IsolatedJoinSHA256,
+		}); err != nil {
+			return result, err
+		}
 	}
 	// Uniform provenance checks must continue after acquisition, including
 	// preparation, observation and recovery. Keep missing stage admission nil
@@ -83,6 +96,24 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 		return result, err
 	}
 	r.Network.Lifecycle.Join = func(ctx context.Context) error {
+		if filepath.Base(inputs.JoinScript) == IsolatedJoinScript {
+			if err := inputs.AdmitTools(ctx); err != nil {
+				return err
+			}
+			// RunFaultLifecycle invokes Join only after all managed Wait calls
+			// and command-producing workers return. Never reap from a timer.
+			children, observed := ReapIsolatedJoinZombies(ctx, p.OwnerDirectory, inputs.IsolatedJoinSHA256)
+			for _, child := range children {
+				if syscall.WaitStatus(child.Status) != 0 {
+					observed = errors.Join(observed, errors.New("unmanaged child exited unsuccessfully"))
+				}
+			}
+			data, encodeErr := json.Marshal(children)
+			retained := RetainRecoveryObserver(p.OwnerDirectory, "join-reaped", data, observed)
+			if err := errors.Join(observed, encodeErr, retained); err != nil {
+				return err
+			}
+		}
 		return RunFaultJoin(ctx, p.OwnerDirectory, inputs.JoinScript, inputs.AdmitTools)
 	}
 	// Source and endpoint/process checks bracket each Status read. Metrics may

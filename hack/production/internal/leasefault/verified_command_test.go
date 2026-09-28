@@ -27,7 +27,7 @@ type targetedSuccessorConnection struct {
 func (c *targetedSuccessorConnection) Target() string { return c.target }
 
 func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
-	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release", "node-uid", "node-platform", "node-api", "node-post-admit", "endpoint-original", "endpoint-observer", "endpoint-dns", "endpoint-port", "endpoint-probe", "endpoint-no-target", "endpoint-shared-ip", "endpoint-host-network", "deployment-spec", "deployment-generation", "deployment-uid", "deployment-api"} {
+	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release", "missing-isolated-join-pin", "node-uid", "node-platform", "node-api", "node-post-admit", "endpoint-original", "endpoint-observer", "endpoint-dns", "endpoint-port", "endpoint-probe", "endpoint-no-target", "endpoint-shared-ip", "endpoint-host-network", "deployment-spec", "deployment-generation", "deployment-uid", "deployment-api"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -152,6 +152,9 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			predicate, err := filepath.Abs("../../same-pod-process.jq")
 			require.NoError(t, err)
 			join := filepath.Join(t.TempDir(), "join.sh")
+			if mode == "missing-isolated-join-pin" {
+				join = filepath.Join(filepath.Dir(join), IsolatedJoinScript)
+			}
 			require.NoError(t, os.WriteFile(join, []byte("printf 'joined fixture\\n'\n"), 0600))
 			// Exercise the public artifact-to-runtime path, not manually supplied
 			// descriptors or precreated worker directories from a fixture.
@@ -176,7 +179,7 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			require.Error(t, err)
 			joins, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "recovery-join.*.json"))
 			require.NoError(t, globErr)
-			staticFailure := mode == "preconfigured-recovery" || mode == "missing-preparation" || mode == "missing-successor" || mode == "wrong-release" || strings.HasPrefix(mode, "endpoint-")
+			staticFailure := mode == "preconfigured-recovery" || mode == "missing-preparation" || mode == "missing-successor" || mode == "wrong-release" || mode == "missing-isolated-join-pin" || strings.HasPrefix(mode, "endpoint-")
 			if mode == "wrong-member" || mode == "wrong-preparation-member" || staticFailure || strings.HasPrefix(mode, "node-") || strings.HasPrefix(mode, "deployment-") {
 				require.Zero(t, creates)
 				require.Nil(t, result.Owner)

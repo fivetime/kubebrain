@@ -45,12 +45,13 @@ cp -- "$FAULT_BUILD_FIXTURE" "$4"
 			require.NoError(t, err, string(out))
 			manifest, err := os.ReadFile(filepath.Join(bundle, "SHA256SUMS"))
 			require.NoError(t, err)
-			require.Len(t, strings.Split(strings.TrimSpace(string(manifest)), "\n"), 29)
+			require.Len(t, strings.Split(strings.TrimSpace(string(manifest)), "\n"), 34)
 			verify := exec.Command("sha256sum", "-c", "SHA256SUMS")
 			verify.Dir = bundle
 			verified, err := verify.CombinedOutput()
 			require.NoError(t, err, string(verified))
-			for _, file := range []string{"protected-wait-worker.sh", "protected-metrics-worker.sh", "protected-stack-session.sh", "join-isolated-fault-workers.sh", "same-pod-process.jq", "expired-lease-wait-frames.jq"} {
+			require.FileExists(t, filepath.Join(bundle, "bin/lease-fault-run"))
+			for _, file := range []string{"protected-wait-worker.sh", "protected-metrics-worker.sh", "protected-stack-session.sh", "join-isolated-fault-workers.sh", "same-pod-process.jq", "expired-lease-wait-frames.jq", "monitor-stream.jq", "backend-drops.jq"} {
 				original, err := os.ReadFile(file)
 				require.NoError(t, err)
 				for _, subdir := range []string{"hack/production", "deploy/test-cluster"} {

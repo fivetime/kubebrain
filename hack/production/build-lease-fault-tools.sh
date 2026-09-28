@@ -17,13 +17,13 @@ mkdir "$bundle/bin" "$bundle/deploy" "$bundle/hack"
 mkdir "$bundle/deploy/test-cluster" "$bundle/hack/production"
 # Explicit package names prevent unrelated operational commands entering this
 # bundle. Build failure preserves partial output; never delete or reuse it.
-for tool in lease-term-probe lease-fault-plan lease-fault-recover lease-fault-response info-diagnostic-probe retirement-metrics-delta; do
+for tool in lease-term-probe lease-fault-plan lease-fault-recover lease-fault-response info-diagnostic-probe retirement-metrics-delta lease-fault-run; do
  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -o "$bundle/bin/$tool" "./hack/production/cmd/$tool"
 done
 for name in capture-local-cilium-drops.sh capture-local-cilium-endpoint.sh observe-local-backend-drops.sh observe-local-backend-tcp.sh observe-local-fault-label.sh observe-local-network-restored.sh observe-local-nonces.sh observe-local-policy-state.sh local-label-identity-transition.jq local-policy-observation.jq local-nonce-endpoints.jq; do
  cp -- "deploy/test-cluster/$name" "$bundle/deploy/test-cluster/$name"
 done
-for name in protected-wait-worker.sh protected-metrics-worker.sh protected-stack-session.sh join-isolated-fault-workers.sh same-pod-process.jq expired-lease-wait-frames.jq; do
+for name in protected-wait-worker.sh protected-metrics-worker.sh protected-stack-session.sh join-isolated-fault-workers.sh same-pod-process.jq expired-lease-wait-frames.jq monitor-stream.jq backend-drops.jq; do
  cp -- "hack/production/$name" "$bundle/hack/production/$name"
  # NativeCommandPlan currently shares one directory for stack/metrics/network
  # scripts. Generated copies satisfy that contract; preserve the original

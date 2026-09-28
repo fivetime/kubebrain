@@ -100,6 +100,7 @@ jobs:
           go mod download
           go mod verify
           go test -race ./hack/production/internal/planinput ./hack/production/internal/leasefault -count=1 -timeout=5m
+          go test -race ./hack/production/cmd/lease-fault-run -count=1 -timeout=2m -v
           go test ./hack/production -run '^(TestLeaseFaultTool|TestIsolatedFaultJoin)' -count=1 -v
           bash hack/production/build-lease-fault-tools.sh "$CONTEXT_DIR/bundle" amd64
           for binary in "$CONTEXT_DIR/bundle/bin/"*; do

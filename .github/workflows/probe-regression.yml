@@ -10,6 +10,7 @@ name: Rollout probe regression
       - 'hack/production/cmd/lease-fault-response/**'
       - 'hack/production/cmd/lease-fault-recover/**'
       - 'hack/production/cmd/lease-fault-plan/**'
+      - 'hack/production/cmd/lease-fault-run/**'
       - 'hack/production/cmd/uid-delete/**'
       - 'hack/production/cmd/info-diagnostic-probe/**'
       - 'hack/production/cmd/retirement-metrics-delta/**'
@@ -162,6 +163,8 @@ jobs:
           go test -race -count=1 -timeout=2m -v ./hack/production/cmd/lease-fault-recover
           go vet ./hack/production/cmd/lease-fault-plan
           go test -race -count=1 -timeout=2m -v ./hack/production/cmd/lease-fault-plan
+          go vet ./hack/production/cmd/lease-fault-run
+          go test -race -count=1 -timeout=2m -v ./hack/production/cmd/lease-fault-run
           go vet ./hack/production/internal/planinput
           go test -race -count=1 -timeout=2m -v ./hack/production/internal/planinput
       - name: Verify bounded authenticated info diagnostics

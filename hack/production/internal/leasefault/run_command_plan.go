@@ -115,5 +115,6 @@ func RunNativeCommand(ctx context.Context, path, digest string, admission Comman
 	}
 	h := ObservationHooks{AdmitOriginal: admission.Original, AdmitStack: admission.Stack}
 	inputs := VerifiedCommandInputs{Processes: p.Processes, Release: p.Release, MetricExecutable: p.MetricExecutable, JoinScript: p.JoinScript, Targets: artifacts.Targets, AdmitTools: tools}
+	inputs.IsolatedJoinSHA256 = p.Files[filepath.Join(p.OwnerDirectory, IsolatedJoinIdentity)]
 	return artifacts.Plan.RunVerified(ctx, r, h, inputs)
 }
