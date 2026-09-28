@@ -59,6 +59,14 @@ func TestPeerRetirementPendingStreamWithReloadedProxyCredentials(t *testing.T) {
 	runRetirementNetworkHandoff(t, true, true, true)
 }
 
+// Unlike the callback-only production-timer test, require the pending public
+// stream and the successor's data/term checks to finish within the same 30s
+// window. Storage failures are injected at the interface, not a TiKV network;
+// this regression does not replace the dedicated-cluster acceptance case.
+func TestPeerRetirementPendingExpiredStreamProductionTimers(t *testing.T) {
+	runRetirementNetworkHandoffTimers(t, true, true, true)
+}
+
 type networkCredentialSource func(context.Context) (transportidentity.ClientCredentialMaterial, error)
 
 func (f networkCredentialSource) LoadClientCredentialMaterial(ctx context.Context) (transportidentity.ClientCredentialMaterial, error) {
@@ -79,6 +87,12 @@ func (s retirementCountedStream) RecvMsg(message any) error {
 }
 
 func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...bool) {
+	t.Helper()
+	runRetirementNetworkHandoffTimers(t, enabled, pending, false, reload...)
+}
+
+func runRetirementNetworkHandoffTimers(t *testing.T, enabled, pending, productionTimers bool, reload ...bool) {
+	t.Helper()
 	pool, certs := retirementTestCertificates(t)
 	var credentialLoads atomic.Int32
 	if len(reload) > 0 && reload[0] {
@@ -177,6 +191,10 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 				})
 			}
 		}
+		if productionTimers {
+			serverConfig.RenewDeadline = 25 * time.Second
+			serverConfig.RetryPeriod = 500 * time.Millisecond
+		}
 		var s Server
 		if enabled {
 			var err error
@@ -215,7 +233,13 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 			}
 			return handler(srv, stream)
 		}))
-	rpcCtx, rpcCancel := context.WithTimeout(ctx, 10*time.Second)
+	rpcBudget := 10 * time.Second
+	if productionTimers {
+		// Covers setup, the original fault window, and separate post-response
+		// hint revalidation/recovery. The fault deadline below stays 30s.
+		rpcBudget = time.Minute
+	}
+	rpcCtx, rpcCancel := context.WithTimeout(ctx, rpcBudget)
 	defer rpcCancel()
 	leaseClient := etcdserverpb.NewLeaseClient(oldClient)
 	leaseTTL := int64(60)
@@ -241,10 +265,18 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 	oldTerm := old.leaderElection.CurrentLeadershipTerm()
 	next := start(1, bases[1])
 	require.Eventually(t, func() bool { return next.leaderElection.GetLeaderInfo() == urls[0] }, 3*time.Second, 10*time.Millisecond)
+	faultStarted := time.Now()
+	verificationCtx := rpcCtx
+	if productionTimers {
+		var cancelFault context.CancelFunc
+		verificationCtx, cancelFault = context.WithDeadline(rpcCtx, faultStarted.Add(30*time.Second))
+		defer cancelFault()
+	}
 	oldStore.failed.Store(true)
 	type renewalResult struct {
 		response *etcdserverpb.LeaseKeepAliveResponse
 		err      error
+		received time.Time
 	}
 	var renewalDone chan renewalResult
 	if pending {
@@ -267,7 +299,7 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 		go func() {
 			defer close(joined)
 			response, err := stream.Recv()
-			renewalDone <- renewalResult{response, err}
+			renewalDone <- renewalResult{response, err, time.Now()}
 		}()
 		defer func() { stopStream(); <-joined }()
 		select {
@@ -286,9 +318,16 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 		require.Equal(t, urls[0], record.HolderIdentity)
 		return
 	}
+	successorBudget := 5 * time.Second
+	if productionTimers {
+		deadline, ok := verificationCtx.Deadline()
+		require.True(t, ok)
+		successorBudget = time.Until(deadline)
+		require.Positive(t, successorBudget, "setup must not exhaust the original fault window")
+	}
 	require.Eventually(t, func() bool {
 		return next.leaderElection.IsLeader() && next.requestPathReady()
-	}, 5*time.Second, 10*time.Millisecond)
+	}, successorBudget, 10*time.Millisecond)
 	require.Positive(t, requests.Load())
 	require.Positive(t, oldStore.rejected.Load(), "storage fault must actually reject old-node calls")
 	require.True(t, oldStore.failed.Load(), "handoff must not depend on restoring old storage access")
@@ -296,11 +335,11 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 	require.False(t, old.leaderElection.IsLeader())
 	require.Greater(t, next.leaderElection.CurrentLeadershipTerm(), oldTerm)
 	nextClient := retirementPublicGRPC(t, next, pool, certs)
-	ttl, err := etcdserverpb.NewLeaseClient(nextClient).LeaseTimeToLive(rpcCtx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grant.ID, Keys: true})
+	ttl, err := etcdserverpb.NewLeaseClient(nextClient).LeaseTimeToLive(verificationCtx, &etcdserverpb.LeaseTimeToLiveRequest{ID: grant.ID, Keys: true})
 	require.NoError(t, err)
 	require.GreaterOrEqual(t, ttl.TTL, ack.TTL)
 	require.Contains(t, ttl.Keys, key)
-	value, err := etcdserverpb.NewKVClient(nextClient).Range(rpcCtx, &etcdserverpb.RangeRequest{Key: key})
+	value, err := etcdserverpb.NewKVClient(nextClient).Range(verificationCtx, &etcdserverpb.RangeRequest{Key: key})
 	require.NoError(t, err)
 	require.Len(t, value.Kvs, 1)
 	require.Equal(t, grant.ID, value.Kvs[0].Lease)
@@ -327,6 +366,13 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 				"isolated ingress must retain the verified successor term, not merely the old term")
 			require.Positive(t, peerRenewals[1].Load(), "successor peer must actually consume the forwarded renewal")
 			require.True(t, oldStore.failed.Load())
+			if productionTimers {
+				require.Less(t, got.received.Sub(faultStarted), 30*time.Second, "late original responses are failures")
+				require.NoError(t, verificationCtx.Err(), "all fault assertions must finish in the original window")
+				require.Less(t, time.Since(faultStarted), 30*time.Second)
+				t.Logf("fault to original response=%s; successor/lease/key/term checks completed=%s (budget 30s)",
+					got.received.Sub(faultStarted), time.Since(faultStarted))
+			}
 			// Keep the original stream alive beyond the two-second routing hint
 			// lifetime. Repeated renewal must survive revalidation while the old
 			// ingress still cannot refresh the authoritative election record.
@@ -382,7 +428,7 @@ func runRetirementNetworkHandoff(t *testing.T, enabled, pending bool, reload ...
 			require.Len(t, persisted.Kvs, 1)
 			require.Equal(t, grant.ID, persisted.Kvs[0].Lease)
 			require.Equal(t, []byte("kept"), persisted.Kvs[0].Value)
-		case <-rpcCtx.Done():
+		case <-verificationCtx.Done():
 			t.Fatal("original expired keepalive stream did not recover while old storage remained unavailable")
 		}
 	}
