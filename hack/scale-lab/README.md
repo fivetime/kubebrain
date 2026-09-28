@@ -95,7 +95,14 @@ mode, audit bodies also cover only the test administrator's Pod deletes in
 `controlplane-smoke`, to verify those deletion preconditions. No permissions
 are added. Replacement is disabled by default and rejected without KWOK.
 This covers controller reconciliation, not real workload recovery or HA; shared
-backend admission and the existing 60-second lease cleanup gate are unchanged.
+backend admission is unchanged. Following the 2026-09-28 acceptance decision,
+shared-backend cleanup observes empty leases for their initially sampled maximum
+GrantedTTL plus the existing 60-second cleanup allowance. This fixed deadline is
+not extended by later polls. Attached keys, new leases, identity drift, RPC errors,
+or expiration outside the window fail cleanup; no lease is renewed or revoked.
+`operation-result.json` records the functional exit while cleanup is pending;
+only final `result.json` reports the overall result after cleanup. This does not
+change the 60-second Pod replacement window or any fault/performance threshold.
 
 Build and test locally without deployment configuration:
 

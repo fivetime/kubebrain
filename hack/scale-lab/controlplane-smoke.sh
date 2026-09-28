@@ -46,6 +46,9 @@ done
 work=$(mktemp -d "$WORK_PARENT/controlplane-$backend.XXXXXXXX")
 echo "CONTROLPLANE_EVIDENCE=$work"
 sha256sum "${BASH_SOURCE[0]}" "$root/hack/scale-lab/verify-controlplane-audit.jq" "$root/hack/scale-lab/controlplane-audit-policy.jq" > "$work/runner.sha256"
+if [[ $backend == kubebrain ]]; then
+  sha256sum "$root/hack/scale-lab/controlplane-backend.sh" >> "$work/runner.sha256"
+fi
 if [[ $replacement == true ]]; then
   sha256sum "$root/hack/scale-lab/controlplane-replacement.sh" "$root/hack/scale-lab/verify-controlplane-replacement"*.jq >> "$work/runner.sha256"
 fi
@@ -63,6 +66,9 @@ finish() {
     wait "$pid" 2>/dev/null || true
   done
   operation_result=$result
+  # Preserve the functional outcome while long Event leases expire. This is
+  # not an overall success receipt; result.json is written only after cleanup.
+  printf '{"operation_exit":%s,"cleanup":"pending"}\n' "$operation_result" > "$work/operation-result.json"
   cleanup_result=0
   if [[ $backend == kubebrain ]]; then
     controlplane_backend_cleanup || cleanup_result=$?

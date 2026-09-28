@@ -67,15 +67,49 @@ controlplane_backend_cleanup() {
   controlplane_backend_identity > "$controlplane_backend_directory/backend-cleanup.fields" || return 1
   "${controlplane_etcdctl[@]}" del "$controlplane_prefix" --prefix --write-out=json > "$controlplane_backend_directory/backend-delete.json" || return 1
   controlplane_backend_empty_prefix || return 1
-  local deadline=$((SECONDS+60)) leases
+  # Empty leases remain valid after their last key is deleted. Freeze the
+  # observation budget once: granted lifetime plus the existing 60s cleanup
+  # allowance. Never refresh this deadline on renewal or leadership changes.
+  local started=$SECONDS deadline leases lease response ttl granted max_ttl=0 initial=true
+  local -a ids=()
+  local -A admitted=()
+  deadline=$((started+60))
   while true; do
+    controlplane_backend_identity > "$controlplane_backend_directory/backend-cleanup-current.fields" || return 1
     leases=$("${controlplane_etcdctl[@]}" lease list) || return 1
     printf '%s\n' "$leases" > "$controlplane_backend_directory/backend-final-leases.txt"
+    ((SECONDS <= deadline)) || { echo 'leases did not naturally expire; none revoked' >&2; return 1; }
     if [[ $leases == 'found 0 leases' ]]; then
+      controlplane_backend_empty_prefix || return 1
       controlplane_backend_owned=false
       return 0
     fi
-    ((SECONDS < deadline)) || { echo 'leases did not naturally expire; none revoked' >&2; return 1; }
+    mapfile -t ids <<< "${leases#*$'\n'}"
+    [[ ${leases%%$'\n'*} == "found ${#ids[@]} leases" ]] || return 1
+    for lease in "${ids[@]}"; do
+      [[ $lease =~ ^[a-f0-9]{1,16}$ ]] || return 1
+      if [[ $initial == true ]]; then
+        [[ ! -v admitted[$lease] ]] || return 1
+        admitted[$lease]=true
+      else
+        [[ -v admitted[$lease] ]] || { echo 'new lease appeared after writers stopped' >&2; return 1; }
+      fi
+      response=$("${controlplane_etcdctl[@]}" lease timetolive "$lease" --keys --write-out=json) || return 1
+      printf '%s\n' "$response" > "$controlplane_backend_directory/backend-lease-$lease.json"
+      # A lease may expire between List and TTL. Live leases must have no keys.
+      ttl=$(jq -er 'select((.keys // [] | type)=="array" and (.keys // [] | length)==0)
+        | .ttl | select(type=="number" and .==floor and .>= -1 and .<=2147483647)' <<< "$response") || return 1
+      if ((ttl >= 0)); then
+        granted=$(jq -er '.["granted-ttl"] | select(type=="number" and .==floor and .>0 and .<=2147483647)' <<< "$response") || return 1
+        ((ttl <= granted)) || return 1
+        if [[ $initial == true ]] && ((granted > max_ttl)); then max_ttl=$granted; fi
+      fi
+    done
+    if [[ $initial == true ]]; then
+      deadline=$((started+max_ttl+60))
+      printf 'granted_ttl_max=%s\ncleanup_allowance=60\n' "$max_ttl" > "$controlplane_backend_directory/backend-cleanup-budget.txt"
+      initial=false
+    fi
     sleep 1
   done
 }
