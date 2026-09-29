@@ -122,7 +122,7 @@ FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc
 
 RUN apk add --no-cache \
       bash=5.3.3-r1 \
-      ca-certificates=20260611-r0 \
+      ca-certificates=20260909-r0 \
       coreutils=9.8-r1 \
       gcompat=1.1.0-r4 \
       jq=1.8.2-r0 \
@@ -150,7 +150,7 @@ FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc
 
 RUN apk add --no-cache \
       bash=5.3.3-r1 \
-      ca-certificates=20260611-r0 \
+      ca-certificates=20260909-r0 \
       coreutils=9.8-r1 \
       gcompat=1.1.0-r4 \
       jq=1.8.2-r0 \
@@ -186,7 +186,7 @@ FROM alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc
 
 RUN apk add --no-cache \
       bash=5.3.3-r1 \
-      ca-certificates=20260611-r0 \
+      ca-certificates=20260909-r0 \
       coreutils=9.8-r1 \
       curl=8.22.0-r0 \
       etcd-ctl=3.6.10-r1 \
