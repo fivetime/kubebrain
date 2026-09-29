@@ -31,7 +31,7 @@ env:
 jobs:
   real-consumer-smoke:
     name: Real consumer smoke
-    runs-on: ubuntu-24.04
+    runs-on: self-hosted
     timeout-minutes: 75
     steps:
       - name: Check out repository
