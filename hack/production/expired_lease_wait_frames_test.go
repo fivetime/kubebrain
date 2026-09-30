@@ -22,6 +22,9 @@ func TestExpiredLeaseWaitFramesRequireReviewedSourceAndExactTopWaitSite(t *testi
 		fail                     bool
 	}{
 		{"matching", frame, source, hash, 1, false},
+		{"fixed candidate", frame, "4906a5f87b4282d860c5fd748be69ca68d42e898", hash, 1, false},
+		{"fixed candidate wrong file", frame, "4906a5f87b4282d860c5fd748be69ca68d42e898", strings.Repeat("b", 64), 0, true},
+		{"fixed candidate wrong line", strings.Replace(frame, ":1645", ":1646", 1), "4906a5f87b4282d860c5fd748be69ca68d42e898", hash, 0, false},
 		{"current release", frame, "1e862c110a82081e68ffa9612de4893d74decbc6", hash, 1, false},
 		{"current release wrong file", frame, "1e862c110a82081e68ffa9612de4893d74decbc6", strings.Repeat("b", 64), 0, true},
 		{"current release wrong line", strings.Replace(frame, ":1645", ":1646", 1), "1e862c110a82081e68ffa9612de4893d74decbc6", hash, 0, false},
