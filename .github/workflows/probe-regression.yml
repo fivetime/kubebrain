@@ -1,4 +1,5 @@
 name: Rollout probe regression
+# The self-path push trigger also restores branch-only workflow discovery.
 
 "on":
   push:

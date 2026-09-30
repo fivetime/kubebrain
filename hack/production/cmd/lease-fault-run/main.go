@@ -30,8 +30,9 @@ import (
 	strictjson "sigs.k8s.io/json"
 )
 
-const candidateSource = "1e862c110a82081e68ffa9612de4893d74decbc6"
-const candidateImage = "ghcr.io/fivetime/kubebrain@sha256:8aa38da6669729ecff864008e5e92df51be754f59e138a7b32424d1fca11589c"
+// Image workflow 36603923274, attempt 4; release artifact 11109271032.
+const candidateSource = "aeee53f9125069d0e17fd2432cffd156f29287ad"
+const candidateImage = "ghcr.io/fivetime/kubebrain@sha256:a53b9c4882e54f04427cc1703fcc7098f0c913780282d097ffd883df0c0378d6"
 const leaseSourceHash = "3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"
 const namespace = "kubebrain-dbaas-test"
 const namespaceUID = "6c57c242-912b-41bb-9020-f4fdb3225ef3"

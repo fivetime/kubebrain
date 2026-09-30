@@ -1,4 +1,5 @@
 name: Build dedicated lease fault tools
+# Keep the push registration entry: deleting all runs can remove branch-only discovery.
 
 # Build/publish only. This workflow has no cluster credentials or fault execution.
 on:
