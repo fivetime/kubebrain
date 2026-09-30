@@ -2,14 +2,17 @@
 
 `lease-fault-run` connects the existing native command plan to concrete live
 namespace/deployment, process, TLS member and file admission, then executes one
-attempt. It is restricted to the dedicated cluster identities and `aeee53f9`
+attempt. It is restricted to the dedicated cluster identities and `4906a5f8`
 product candidate in `main.go`. It does not deploy that candidate or generate
 plans, credentials, diagnostic snapshots, experimental peer configuration or
 network-policy approval.
 
-This candidate's image and release evidence passed workflow `36603923274`,
-attempt 4 (artifact `11109271032`). Earlier `1e862c11` acceptance results do not
+This candidate's image and release evidence passed workflow `36739259406`,
+attempt 1 (artifact `11111945808`). Earlier `1e862c11` acceptance results do not
 prove acceptance of this candidate; real-cluster cases must be rerun.
+The matching regression workflow must independently succeed before admission;
+the image workflow alone is insufficient. Later tool-only commits do not change
+this product candidate: report tool source and product source separately.
 
 The command must be PID 1 in the separately admitted execution Pod, with one
 container, no sidecars/init containers/shared or host namespaces/host volumes,
