@@ -10,6 +10,21 @@ ARG GH_SHA256
 ARG TOOLS_SOURCE
 COPY bundle/ /opt/kubebrain-fault/
 COPY gh /usr/local/bin/gh
+COPY runtime-apks/ /tmp/kubebrain-runtime-apks/
+# Signed Alpine packages are fetched before the offline Docker build. ss is
+# required by the existing protected diagnostic port checks.
+RUN apk add --no-cache --no-network /tmp/kubebrain-runtime-apks/*.apk \
+    && rm -r /tmp/kubebrain-runtime-apks \
+    && ss --version
+# Command input admission rejects final symlinks. Alpine supplies several
+# applets through symlinks, so expose regular copies in the driver's exact PATH.
+RUN for tool in bash jq kubectl timeout date sha256sum grep ss find mktemp stat openssl cut sed dirname basename sleep mkdir; do \
+      tool_path="$(command -v "$tool")" || exit 1; \
+      if [ "$tool_path" != "/usr/local/bin/$tool" ]; then \
+        cp -L "$tool_path" "/usr/local/bin/$tool"; \
+      fi; \
+      test -f "/usr/local/bin/$tool" && test ! -L "/usr/local/bin/$tool" || exit 1; \
+    done
 RUN printf '%s\n' "$BASE_IMAGE" | grep -Eq '^ghcr.io/fivetime/kubebrain@sha256:[0-9a-f]{64}$' \
     && printf '%s\n' "$TOOLS_SOURCE" | grep -Eq '^[0-9a-f]{40}$' \
     && for digest in "$BUNDLE_SHA256" "$GH_SHA256"; do \
@@ -22,7 +37,7 @@ RUN test -n "$BUNDLE_SHA256" && test -n "$GH_SHA256" \
     && /usr/local/bin/gh --version \
     && /usr/local/bin/kubectl version --client \
     && bash --version && jq --version && timeout --version \
-    && for tool in find grep stat date sha256sum mktemp sort; do command -v "$tool" || exit 1; done
+    && for tool in find grep stat date sha256sum mktemp sort ss; do command -v "$tool" || exit 1; done
 LABEL org.opencontainers.image.title="KubeBrain dedicated lease fault test tools" \
       org.opencontainers.image.revision="$TOOLS_SOURCE" \
       io.kubebrain.fault-tools.bundle-sha256="$BUNDLE_SHA256" \

@@ -118,6 +118,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Fetch signed diagnostic runtime packages
+        env:
+          CONTEXT_DIR: ${{ steps.inputs.outputs.context }}
+          BASE_IMAGE: ${{ inputs.base_image }}
+        run: |
+          set -euo pipefail
+          mkdir "$CONTEXT_DIR/runtime-apks"
+          docker run --rm --user 0:0 --entrypoint /bin/sh \
+            --volume "$CONTEXT_DIR/runtime-apks:/packages" "$BASE_IMAGE" \
+            -ec 'apk update; apk fetch --recursive --output /packages iproute2-ss=6.17.0-r0'
+          test -f "$CONTEXT_DIR/runtime-apks/iproute2-ss-6.17.0-r0.apk"
+          (cd "$CONTEXT_DIR/runtime-apks" && sha256sum *.apk) > "$CONTEXT_DIR/evidence/runtime-apks.sha256"
+
       - name: Build runtime without network in build steps
         env:
           CONTEXT_DIR: ${{ steps.inputs.outputs.context }}
@@ -141,7 +154,10 @@ jobs:
           set -euo pipefail
           docker run --rm --network=none --read-only --cap-drop=ALL \
             --security-opt=no-new-privileges --entrypoint /bin/bash "$IMAGE" -c \
-            'set -e; cd /opt/kubebrain-fault; sha256sum -c SHA256SUMS; gh --version; kubectl version --client' \
+            'set -e; cd /opt/kubebrain-fault; sha256sum -c SHA256SUMS; gh --version; kubectl version --client;
+             export PATH=/usr/local/bin:/usr/bin:/bin;
+             for tool in bash jq kubectl timeout date sha256sum grep ss find mktemp stat openssl cut sed dirname basename sleep mkdir; do path=$(command -v "$tool"); test -f "$path" && test ! -L "$path"; done;
+             ss --version; ss -H -ltn; apk info -v iproute2-ss' \
             > "$CONTEXT_DIR/evidence/smoke.log" 2>&1
           if docker run --rm --network=none --read-only --cap-drop=ALL \
             --security-opt=no-new-privileges "$IMAGE" \
@@ -175,7 +191,7 @@ jobs:
               scope:"tool runtime build and smoke only; not fault admission or acceptance"}' \
             > "$CONTEXT_DIR/evidence/runtime.json"
           cp "$CONTEXT_DIR/bundle/SHA256SUMS" "$CONTEXT_DIR/evidence/bundle.sha256"
-          (cd "$CONTEXT_DIR/evidence" && sha256sum smoke.log default.log manifest.json runtime.json bundle.sha256 > SHA256SUMS)
+          (cd "$CONTEXT_DIR/evidence" && sha256sum smoke.log default.log manifest.json runtime.json bundle.sha256 runtime-apks.sha256 > SHA256SUMS)
 
       - name: Archive runtime evidence
         if: always() && steps.inputs.outputs.context != ''
