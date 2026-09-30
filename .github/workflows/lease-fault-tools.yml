@@ -157,7 +157,7 @@ jobs:
             'set -e; cd /opt/kubebrain-fault; sha256sum -c SHA256SUMS; gh --version; kubectl version --client;
              export PATH=/usr/local/bin:/usr/bin:/bin;
              for tool in bash jq kubectl timeout date sha256sum grep ss find mktemp stat openssl cut sed dirname basename sleep mkdir; do path=$(command -v "$tool"); test -f "$path" && test ! -L "$path"; done;
-             ss --version; ss -H -ltn; apk info -v iproute2-ss' \
+             ss --version; ss -H -ltn; /sbin/apk info -v iproute2-ss' \
             > "$CONTEXT_DIR/evidence/smoke.log" 2>&1
           if docker run --rm --network=none --read-only --cap-drop=ALL \
             --security-opt=no-new-privileges "$IMAGE" \
