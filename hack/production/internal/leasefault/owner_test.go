@@ -20,7 +20,7 @@ import (
 )
 
 func TestFaultOwnerClaim(t *testing.T) {
-	for _, mode := range []string{"success", "same-owner-busy", "other-owner-busy", "ambiguous-create", "replaced", "changed-holder", "mutable", "scope-replaced", "missing-receipt", "symlink-receipt", "recovery-failed", "delete-conflict"} {
+	for _, mode := range []string{"success", "same-owner-busy", "other-owner-busy", "ambiguous-create", "cancelled-after-create", "replaced", "changed-holder", "mutable", "scope-replaced", "missing-receipt", "symlink-receipt", "recovery-failed", "delete-conflict"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -45,6 +45,9 @@ func TestFaultOwnerClaim(t *testing.T) {
 				if mode == "ambiguous-create" {
 					return true, nil, errors.New("CREATE response lost")
 				}
+				if mode == "cancelled-after-create" {
+					cancel()
+				}
 				return true, u, nil
 			})
 			client.PrependReactor("delete", "configmaps", func(a ktesting.Action) (bool, runtime.Object, error) {
@@ -61,6 +64,19 @@ func TestFaultOwnerClaim(t *testing.T) {
 				return false, nil, nil
 			})
 			o, err := AcquireFaultOwner(ctx, client, dir, b)
+			if mode == "cancelled-after-create" {
+				require.ErrorIs(t, err, context.Canceled)
+				require.Nil(t, o, "persisted CREATE is not admission after cancellation")
+				claim, getErr := client.Resource(ownerResource).Namespace(b.Namespace).Get(context.Background(), faultOwnerName, metav1.GetOptions{})
+				require.NoError(t, getErr)
+				require.Equal(t, types.UID("claim-uid"), claim.GetUID())
+				saved, loadErr := LoadFaultOwner(client, dir, b)
+				require.NoError(t, loadErr, "retain the receipt for independent recovery, not automatic execution")
+				require.Equal(t, "claim-uid", saved.uid)
+				require.Equal(t, 1, creates)
+				require.Zero(t, deletes)
+				return
+			}
 			if mode == "ambiguous-create" {
 				require.Error(t, err)
 				require.Nil(t, o)

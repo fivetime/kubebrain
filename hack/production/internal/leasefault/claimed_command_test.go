@@ -103,7 +103,7 @@ func TestClaimingCommandPreflightAndRetainedOwnership(t *testing.T) {
 				_, getErr := client.Resource(ownerResource).Namespace(n.Namespace).Get(context.Background(), faultOwnerName, metav1.GetOptions{})
 				require.NoError(t, getErr, "claim must remain on any failure")
 				if strings.HasPrefix(mode, "execution-") {
-					require.NotNil(t, result.Owner)
+					require.NotNil(t, result.Owner, "claim return error: %v; context: %v; preclaims=%d creates=%d liveChecks=%d", err, ctx.Err(), preclaims, creates, liveChecks)
 					require.Error(t, result.Lifecycle.ExecutionError)
 					require.Error(t, result.Lifecycle.RecoveryError)
 					require.True(t, result.Lifecycle.RecoveryAttempted)
