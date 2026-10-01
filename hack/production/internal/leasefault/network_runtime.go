@@ -55,12 +55,7 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 		return FaultLifecycle{}, errors.New("independent successor does not bind the original probe")
 	}
 	p := l.Preparation
-	admit := func(ctx context.Context) error {
-		if r.admitTools != nil {
-			if err := r.admitTools(ctx); err != nil {
-				return err
-			}
-		}
+	liveAdmission := func(ctx context.Context) error {
 		if err := l.Owner.Check(ctx); err != nil {
 			return err
 		}
@@ -73,6 +68,17 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 		if err := l.Owner.Check(ctx); err != nil {
 			return err
 		}
+		return ctx.Err()
+	}
+	admit := func(ctx context.Context) error {
+		if r.admitTools != nil {
+			if err := r.admitTools(ctx); err != nil {
+				return err
+			}
+		}
+		if err := liveAdmission(ctx); err != nil {
+			return err
+		}
 		if r.admitTools != nil {
 			return errors.Join(r.admitTools(ctx), ctx.Err())
 		}
@@ -80,7 +86,12 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	}
 	n := NetworkObserver{Directory: p.Directory, StatefulSetName: p.StatefulSetName, ScriptDirectory: r.ScriptDirectory, TargetsSHA256: r.TargetsSHA256, Network: p.Network, Client: p.Client, Env: append([]string{}, r.Env...), Admit: admit, Retain: r.RetainNetwork}
 	l.Preparation.Own = admit
-	l.Preparation.NoncesSafe = n.NoncesSafe
+	// The nonce scan is wholly read-only. Keep every live ownership/identity
+	// check, but bracket the whole scan rather than each nested API admission.
+	nonces := n
+	nonces.Admit = liveAdmission
+	nonces.nonceTools = r.admitTools
+	l.Preparation.NoncesSafe = nonces.NoncesSafe
 	l.Preparation.ReservedReady = n.Prepared
 	l.NetworkRestored = n.Restored
 	l.IdentityRestored = n.Unlabelled

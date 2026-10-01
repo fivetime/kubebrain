@@ -38,7 +38,7 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 		"observer-drops", "observer-drops-pending", "observer-drops-bad-output", "observer-drops-wrong-path",
 		"observer-drops-input-during", "observer-drops-retain-fail", "observer-drops-inactive", "observer-drops-invalid-duration",
 		"observer-drops-wrong-clock", "observer-drops-wrong-exit",
-		"nonce-matched", "nonce-pending", "nonce-input-before", "nonce-input-during", "nonce-retain-fail", "nonce-owner-lost", "nonce-owner-after",
+		"nonce-matched", "nonce-pending", "nonce-input-before", "nonce-input-during", "nonce-retain-fail", "nonce-owner-lost", "nonce-owner-after", "nonce-source-before", "nonce-source-after",
 	} {
 		t.Run(mode, func(t *testing.T) {
 			// Bound fixture setup and preparation without treating their total

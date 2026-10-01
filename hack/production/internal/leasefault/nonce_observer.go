@@ -15,9 +15,15 @@ import (
 // scan must precede CREATE. Admit must authenticate the same fixed test cluster,
 // claim, explicit environment and pinned collector/classifier/tool dependencies.
 // This is one snapshot attempt, not a continuous-absence or enforcement proof.
-func (o NetworkObserver) NoncesSafe(ctx context.Context) error {
+func (o NetworkObserver) NoncesSafe(ctx context.Context) (err error) {
 	if ctx == nil || o.Client == nil || o.Admit == nil || o.Retain == nil || !filepath.IsAbs(o.ScriptDirectory) || filepath.Clean(o.ScriptDirectory) != o.ScriptDirectory {
 		return errors.New("incomplete nonce observer binding")
+	}
+	if o.nonceTools != nil {
+		if err := o.nonceTools(ctx); err != nil {
+			return err
+		}
+		defer func() { err = errors.Join(err, o.nonceTools(ctx), ctx.Err()) }()
 	}
 	o.Network.PodBefore = bytes.Clone(o.Network.PodBefore)
 	o.Network.ApprovedPolicy = bytes.Clone(o.Network.ApprovedPolicy)

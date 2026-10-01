@@ -33,6 +33,8 @@ type NetworkObserver struct {
 	Env                                                        []string
 	Admit                                                      func(context.Context) error
 	Retain                                                     func(string, []byte, error) error
+	// Only the concrete runtime may separate source checks from live admission.
+	nonceTools func(context.Context) error
 }
 
 // Prepared verifies the owned-label identity and absence of the reserved policy

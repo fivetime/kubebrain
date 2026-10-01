@@ -25,11 +25,22 @@ if [[ $MODE == nonce-input-during ]]; then printf changed > "$2"; fi
 `
 	require.NoError(t, os.WriteFile(filepath.Join(scripts, "observe-local-nonces.sh"), []byte(script), 0600))
 	retained := 0
+	admissions := 0
+	sourceChecks := 0
+	sourceChanged := mode == "nonce-source-before"
 	ownerLost := mode == "nonce-owner-lost"
 	o := NetworkObserver{Directory: p.Directory, StatefulSetName: p.StatefulSetName, ScriptDirectory: scripts,
 		Network: p.Network, Client: p.Client,
+		nonceTools: func(context.Context) error {
+			sourceChecks++
+			if sourceChanged {
+				return errors.New("pinned source changed")
+			}
+			return nil
+		},
 		Env: []string{"MODE=" + mode, "ACTIVE=" + p.Network.Nonce, "RESERVED=" + p.Network.ReservedNonce, fmt.Sprintf("DEADLINE=%d", deadline.UnixNano())},
 		Admit: func(context.Context) error {
+			admissions++
 			if ownerLost {
 				return errors.New("claim lost")
 			}
@@ -37,6 +48,12 @@ if [[ $MODE == nonce-input-during ]]; then printf changed > "$2"; fi
 		},
 		Retain: func(stage string, output []byte, observed error) error {
 			retained++
+			if mode == "nonce-source-after" {
+				sourceChanged = true
+			}
+			if mode == "nonce-matched" {
+				require.Equal(t, 4*retained-2, admissions, "each scan has two admission checks before its child runs")
+			}
 			if mode == "nonce-owner-after" {
 				ownerLost = true
 			}
@@ -60,6 +77,8 @@ if [[ $MODE == nonce-input-during ]]; then printf changed > "$2"; fi
 	err := PrepareFault(ctx, p)
 	if mode == "nonce-matched" {
 		require.NoError(t, err)
+		require.Equal(t, 4*retained, admissions, "successful scans repeat full admission four times")
+		require.Equal(t, 2*retained, sourceChecks, "source verification brackets each complete read-only scan")
 		require.Greater(t, retained, 1, "scan is checked between preparation mutations")
 		require.Error(t, VerifyProtocolRecovery(ctx, p.Protocol, p.Connection))
 		require.NoError(t, RecoverFault(ctx, FaultRecovery{Directory: p.Directory, StatefulSetName: p.StatefulSetName, Network: p.Network, Protocol: p.Protocol,
@@ -69,7 +88,15 @@ if [[ $MODE == nonce-input-during ]]; then printf changed > "$2"; fi
 	}
 	require.Error(t, err)
 	require.NoError(t, VerifyProtocolRecovery(ctx, p.Protocol, p.Connection))
-	if mode == "nonce-owner-lost" || mode == "nonce-input-before" {
+	if mode == "nonce-source-before" {
+		require.Zero(t, admissions)
+		require.Equal(t, 1, sourceChecks)
+	}
+	if mode == "nonce-source-after" {
+		require.ErrorContains(t, err, "pinned source changed")
+		require.Equal(t, 2, sourceChecks)
+	}
+	if mode == "nonce-owner-lost" || mode == "nonce-input-before" || mode == "nonce-source-before" {
 		require.Zero(t, retained)
 	} else {
 		require.Equal(t, 1, retained, "no implicit read retry or mutation on failed first scan")
