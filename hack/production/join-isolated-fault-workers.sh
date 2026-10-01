@@ -36,7 +36,17 @@ read -r -a fields <<<"${init_stat##*) }"
 for entry in /proc/[0-9]*; do
   pid=${entry##*/}
   if [[ $pid != 1 && $pid != "$$" ]]; then
-    printf 'JOIN_REFUSED_PROCESS_REMAINS pid=%s\n' "$pid" >&2
+    # Retain non-secret identity using shell builtins only. A disappeared entry
+    # still refuses this attempt; diagnostics never weaken the empty check.
+    state=unavailable parent=unavailable start=unavailable
+    process_stat=
+    if IFS= read -r process_stat <"$entry/stat" 2>/dev/null; then
+      read -r -a process_fields <<<"${process_stat##*) }"
+      state=${process_fields[0]:-unavailable}
+      parent=${process_fields[1]:-unavailable}
+      start=${process_fields[19]:-unavailable}
+    fi
+    printf 'JOIN_REFUSED_PROCESS_REMAINS pid=%s state=%s ppid=%s start=%s\n' "$pid" "$state" "$parent" "$start" >&2
     exit 75
   fi
 done

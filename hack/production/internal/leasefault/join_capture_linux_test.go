@@ -103,6 +103,14 @@ func TestCaptureIsolatedJoinHelper(t *testing.T) {
 	}
 	if mode == "adopted-zombie" || mode == "reap-wrong-identity" || mode == "reap-cancelled" {
 		pid := adoptedJoinZombie(t, ctx, dir)
+		if mode == "adopted-zombie" {
+			out, err := exec.CommandContext(ctx, "/bin/bash", script, dir).CombinedOutput()
+			var exit *exec.ExitError
+			require.ErrorAs(t, err, &exit, "diagnostics must still refuse an unreaped zombie")
+			require.Equal(t, 75, exit.ExitCode())
+			require.Contains(t, string(out), "JOIN_REFUSED_PROCESS_REMAINS pid="+strconv.Itoa(pid)+" state=Z ppid=1 start=")
+			require.FileExists(t, "/proc/"+strconv.Itoa(pid)+"/stat", "read-only diagnostics must not reap")
+		}
 		if mode == "reap-wrong-identity" {
 			fields := strings.Split(string(data), "\t")
 			fields[1] = "0:0"
