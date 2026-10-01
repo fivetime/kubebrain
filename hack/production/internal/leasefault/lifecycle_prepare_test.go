@@ -23,7 +23,7 @@ import (
 // This verifies composition, not election, Cilium convergence or fault timing.
 func TestPrepareFaultAndRecover(t *testing.T) {
 	for _, mode := range []string{
-		"success", "owner-mismatch", "unsafe-nonce", "reservation-replaced", "dataplane-not-ready", "create-ambiguous", "after-grant-denied", "after-grant-policy-replaced", "after-grant-nonce-collision",
+		"success", "owner-mismatch", "unsafe-nonce", "unsafe-before-label", "unsafe-before-label-write", "reservation-replaced", "dataplane-not-ready", "create-ambiguous", "after-grant-denied", "after-grant-policy-replaced", "after-grant-nonce-collision",
 		"lifecycle-success", "lifecycle-child-fail", "lifecycle-baseline-fail", "lifecycle-deadline", "lifecycle-parent-cancel", "lifecycle-join-fail",
 		"lifecycle-evidence-fail", "lifecycle-clock-changed", "lifecycle-outcome-mismatch", "lifecycle-outcome-timeout",
 		"lifecycle-owner-lost",
@@ -139,6 +139,9 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 					if mode == "unsafe-nonce" {
 						return errors.New("foreign endpoint")
 					}
+					if (mode == "unsafe-before-label" && nonceChecks == 2) || (mode == "unsafe-before-label-write" && nonceChecks == 3) {
+						return errors.New("foreign endpoint before label write")
+					}
 					return nil
 				},
 				ReservedReady: func(context.Context) error {
@@ -171,6 +174,18 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 			err = PrepareFault(ctx, prep)
 			if mode == "success" {
 				t.Logf("complete preparation: nonce snapshots=%d, reserved-ready observations=%d", nonceChecks, readyChecks)
+				require.Equal(t, 10, nonceChecks)
+				require.Equal(t, 3, readyChecks)
+			}
+			if mode == "unsafe-before-label" || mode == "unsafe-before-label-write" {
+				require.ErrorContains(t, err, "foreign endpoint before label write")
+				for _, action := range client.Actions() {
+					require.False(t, action.GetVerb() == "patch" && action.GetResource().Resource == "pods", "rejected dataplane admission must prevent label mutation")
+				}
+				_, intentErr := LoadProtocolRecovery(dir, p)
+				require.ErrorIs(t, intentErr, os.ErrNotExist)
+				require.NoError(t, VerifyProtocolRecovery(ctx, p, conn))
+				return
 			}
 			if strings.HasPrefix(mode, "observer-") {
 				require.NoError(t, err)

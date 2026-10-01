@@ -68,12 +68,15 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 		return ctx.Err()
 	}
 	reserve := func(ctx context.Context) error {
-		return CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, NetworkUnlabelled, safe)
+		if err := CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, NetworkUnlabelled, p.Own); err != nil {
+			return err
+		}
+		return safe(ctx)
 	}
 	if err := ReserveNetwork(ctx, p.Client, p.Directory, p.Network, reserve); err != nil {
 		return fmt.Errorf("reserve network: %w", err)
 	}
-	if err := PrepareNetworkLabel(ctx, p.Client, p.Directory, p.Network, p.StatefulSetName, safe); err != nil {
+	if err := changeNetworkLabelWithOwnership(ctx, p.Client, p.Directory, p.Network, p.StatefulSetName, safe, p.Own, false); err != nil {
 		return fmt.Errorf("prepare label: %w", err)
 	}
 	reservation := func(ctx context.Context) error {

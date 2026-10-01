@@ -29,7 +29,16 @@ func RestoreNetworkLabel(ctx context.Context, client dynamic.Interface, dir stri
 }
 
 func changeNetworkLabel(ctx context.Context, client dynamic.Interface, dir string, plan NetworkRecovery, sts string, admit func(context.Context) error, restore bool) error {
-	if ctx == nil || client == nil || admit == nil {
+	return changeNetworkLabelWithOwnership(ctx, client, dir, plan, sts, admit, admit, restore)
+}
+
+// Lifecycle callers keep fresh ownership around the API identity reads and run
+// their complete dataplane/protocol admission once per label check. Passing that
+// complete admission into CheckNetworkIdentity as well would run its remote
+// collectors three times per check. Standalone callers retain the same callback
+// for both obligations through changeNetworkLabel above.
+func changeNetworkLabelWithOwnership(ctx context.Context, client dynamic.Interface, dir string, plan NetworkRecovery, sts string, admit, own func(context.Context) error, restore bool) error {
+	if ctx == nil || client == nil || admit == nil || own == nil {
 		return errors.New("label mutation requires context, client and admission")
 	}
 	raw, err := LoadNetworkReservation(dir, plan)
@@ -52,7 +61,7 @@ func changeNetworkLabel(ctx context.Context, client dynamic.Interface, dir strin
 		if !bytes.Equal(retained, raw) {
 			return errors.New("reservation changed during label mutation")
 		}
-		if err := CheckNetworkIdentity(ctx, client, plan, sts, phase, admit); err != nil {
+		if err := CheckNetworkIdentity(ctx, client, plan, sts, phase, own); err != nil {
 			return err
 		}
 		policies, err := client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(plan.Namespace).List(ctx, metav1.ListOptions{})

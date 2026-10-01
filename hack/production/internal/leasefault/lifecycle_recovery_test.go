@@ -20,7 +20,7 @@ import (
 )
 
 func TestRecoverFaultStages(t *testing.T) {
-	for _, mode := range []string{"success", "join-error", "owner-mismatch", "withdrawal-error", "protocol-error", "identity-error", "missing-protocol-empty", "missing-protocol-live", "missing-protocol-appeared", "malformed-protocol"} {
+	for _, mode := range []string{"success", "join-error", "owner-mismatch", "withdrawal-error", "withdrawal-before-label-write", "protocol-error", "identity-error", "missing-protocol-empty", "missing-protocol-live", "missing-protocol-appeared", "malformed-protocol"} {
 		t.Run(mode, func(t *testing.T) {
 			dir := t.TempDir()
 			require.NoError(t, os.Chmod(dir, 0700))
@@ -28,7 +28,7 @@ func TestRecoverFaultStages(t *testing.T) {
 			protocol.Owner, protocol.NamespaceUID, protocol.StatefulSetUID = network.Owner, network.NamespaceUID, network.StatefulSetUID
 			require.NoError(t, ArmNetworkRecovery(dir, network))
 			require.NoError(t, SaveNetworkReservation(dir, network, reservationFixture()))
-			missingProtocol := mode == "missing-protocol-empty" || mode == "missing-protocol-live" || mode == "missing-protocol-appeared"
+			missingProtocol := mode == "missing-protocol-empty" || mode == "missing-protocol-live" || mode == "missing-protocol-appeared" || mode == "withdrawal-before-label-write"
 			if !missingProtocol {
 				require.NoError(t, ArmProtocolRecovery(dir, protocol))
 			}
@@ -36,7 +36,7 @@ func TestRecoverFaultStages(t *testing.T) {
 				require.NoError(t, os.WriteFile(dir+"/"+protocolRecoveryFile, []byte("partial"), 0600))
 			}
 			conn := &restoreConnection{recoveryConnection: recoveryConnection{t: t, plan: protocol}, alarm: true, lease: true}
-			if mode == "missing-protocol-empty" {
+			if mode == "missing-protocol-empty" || mode == "withdrawal-before-label-write" {
 				conn.alarm, conn.lease = false, false
 			}
 			if mode == "protocol-error" {
@@ -50,6 +50,7 @@ func TestRecoverFaultStages(t *testing.T) {
 			pod.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "StatefulSet", Name: "brain", UID: types.UID(network.StatefulSetUID), Controller: &controller}})
 			joined, removed, converged := false, false, false
 			patches, deletes := 0, 0
+			withdrawalChecks := 0
 			client := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 				{Version: "v1", Resource: "pods"}:                                      "PodList",
 				{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}: "CiliumNetworkPolicyList",
@@ -139,6 +140,13 @@ func TestRecoverFaultStages(t *testing.T) {
 				Own: func(context.Context) error { require.True(t, joined); return nil },
 				NetworkRestored: func(context.Context) error {
 					require.True(t, removed)
+					withdrawalChecks++
+					// Initial withdrawal, protocol preflight and the first label
+					// check pass; a fresh rejection immediately before PATCH must
+					// still stop label removal in the split-admission path.
+					if mode == "withdrawal-before-label-write" && withdrawalChecks == 4 {
+						return errors.New("withdrawal lost before label write")
+					}
 					if mode == "missing-protocol-appeared" {
 						if _, err := os.Stat(dir + "/" + protocolRecoveryFile); errors.Is(err, os.ErrNotExist) {
 							require.NoError(t, ArmProtocolRecovery(dir, protocol))
@@ -162,6 +170,10 @@ func TestRecoverFaultStages(t *testing.T) {
 				r.Protocol.Owner = "foreign"
 			}
 			err := RecoverFault(ctx, r)
+			if mode == "withdrawal-before-label-write" {
+				require.ErrorContains(t, err, "withdrawal lost before label write")
+				require.Equal(t, 4, withdrawalChecks)
+			}
 			if mode == "success" || mode == "missing-protocol-empty" {
 				require.NoError(t, err)
 				require.True(t, converged)

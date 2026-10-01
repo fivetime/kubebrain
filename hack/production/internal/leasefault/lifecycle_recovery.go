@@ -121,7 +121,7 @@ func RecoverFault(ctx context.Context, r FaultRecovery) error {
 	if err := protocolReady(ctx); err != nil {
 		return fmt.Errorf("verify protocol before label recovery: %w", err)
 	}
-	if err := RestoreNetworkLabel(ctx, r.Client, r.Directory, r.Network, r.StatefulSetName, protocolReady); err != nil {
+	if err := changeNetworkLabelWithOwnership(ctx, r.Client, r.Directory, r.Network, r.StatefulSetName, protocolReady, r.Own, true); err != nil {
 		return fmt.Errorf("restore Pod label: %w", err)
 	}
 	if err := r.IdentityRestored(ctx); err != nil {
