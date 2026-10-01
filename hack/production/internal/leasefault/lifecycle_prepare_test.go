@@ -3,6 +3,7 @@ package leasefault
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -23,6 +24,7 @@ import (
 // This verifies composition, not election, Cilium convergence or fault timing.
 func TestPrepareFaultAndRecover(t *testing.T) {
 	for _, mode := range []string{
+		"preparation-nonce-eof", "dataplane-eof",
 		"success", "owner-mismatch", "unsafe-nonce", "unsafe-before-label", "unsafe-before-label-write", "reservation-replaced", "dataplane-not-ready", "create-ambiguous", "after-grant-denied", "after-grant-policy-replaced", "after-grant-nonce-collision",
 		"lifecycle-success", "lifecycle-child-fail", "lifecycle-baseline-fail", "lifecycle-deadline", "lifecycle-parent-cancel", "lifecycle-join-fail",
 		"lifecycle-evidence-fail", "lifecycle-clock-changed", "lifecycle-outcome-mismatch", "lifecycle-outcome-timeout",
@@ -136,6 +138,9 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 			prep := FaultPreparation{Directory: dir, StatefulSetName: "brain", Network: n, Protocol: p, Client: client, Connection: conn, Own: own,
 				NoncesSafe: func(context.Context) error {
 					nonceChecks++
+					if mode == "preparation-nonce-eof" {
+						return io.EOF
+					}
 					if mode == "unsafe-nonce" {
 						return errors.New("foreign endpoint")
 					}
@@ -146,6 +151,9 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 				},
 				ReservedReady: func(context.Context) error {
 					readyChecks++
+					if mode == "dataplane-eof" {
+						return io.EOF
+					}
 					if mode == "dataplane-not-ready" {
 						return errors.New("identity pending")
 					}
@@ -172,6 +180,22 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 				return
 			}
 			err = PrepareFault(ctx, prep)
+			if mode == "preparation-nonce-eof" || mode == "dataplane-eof" {
+				require.ErrorIs(t, err, io.EOF)
+				if mode == "preparation-nonce-eof" {
+					require.ErrorContains(t, err, "preparation nonce admission")
+					require.Zero(t, creates)
+					require.Equal(t, 1, nonceChecks)
+				} else {
+					require.ErrorContains(t, err, "preparation reserved dataplane admission")
+					require.Equal(t, 1, creates)
+					require.Equal(t, 1, readyChecks)
+				}
+				require.NoError(t, VerifyProtocolRecovery(ctx, p, conn))
+				_, recordErr := LoadProtocolRecovery(dir, p)
+				require.ErrorIs(t, recordErr, os.ErrNotExist)
+				return
+			}
 			if mode == "success" {
 				t.Logf("complete preparation: nonce snapshots=%d, reserved-ready observations=%d", nonceChecks, readyChecks)
 				require.Equal(t, 10, nonceChecks)

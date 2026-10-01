@@ -69,10 +69,10 @@ func (p FaultPreparation) validate(ctx context.Context) error {
 func prepareFault(ctx context.Context, p FaultPreparation) error {
 	safe := func(ctx context.Context) error {
 		if err := p.Own(ctx); err != nil {
-			return err
+			return fmt.Errorf("preparation ownership admission: %w", err)
 		}
 		if err := p.NoncesSafe(ctx); err != nil {
-			return err
+			return fmt.Errorf("preparation nonce admission: %w", err)
 		}
 		return ctx.Err()
 	}
@@ -90,19 +90,19 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 	}
 	reservation := func(ctx context.Context) error {
 		if err := p.checkIdentity(ctx, NetworkLabelOwned); err != nil {
-			return err
+			return fmt.Errorf("reservation identity admission: %w", err)
 		}
 		raw, err := LoadNetworkReservation(p.Directory, p.Network)
 		if err != nil {
-			return err
+			return fmt.Errorf("load preparation reservation: %w", err)
 		}
 		var receipt unstructured.Unstructured
 		if err := receipt.UnmarshalJSON(raw); err != nil {
-			return err
+			return fmt.Errorf("decode preparation reservation: %w", err)
 		}
 		live, err := p.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(p.Network.Namespace).Get(ctx, p.Network.PolicyName, metav1.GetOptions{})
 		if err != nil {
-			return err
+			return fmt.Errorf("get preparation reservation policy: %w", err)
 		}
 		if live == nil || live.GetUID() != receipt.GetUID() {
 			return errors.New("inactive reservation replaced")
@@ -114,7 +114,10 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 		if err := validateReservation(p.Network, raw); err != nil {
 			return err
 		}
-		return p.Own(ctx)
+		if err := p.Own(ctx); err != nil {
+			return fmt.Errorf("reservation ownership admission: %w", err)
+		}
+		return nil
 	}
 	ready := func(ctx context.Context) error {
 		if err := safe(ctx); err != nil {
@@ -124,7 +127,7 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 			return err
 		}
 		if err := p.ReservedReady(ctx); err != nil {
-			return err
+			return fmt.Errorf("preparation reserved dataplane admission: %w", err)
 		}
 		return safe(ctx)
 	}
