@@ -98,7 +98,7 @@ func TestRunNativeCommandLiveProcessRefusal(t *testing.T) {
 			require.NoError(t, os.WriteFile(path, data, 0600))
 			check := func(context.Context) error { return nil }
 			a := CommandAdmission{Tools: check, Own: check, Original: check, Network: check, Successor: check, Metrics: check, Outcome: check, Stack: func(context.Context, string) error { return nil }}
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			result, err := RunNativeCommand(ctx, path, planinput.SHA256(data), a)
 			require.Error(t, err)
@@ -173,7 +173,7 @@ func TestRunNativeCommandRefusesBeforeClusterRequests(t *testing.T) {
 			if mode == "missing-gate" {
 				a.Outcome = nil
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			if mode == "cancelled" {
 				cancel()

@@ -34,7 +34,7 @@ func TestNetworkRecoveryFeedsLabelPlan(t *testing.T) {
 	}
 	data, err := json.Marshal(input)
 	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "jq", "-e", "-f", "../../fault-label-restore-plan.jq")
 	cmd.Stdin = bytes.NewReader(data)

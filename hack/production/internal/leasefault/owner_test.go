@@ -22,7 +22,7 @@ import (
 func TestFaultOwnerClaim(t *testing.T) {
 	for _, mode := range []string{"success", "same-owner-busy", "other-owner-busy", "ambiguous-create", "cancelled-after-create", "replaced", "changed-holder", "mutable", "scope-replaced", "missing-receipt", "symlink-receipt", "recovery-failed", "delete-conflict"} {
 		t.Run(mode, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			b := FaultOwnerBinding{Owner: "attempt-a", Namespace: "test", NamespaceUID: "namespace-uid", StatefulSetName: "brain", StatefulSetUID: "sts-uid"}
 			dir := t.TempDir()

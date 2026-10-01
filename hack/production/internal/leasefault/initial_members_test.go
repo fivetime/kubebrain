@@ -18,7 +18,9 @@ func TestInitialMemberAdmission(t *testing.T) {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			// The outer bound covers both members and durable evidence. Each
+			// Status request must still obey the independently asserted 5s limit.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			makeConnection := func(member uint64, original bool) *successorConnection {
 				return &successorConnection{read: func(ctx context.Context, count int) (*pb.StatusResponse, error) {

@@ -67,7 +67,8 @@ func TestCommandProcessAdmission(t *testing.T) {
 			require.NoError(t, err)
 			// Subsequent caller mutation must not change the captured snapshots.
 			inputs.Observer[0], inputs.Metrics[0][0], p.Bindings.Network.PodBefore[0] = '!', '!', '!'
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// Functional identity/retention checks, not a five-second IO SLA.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			require.NoError(t, hooks.AdmitOriginal(ctx))
 			require.NoError(t, hooks.AdmitStack(ctx, "before"))

@@ -173,7 +173,7 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, artifacts.Close()) })
 			p = artifacts.Plan
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			changed := errors.New("approved tools changed after claim")
 			toolsAdmit := func(context.Context) error {

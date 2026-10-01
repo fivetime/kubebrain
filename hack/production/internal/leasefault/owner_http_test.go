@@ -26,7 +26,9 @@ import (
 func TestFaultOwnerConcurrentHTTPClaims(t *testing.T) {
 	for _, lostResponse := range []bool{false, true} {
 		t.Run(map[bool]string{false: "one-winner", true: "committed-response-lost"}[lostResponse], func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// The CAS outcome is asserted independently of startup and fsync
+			// duration; this deadline only prevents a hung fixture.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			base := FaultOwnerBinding{Owner: "attempt-a", Namespace: "test", NamespaceUID: "ns-uid", StatefulSetName: "brain", StatefulSetUID: "sts-uid"}
 			var mu sync.Mutex

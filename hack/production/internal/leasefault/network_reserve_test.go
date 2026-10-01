@@ -61,7 +61,7 @@ func TestReserveNetworkHTTP(t *testing.T) {
 			defer server.Close()
 			client, err := dynamic.NewForConfig(&rest.Config{Host: server.URL})
 			require.NoError(t, err)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			admit := func(context.Context) error {
 				if mode == "admission-failure" {

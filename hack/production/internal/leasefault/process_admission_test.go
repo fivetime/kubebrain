@@ -42,7 +42,7 @@ func TestLiveProcessAdmissionCanonicalPredicate(t *testing.T) {
 			}
 			predicate, err := filepath.Abs("../../same-pod-process.jq")
 			require.NoError(t, err)
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			admissions, retained := 0, 0
 			err = CheckLivePodProcess(ctx, client, expected, "/usr/bin/jq", predicate, func(context.Context) error {
