@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	goruntime "runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -151,7 +152,9 @@ func TestFaultOwnerConcurrentHTTPClaims(t *testing.T) {
 				select {
 				case got = <-results:
 				case <-ctx.Done():
-					t.Fatal("claim did not finish")
+					stacks := make([]byte, 64<<10)
+					n := goruntime.Stack(stacks, true)
+					t.Fatalf("claim did not finish (CREATE=%d DELETE=%d):\n%s", posts.Load(), deletes.Load(), stacks[:n])
 				}
 				if got.err == nil {
 					require.Nil(t, winner)
