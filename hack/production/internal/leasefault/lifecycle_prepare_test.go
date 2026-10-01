@@ -41,7 +41,10 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 		"nonce-matched", "nonce-pending", "nonce-input-before", "nonce-input-during", "nonce-retain-fail", "nonce-owner-lost", "nonce-owner-after",
 	} {
 		t.Run(mode, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// Bound fixture setup and preparation without treating their total
+			// duration as fault availability. testFaultLifecycle separately
+			// verifies the original origin+30s limit and expired-clock cases.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			// Fixed term 3 permits synthetic initial=2/successor=3 evidence in
 			// lifecycle wiring tests; this service does not perform an election.

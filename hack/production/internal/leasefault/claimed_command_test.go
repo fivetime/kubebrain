@@ -60,7 +60,9 @@ func TestClaimingCommandPreflightAndRetainedOwnership(t *testing.T) {
 				SuccessorConnection: conn, AdmitSuccessor: check, CaptureSeconds: 1,
 			}, AdmitMetrics: check}
 			h := ObservationHooks{AdmitOriginal: check, AdmitStack: func(context.Context, string) error { return nil }}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// Ownership/retention assertions are functional, not a five-second
+			// filesystem SLA. Explicit cancellation remains exercised below.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			admit := func(context.Context) error {
 				preclaims++

@@ -55,7 +55,14 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 				return nil
 			})
 			require.NoError(t, err)
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			// This test checks barrier ordering, not a two-second startup/IO
+			// SLA. Keep an outer hang bound; the supervisor still derives its
+			// unchanged 30-second fault deadline from the selected origin.
+			budget := time.Minute
+			if mode == "expired-after-sync" {
+				budget = 2 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), budget)
 			defer cancel()
 			var selected time.Time
 			started := time.Now()
