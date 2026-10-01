@@ -397,7 +397,10 @@ func main() {
 	cancelStaging()
 	<-joined
 	if err = errors.Join(err, stagingErr); err == nil {
-		runCtx, cancelRun := context.WithTimeout(ctx, 3*time.Minute)
+		// CI authentication and repeated live admission precede activation.
+		// Use the preparation API's existing hard bound for the whole attempt;
+		// this does not change the independent 30-second fault clock or retries.
+		runCtx, cancelRun := context.WithTimeout(ctx, 5*time.Minute)
 		err = execute(runCtx, *owner, identity, r)
 		cancelRun()
 	}
