@@ -58,6 +58,7 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			var selected time.Time
+			started := time.Now()
 			_, err = metricsworker.Run(ctx, dir, []metricsworker.Command{worker}, metricsworker.Hooks{
 				Baseline: func(context.Context, int, metricsworker.Ready) error { baselines++; return nil },
 				Origin:   originHook,
@@ -81,6 +82,17 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 				},
 			})
 			if mode == "success" {
+				if err != nil {
+					// Keep the existing deadline and barrier assertions. Report
+					// which boundary was reached rather than guessing whether a
+					// CI timeout came from child startup, persistence or Join.
+					t.Logf("barrier failure: elapsed=%s baseline=%d ownership=%d injection=%d completion=%d origin=%s context=%v",
+						time.Since(started), baselines, ownership, injections, completions, selected.Format(time.RFC3339Nano), ctx.Err())
+					for _, name := range []string{"worker.pid", "worker.origin", "worker.stderr", faultOriginFile} {
+						data, readErr := os.ReadFile(filepath.Join(dir, name))
+						t.Logf("fixture %s: bytes=%q read_error=%v", name, data, readErr)
+					}
+				}
 				require.NoError(t, err)
 				require.Equal(t, 1, injections)
 				require.Equal(t, 1, completions)
