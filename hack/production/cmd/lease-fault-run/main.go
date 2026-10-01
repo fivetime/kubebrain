@@ -277,6 +277,12 @@ func (g *gates) tools(ctx context.Context) error {
 	if err := g.p.VerifyFiles(ctx); err != nil {
 		return err
 	}
+	return g.onlineTools(ctx)
+}
+
+// RunNativeCommand brackets this callback with fresh file verification. Keep
+// standalone join/recovery callers on tools so they retain that verification.
+func (g *gates) onlineTools(ctx context.Context) error {
 	if err := g.local(ctx); err != nil {
 		return err
 	}
@@ -308,7 +314,7 @@ func (g *gates) admission() leasefault.CommandAdmission {
 		return g.member(ctx, g.c.Original, g.p.Bindings.Protocol.AlarmMemberID)
 	}
 	successor := func(ctx context.Context) error { return g.member(ctx, g.c.Successor, g.p.Bindings.ObserverMemberID) }
-	return leasefault.CommandAdmission{Tools: g.tools, Own: g.scope, Original: original, Network: g.scope, Successor: successor, Metrics: g.scope, Outcome: successor,
+	return leasefault.CommandAdmission{Tools: g.onlineTools, Own: g.scope, Original: original, Network: g.scope, Successor: successor, Metrics: g.scope, Outcome: successor,
 		Stack: func(ctx context.Context, stage string) error {
 			if stage != "before" && stage != "after" {
 				return errors.New("invalid stack stage")
