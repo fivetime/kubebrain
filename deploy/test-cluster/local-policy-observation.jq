@@ -19,12 +19,16 @@ need((if $mode=="absent-unlabelled" then
  else ($s.identity.labels|index($nonce))!=null end); "target identity label mismatch") |
 ($s.policy.spec["policy-revision"]) as $desired |
 ($s.policy.realized["policy-revision"]) as $actual |
-need($desired >= $actual; "policy revision moved backwards") |
+# Cilium v1.19.4 GetPolicyModel maps spec to nextPolicyRevision and realized
+# to policyRevision (pkg/endpoint/api.go). UpdatePolicy's no-op path advances
+# only policyRevision (pkg/endpoint/policy.go), so realized may lead spec.
+# A lagging realization is pending; an advanced revision still needs the exact
+# policy name/UID and identity checks below, not a revision-only success.
 [$s.policy.realized|..|strings] as $labels |
 ($labels|index("k8s:io.cilium.k8s.policy.uid="+$policy_uid)!=null) as $uid_present |
 ($labels|index("k8s:io.cilium.k8s.policy.name="+$policy_name)!=null) as $name_present |
 need($uid_present==$name_present; "policy name/UID evidence conflicts") |
-{state:(if $desired!=$actual then "pending"
+{state:(if $actual<$desired then "pending"
  elif ($mode=="present" and $uid_present) or ($mode!="present" and ($uid_present|not)) then "matched"
  else "pending" end), mode:$mode,policy_uid:$policy_uid,policy_name:$policy_name,
  desired_revision:$desired,realized_revision:$actual,

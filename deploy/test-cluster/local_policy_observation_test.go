@@ -27,7 +27,8 @@ func TestLocalPolicyObserverAndRecoveryWait(t *testing.T) {
 	}{
 		{"absent", 0}, {"ready-restored", 0}, {"present", 0}, {"pending", 75}, {"revision-pending", 75},
 		{"wrong-identity", 65}, {"conflicting-policy", 65}, {"malformed", 65},
-		{"backwards-revision", 65}, {"pod-restart", 65},
+		{"noop-revision-ahead", 0}, {"noop-revision-ahead-present", 0},
+		{"noop-revision-ahead-policy-remains", 75}, {"pod-restart", 65},
 		{"unlabelled-absent", 0}, {"unlabelled-stale-identity", 65}, {"unlabelled-policy-remains", 75},
 		{"unlabelled-foreign-identity", 65}, {"unlabelled-pod-labelled", 65},
 		{"wait-converges", 0}, {"wait-fatal", 65}, {"wait-drift-after-pending", 65},
@@ -54,7 +55,7 @@ func TestLocalPolicyObserverAndRecoveryWait(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			defer cancel()
 			mode := "absent"
-			if tc.name == "present" {
+			if tc.name == "present" || tc.name == "noop-revision-ahead-present" {
 				mode = "present"
 			}
 			if strings.HasPrefix(tc.name, "unlabelled-") {
@@ -140,7 +141,7 @@ if [[ " $* " != *" exec "* ]]; then exec bash "$CAPTURE_FIXTURE/mock-api" "$@"; 
 if [[ $POLICY_SCENARIO == wait-cancel ]]; then printf '%s\n' "$BASHPID" > "$CAPTURE_FIXTURE/blocked.pid"; exec sleep 60; fi
 present=false
 case $POLICY_SCENARIO in
- present|pending|unlabelled-policy-remains) present=true;;
+ present|pending|unlabelled-policy-remains|noop-revision-ahead-present|noop-revision-ahead-policy-remains) present=true;;
  wait-converges|wait-drift-after-pending) if [[ ! -e $CAPTURE_FIXTURE/policy-seen ]]; then present=true; fi; touch "$CAPTURE_FIXTURE/policy-seen";;
 esac
 bash "$CAPTURE_FIXTURE/mock-api" "$@" |
@@ -152,7 +153,7 @@ bash "$CAPTURE_FIXTURE/mock-api" "$@" |
  elif $scenario=="unlabelled-foreign-identity" then .[0].status.identity.labels=["k8s:kubebrain.io/fault-owner=foreign"]
  elif $scenario=="conflicting-policy" then .[0].status.policy.realized.l4.egress=[{"derived-from-rules":[["k8s:io.cilium.k8s.policy.name=kb-term-test"]]}]
  elif $scenario=="revision-pending" then .[0].status.policy.spec["policy-revision"]=5
- elif $scenario=="backwards-revision" then .[0].status.policy.spec["policy-revision"]=3
+ elif ($scenario|startswith("noop-revision-ahead")) then .[0].status.policy.spec["policy-revision"]=3
  elif $scenario=="malformed" then del(.[0].status.policy.realized.l4)
  else . end'
 `
