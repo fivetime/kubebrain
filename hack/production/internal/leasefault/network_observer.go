@@ -34,13 +34,23 @@ type NetworkObserver struct {
 	Admit                                                      func(context.Context) error
 	Retain                                                     func(string, []byte, error) error
 	// Only the concrete runtime may separate source checks from live admission.
-	nonceTools func(context.Context) error
+	nonceTools    func(context.Context) error
+	preparedTools func(context.Context) error
 }
 
 // Prepared verifies the owned-label identity and absence of the reserved policy
 // from the endpoint plus backend TCP. PrepareFault separately verifies the live
 // API policy is the recorded inactive reservation; this method cannot replace it.
-func (o NetworkObserver) Prepared(ctx context.Context) error {
+func (o NetworkObserver) Prepared(ctx context.Context) (err error) {
+	if ctx == nil {
+		return errors.New("prepared observation requires context")
+	}
+	if o.preparedTools != nil {
+		if err := o.preparedTools(ctx); err != nil {
+			return err
+		}
+		defer func() { err = errors.Join(err, o.preparedTools(ctx), ctx.Err()) }()
+	}
 	return o.observe(ctx, "prepared", NetworkLabelOwned)
 }
 

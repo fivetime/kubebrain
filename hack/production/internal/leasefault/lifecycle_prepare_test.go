@@ -32,7 +32,7 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 		"lifecycle-native-success", "lifecycle-native-gate-fail",
 		"lifecycle-native-stale-successor", "lifecycle-native-identity-mismatch",
 		"lifecycle-native-runtime-success", "lifecycle-native-runtime-drops-fail",
-		"observer-matched", "observer-pending", "observer-input-before", "observer-input-during", "observer-retain-fail", "observer-owner-lost",
+		"observer-matched", "observer-pending", "observer-input-before", "observer-input-during", "observer-retain-fail", "observer-owner-lost", "observer-source-before", "observer-source-after",
 		"observer-active", "observer-active-pending", "observer-active-inactive", "observer-active-replaced",
 		"observer-check-active", "observer-check-active-inactive", "observer-check-active-replaced",
 		"observer-drops", "observer-drops-pending", "observer-drops-bad-output", "observer-drops-wrong-path",

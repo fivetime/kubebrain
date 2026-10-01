@@ -60,8 +60,17 @@ fi
 if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 `), 0600))
 	retained, pending := 0, 0
+	sourceChecks := 0
+	sourceChanged := mode == "observer-source-before"
 	stages := map[string]bool{}
 	o := NetworkObserver{Directory: dir, StatefulSetName: p.StatefulSetName, ScriptDirectory: scripts, TargetsSHA256: hex.EncodeToString(digest[:]), Network: p.Network, Client: p.Client, Env: []string{"SCENARIO=" + mode, "PATH=/usr/bin:/bin"},
+		preparedTools: func(context.Context) error {
+			sourceChecks++
+			if sourceChanged {
+				return errors.New("prepared source changed")
+			}
+			return nil
+		},
 		Admit: func(context.Context) error {
 			if mode == "observer-owner-lost" {
 				return errors.New("ownership lost")
@@ -70,6 +79,9 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 		},
 		Retain: func(stage string, output []byte, observed error) error {
 			retained++
+			if mode == "observer-source-after" {
+				sourceChanged = true
+			}
 			stages[stage] = true
 			if stage != "drops" {
 				require.Contains(t, string(output), "fixture observer result")
@@ -177,9 +189,17 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 		return
 	}
 	err := o.Prepared(ctx)
+	if mode == "observer-source-before" || mode == "observer-source-after" {
+		require.ErrorContains(t, err, "prepared source changed")
+		if mode == "observer-source-before" {
+			require.Equal(t, 1, sourceChecks)
+		} else {
+			require.Equal(t, 2, sourceChecks)
+		}
+	}
 	if mode != "observer-matched" && mode != "observer-pending" {
 		require.Error(t, err)
-		if mode == "observer-input-before" || mode == "observer-owner-lost" {
+		if mode == "observer-input-before" || mode == "observer-owner-lost" || mode == "observer-source-before" {
 			require.Zero(t, retained)
 		} else {
 			require.Equal(t, 1, retained)
@@ -187,6 +207,7 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 		return
 	}
 	require.NoError(t, err)
+	require.Equal(t, 2, sourceChecks, "source verification brackets the whole prepared observation, including pending reads")
 	if mode == "observer-pending" {
 		require.Equal(t, 1, pending)
 		require.Equal(t, 2, retained)

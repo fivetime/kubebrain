@@ -92,7 +92,10 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	nonces.Admit = liveAdmission
 	nonces.nonceTools = r.admitTools
 	l.Preparation.NoncesSafe = nonces.NoncesSafe
-	l.Preparation.ReservedReady = n.Prepared
+	prepared := n
+	prepared.Admit = liveAdmission
+	prepared.preparedTools = r.admitTools
+	l.Preparation.ReservedReady = prepared.Prepared
 	l.NetworkRestored = n.Restored
 	l.IdentityRestored = n.Unlabelled
 	var origin time.Time
