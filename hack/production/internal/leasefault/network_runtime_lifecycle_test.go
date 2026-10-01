@@ -64,9 +64,9 @@ printf 'EVIDENCE=%s\nSAME_SOURCE_PD_AND_TIKV_POLICY_DROPS_NOT_TERM_OR_RPC_PROOF\
 	}}
 	t.Cleanup(func() {
 		require.Greater(t, stages["nonces"], 1, "repeat nonce scans throughout preparation and before activation")
-		// Protocol preflight, intent admission, three before-write gates and
-		// the final preparation check all re-observe the reserved network.
-		require.Equal(t, 6, stages["prepared"])
+		// Protocol preflight, intent admission and the final preparation check
+		// re-observe the dataplane. Each write still refreshes API admission.
+		require.Equal(t, 3, stages["prepared"])
 		require.Equal(t, 1, stages["drops"])
 		// Withdrawal is rechecked throughout protocol and label recovery,
 		// rather than accepted once and then cached across recovery writes.

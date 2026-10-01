@@ -76,8 +76,8 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 	if err := PrepareNetworkLabel(ctx, p.Client, p.Directory, p.Network, p.StatefulSetName, safe); err != nil {
 		return fmt.Errorf("prepare label: %w", err)
 	}
-	ready := func(ctx context.Context) error {
-		if err := CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, NetworkLabelOwned, safe); err != nil {
+	reservation := func(ctx context.Context) error {
+		if err := CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, NetworkLabelOwned, p.Own); err != nil {
 			return err
 		}
 		raw, err := LoadNetworkReservation(p.Directory, p.Network)
@@ -102,12 +102,21 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 		if err := validateReservation(p.Network, raw); err != nil {
 			return err
 		}
+		return p.Own(ctx)
+	}
+	ready := func(ctx context.Context) error {
+		if err := safe(ctx); err != nil {
+			return err
+		}
+		if err := reservation(ctx); err != nil {
+			return err
+		}
 		if err := p.ReservedReady(ctx); err != nil {
 			return err
 		}
 		return safe(ctx)
 	}
-	if err := PrepareProtocol(ctx, p.Directory, p.Protocol, p.Connection, ready); err != nil {
+	if err := prepareProtocol(ctx, p.Directory, p.Protocol, p.Connection, ready, reservation); err != nil {
 		return fmt.Errorf("prepare protocol: %w", err)
 	}
 	return ready(ctx)

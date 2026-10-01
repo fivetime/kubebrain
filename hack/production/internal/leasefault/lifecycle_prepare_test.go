@@ -23,7 +23,7 @@ import (
 // This verifies composition, not election, Cilium convergence or fault timing.
 func TestPrepareFaultAndRecover(t *testing.T) {
 	for _, mode := range []string{
-		"success", "owner-mismatch", "unsafe-nonce", "reservation-replaced", "dataplane-not-ready", "create-ambiguous", "after-grant-denied",
+		"success", "owner-mismatch", "unsafe-nonce", "reservation-replaced", "dataplane-not-ready", "create-ambiguous", "after-grant-denied", "after-grant-policy-replaced", "after-grant-nonce-collision",
 		"lifecycle-success", "lifecycle-child-fail", "lifecycle-baseline-fail", "lifecycle-deadline", "lifecycle-parent-cancel", "lifecycle-join-fail",
 		"lifecycle-evidence-fail", "lifecycle-clock-changed", "lifecycle-outcome-mismatch", "lifecycle-outcome-timeout",
 		"lifecycle-owner-lost",
@@ -98,10 +98,44 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 				copy.SetUID("replacement")
 				return true, copy, nil
 			})
-			own := func(context.Context) error { return nil }
+			grantAdmissionDenied := false
+			restoreDrift := func() {}
+			own := func(ctx context.Context) error {
+				if strings.HasPrefix(mode, "after-grant-") && !grantAdmissionDenied {
+					ttl, err := pb.NewLeaseClient(conn).LeaseTimeToLive(ctx, &pb.LeaseTimeToLiveRequest{ID: p.LeaseID})
+					if err != nil {
+						return err
+					}
+					if ttl.TTL >= 0 {
+						grantAdmissionDenied = true
+						switch mode {
+						case "after-grant-denied":
+							return errors.New("admission lost after lease grant")
+						case "after-grant-policy-replaced":
+							original, err := client.Tracker().Get(policies, n.Namespace, n.PolicyName)
+							require.NoError(t, err)
+							changed := original.(*unstructured.Unstructured).DeepCopy()
+							changed.SetUID("foreign-policy")
+							require.NoError(t, client.Tracker().Update(policies, changed, n.Namespace))
+							restoreDrift = func() { require.NoError(t, client.Tracker().Update(policies, original, n.Namespace)) }
+						case "after-grant-nonce-collision":
+							foreign := pod.DeepCopy()
+							foreign.SetName("foreign-pod")
+							foreign.SetUID("foreign-uid")
+							foreign.SetLabels(map[string]string{"kubebrain.io/fault-owner": n.ReservedNonce})
+							pods := schema.GroupVersionResource{Version: "v1", Resource: "pods"}
+							require.NoError(t, client.Tracker().Create(pods, foreign, n.Namespace))
+							restoreDrift = func() { require.NoError(t, client.Tracker().Delete(pods, n.Namespace, foreign.GetName())) }
+						}
+					}
+				}
+				return nil
+			}
 			readyChecks := 0
+			nonceChecks := 0
 			prep := FaultPreparation{Directory: dir, StatefulSetName: "brain", Network: n, Protocol: p, Client: client, Connection: conn, Own: own,
 				NoncesSafe: func(context.Context) error {
+					nonceChecks++
 					if mode == "unsafe-nonce" {
 						return errors.New("foreign endpoint")
 					}
@@ -109,9 +143,6 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 				},
 				ReservedReady: func(context.Context) error {
 					readyChecks++
-					if mode == "after-grant-denied" && readyChecks == 4 {
-						return errors.New("admission lost after lease grant")
-					}
 					if mode == "dataplane-not-ready" {
 						return errors.New("identity pending")
 					}
@@ -138,16 +169,23 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 				return
 			}
 			err = PrepareFault(ctx, prep)
+			if mode == "success" {
+				t.Logf("complete preparation: nonce snapshots=%d, reserved-ready observations=%d", nonceChecks, readyChecks)
+			}
 			if strings.HasPrefix(mode, "observer-") {
 				require.NoError(t, err)
 				testNetworkObserver(t, ctx, prep, mode)
 				return
 			}
-			if mode == "success" || mode == "after-grant-denied" {
+			if mode == "success" || strings.HasPrefix(mode, "after-grant-") {
 				if mode == "success" {
 					require.NoError(t, err)
-				} else {
+				} else if mode == "after-grant-denied" {
 					require.ErrorContains(t, err, "admission lost after lease grant")
+				} else if mode == "after-grant-policy-replaced" {
+					require.ErrorContains(t, err, "inactive reservation replaced")
+				} else {
+					require.ErrorContains(t, err, "fault selector matches multiple Pods")
 				}
 				ttl, err := pb.NewLeaseClient(conn).LeaseTimeToLive(ctx, &pb.LeaseTimeToLiveRequest{ID: p.LeaseID, Keys: true})
 				require.NoError(t, err)
@@ -161,8 +199,13 @@ func TestPrepareFaultAndRecover(t *testing.T) {
 				} else {
 					require.Empty(t, ttl.Keys)
 					require.Empty(t, alarms.Alarms)
+					key, err := pb.NewKVClient(conn).Range(ctx, &pb.RangeRequest{Key: []byte(p.Key)})
+					require.NoError(t, err)
+					require.Zero(t, key.Count, "drift after Grant must prevent the fixture Txn")
+					require.Empty(t, key.Kvs)
 				}
 				require.Error(t, VerifyProtocolRecovery(ctx, p, conn))
+				restoreDrift()
 				require.NoError(t, RecoverFault(ctx, FaultRecovery{Directory: dir, StatefulSetName: "brain", Network: n, Protocol: p, Client: client, Connection: conn, Own: own, Join: own, NetworkRestored: own, IdentityRestored: own}))
 				require.NoError(t, VerifyProtocolRecovery(ctx, p, conn))
 				current, err := client.Resource(schema.GroupVersionResource{Version: "v1", Resource: "pods"}).Namespace(n.Namespace).Get(ctx, n.PodName, metav1.GetOptions{})

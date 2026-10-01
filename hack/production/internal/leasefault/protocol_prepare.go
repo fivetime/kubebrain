@@ -16,7 +16,15 @@ import (
 // No write is retried. Any error after arming requires post-join reconciliation.
 // This does not wait for lease expiry, start a probe, or begin the fault clock.
 func PrepareProtocol(ctx context.Context, dir string, plan ProtocolRecovery, conn grpc.ClientConnInterface, admit func(context.Context) error) error {
-	if ctx == nil || conn == nil || admit == nil || !plan.valid() {
+	return prepareProtocol(ctx, dir, plan, conn, admit, admit)
+}
+
+// The lifecycle supplies complete dataplane admission at preparation boundaries
+// and fresh ownership/API reservation admission before each protocol mutation.
+// No network mutation occurs within this fixture sequence. Re-running remote
+// collectors between Grant and Txn would consume the unchanged ten-second TTL.
+func prepareProtocol(ctx context.Context, dir string, plan ProtocolRecovery, conn grpc.ClientConnInterface, admit, mutationAdmit func(context.Context) error) error {
+	if ctx == nil || conn == nil || admit == nil || mutationAdmit == nil || !plan.valid() {
 		return errors.New("invalid protocol preparation")
 	}
 	deadline, ok := ctx.Deadline()
@@ -61,7 +69,10 @@ func PrepareProtocol(ctx context.Context, dir string, plan ProtocolRecovery, con
 		if _, err := LoadProtocolRecovery(dir, plan); err != nil {
 			return err
 		}
-		return check()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		return errors.Join(mutationAdmit(ctx), ctx.Err())
 	}
 	if err := beforeWrite(); err != nil {
 		return err
