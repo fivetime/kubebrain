@@ -9,6 +9,7 @@ import (
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/planinput"
 	"github.com/kubewharf/kubebrain/hack/production/internal/processgroup"
+	"golang.org/x/sync/errgroup"
 	corev1 "k8s.io/api/core/v1"
 	strictjson "sigs.k8s.io/json"
 )
@@ -179,8 +180,13 @@ func (p NativeCommandPlan) VerifyFiles(ctx context.Context) error {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
-	for _, path := range paths {
-		if err := ctx.Err(); err != nil {
+	// Hash at most two inputs concurrently. Every call still reopens and reads
+	// every complete file; this does not cache digests or weaken admission.
+	// Wait joins all readers, including on cancellation or a failed input.
+	group, hashCtx := errgroup.WithContext(ctx)
+	group.SetLimit(2)
+	verifyFile := func(path string) error {
+		if err := hashCtx.Err(); err != nil {
 			return err
 		}
 		digest := p.Files[path]
@@ -199,16 +205,26 @@ func (p NativeCommandPlan) VerifyFiles(ctx context.Context) error {
 		if path == filepath.Join(p.OwnerDirectory, IsolatedJoinIdentity) {
 			private, limit = true, 256
 		}
-		actual, err := planinput.FileSHA256(ctx, path, private, limit)
+		actual, err := planinput.FileSHA256(hashCtx, path, private, limit)
 		if err != nil {
 			return err
 		}
-		if err := ctx.Err(); err != nil {
+		if err := hashCtx.Err(); err != nil {
 			return err
 		}
 		if actual != digest {
 			return errors.New("command input differs from admission")
 		}
+		return nil
+	}
+	for _, path := range paths {
+		if hashCtx.Err() != nil {
+			break
+		}
+		group.Go(func() error { return verifyFile(path) })
+	}
+	if err := errors.Join(group.Wait(), ctx.Err()); err != nil {
+		return err
 	}
 	for _, path := range []string{p.ProbeExecutable, p.StackExecutable, p.MetricExecutable, p.Processes.JQ} {
 		if err := ctx.Err(); err != nil {

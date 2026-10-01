@@ -51,6 +51,30 @@ func TestCommandFileVerificationHonorsCancellation(t *testing.T) {
 	require.Error(t, p.VerifyFiles(nil))
 }
 
+func TestCommandFileVerificationReadsEveryInputAgain(t *testing.T) {
+	p := serializedCommandFixture(t)
+	dir := t.TempDir()
+	data := bytes.Repeat([]byte("x"), 256<<10)
+	paths := make([]string, 8)
+	for i := range paths {
+		paths[i] = filepath.Join(dir, fmt.Sprintf("dependency-%d", i))
+		require.NoError(t, os.WriteFile(paths[i], data, 0600))
+		p.Files[paths[i]] = planinput.SHA256(data)
+	}
+	require.NoError(t, p.VerifyFiles(context.Background()))
+	for _, path := range paths {
+		// A previous successful concurrent pass must not cache this file's hash.
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		require.NoError(t, err)
+		_, err = f.WriteAt([]byte("y"), int64(len(data)-1))
+		require.NoError(t, err)
+		require.NoError(t, f.Close())
+		require.ErrorContains(t, p.VerifyFiles(context.Background()), "differs from admission")
+		require.NoError(t, os.WriteFile(path, data, 0600))
+		require.NoError(t, p.VerifyFiles(context.Background()))
+	}
+}
+
 func TestNativeCommandPlanLoad(t *testing.T) {
 	for _, mode := range []string{"valid", "unknown", "duplicate", "numeric-duration", "wrong-digest", "public", "changed-tool", "missing-pin", "bad-binding", "port-overlap", "metric-uid", "metric-snapshot", "endpoint", "recovery-budget", "environment", "descriptor", "symlink"} {
 		t.Run(mode, func(t *testing.T) {
