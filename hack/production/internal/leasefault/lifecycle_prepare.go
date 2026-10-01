@@ -26,6 +26,15 @@ type FaultPreparation struct {
 	Client                         dynamic.Interface
 	Connection                     grpc.ClientConnInterface
 	Own, NoncesSafe, ReservedReady func(context.Context) error
+	// Concrete runtime source admission brackets each complete read-only check.
+	identityCheck func(context.Context, NetworkLabelPhase) error
+}
+
+func (p FaultPreparation) checkIdentity(ctx context.Context, phase NetworkLabelPhase) error {
+	if p.identityCheck != nil {
+		return p.identityCheck(ctx, phase)
+	}
+	return CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, phase, p.Own)
 }
 
 // PrepareFault serializes durable network reservation, label and protocol setup.
@@ -68,7 +77,7 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 		return ctx.Err()
 	}
 	reserve := func(ctx context.Context) error {
-		if err := CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, NetworkUnlabelled, p.Own); err != nil {
+		if err := p.checkIdentity(ctx, NetworkUnlabelled); err != nil {
 			return err
 		}
 		return safe(ctx)
@@ -80,7 +89,7 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 		return fmt.Errorf("prepare label: %w", err)
 	}
 	reservation := func(ctx context.Context) error {
-		if err := CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, NetworkLabelOwned, p.Own); err != nil {
+		if err := p.checkIdentity(ctx, NetworkLabelOwned); err != nil {
 			return err
 		}
 		raw, err := LoadNetworkReservation(p.Directory, p.Network)

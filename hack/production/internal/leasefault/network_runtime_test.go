@@ -9,15 +9,20 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic/fake"
 	ktesting "k8s.io/client-go/testing"
 )
 
 func TestNetworkAdmissionSourceBoundary(t *testing.T) {
-	for _, mode := range []string{"success", "source-before", "source-after", "own", "network", "claim-changed", "cancelled"} {
+	for _, mode := range []string{"success", "source-before", "source-after", "own", "network", "claim-changed", "cancelled", "identity-success", "identity-source-before", "identity-source-after", "identity-own", "identity-network", "identity-claim-changed", "identity-cancelled"} {
 		t.Run(mode, func(t *testing.T) {
+			identityMode := strings.HasPrefix(mode, "identity-")
+			mode = strings.TrimPrefix(mode, "identity-")
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			binding := FaultOwnerBinding{Owner: "attempt-a", Namespace: "test", NamespaceUID: "namespace-uid", StatefulSetName: "brain", StatefulSetUID: "sts-uid"}
@@ -25,7 +30,7 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 			require.NoError(t, os.Chmod(dir, 0700))
 			ns := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]interface{}{"name": "test", "uid": "namespace-uid", "resourceVersion": "1"}}}
 			sts := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": map[string]interface{}{"name": "brain", "namespace": "test", "uid": "sts-uid", "resourceVersion": "1"}}}
-			client := fake.NewSimpleDynamicClient(runtime.NewScheme(), ns, sts)
+			client := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{{Version: "v1", Resource: "pods"}: "PodList"}, ns, sts)
 			client.PrependReactor("create", "configmaps", func(a ktesting.Action) (bool, runtime.Object, error) {
 				claim := a.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
 				claim.SetUID("claim-uid")
@@ -71,12 +76,38 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 					return nil
 				},
 			}
+			if identityMode {
+				plan := networkPlan()
+				plan.Namespace, plan.NamespaceUID = "test", "namespace-uid"
+				pod := &unstructured.Unstructured{}
+				require.NoError(t, pod.UnmarshalJSON(plan.PodBefore))
+				pod.SetNamespace("test")
+				controller := true
+				pod.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "StatefulSet", Name: "brain", UID: types.UID("sts-uid"), Controller: &controller}})
+				plan.PodBefore, err = pod.MarshalJSON()
+				require.NoError(t, err)
+				policy := &unstructured.Unstructured{}
+				require.NoError(t, policy.UnmarshalJSON(plan.ApprovedPolicy))
+				policy.SetNamespace("test")
+				plan.ApprovedPolicy, err = policy.MarshalJSON()
+				require.NoError(t, err)
+				require.NoError(t, client.Tracker().Add(pod))
+				r.Lifecycle.Preparation.Network = plan
+				r.Lifecycle.Preparation.Client = client
+				r.Lifecycle.Preparation.StatefulSetName = "brain"
+			}
 			bound, err := r.bind()
 			require.NoError(t, err)
-			err = bound.Preparation.Own(ctx)
+			want := []string{"source", "own", "network", "source"}
+			if identityMode {
+				err = bound.Preparation.checkIdentity(ctx, NetworkUnlabelled)
+				want = []string{"source", "own", "network", "own", "network", "source"}
+			} else {
+				err = bound.Preparation.Own(ctx)
+			}
 			if mode == "success" {
 				require.NoError(t, err)
-				require.Equal(t, []string{"source", "own", "network", "source"}, calls)
+				require.Equal(t, want, calls)
 			} else {
 				require.Error(t, err)
 				if mode == "source-before" {
@@ -84,7 +115,7 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 				}
 				if mode == "source-after" {
 					require.ErrorIs(t, err, changed)
-					require.Equal(t, []string{"source", "own", "network", "source"}, calls)
+					require.Equal(t, want, calls)
 				}
 				if mode == "cancelled" {
 					require.ErrorIs(t, err, context.Canceled)

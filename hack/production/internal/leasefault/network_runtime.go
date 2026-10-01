@@ -86,6 +86,17 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	}
 	n := NetworkObserver{Directory: p.Directory, StatefulSetName: p.StatefulSetName, ScriptDirectory: r.ScriptDirectory, TargetsSHA256: r.TargetsSHA256, Network: p.Network, Client: p.Client, Env: append([]string{}, r.Env...), Admit: admit, Retain: r.RetainNetwork}
 	l.Preparation.Own = admit
+	l.Preparation.identityCheck = func(ctx context.Context, phase NetworkLabelPhase) (err error) {
+		if r.admitTools != nil {
+			if err := r.admitTools(ctx); err != nil {
+				return err
+			}
+			defer func() { err = errors.Join(err, r.admitTools(ctx), ctx.Err()) }()
+		}
+		// Keep both live admissions within the identity read; do not multiply
+		// the complete source bracket by those internal callbacks.
+		return CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, phase, liveAdmission)
+	}
 	// The nonce scan is wholly read-only. Keep every live ownership/identity
 	// check, but bracket the whole scan rather than each nested API admission.
 	nonces := n
