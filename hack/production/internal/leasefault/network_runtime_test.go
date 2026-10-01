@@ -2,12 +2,97 @@ package leasefault
 
 import (
 	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic/fake"
+	ktesting "k8s.io/client-go/testing"
 )
+
+func TestNetworkAdmissionSourceBoundary(t *testing.T) {
+	for _, mode := range []string{"success", "source-before", "source-after", "own", "network", "claim-changed", "cancelled"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			binding := FaultOwnerBinding{Owner: "attempt-a", Namespace: "test", NamespaceUID: "namespace-uid", StatefulSetName: "brain", StatefulSetUID: "sts-uid"}
+			dir := t.TempDir()
+			require.NoError(t, os.Chmod(dir, 0700))
+			ns := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": "v1", "kind": "Namespace", "metadata": map[string]interface{}{"name": "test", "uid": "namespace-uid", "resourceVersion": "1"}}}
+			sts := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": map[string]interface{}{"name": "brain", "namespace": "test", "uid": "sts-uid", "resourceVersion": "1"}}}
+			client := fake.NewSimpleDynamicClient(runtime.NewScheme(), ns, sts)
+			client.PrependReactor("create", "configmaps", func(a ktesting.Action) (bool, runtime.Object, error) {
+				claim := a.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+				claim.SetUID("claim-uid")
+				claim.SetResourceVersion("1")
+				return true, claim, client.Tracker().Create(ownerResource, claim, "test")
+			})
+			owner, err := AcquireFaultOwner(ctx, client, dir, binding)
+			require.NoError(t, err)
+			var calls []string
+			changed := errors.New("admission changed")
+			sourceCalls := 0
+			r := NetworkFaultRuntime{
+				Lifecycle: FaultLifecycle{Owner: owner, Preparation: FaultPreparation{Own: func(context.Context) error {
+					calls = append(calls, "own")
+					if mode == "own" {
+						return changed
+					}
+					return nil
+				}}, Observation: &OriginalObservation{Initial: Binding{ClusterID: 1, InitialMemberID: 2, InitialTerm: 3}}, OutcomeAdmit: func(context.Context) error { return nil }},
+				ScriptDirectory: "/admitted/scripts", TargetsSHA256: strings.Repeat("a", 64),
+				AdmitNetwork: func(context.Context) error {
+					calls = append(calls, "network")
+					if mode == "network" {
+						return changed
+					}
+					if mode == "claim-changed" {
+						return client.Tracker().Delete(ownerResource, "test", faultOwnerName)
+					}
+					if mode == "cancelled" {
+						cancel()
+					}
+					return nil
+				},
+				RetainNetwork:       func(string, []byte, error) error { return nil },
+				SuccessorConnection: &successorConnection{}, Successor: SuccessorBinding{ClusterID: 1, ObserverMemberID: 4, OldLeaderID: 2, OldTerm: 3},
+				AdmitSuccessor: func(context.Context) error { return nil }, RetainStatus: func(context.Context, SuccessorSample) error { return nil }, CaptureSeconds: 1,
+				admitTools: func(context.Context) error {
+					calls = append(calls, "source")
+					sourceCalls++
+					if (mode == "source-before" && sourceCalls == 1) || (mode == "source-after" && sourceCalls == 2) {
+						return changed
+					}
+					return nil
+				},
+			}
+			bound, err := r.bind()
+			require.NoError(t, err)
+			err = bound.Preparation.Own(ctx)
+			if mode == "success" {
+				require.NoError(t, err)
+				require.Equal(t, []string{"source", "own", "network", "source"}, calls)
+			} else {
+				require.Error(t, err)
+				if mode == "source-before" {
+					require.Equal(t, []string{"source"}, calls)
+				}
+				if mode == "source-after" {
+					require.ErrorIs(t, err, changed)
+					require.Equal(t, []string{"source", "own", "network", "source"}, calls)
+				}
+				if mode == "cancelled" {
+					require.ErrorIs(t, err, context.Canceled)
+				}
+			}
+		})
+	}
+}
 
 func TestNetworkFaultRuntimeBinding(t *testing.T) {
 	for _, mode := range []string{"bound", "cluster", "old-member", "old-term", "same-observer", "prefilled-clock", "duration", "conflicting-nonces", "conflicting-ready", "conflicting-fault", "conflicting-recovery", "missing-admission", "bad-script", "bad-digest"} {

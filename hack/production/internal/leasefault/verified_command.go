@@ -37,7 +37,7 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 	if err := ownerContext(ctx); err != nil {
 		return result, err
 	}
-	if r.Network.Lifecycle.Preparation.Connection == nil || r.Network.SuccessorConnection == nil || inputs.AdmitTools == nil || r.Network.Lifecycle.Join != nil || r.Network.Lifecycle.RecoveryConnection != nil {
+	if r.Network.Lifecycle.Preparation.Connection == nil || r.Network.SuccessorConnection == nil || inputs.AdmitTools == nil || r.Network.Lifecycle.Join != nil || r.Network.Lifecycle.RecoveryConnection != nil || r.Network.admitTools != nil {
 		return result, errors.New("verified command requires preparation/successor connections and tool admission, without preconfigured Join or recovery connection")
 	}
 	r.Network.Lifecycle.RecoveryConnection = r.Network.SuccessorConnection
@@ -88,9 +88,11 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 			return errors.Join(inputs.AdmitTools(ctx), ctx.Err())
 		}
 	}
-	r.Network.Lifecycle.Preparation.Own = guard(r.Network.Lifecycle.Preparation.Own)
+	// Network.bind combines both claim checks, Preparation.Own and
+	// AdmitNetwork. Apply one source bracket to that whole read-only admission;
+	// retain every internal check and reject changed tools before it returns.
+	r.Network.admitTools = inputs.AdmitTools
 	r.Network.Lifecycle.OutcomeAdmit = guard(r.Network.Lifecycle.OutcomeAdmit)
-	r.Network.AdmitNetwork = guard(r.Network.AdmitNetwork)
 	r.Network.AdmitSuccessor = guard(r.Network.AdmitSuccessor)
 	r.AdmitMetrics = guard(r.AdmitMetrics)
 	h.AdmitOriginal = guard(h.AdmitOriginal)

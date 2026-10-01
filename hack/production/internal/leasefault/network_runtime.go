@@ -27,6 +27,9 @@ type NetworkFaultRuntime struct {
 	AdmitSuccessor                 func(context.Context) error
 	RetainStatus                   func(context.Context, SuccessorSample) error
 	CaptureSeconds                 int
+	// Set only by RunVerified: bracket the complete ownership/network
+	// admission, not each of its internal read-only checks independently.
+	admitTools func(context.Context) error
 }
 
 func (r NetworkFaultRuntime) Run(ctx context.Context) (LifecycleResult, error) {
@@ -53,6 +56,11 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	}
 	p := l.Preparation
 	admit := func(ctx context.Context) error {
+		if r.admitTools != nil {
+			if err := r.admitTools(ctx); err != nil {
+				return err
+			}
+		}
 		if err := l.Owner.Check(ctx); err != nil {
 			return err
 		}
@@ -62,7 +70,13 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 		if err := r.AdmitNetwork(ctx); err != nil {
 			return err
 		}
-		return l.Owner.Check(ctx)
+		if err := l.Owner.Check(ctx); err != nil {
+			return err
+		}
+		if r.admitTools != nil {
+			return errors.Join(r.admitTools(ctx), ctx.Err())
+		}
+		return ctx.Err()
 	}
 	n := NetworkObserver{Directory: p.Directory, StatefulSetName: p.StatefulSetName, ScriptDirectory: r.ScriptDirectory, TargetsSHA256: r.TargetsSHA256, Network: p.Network, Client: p.Client, Env: append([]string{}, r.Env...), Admit: admit, Retain: r.RetainNetwork}
 	l.Preparation.Own = admit
