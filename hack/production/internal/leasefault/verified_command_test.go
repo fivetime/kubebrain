@@ -27,7 +27,7 @@ type targetedSuccessorConnection struct {
 func (c *targetedSuccessorConnection) Target() string { return c.target }
 
 func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
-	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release", "missing-isolated-join-pin", "node-uid", "node-platform", "node-api", "node-post-admit", "endpoint-original", "endpoint-observer", "endpoint-dns", "endpoint-port", "endpoint-probe", "endpoint-no-target", "endpoint-shared-ip", "endpoint-host-network", "deployment-spec", "deployment-generation", "deployment-uid", "deployment-api"} {
+	for _, mode := range []string{"execution-refused", "wrong-member", "tools-changed-after-claim", "tools-changed-during-process", "preconfigured-recovery", "wrong-preparation-member", "missing-preparation", "missing-successor", "wrong-release", "missing-isolated-join-pin", "node-uid", "node-platform", "node-api", "node-post-admit", "endpoint-original", "endpoint-observer", "endpoint-dns", "endpoint-port", "endpoint-probe", "endpoint-no-target", "endpoint-shared-ip", "endpoint-host-network", "deployment-spec", "deployment-generation", "deployment-uid", "deployment-api"} {
 		t.Run(mode, func(t *testing.T) {
 			p := commandPlan(t)
 			require.NoError(t, os.Chmod(p.OwnerDirectory, 0700))
@@ -81,6 +81,13 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 				require.NoError(t, unstructured.SetNestedField(node.Object, "arm64", "status", "nodeInfo", "architecture"))
 			}
 			client := fake.NewSimpleDynamicClient(runtime.NewScheme(), pod, observer, ns, sts, node)
+			toolsCalls := 0
+			processRead := false
+			var originalAdmissionTools []int
+			client.PrependReactor("get", "pods", func(a ktesting.Action) (bool, runtime.Object, error) {
+				processRead = true
+				return false, nil, nil
+			})
 			deploymentGets := 0
 			client.PrependReactor("get", "statefulsets", func(a ktesting.Action) (bool, runtime.Object, error) {
 				deploymentGets++
@@ -148,7 +155,10 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			if mode == "missing-successor" {
 				r.Network.SuccessorConnection = nil
 			}
-			h := ObservationHooks{AdmitOriginal: check, AdmitStack: func(context.Context, string) error { return nil }}
+			h := ObservationHooks{AdmitOriginal: func(context.Context) error {
+				originalAdmissionTools = append(originalAdmissionTools, toolsCalls)
+				return nil
+			}, AdmitStack: func(context.Context, string) error { return nil }}
 			predicate, err := filepath.Abs("../../same-pod-process.jq")
 			require.NoError(t, err)
 			join := filepath.Join(t.TempDir(), "join.sh")
@@ -167,6 +177,10 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			defer cancel()
 			changed := errors.New("approved tools changed after claim")
 			toolsAdmit := func(context.Context) error {
+				toolsCalls++
+				if mode == "tools-changed-during-process" && processRead {
+					return changed
+				}
 				if mode == "node-post-admit" && nodeGets > 0 {
 					return changed
 				}
@@ -177,10 +191,17 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			}
 			result, err := p.RunVerified(ctx, r, h, VerifiedCommandInputs{Release: release, Processes: CommandProcessInputs{JQ: "/usr/bin/jq", Predicate: predicate, Observer: observerRaw, Metrics: []json.RawMessage{p.Bindings.Network.PodBefore}}, MetricExecutable: "/bin/bash", JoinScript: join, Targets: artifacts.Targets, AdmitTools: toolsAdmit})
 			require.Error(t, err)
+			if mode == "execution-refused" {
+				require.GreaterOrEqual(t, len(originalAdmissionTools), 2)
+				require.Equal(t, []int{2, 2}, originalAdmissionTools[:2], "one source guard brackets the whole original process check, rather than each internal member check")
+			}
+			if mode == "tools-changed-during-process" {
+				require.ErrorIs(t, err, changed, "post-process source guard must reject tools changed during the live read")
+			}
 			joins, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "recovery-join.*.json"))
 			require.NoError(t, globErr)
 			staticFailure := mode == "preconfigured-recovery" || mode == "missing-preparation" || mode == "missing-successor" || mode == "wrong-release" || mode == "missing-isolated-join-pin" || strings.HasPrefix(mode, "endpoint-")
-			if mode == "wrong-member" || mode == "wrong-preparation-member" || staticFailure || strings.HasPrefix(mode, "node-") || strings.HasPrefix(mode, "deployment-") {
+			if mode == "wrong-member" || mode == "wrong-preparation-member" || mode == "tools-changed-during-process" || staticFailure || strings.HasPrefix(mode, "node-") || strings.HasPrefix(mode, "deployment-") {
 				require.Zero(t, creates)
 				require.Nil(t, result.Owner)
 				require.Empty(t, joins)
@@ -201,7 +222,7 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			}
 			nodeEvidence, nodeErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "experiment-node-platform.*.json"))
 			require.NoError(t, nodeErr)
-			if staticFailure || strings.HasPrefix(mode, "deployment-") {
+			if staticFailure || mode == "tools-changed-during-process" || strings.HasPrefix(mode, "deployment-") {
 				require.Zero(t, nodeGets)
 				require.Empty(t, nodeEvidence)
 			} else {
@@ -210,7 +231,7 @@ func TestVerifiedCommandAdmissionAndJoin(t *testing.T) {
 			}
 			deploymentEvidence, globErr := filepath.Glob(filepath.Join(p.OwnerDirectory, "experiment-deployment.*.json"))
 			require.NoError(t, globErr)
-			if staticFailure {
+			if staticFailure || mode == "tools-changed-during-process" {
 				require.Empty(t, deploymentEvidence)
 				require.Zero(t, deploymentGets)
 			} else {

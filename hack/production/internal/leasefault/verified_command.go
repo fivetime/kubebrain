@@ -57,6 +57,14 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 			return result, err
 		}
 	}
+	// Bind the complete process check before adding provenance guards. Its
+	// member admission brackets the live Pod read and predicate execution;
+	// source checks must bracket that whole operation, not be multiplied by
+	// each of its internal member-admission calls.
+	r, h, err := p.BindProcessAdmission(r, h, inputs.Targets, inputs.Processes)
+	if err != nil {
+		return result, err
+	}
 	// Uniform provenance checks must continue after acquisition, including
 	// preparation, observation and recovery. Keep missing stage admission nil
 	// so static validation still rejects it rather than masking it with tools.
@@ -90,10 +98,6 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 		h.AdmitStack = func(ctx context.Context, stage string) error {
 			return guard(func(ctx context.Context) error { return stack(ctx, stage) })(ctx)
 		}
-	}
-	r, h, err := p.BindProcessAdmission(r, h, inputs.Targets, inputs.Processes)
-	if err != nil {
-		return result, err
 	}
 	r.Network.Lifecycle.Join = func(ctx context.Context) error {
 		if filepath.Base(inputs.JoinScript) == IsolatedJoinScript {
