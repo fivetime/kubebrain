@@ -36,6 +36,7 @@ type NetworkObserver struct {
 	// Only the concrete runtime may separate source checks from live admission.
 	nonceTools    func(context.Context) error
 	preparedTools func(context.Context) error
+	faultTools    func(context.Context) error
 }
 
 // Prepared verifies the owned-label identity and absence of the reserved policy
@@ -81,7 +82,7 @@ func (o NetworkObserver) Drops(ctx context.Context, origin time.Time, durationSe
 	return o.observeFault(ctx, "drops", origin, durationSeconds)
 }
 
-func (o NetworkObserver) observeFault(ctx context.Context, stage string, origin time.Time, durationSeconds int) error {
+func (o NetworkObserver) observeFault(ctx context.Context, stage string, origin time.Time, durationSeconds int) (err error) {
 	if ctx == nil || origin.IsZero() || origin.After(time.Now()) {
 		return errors.New("invalid network fault clock")
 	}
@@ -92,7 +93,13 @@ func (o NetworkObserver) observeFault(ctx context.Context, stage string, origin 
 	if !time.Now().Before(deadline) {
 		return context.DeadlineExceeded
 	}
-	err := o.observeCapture(ctx, stage, NetworkLabelOwned, origin, durationSeconds)
+	if o.faultTools != nil {
+		if err := o.faultTools(ctx); err != nil {
+			return err
+		}
+		defer func() { err = errors.Join(err, o.faultTools(ctx), ctx.Err()) }()
+	}
+	err = o.observeCapture(ctx, stage, NetworkLabelOwned, origin, durationSeconds)
 	if !time.Now().Before(deadline) {
 		return errors.Join(err, context.DeadlineExceeded)
 	}

@@ -61,7 +61,9 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 `), 0600))
 	retained, pending := 0, 0
 	sourceChecks := 0
-	sourceChanged := mode == "observer-source-before"
+	liveChecks := 0
+	faultBound := false
+	sourceChanged := mode == "observer-source-before" || strings.HasSuffix(mode, "-source-before")
 	stages := map[string]bool{}
 	o := NetworkObserver{Directory: dir, StatefulSetName: p.StatefulSetName, ScriptDirectory: scripts, TargetsSHA256: hex.EncodeToString(digest[:]), Network: p.Network, Client: p.Client, Env: []string{"SCENARIO=" + mode, "PATH=/usr/bin:/bin"},
 		preparedTools: func(context.Context) error {
@@ -72,6 +74,15 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 			return nil
 		},
 		Admit: func(context.Context) error {
+			liveChecks++
+			if mode == "observer-check-active-source-after" && liveChecks == 4 {
+				sourceChanged = true
+			}
+			if mode == "observer-check-active" && !faultBound {
+				// The concrete runtime's admission brackets each nested live
+				// callback with two full tool checks.
+				sourceChecks += 2
+			}
 			if mode == "observer-owner-lost" {
 				return errors.New("ownership lost")
 			}
@@ -79,7 +90,7 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 		},
 		Retain: func(stage string, output []byte, observed error) error {
 			retained++
-			if mode == "observer-source-after" {
+			if mode == "observer-source-after" || mode == "observer-active-source-after" {
 				sourceChanged = true
 			}
 			stages[stage] = true
@@ -94,6 +105,10 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 			}
 			return nil
 		},
+	}
+	if strings.HasPrefix(mode, "observer-active") || strings.HasPrefix(mode, "observer-check-active") || strings.HasPrefix(mode, "observer-drops") {
+		o.faultTools = o.preparedTools
+		faultBound = true
 	}
 	if mode == "observer-input-before" {
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "observer-targets.json"), []byte("changed"), 0600))
@@ -159,6 +174,18 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 			require.NoError(t, os.Remove(filepath.Join(scripts, "observe-local-policy-state.sh")))
 		}
 		err := observe(faultCtx, origin)
+		if strings.HasSuffix(mode, "-source-before") || strings.HasSuffix(mode, "-source-after") {
+			require.ErrorContains(t, err, "prepared source changed")
+			if strings.HasSuffix(mode, "-source-before") {
+				require.Equal(t, 1, sourceChecks)
+				require.Zero(t, liveChecks)
+				require.Zero(t, retained)
+			} else {
+				require.Equal(t, 2, sourceChecks)
+				require.GreaterOrEqual(t, liveChecks, 4)
+			}
+			return
+		}
 		if activeMode == "observer-active-inactive" || activeMode == "observer-active-replaced" {
 			require.Error(t, err)
 			require.Zero(t, retained)
@@ -166,6 +193,21 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 		}
 		require.NoError(t, err)
 		if checkOnly {
+			if mode == "observer-check-active" {
+				require.Equal(t, 4, liveChecks)
+				require.Equal(t, 2, sourceChecks, "one source bracket around this read-only observation")
+				legacy := o
+				legacy.faultTools = nil
+				liveAdmit := o.Admit
+				legacy.Admit = func(ctx context.Context) error {
+					sourceChecks += 2
+					return liveAdmit(ctx)
+				}
+				liveChecks, sourceChecks = 0, 0
+				require.NoError(t, legacy.CheckActive(faultCtx, origin))
+				require.Equal(t, 4, liveChecks, "same live identity admissions as before")
+				require.Equal(t, 8, sourceChecks, "previous nested source brackets")
+			}
 			require.Zero(t, retained)
 			// A previously matched API check must not hide a later replacement.
 			resource := p.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(p.Network.Namespace)

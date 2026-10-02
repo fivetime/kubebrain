@@ -192,6 +192,12 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	}
 	l.NetworkRestored = n.Restored
 	l.IdentityRestored = n.Unlabelled
+	// Each fault observation is read-only: bracket its complete source once,
+	// retaining every live identity/input/policy check within it. Activation
+	// and recovery retain their independent full source admissions.
+	faultObserver := n
+	faultObserver.Admit = liveAdmission
+	faultObserver.faultTools = r.admitTools
 	var origin time.Time
 	l.ObserveFault = func(ctx context.Context, at time.Time) (uint64, error) {
 		if !origin.IsZero() {
@@ -199,10 +205,10 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 		}
 		origin = at
 		observe := FaultObservation{
-			Connection: r.SuccessorConnection, Successor: b, Active: n.Active,
-			Drops: func(ctx context.Context, at time.Time) error { return n.Drops(ctx, at, r.CaptureSeconds) },
+			Connection: r.SuccessorConnection, Successor: b, Active: faultObserver.Active,
+			Drops: func(ctx context.Context, at time.Time) error { return faultObserver.Drops(ctx, at, r.CaptureSeconds) },
 			CheckIsolation: func(ctx context.Context) error {
-				if err := n.CheckActive(ctx, at); err != nil {
+				if err := faultObserver.CheckActive(ctx, at); err != nil {
 					return err
 				}
 				return r.AdmitSuccessor(ctx)
@@ -213,13 +219,13 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	}
 	outcomeAdmit := l.OutcomeAdmit
 	l.OutcomeAdmit = func(ctx context.Context) error {
-		if err := n.CheckActive(ctx, origin); err != nil {
+		if err := faultObserver.CheckActive(ctx, origin); err != nil {
 			return err
 		}
 		if err := outcomeAdmit(ctx); err != nil {
 			return err
 		}
-		return n.CheckActive(ctx, origin)
+		return faultObserver.CheckActive(ctx, origin)
 	}
 	return l, nil
 }
