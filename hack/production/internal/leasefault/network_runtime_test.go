@@ -19,9 +19,11 @@ import (
 )
 
 func TestNetworkAdmissionSourceBoundary(t *testing.T) {
-	for _, mode := range []string{"success", "source-before", "source-after", "own", "network", "claim-changed", "cancelled", "identity-success", "identity-source-before", "identity-source-after", "identity-own", "identity-network", "identity-claim-changed", "identity-cancelled"} {
+	for _, mode := range []string{"success", "source-before", "source-after", "own", "network", "claim-changed", "cancelled", "identity-success", "identity-source-before", "identity-source-after", "identity-own", "identity-network", "identity-claim-changed", "identity-cancelled", "reservation-success", "reservation-source-before", "reservation-source-after", "reservation-own", "reservation-network", "reservation-claim-changed", "reservation-cancelled", "reservation-policy-replaced", "reservation-policy-active"} {
 		t.Run(mode, func(t *testing.T) {
-			identityMode := strings.HasPrefix(mode, "identity-")
+			reservationMode := strings.HasPrefix(mode, "reservation-")
+			identityMode := strings.HasPrefix(mode, "identity-") || reservationMode
+			mode = strings.TrimPrefix(mode, "reservation-")
 			mode = strings.TrimPrefix(mode, "identity-")
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
@@ -91,7 +93,27 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 				policy.SetNamespace("test")
 				plan.ApprovedPolicy, err = policy.MarshalJSON()
 				require.NoError(t, err)
+				if reservationMode {
+					labels := pod.GetLabels()
+					labels["kubebrain.io/fault-owner"] = plan.Nonce
+					pod.SetLabels(labels)
+					reserved := &unstructured.Unstructured{}
+					require.NoError(t, reserved.UnmarshalJSON(reservationFixture()))
+					reserved.SetNamespace("test")
+					raw, err := reserved.MarshalJSON()
+					require.NoError(t, err)
+					require.NoError(t, ArmNetworkRecovery(dir, plan))
+					require.NoError(t, SaveNetworkReservation(dir, plan, raw))
+					if mode == "policy-replaced" {
+						reserved.SetUID("replacement")
+					}
+					if mode == "policy-active" {
+						require.NoError(t, unstructured.SetNestedField(reserved.Object, plan.Nonce, "spec", "endpointSelector", "matchLabels", "kubebrain.io/fault-owner"))
+					}
+					require.NoError(t, client.Tracker().Add(reserved))
+				}
 				require.NoError(t, client.Tracker().Add(pod))
+				r.Lifecycle.Preparation.Directory = dir
 				r.Lifecycle.Preparation.Network = plan
 				r.Lifecycle.Preparation.Client = client
 				r.Lifecycle.Preparation.StatefulSetName = "brain"
@@ -99,7 +121,10 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 			bound, err := r.bind()
 			require.NoError(t, err)
 			want := []string{"source", "own", "network", "source"}
-			if identityMode {
+			if reservationMode {
+				err = bound.Preparation.protocolReservationCheck(ctx)
+				want = []string{"source", "own", "network", "own", "network", "own", "network", "source"}
+			} else if identityMode {
 				err = bound.Preparation.checkIdentity(ctx, NetworkUnlabelled)
 				want = []string{"source", "own", "network", "own", "network", "source"}
 			} else {
@@ -108,6 +133,21 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 			if mode == "success" {
 				require.NoError(t, err)
 				require.Equal(t, want, calls)
+				if reservationMode {
+					require.Equal(t, 2, sourceCalls)
+					// Compare the old nested boundary on the same live fixture:
+					// only redundant source checks disappear, not ownership reads.
+					calls, sourceCalls = nil, 0
+					require.NoError(t, bound.Preparation.checkProtocolReservation(ctx, bound.Preparation.checkIdentity, bound.Preparation.Own))
+					require.Equal(t, 4, sourceCalls)
+					var liveCalls []string
+					for _, call := range calls {
+						if call != "source" {
+							liveCalls = append(liveCalls, call)
+						}
+					}
+					require.Equal(t, []string{"own", "network", "own", "network", "own", "network"}, liveCalls)
+				}
 			} else {
 				require.Error(t, err)
 				if mode == "source-before" {

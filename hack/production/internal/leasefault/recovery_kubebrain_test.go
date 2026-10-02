@@ -63,6 +63,40 @@ func recoveryGRPCFixture(t *testing.T) *grpc.ClientConn {
 	return recoveryGRPCFixtureAtTerm(t, 1)
 }
 
+// A slow admitted setup must not report a usable fixture when the fixed
+// ten-second lease expires before CORRUPT activation. This is a setup-order
+// regression, not a real TiKV/Cilium or thirty-second fault acceptance proof.
+func TestPrepareProtocolRejectsLeaseExpiredBeforeAlarm(t *testing.T) {
+	conn := recoveryGRPCFixture(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	status, err := pb.NewMaintenanceClient(conn).Status(ctx, &pb.StatusRequest{})
+	require.NoError(t, err)
+	plan := ProtocolRecovery{Owner: "slow-preparation", NamespaceUID: "fixture-namespace", StatefulSetUID: "fixture-sts", ClusterID: status.Header.ClusterId, AlarmMemberID: status.Header.MemberId, LeaseID: 5180, Key: "/acceptance/slow-preparation"}
+	dir := t.TempDir()
+	require.NoError(t, os.Chmod(dir, 0700))
+	mutations := 0
+	err = prepareProtocol(ctx, dir, plan, conn, func(context.Context) error { return nil }, func(ctx context.Context) error {
+		mutations++
+		if mutations == 2 || mutations == 3 {
+			timer := time.NewTimer(6 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+		return nil
+	})
+	ttl, ttlErr := pb.NewLeaseClient(conn).LeaseTimeToLive(ctx, &pb.LeaseTimeToLiveRequest{ID: plan.LeaseID, Keys: true})
+	require.NoError(t, ttlErr)
+	require.Zero(t, ttl.GrantedTTL, "expired fixture must reproduce the missing lease")
+	require.EqualValues(t, -1, ttl.TTL)
+	require.Empty(t, ttl.Keys)
+	require.Error(t, err, "preparation must reject a missing fixture instead of proceeding to the original probe")
+}
+
 func recoveryGRPCFixtureAtTerm(t *testing.T, term uint64) *grpc.ClientConn {
 	t.Helper()
 	ctrl := gomock.NewController(t)

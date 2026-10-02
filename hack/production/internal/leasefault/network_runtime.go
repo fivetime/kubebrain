@@ -97,6 +97,18 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 		// the complete source bracket by those internal callbacks.
 		return CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, phase, liveAdmission)
 	}
+	l.Preparation.protocolReservationCheck = func(ctx context.Context) (err error) {
+		if r.admitTools != nil {
+			if err := r.admitTools(ctx); err != nil {
+				return err
+			}
+			defer func() { err = errors.Join(err, r.admitTools(ctx), ctx.Err()) }()
+		}
+		identity := func(ctx context.Context, phase NetworkLabelPhase) error {
+			return CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, phase, liveAdmission)
+		}
+		return p.checkProtocolReservation(ctx, identity, liveAdmission)
+	}
 	// The nonce scan is wholly read-only. Keep every live ownership/identity
 	// check, but bracket the whole scan rather than each nested API admission.
 	nonces := n

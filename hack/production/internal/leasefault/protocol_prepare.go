@@ -113,5 +113,15 @@ func prepareProtocol(ctx context.Context, dir string, plan ProtocolRecovery, con
 	if alarm == nil || !validHeader(alarm.Header) || len(alarm.Alarms) != 1 || alarm.Alarms[0] == nil || alarm.Alarms[0].MemberID != plan.AlarmMemberID || alarm.Alarms[0].Alarm != pb.AlarmType_CORRUPT {
 		return errors.New("fixture alarm activation was not confirmed")
 	}
+	// The admission before Alarm may outlast the fixed ten-second TTL. A
+	// successful Alarm response cannot resurrect an already expired fixture.
+	// Read only: never renew, recreate or retry the lease to hide this race.
+	ttl, err := lease.LeaseTimeToLive(ctx, &pb.LeaseTimeToLiveRequest{ID: plan.LeaseID, Keys: true})
+	if err != nil {
+		return err
+	}
+	if ttl == nil || !validHeader(ttl.Header) || ttl.ID != plan.LeaseID || ttl.GrantedTTL != 10 || len(ttl.Keys) != 1 || string(ttl.Keys[0]) != plan.Key {
+		return errors.New("fixture lease was not retained after alarm activation")
+	}
 	return ctx.Err()
 }

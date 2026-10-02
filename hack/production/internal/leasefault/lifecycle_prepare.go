@@ -28,6 +28,9 @@ type FaultPreparation struct {
 	Own, NoncesSafe, ReservedReady func(context.Context) error
 	// Concrete runtime source admission brackets each complete read-only check.
 	identityCheck func(context.Context, NetworkLabelPhase) error
+	// Concrete runtime brackets the complete pre-mutation reservation check,
+	// rather than hashing the same inputs separately around its nested reads.
+	protocolReservationCheck func(context.Context) error
 }
 
 func (p FaultPreparation) checkIdentity(ctx context.Context, phase NetworkLabelPhase) error {
@@ -88,36 +91,11 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 	if err := changeNetworkLabelWithOwnership(ctx, p.Client, p.Directory, p.Network, p.StatefulSetName, safe, p.Own, false); err != nil {
 		return fmt.Errorf("prepare label: %w", err)
 	}
-	reservation := func(ctx context.Context) error {
-		if err := p.checkIdentity(ctx, NetworkLabelOwned); err != nil {
-			return fmt.Errorf("reservation identity admission: %w", err)
+	reservation := p.protocolReservationCheck
+	if reservation == nil {
+		reservation = func(ctx context.Context) error {
+			return p.checkProtocolReservation(ctx, p.checkIdentity, p.Own)
 		}
-		raw, err := LoadNetworkReservation(p.Directory, p.Network)
-		if err != nil {
-			return fmt.Errorf("load preparation reservation: %w", err)
-		}
-		var receipt unstructured.Unstructured
-		if err := receipt.UnmarshalJSON(raw); err != nil {
-			return fmt.Errorf("decode preparation reservation: %w", err)
-		}
-		live, err := p.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(p.Network.Namespace).Get(ctx, p.Network.PolicyName, metav1.GetOptions{})
-		if err != nil {
-			return fmt.Errorf("get preparation reservation policy: %w", err)
-		}
-		if live == nil || live.GetUID() != receipt.GetUID() {
-			return errors.New("inactive reservation replaced")
-		}
-		raw, err = live.MarshalJSON()
-		if err != nil {
-			return err
-		}
-		if err := validateReservation(p.Network, raw); err != nil {
-			return err
-		}
-		if err := p.Own(ctx); err != nil {
-			return fmt.Errorf("reservation ownership admission: %w", err)
-		}
-		return nil
 	}
 	ready := func(ctx context.Context) error {
 		if err := safe(ctx); err != nil {
@@ -135,4 +113,38 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 		return fmt.Errorf("prepare protocol: %w", err)
 	}
 	return ready(ctx)
+}
+
+// Same live reads and ownership checks for standalone and concrete execution.
+// Neither path caches a receipt, identity, file digest or ownership result.
+func (p FaultPreparation) checkProtocolReservation(ctx context.Context, identity func(context.Context, NetworkLabelPhase) error, own func(context.Context) error) error {
+	if err := identity(ctx, NetworkLabelOwned); err != nil {
+		return fmt.Errorf("reservation identity admission: %w", err)
+	}
+	raw, err := LoadNetworkReservation(p.Directory, p.Network)
+	if err != nil {
+		return fmt.Errorf("load preparation reservation: %w", err)
+	}
+	var receipt unstructured.Unstructured
+	if err := receipt.UnmarshalJSON(raw); err != nil {
+		return fmt.Errorf("decode preparation reservation: %w", err)
+	}
+	live, err := p.Client.Resource(schema.GroupVersionResource{Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"}).Namespace(p.Network.Namespace).Get(ctx, p.Network.PolicyName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("get preparation reservation policy: %w", err)
+	}
+	if live == nil || live.GetUID() != receipt.GetUID() {
+		return errors.New("inactive reservation replaced")
+	}
+	raw, err = live.MarshalJSON()
+	if err != nil {
+		return err
+	}
+	if err := validateReservation(p.Network, raw); err != nil {
+		return err
+	}
+	if err := own(ctx); err != nil {
+		return fmt.Errorf("reservation ownership admission: %w", err)
+	}
+	return ctx.Err()
 }
