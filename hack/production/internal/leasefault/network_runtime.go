@@ -42,7 +42,7 @@ func (r NetworkFaultRuntime) Run(ctx context.Context) (LifecycleResult, error) {
 
 func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	l := r.Lifecycle
-	if l.Observation == nil || l.Owner == nil || l.Preparation.Own == nil || l.OutcomeAdmit == nil || l.Preparation.NoncesSafe != nil || l.Preparation.ReservedReady != nil || l.ObserveFault != nil || l.NetworkRestored != nil || l.IdentityRestored != nil || r.AdmitNetwork == nil || r.RetainNetwork == nil || r.SuccessorConnection == nil || r.AdmitSuccessor == nil || r.RetainStatus == nil || r.CaptureSeconds < 1 || r.CaptureSeconds > 9 {
+	if l.Observation == nil || l.Owner == nil || l.Preparation.Own == nil || l.OutcomeAdmit == nil || l.Preparation.NoncesSafe != nil || l.Preparation.ReservedReady != nil || l.ObserveFault != nil || l.NetworkRestored != nil || l.IdentityRestored != nil || l.observationAdmission != nil || r.AdmitNetwork == nil || r.RetainNetwork == nil || r.SuccessorConnection == nil || r.AdmitSuccessor == nil || r.RetainStatus == nil || r.CaptureSeconds < 1 || r.CaptureSeconds > 9 {
 		return FaultLifecycle{}, errors.New("incomplete or conflicting concrete network runtime")
 	}
 	initial := l.Observation.Initial
@@ -86,6 +86,34 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	}
 	n := NetworkObserver{Directory: p.Directory, StatefulSetName: p.StatefulSetName, ScriptDirectory: r.ScriptDirectory, TargetsSHA256: r.TargetsSHA256, Network: p.Network, Client: p.Client, Env: append([]string{}, r.Env...), Admit: admit, Retain: r.RetainNetwork}
 	l.Preparation.Own = admit
+	if r.admitTools != nil {
+		l.observationAdmission = func(ctx context.Context, stage func(context.Context) error) error {
+			if err := r.admitTools(ctx); err != nil {
+				return err
+			}
+			// Same ownership reads as runAdmittedFaultLifecycle's Own wrapper,
+			// without separately hashing inputs around each nested callback.
+			own := func() error {
+				if err := l.Owner.Check(ctx); err != nil {
+					return err
+				}
+				if err := liveAdmission(ctx); err != nil {
+					return err
+				}
+				return l.Owner.Check(ctx)
+			}
+			if err := own(); err != nil {
+				return err
+			}
+			if err := stage(ctx); err != nil {
+				return err
+			}
+			if err := own(); err != nil {
+				return err
+			}
+			return errors.Join(r.admitTools(ctx), ctx.Err())
+		}
+	}
 	l.Preparation.identityCheck = func(ctx context.Context, phase NetworkLabelPhase) (err error) {
 		if r.admitTools != nil {
 			if err := r.admitTools(ctx); err != nil {

@@ -65,6 +65,7 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 	if err != nil {
 		return result, err
 	}
+	observationHooks := h
 	// Uniform provenance checks must continue after acquisition, including
 	// preparation, observation and recovery. Keep missing stage admission nil
 	// so static validation still rejects it rather than masking it with tools.
@@ -124,11 +125,12 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 	}
 	// Source and endpoint/process checks bracket each Status read. Metrics may
 	// involve additional Pods and are also admitted before acquiring ownership.
+	initialOriginal := h.AdmitOriginal
 	initialAdmit := func(ctx context.Context) error {
 		if err := inputs.AdmitTools(ctx); err != nil {
 			return err
 		}
-		if err := h.AdmitOriginal(ctx); err != nil {
+		if err := initialOriginal(ctx); err != nil {
 			return err
 		}
 		return r.Network.AdmitSuccessor(ctx)
@@ -148,5 +150,9 @@ func (p ObservationCommandPlan) RunVerified(ctx context.Context, r MeasuredNetwo
 		}
 		return p.VerifyInitialMembers(ctx, r.Network.Lifecycle.Preparation.Connection, r.Network.SuccessorConnection, initialAdmit)
 	}
+	// The native lifecycle brackets complete ownership + observation admission
+	// with its source checks. Keep preclaim's guarded callbacks above, but do
+	// not nest those same source guards inside the lifecycle's outer boundary.
+	h.AdmitOriginal, h.AdmitStack = observationHooks.AdmitOriginal, observationHooks.AdmitStack
 	return p.ClaimAndRun(ctx, r, h, inputs.MetricExecutable, inputs.Targets, preclaim)
 }

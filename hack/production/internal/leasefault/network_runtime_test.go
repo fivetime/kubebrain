@@ -19,12 +19,14 @@ import (
 )
 
 func TestNetworkAdmissionSourceBoundary(t *testing.T) {
-	for _, mode := range []string{"success", "source-before", "source-after", "own", "network", "claim-changed", "cancelled", "identity-success", "identity-source-before", "identity-source-after", "identity-own", "identity-network", "identity-claim-changed", "identity-cancelled", "reservation-success", "reservation-source-before", "reservation-source-after", "reservation-own", "reservation-network", "reservation-claim-changed", "reservation-cancelled", "reservation-policy-replaced", "reservation-policy-active"} {
+	for _, mode := range []string{"success", "source-before", "source-after", "own", "network", "claim-changed", "cancelled", "identity-success", "identity-source-before", "identity-source-after", "identity-own", "identity-network", "identity-claim-changed", "identity-cancelled", "reservation-success", "reservation-source-before", "reservation-source-after", "reservation-own", "reservation-network", "reservation-claim-changed", "reservation-cancelled", "reservation-policy-replaced", "reservation-policy-active", "observation-success", "observation-source-before", "observation-source-after", "observation-own", "observation-network", "observation-claim-changed", "observation-cancelled", "observation-stage-error", "observation-stage-source", "observation-stage-claim", "observation-stage-cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			reservationMode := strings.HasPrefix(mode, "reservation-")
+			observationMode := strings.HasPrefix(mode, "observation-")
 			identityMode := strings.HasPrefix(mode, "identity-") || reservationMode
 			mode = strings.TrimPrefix(mode, "reservation-")
 			mode = strings.TrimPrefix(mode, "identity-")
+			mode = strings.TrimPrefix(mode, "observation-")
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
 			binding := FaultOwnerBinding{Owner: "attempt-a", Namespace: "test", NamespaceUID: "namespace-uid", StatefulSetName: "brain", StatefulSetUID: "sts-uid"}
@@ -44,6 +46,7 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 			var calls []string
 			changed := errors.New("admission changed")
 			sourceCalls := 0
+			stageVisited := false
 			r := NetworkFaultRuntime{
 				Lifecycle: FaultLifecycle{Owner: owner, Preparation: FaultPreparation{Own: func(context.Context) error {
 					calls = append(calls, "own")
@@ -72,7 +75,7 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 				admitTools: func(context.Context) error {
 					calls = append(calls, "source")
 					sourceCalls++
-					if (mode == "source-before" && sourceCalls == 1) || (mode == "source-after" && sourceCalls == 2) {
+					if (mode == "source-before" && sourceCalls == 1) || (mode == "source-after" && sourceCalls == 2) || (mode == "stage-source" && stageVisited) {
 						return changed
 					}
 					return nil
@@ -121,7 +124,22 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 			bound, err := r.bind()
 			require.NoError(t, err)
 			want := []string{"source", "own", "network", "source"}
-			if reservationMode {
+			if observationMode {
+				err = bound.admitObservation(ctx, func(context.Context) error {
+					calls = append(calls, "stage")
+					stageVisited = true
+					switch mode {
+					case "stage-error":
+						return changed
+					case "stage-claim":
+						return client.Tracker().Delete(ownerResource, "test", faultOwnerName)
+					case "stage-cancel":
+						cancel()
+					}
+					return nil
+				})
+				want = []string{"source", "own", "network", "stage", "own", "network", "source"}
+			} else if reservationMode {
 				err = bound.Preparation.protocolReservationCheck(ctx)
 				want = []string{"source", "own", "network", "own", "network", "own", "network", "source"}
 			} else if identityMode {
@@ -148,6 +166,29 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 					}
 					require.Equal(t, []string{"own", "network", "own", "network", "own", "network"}, liveCalls)
 				}
+				if observationMode {
+					require.Equal(t, 2, sourceCalls)
+					calls, sourceCalls = nil, 0
+					// Prior runtime nested a source guard around each Own and
+					// another around the process/member stage: six full checks.
+					legacy := bound
+					legacy.observationAdmission = nil
+					require.NoError(t, legacy.admitObservation(ctx, func(ctx context.Context) error {
+						if err := r.admitTools(ctx); err != nil {
+							return err
+						}
+						calls = append(calls, "stage")
+						return r.admitTools(ctx)
+					}))
+					require.Equal(t, 6, sourceCalls)
+					var liveCalls []string
+					for _, call := range calls {
+						if call != "source" {
+							liveCalls = append(liveCalls, call)
+						}
+					}
+					require.Equal(t, []string{"own", "network", "stage", "own", "network"}, liveCalls)
+				}
 			} else {
 				require.Error(t, err)
 				if mode == "source-before" {
@@ -157,8 +198,11 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 					require.ErrorIs(t, err, changed)
 					require.Equal(t, want, calls)
 				}
-				if mode == "cancelled" {
+				if mode == "cancelled" || mode == "stage-cancel" {
 					require.ErrorIs(t, err, context.Canceled)
+				}
+				if mode == "stage-error" || mode == "stage-source" {
+					require.ErrorIs(t, err, changed)
 				}
 			}
 		})

@@ -51,6 +51,9 @@ type FaultLifecycle struct {
 	// OutcomeAdmit checks live isolation and protocol identities before outcome
 	// reads; Preparation.Own is also rechecked. Both use the original fault context.
 	OutcomeAdmit func(context.Context) error
+	// Concrete runtime brackets the entire synchronous observation admission.
+	// Standalone lifecycles retain their existing ownership checks below.
+	observationAdmission func(context.Context, func(context.Context) error) error
 }
 
 type LifecycleResult struct {
@@ -205,13 +208,7 @@ func runAdmittedFaultLifecycle(ctx context.Context, l FaultLifecycle) (Lifecycle
 			o := *l.Observation
 			guard := func(admit func(context.Context) error) func(context.Context) error {
 				return func(ctx context.Context) error {
-					if err := l.Preparation.Own(ctx); err != nil {
-						return err
-					}
-					if err := admit(ctx); err != nil {
-						return err
-					}
-					return l.Preparation.Own(ctx)
+					return l.admitObservation(ctx, admit)
 				}
 			}
 			o.Admit = guard(o.Admit)
@@ -255,4 +252,17 @@ func runAdmittedFaultLifecycle(ctx context.Context, l FaultLifecycle) (Lifecycle
 		recoveryErr = fmt.Errorf("fault recovery: %w", result.RecoveryError)
 	}
 	return result, errors.Join(executionErr, recoveryErr)
+}
+
+func (l FaultLifecycle) admitObservation(ctx context.Context, stage func(context.Context) error) error {
+	if l.observationAdmission != nil {
+		return l.observationAdmission(ctx, stage)
+	}
+	if err := l.Preparation.Own(ctx); err != nil {
+		return err
+	}
+	if err := stage(ctx); err != nil {
+		return err
+	}
+	return l.Preparation.Own(ctx)
 }
