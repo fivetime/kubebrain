@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -14,7 +15,29 @@ import (
 	"github.com/kubewharf/kubebrain/hack/production/internal/planinput"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic/fake"
 )
+
+func TestNetworkAdmissionDoesNotRepeatOwnScope(t *testing.T) {
+	client := fake.NewSimpleDynamicClient(runtime.NewScheme())
+	g := &gates{c: &leasefault.CommandConnections{Client: client}, credential: &x509.Certificate{NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}}
+	a := g.admission()
+	// NetworkFaultRuntime invokes Own immediately before Network. Missing live
+	// scope must still fail Own; Network must not repeat that API read.
+	require.Error(t, a.Own(context.Background()))
+	require.Len(t, client.Actions(), 1)
+	client.ClearActions()
+	require.NoError(t, a.Network(context.Background()))
+	require.Empty(t, client.Actions())
+	g.credential.NotAfter = time.Now().Add(-time.Second)
+	require.ErrorContains(t, a.Network(context.Background()), "no longer valid")
+	g.credential.NotAfter = time.Now().Add(time.Hour)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, a.Network(ctx), context.Canceled)
+	require.Empty(t, client.Actions())
+}
 
 func TestExecutionRequestRequiresIndependentDigests(t *testing.T) {
 	raw := `{"command_path":"/private/command.json","command_sha256":"` + strings.Repeat("a", 64) + `","release_path":"/private/release.json","release_sha256":"` + strings.Repeat("b", 64) + `"}`

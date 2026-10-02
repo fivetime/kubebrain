@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic/fake"
 )
 
 // The subprocess here is a boundary fixture, not a substitute for the real
@@ -173,6 +174,8 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 			// observation subprocess at all. Remove this fixture's executable.
 			require.NoError(t, os.Remove(filepath.Join(scripts, "observe-local-policy-state.sh")))
 		}
+		api := p.Client.(*fake.FakeDynamicClient)
+		actionStart := len(api.Actions())
 		err := observe(faultCtx, origin)
 		if strings.HasSuffix(mode, "-source-before") || strings.HasSuffix(mode, "-source-after") {
 			require.ErrorContains(t, err, "prepared source changed")
@@ -194,6 +197,12 @@ if [[ $SCENARIO == observer-input-during ]]; then printf changed > "$6"; fi
 		require.NoError(t, err)
 		if checkOnly {
 			if mode == "observer-check-active" {
+				actions := api.Actions()[actionStart:]
+				require.Len(t, actions, 9, "two fresh network identity reads and one active policy read")
+				for _, action := range actions {
+					require.Contains(t, []string{"get", "list"}, action.GetVerb(), "fault observation must remain read-only")
+				}
+				t.Logf("CheckActive: %d API reads, %d live admissions, %d source checks", len(actions), liveChecks, sourceChecks)
 				require.Equal(t, 4, liveChecks)
 				require.Equal(t, 2, sourceChecks, "one source bracket around this read-only observation")
 				legacy := o

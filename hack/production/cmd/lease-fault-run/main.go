@@ -315,7 +315,12 @@ func (g *gates) admission() leasefault.CommandAdmission {
 		return g.member(ctx, g.c.Original, g.p.Bindings.Protocol.AlarmMemberID)
 	}
 	successor := func(ctx context.Context) error { return g.member(ctx, g.c.Successor, g.p.Bindings.ObserverMemberID) }
-	return leasefault.CommandAdmission{Tools: g.onlineTools, Own: g.scope, Original: original, Network: g.scope, Successor: successor, Metrics: g.scope, Outcome: successor,
+	// The concrete runtime calls Own immediately before Network inside each
+	// live admission, bracketed by fresh owner checks. Own retains the complete
+	// namespace/spec check; repeating the same scope GETs in Network adds no
+	// independent network proof. Network identity/policy reads remain in the
+	// runtime, and this callback still refuses expired credentials/cancellation.
+	return leasefault.CommandAdmission{Tools: g.onlineTools, Own: g.scope, Original: original, Network: g.local, Successor: successor, Metrics: g.scope, Outcome: successor,
 		Stack: func(ctx context.Context, stage string) error {
 			if stage != "before" && stage != "after" {
 				return errors.New("invalid stack stage")
