@@ -210,7 +210,7 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 }
 
 func TestNetworkFaultRuntimeBinding(t *testing.T) {
-	for _, mode := range []string{"bound", "cluster", "old-member", "old-term", "same-observer", "prefilled-clock", "duration", "conflicting-nonces", "conflicting-ready", "conflicting-fault", "conflicting-recovery", "missing-admission", "bad-script", "bad-digest"} {
+	for _, mode := range []string{"bound", "cluster", "old-member", "old-term", "same-observer", "prefilled-clock", "duration", "conflicting-nonces", "conflicting-ready", "conflicting-readiness", "conflicting-fault", "conflicting-recovery", "missing-admission", "bad-script", "bad-digest"} {
 		t.Run(mode, func(t *testing.T) {
 			calls := 0
 			admit := func(context.Context) error { calls++; return nil }
@@ -236,6 +236,8 @@ func TestNetworkFaultRuntimeBinding(t *testing.T) {
 				r.CaptureSeconds = 10
 			case "conflicting-ready":
 				r.Lifecycle.Preparation.ReservedReady = admit
+			case "conflicting-readiness":
+				r.Lifecycle.Preparation.readinessCheck = admit
 			case "conflicting-nonces":
 				r.Lifecycle.Preparation.NoncesSafe = admit
 			case "conflicting-fault":

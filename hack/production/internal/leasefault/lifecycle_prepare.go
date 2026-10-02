@@ -31,6 +31,8 @@ type FaultPreparation struct {
 	// Concrete runtime brackets the complete pre-mutation reservation check,
 	// rather than hashing the same inputs separately around its nested reads.
 	protocolReservationCheck func(context.Context) error
+	// A concrete runtime may bracket the whole synchronous read-only admission.
+	readinessCheck func(context.Context) error
 }
 
 func (p FaultPreparation) checkIdentity(ctx context.Context, phase NetworkLabelPhase) error {
@@ -97,22 +99,42 @@ func prepareFault(ctx context.Context, p FaultPreparation) error {
 			return p.checkProtocolReservation(ctx, p.checkIdentity, p.Own)
 		}
 	}
-	ready := func(ctx context.Context) error {
-		if err := safe(ctx); err != nil {
-			return err
-		}
-		if err := reservation(ctx); err != nil {
-			return err
-		}
-		if err := p.ReservedReady(ctx); err != nil {
-			return fmt.Errorf("preparation reserved dataplane admission: %w", err)
-		}
-		return safe(ctx)
-	}
+	ready := p.checkReady
 	if err := prepareProtocol(ctx, p.Directory, p.Protocol, p.Connection, ready, reservation); err != nil {
 		return fmt.Errorf("prepare protocol: %w", err)
 	}
 	return ready(ctx)
+}
+
+func (p FaultPreparation) checkReady(ctx context.Context) error {
+	if p.readinessCheck != nil {
+		return p.readinessCheck(ctx)
+	}
+	safe := func() error {
+		if err := p.Own(ctx); err != nil {
+			return fmt.Errorf("preparation ownership admission: %w", err)
+		}
+		if err := p.NoncesSafe(ctx); err != nil {
+			return fmt.Errorf("preparation nonce admission: %w", err)
+		}
+		return ctx.Err()
+	}
+	if err := safe(); err != nil {
+		return err
+	}
+	reservation := p.protocolReservationCheck
+	if reservation == nil {
+		reservation = func(ctx context.Context) error {
+			return p.checkProtocolReservation(ctx, p.checkIdentity, p.Own)
+		}
+	}
+	if err := reservation(ctx); err != nil {
+		return err
+	}
+	if err := p.ReservedReady(ctx); err != nil {
+		return fmt.Errorf("preparation reserved dataplane admission: %w", err)
+	}
+	return safe()
 }
 
 // Same live reads and ownership checks for standalone and concrete execution.

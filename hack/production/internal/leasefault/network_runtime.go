@@ -42,7 +42,7 @@ func (r NetworkFaultRuntime) Run(ctx context.Context) (LifecycleResult, error) {
 
 func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	l := r.Lifecycle
-	if l.Observation == nil || l.Owner == nil || l.Preparation.Own == nil || l.OutcomeAdmit == nil || l.Preparation.NoncesSafe != nil || l.Preparation.ReservedReady != nil || l.ObserveFault != nil || l.NetworkRestored != nil || l.IdentityRestored != nil || l.observationAdmission != nil || r.AdmitNetwork == nil || r.RetainNetwork == nil || r.SuccessorConnection == nil || r.AdmitSuccessor == nil || r.RetainStatus == nil || r.CaptureSeconds < 1 || r.CaptureSeconds > 9 {
+	if l.Observation == nil || l.Owner == nil || l.Preparation.Own == nil || l.OutcomeAdmit == nil || l.Preparation.NoncesSafe != nil || l.Preparation.ReservedReady != nil || l.Preparation.readinessCheck != nil || l.ObserveFault != nil || l.NetworkRestored != nil || l.IdentityRestored != nil || l.observationAdmission != nil || r.AdmitNetwork == nil || r.RetainNetwork == nil || r.SuccessorConnection == nil || r.AdmitSuccessor == nil || r.RetainStatus == nil || r.CaptureSeconds < 1 || r.CaptureSeconds > 9 {
 		return FaultLifecycle{}, errors.New("incomplete or conflicting concrete network runtime")
 	}
 	initial := l.Observation.Initial
@@ -147,6 +147,31 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	prepared.Admit = liveAdmission
 	prepared.preparedTools = r.admitTools
 	l.Preparation.ReservedReady = prepared.Prepared
+	if r.admitTools != nil {
+		// Only this synchronous read-only composition shares a source bracket.
+		// Keep the same live admissions, receipt/input reads, child observations
+		// and retention callbacks. Individual preparation mutations still use
+		// the independently bracketed reservation check above; nothing is cached.
+		raw := l.Preparation
+		raw.Own = liveAdmission
+		nonces.nonceTools = nil
+		prepared.preparedTools = nil
+		raw.NoncesSafe = nonces.NoncesSafe
+		raw.ReservedReady = prepared.Prepared
+		raw.protocolReservationCheck = func(ctx context.Context) error {
+			identity := func(ctx context.Context, phase NetworkLabelPhase) error {
+				return CheckNetworkIdentity(ctx, p.Client, p.Network, p.StatefulSetName, phase, liveAdmission)
+			}
+			return p.checkProtocolReservation(ctx, identity, liveAdmission)
+		}
+		l.Preparation.readinessCheck = func(ctx context.Context) (err error) {
+			if err := r.admitTools(ctx); err != nil {
+				return err
+			}
+			defer func() { err = errors.Join(err, r.admitTools(ctx), ctx.Err()) }()
+			return raw.checkReady(ctx)
+		}
+	}
 	l.NetworkRestored = n.Restored
 	l.IdentityRestored = n.Unlabelled
 	var origin time.Time
