@@ -101,6 +101,7 @@ func RunNativeCommand(ctx context.Context, path, digest string, admission Comman
 		return result, err
 	}
 	r.Network.Lifecycle.beforeActivation = beforeActivation
+	r.Network.Lifecycle.afterActivation = beforeActivation
 	h := ObservationHooks{AdmitOriginal: admission.Original, AdmitStack: admission.Stack}
 	inputs := VerifiedCommandInputs{Processes: p.Processes, Release: p.Release, MetricExecutable: p.MetricExecutable, JoinScript: p.JoinScript, Targets: artifacts.Targets, AdmitTools: tools}
 	inputs.IsolatedJoinSHA256 = p.Files[filepath.Join(p.OwnerDirectory, IsolatedJoinIdentity)]
@@ -108,7 +109,7 @@ func RunNativeCommand(ctx context.Context, path, digest string, admission Comman
 }
 
 // The scope is private to this command and only passed through its synchronous
-// read-only pre-activation phase. It caches no file result: complete fresh hashes
+// read-only observation phases. It caches no file result: complete fresh hashes
 // bracket that phase, and activation/recovery retain standalone full checks.
 // Every nested online admission and plan-byte check still runs.
 func nativeSourceAdmissions(checkPlan, verifyFiles, online func(context.Context) error) (func(context.Context) error, func(context.Context, func(context.Context) error) error) {

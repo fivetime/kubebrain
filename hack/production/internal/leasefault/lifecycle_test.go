@@ -66,6 +66,8 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	pendingChecks := 0
 	pendingScopeActive := false
 	pendingScopeCalls := 0
+	observationScopeActive := false
+	observationScopeCalls := 0
 	identityPreparation := prep
 	prep.identityCheck = func(checkCtx context.Context, phase NetworkLabelPhase) error {
 		if !origin.IsZero() {
@@ -76,6 +78,7 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	}
 	client := prep.Client.(*fake.FakeDynamicClient)
 	client.PrependReactor("patch", "ciliumnetworkpolicies", func(a ktesting.Action) (bool, runtime.Object, error) {
+		require.False(t, observationScopeActive, "activation is outside fault observation source scope")
 		require.False(t, pendingScopeActive, "activation must leave the read-only source scope")
 		require.Equal(t, 1, pendingScopeCalls, "actual lifecycle must admit its pending phase once")
 		activationCalls++
@@ -216,6 +219,18 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		require.False(t, deadline.After(origin.Add(30*time.Second)))
 		return pending(faultCtx)
 	}
+	lifecycle.afterActivation = func(faultCtx context.Context, observe func(context.Context) error) error {
+		observationScopeCalls++
+		require.False(t, pendingScopeActive)
+		require.False(t, observationScopeActive)
+		require.Equal(t, 1, activationCalls)
+		deadline, ok := faultCtx.Deadline()
+		require.True(t, ok)
+		require.False(t, deadline.After(origin.Add(30*time.Second)))
+		observationScopeActive = true
+		defer func() { observationScopeActive = false }()
+		return observe(faultCtx)
+	}
 	var concrete *NetworkFaultRuntime
 	if strings.HasPrefix(mode, "lifecycle-native-") {
 		lifecycle.Fault = metricsworker.Command{}
@@ -234,6 +249,7 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 			lifecycle.Observation.Initial.LeaseID++
 		}
 		lifecycle.ObserveFault = func(faultCtx context.Context, got time.Time) (uint64, error) {
+			require.True(t, observationScopeActive)
 			require.Equal(t, origin, got)
 			require.Equal(t, 1, activationCalls)
 			require.False(t, joined)
@@ -307,6 +323,10 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		return
 	}
 	require.True(t, joined)
+	require.False(t, observationScopeActive, "source scope must expire before recovery returns")
+	if mode == "lifecycle-native-success" || mode == "lifecycle-native-gate-fail" {
+		require.Equal(t, 1, observationScopeCalls)
+	}
 	if mode == "lifecycle-baseline-fail" || mode == "lifecycle-parent-cancel" || mode == "lifecycle-activation-nonce-fail" || mode == "lifecycle-activation-original-fail" {
 		require.Zero(t, activationCalls)
 		require.False(t, result.ActivationAcknowledged)

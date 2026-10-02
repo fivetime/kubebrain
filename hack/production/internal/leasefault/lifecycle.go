@@ -57,6 +57,9 @@ type FaultLifecycle struct {
 	// Native command only: one fresh source boundary around the synchronous
 	// read-only Own/nonce/original-pending phase. Activation is outside it.
 	beforeActivation func(context.Context, func(context.Context) error) error
+	// Native command only: synchronous read-only fault/response observation.
+	// Activation, metric workers, outcome reads and recovery remain outside.
+	afterActivation func(context.Context, func(context.Context) error) error
 }
 
 type LifecycleResult struct {
@@ -236,14 +239,20 @@ func runAdmittedFaultLifecycle(ctx context.Context, l FaultLifecycle) (Lifecycle
 					if err := l.Preparation.Own(faultCtx); err != nil {
 						return err
 					}
-					term, err := l.ObserveFault(faultCtx, origin)
-					if err != nil {
-						return err
+					observe := func(ctx context.Context) error {
+						term, err := l.ObserveFault(ctx, origin)
+						if err != nil {
+							return err
+						}
+						if err := l.Preparation.Own(ctx); err != nil {
+							return err
+						}
+						return original.Finish(ctx, origin, term)
 					}
-					if err := l.Preparation.Own(faultCtx); err != nil {
-						return err
+					if l.afterActivation != nil {
+						return l.afterActivation(faultCtx, observe)
 					}
-					return original.Finish(faultCtx, origin, term)
+					return observe(faultCtx)
 				})
 			})
 		}
