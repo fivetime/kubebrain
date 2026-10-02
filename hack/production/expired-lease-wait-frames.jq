@@ -21,6 +21,8 @@ def approved:
    {line:1645,sha256:"3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"},
   "a47b99d7681f043e45b58e3e6b94f79e3e0fd56c":
    {line:1645,sha256:"3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"},
+  "6c295888a8ef5ea0763eb8d0b1c0597b83211a3e":
+   {line:1645,sha256:"3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"},
   "4906a5f87b4282d860c5fd748be69ca68d42e898":
    {line:1645,sha256:"3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"}};
 (approved[$source] // error("unapproved image source for wait-site classification")) as $binding |
