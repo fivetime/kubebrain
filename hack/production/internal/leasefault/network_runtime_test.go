@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -188,6 +189,46 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 						}
 					}
 					require.Equal(t, []string{"own", "network", "stage", "own", "network"}, liveCalls)
+					// Exercise both concrete bindings with the actual supervised
+					// protected worker, not just a standalone admission callback.
+					log, err := os.OpenFile(filepath.Join(dir, "wait-stderr"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+					require.NoError(t, err)
+					defer log.Close()
+					observation, _ := nativeObservationFixture(t, FaultPreparation{Directory: dir, Protocol: ProtocolRecovery{LeaseID: 1, ClusterID: 1, AlarmMemberID: 2}}, log, func(string) {})
+					for _, stage := range []string{"before", "after"} {
+						admit := func(context.Context) error { calls = append(calls, stage); return nil }
+						if stage == "before" {
+							observation.Before.Admit = admit
+						} else {
+							observation.After.Admit = admit
+						}
+					}
+					r.Lifecycle.Observation.Before, r.Lifecycle.Observation.After = observation.Before, observation.After
+					wired, err := r.bind()
+					require.NoError(t, err)
+					for _, wait := range []WaitObservation{wired.Observation.Before, wired.Observation.After} {
+						raw := wait.Admit
+						wait.Admit = func(ctx context.Context) error { return wired.admitObservation(ctx, raw) }
+						err := WithWaitObservation(ctx, wait, func(runCtx context.Context, observe func(context.Context, time.Time) error) error {
+							calls, sourceCalls = nil, 0
+							origin := time.Now()
+							faultCtx, stop := context.WithDeadline(runCtx, origin.Add(time.Second))
+							defer stop()
+							return observe(faultCtx, origin)
+						})
+						require.NoError(t, err)
+						require.Equal(t, 2, sourceCalls)
+						stage := "before"
+						if wait.Count == 0 {
+							stage = "after"
+						}
+						want := []string{"source"}
+						for range 4 {
+							want = append(want, "own", "network", stage, "own", "network")
+						}
+						want = append(want, "source")
+						require.Equal(t, want, calls)
+					}
 				}
 			} else {
 				require.Error(t, err)
@@ -210,7 +251,7 @@ func TestNetworkAdmissionSourceBoundary(t *testing.T) {
 }
 
 func TestNetworkFaultRuntimeBinding(t *testing.T) {
-	for _, mode := range []string{"bound", "cluster", "old-member", "old-term", "same-observer", "prefilled-clock", "duration", "conflicting-nonces", "conflicting-ready", "conflicting-readiness", "conflicting-fault", "conflicting-recovery", "missing-admission", "bad-script", "bad-digest"} {
+	for _, mode := range []string{"bound", "cluster", "old-member", "old-term", "same-observer", "prefilled-clock", "duration", "conflicting-nonces", "conflicting-ready", "conflicting-readiness", "conflicting-wait-tools", "conflicting-wait-live", "conflicting-fault", "conflicting-recovery", "missing-admission", "bad-script", "bad-digest"} {
 		t.Run(mode, func(t *testing.T) {
 			calls := 0
 			admit := func(context.Context) error { calls++; return nil }
@@ -238,6 +279,10 @@ func TestNetworkFaultRuntimeBinding(t *testing.T) {
 				r.Lifecycle.Preparation.ReservedReady = admit
 			case "conflicting-readiness":
 				r.Lifecycle.Preparation.readinessCheck = admit
+			case "conflicting-wait-tools":
+				r.Lifecycle.Observation.Before.observeTools = admit
+			case "conflicting-wait-live":
+				r.Lifecycle.Observation.After.observeAdmit = admit
 			case "conflicting-nonces":
 				r.Lifecycle.Preparation.NoncesSafe = admit
 			case "conflicting-fault":

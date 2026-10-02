@@ -45,6 +45,11 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	if l.Observation == nil || l.Owner == nil || l.Preparation.Own == nil || l.OutcomeAdmit == nil || l.Preparation.NoncesSafe != nil || l.Preparation.ReservedReady != nil || l.Preparation.readinessCheck != nil || l.ObserveFault != nil || l.NetworkRestored != nil || l.IdentityRestored != nil || l.observationAdmission != nil || r.AdmitNetwork == nil || r.RetainNetwork == nil || r.SuccessorConnection == nil || r.AdmitSuccessor == nil || r.RetainStatus == nil || r.CaptureSeconds < 1 || r.CaptureSeconds > 9 {
 		return FaultLifecycle{}, errors.New("incomplete or conflicting concrete network runtime")
 	}
+	for _, w := range []WaitObservation{l.Observation.Before, l.Observation.After} {
+		if w.observeTools != nil || w.observeAdmit != nil {
+			return FaultLifecycle{}, errors.New("preconfigured protected observation source boundary")
+		}
+	}
 	initial := l.Observation.Initial
 	digest, err := hex.DecodeString(r.TargetsSHA256)
 	if !filepath.IsAbs(r.ScriptDirectory) || filepath.Clean(r.ScriptDirectory) != r.ScriptDirectory || err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != r.TargetsSHA256 {
@@ -87,10 +92,7 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 	n := NetworkObserver{Directory: p.Directory, StatefulSetName: p.StatefulSetName, ScriptDirectory: r.ScriptDirectory, TargetsSHA256: r.TargetsSHA256, Network: p.Network, Client: p.Client, Env: append([]string{}, r.Env...), Admit: admit, Retain: r.RetainNetwork}
 	l.Preparation.Own = admit
 	if r.admitTools != nil {
-		l.observationAdmission = func(ctx context.Context, stage func(context.Context) error) error {
-			if err := r.admitTools(ctx); err != nil {
-				return err
-			}
+		observationLiveAdmission := func(ctx context.Context, stage func(context.Context) error) error {
 			// Same ownership reads as runAdmittedFaultLifecycle's Own wrapper,
 			// without separately hashing inputs around each nested callback.
 			own := func() error {
@@ -111,8 +113,24 @@ func (r NetworkFaultRuntime) bind() (FaultLifecycle, error) {
 			if err := own(); err != nil {
 				return err
 			}
+			return ctx.Err()
+		}
+		l.observationAdmission = func(ctx context.Context, stage func(context.Context) error) error {
+			if err := r.admitTools(ctx); err != nil {
+				return err
+			}
+			if err := observationLiveAdmission(ctx, stage); err != nil {
+				return err
+			}
 			return errors.Join(r.admitTools(ctx), ctx.Err())
 		}
+		o := *l.Observation
+		for _, w := range []*WaitObservation{&o.Before, &o.After} {
+			stage := w.Admit
+			w.observeTools = r.admitTools
+			w.observeAdmit = func(ctx context.Context) error { return observationLiveAdmission(ctx, stage) }
+		}
+		l.Observation = &o
 	}
 	l.Preparation.identityCheck = func(ctx context.Context, phase NetworkLabelPhase) (err error) {
 		if r.admitTools != nil {

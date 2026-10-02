@@ -18,6 +18,9 @@ type WaitObservation struct {
 	Count                         int
 	Admit                         func(context.Context) error
 	Retain                        func(context.Context, WaitReceipt, error) error
+	// Concrete runtime only: one fresh source bracket around this synchronous
+	// read-only observation; every original live admission remains inside it.
+	observeTools, observeAdmit func(context.Context) error
 }
 
 // WithWaitObservation prepares a protected-stack child before running the
@@ -31,6 +34,9 @@ type WaitObservation struct {
 func WithWaitObservation(ctx context.Context, o WaitObservation, run func(context.Context, func(context.Context, time.Time) error) error) error {
 	if ctx == nil || o.Admit == nil || o.Retain == nil || run == nil || o.Count < 0 || o.Count > 1 || o.Directory == "" || o.Source == "" || o.SourceHash == "" {
 		return errors.New("incomplete wait observation")
+	}
+	if (o.observeTools == nil) != (o.observeAdmit == nil) {
+		return errors.New("incomplete protected observation source boundary")
 	}
 	if _, ok := ctx.Deadline(); !ok {
 		return errors.New("wait observation needs preparation deadline")
@@ -53,7 +59,7 @@ func WithWaitObservation(ctx context.Context, o WaitObservation, run func(contex
 				return observationErr
 			}
 			called = true
-			observationErr = func() error {
+			observationErr = func() (err error) {
 				if faultCtx == nil {
 					return errors.New("wait observation needs original context")
 				}
@@ -62,6 +68,14 @@ func WithWaitObservation(ctx context.Context, o WaitObservation, run func(contex
 					return errors.New("wait observation needs original fault budget")
 				}
 				observationDeadline = deadline
+				admit := o.Admit
+				if o.observeTools != nil {
+					if err := o.observeTools(faultCtx); err != nil {
+						return err
+					}
+					defer func() { err = errors.Join(err, o.observeTools(faultCtx), runCtx.Err(), faultCtx.Err()) }()
+					admit = o.observeAdmit
+				}
 				check := func() error {
 					if err := runCtx.Err(); err != nil {
 						return err
@@ -72,7 +86,7 @@ func WithWaitObservation(ctx context.Context, o WaitObservation, run func(contex
 					if !time.Now().Before(deadline) {
 						return context.DeadlineExceeded
 					}
-					if err := o.Admit(faultCtx); err != nil {
+					if err := admit(faultCtx); err != nil {
 						return err
 					}
 					if !time.Now().Before(deadline) {
