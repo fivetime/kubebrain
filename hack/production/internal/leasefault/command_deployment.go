@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/planinput"
@@ -71,7 +73,12 @@ func (p ObservationCommandPlan) VerifyCommandDeployment(ctx context.Context, cli
 	if err != nil {
 		return errors.Join(observed, err)
 	}
+	retainStarted := time.Now()
 	retained := retainObserver(p.OwnerDirectory, "experiment", "deployment", data, observed)
+	// Existing receipts time the GET only. Keep durable retention unchanged,
+	// but expose its otherwise invisible cost in the executor's private stderr.
+	// No resource contents or credentials are included, and this is not a gate.
+	fmt.Fprintf(os.Stderr, "deployment-check-timing at=%s get_ns=%d retain_ns=%d retained=%t\n", time.Now().UTC().Format(time.RFC3339Nano), completed.Sub(started).Nanoseconds(), time.Since(retainStarted).Nanoseconds(), retained == nil)
 	if err := errors.Join(observed, retained, ctx.Err()); err != nil {
 		return err
 	}
