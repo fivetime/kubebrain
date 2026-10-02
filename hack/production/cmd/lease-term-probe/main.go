@@ -108,7 +108,11 @@ func probeWithExpiryWait(ctx context.Context, conn grpc.ClientConnInterface, id 
 			return fmt.Errorf("expiry preflight: %w", err)
 		}
 		if ttl.GetID() != id || ttl.GetGrantedTTL() <= 0 || len(ttl.Keys) != 1 || string(ttl.Keys[0]) != key || ttl.GetHeader().GetClusterId() != cluster || ttl.GetHeader().GetMemberId() != member || ttl.GetHeader().GetRaftTerm() != term {
-			return errors.New("preflight requires retained lease with sole owned attachment and matching cluster/member/term")
+			// Diagnose the actual rejected response without disclosing key bytes
+			// or changing the admission predicate, requests or retry behavior.
+			return fmt.Errorf("preflight requires retained lease with sole owned attachment and matching cluster/member/term: id=%d expected_id=%d ttl=%d granted_ttl=%d key_count=%d owned_key_match=%t cluster=%d expected_cluster=%d member=%d expected_member=%d term=%d expected_term=%d",
+				ttl.GetID(), id, ttl.GetTTL(), ttl.GetGrantedTTL(), len(ttl.GetKeys()), len(ttl.GetKeys()) == 1 && string(ttl.GetKeys()[0]) == key,
+				ttl.GetHeader().GetClusterId(), cluster, ttl.GetHeader().GetMemberId(), member, ttl.GetHeader().GetRaftTerm(), term)
 		}
 		if granted != 0 && ttl.GrantedTTL != granted {
 			return errors.New("lease grant changed during expiry wait")

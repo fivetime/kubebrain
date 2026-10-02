@@ -154,6 +154,19 @@ func TestProbeOriginalStream(t *testing.T) {
 				require.Error(t, err)
 				require.NotContains(t, output.String(), `"phase":"response"`)
 			}
+			switch name {
+			case "missing-lease":
+				require.Contains(t, err.Error(), "ttl=-2 granted_ttl=0 key_count=1 owned_key_match=true")
+			case "changed-member":
+				require.Contains(t, err.Error(), "member=44 expected_member=22")
+			case "changed-term":
+				require.Contains(t, err.Error(), "term=5 expected_term=4")
+			case "extra-key":
+				require.Contains(t, err.Error(), "key_count=2 owned_key_match=false")
+				require.NotContains(t, err.Error(), "foreign")
+			case "wrong-key":
+				require.Contains(t, err.Error(), "key_count=0 owned_key_match=false")
+			}
 			require.Equal(t, wantStreams, s.streams.Load())
 			if name == "unavailable" {
 				require.Equal(t, codes.Unavailable, status.Code(err))
