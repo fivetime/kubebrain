@@ -64,6 +64,8 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	activationCalls := 0
 	activationIdentityChecks := 0
 	pendingChecks := 0
+	pendingScopeActive := false
+	pendingScopeCalls := 0
 	identityPreparation := prep
 	prep.identityCheck = func(checkCtx context.Context, phase NetworkLabelPhase) error {
 		if !origin.IsZero() {
@@ -74,6 +76,8 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	}
 	client := prep.Client.(*fake.FakeDynamicClient)
 	client.PrependReactor("patch", "ciliumnetworkpolicies", func(a ktesting.Action) (bool, runtime.Object, error) {
+		require.False(t, pendingScopeActive, "activation must leave the read-only source scope")
+		require.Equal(t, 1, pendingScopeCalls, "actual lifecycle must admit its pending phase once")
 		activationCalls++
 		if mode == "lifecycle-success" {
 			require.Equal(t, 2, activationIdentityChecks, "activation must use both complete identity admission boundaries")
@@ -201,6 +205,16 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 		},
 		NetworkRestored:  func(context.Context) error { require.True(t, joined); return nil },
 		IdentityRestored: func(context.Context) error { require.True(t, joined); return nil },
+	}
+	lifecycle.beforeActivation = func(faultCtx context.Context, pending func(context.Context) error) error {
+		pendingScopeCalls++
+		require.False(t, pendingScopeActive)
+		pendingScopeActive = true
+		defer func() { pendingScopeActive = false }()
+		deadline, ok := faultCtx.Deadline()
+		require.True(t, ok)
+		require.False(t, deadline.After(origin.Add(30*time.Second)))
+		return pending(faultCtx)
 	}
 	var concrete *NetworkFaultRuntime
 	if strings.HasPrefix(mode, "lifecycle-native-") {

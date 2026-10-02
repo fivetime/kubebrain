@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	"github.com/kubewharf/kubebrain/hack/production/internal/planinput"
@@ -62,21 +63,7 @@ func RunNativeCommand(ctx context.Context, path, digest string, admission Comman
 		}
 		return ctx.Err()
 	}
-	tools := func(ctx context.Context) error {
-		if err := checkPlan(ctx); err != nil {
-			return err
-		}
-		if err := p.VerifyFiles(ctx); err != nil {
-			return err
-		}
-		if err := admission.Tools(ctx); err != nil {
-			return err
-		}
-		if err := checkPlan(ctx); err != nil {
-			return err
-		}
-		return p.VerifyFiles(ctx)
-	}
+	tools, beforeActivation := nativeSourceAdmissions(checkPlan, p.VerifyFiles, admission.Tools)
 	if err = tools(ctx); err != nil {
 		return result, err
 	}
@@ -113,8 +100,52 @@ func RunNativeCommand(ctx context.Context, path, digest string, admission Comman
 	if err != nil {
 		return result, err
 	}
+	r.Network.Lifecycle.beforeActivation = beforeActivation
 	h := ObservationHooks{AdmitOriginal: admission.Original, AdmitStack: admission.Stack}
 	inputs := VerifiedCommandInputs{Processes: p.Processes, Release: p.Release, MetricExecutable: p.MetricExecutable, JoinScript: p.JoinScript, Targets: artifacts.Targets, AdmitTools: tools}
 	inputs.IsolatedJoinSHA256 = p.Files[filepath.Join(p.OwnerDirectory, IsolatedJoinIdentity)]
 	return artifacts.Plan.RunVerified(ctx, r, h, inputs)
+}
+
+// The scope is private to this command and only passed through its synchronous
+// read-only pre-activation phase. It caches no file result: complete fresh hashes
+// bracket that phase, and activation/recovery retain standalone full checks.
+// Every nested online admission and plan-byte check still runs.
+func nativeSourceAdmissions(checkPlan, verifyFiles, online func(context.Context) error) (func(context.Context) error, func(context.Context, func(context.Context) error) error) {
+	key := new(int)
+	tools := func(ctx context.Context) error {
+		if err := checkPlan(ctx); err != nil {
+			return err
+		}
+		scope, _ := ctx.Value(key).(*atomic.Bool)
+		scoped := scope != nil && scope.Load()
+		if !scoped {
+			if err := verifyFiles(ctx); err != nil {
+				return err
+			}
+		}
+		if err := online(ctx); err != nil {
+			return err
+		}
+		if err := checkPlan(ctx); err != nil {
+			return err
+		}
+		if !scoped {
+			return verifyFiles(ctx)
+		}
+		return ctx.Err()
+	}
+	before := func(ctx context.Context, run func(context.Context) error) (err error) {
+		// Even a retained/nested context cannot bypass this outer boundary.
+		ctx = context.WithValue(ctx, key, nil)
+		if err := tools(ctx); err != nil {
+			return err
+		}
+		defer func() { err = errors.Join(err, tools(ctx), ctx.Err()) }()
+		scope := new(atomic.Bool)
+		scope.Store(true)
+		defer scope.Store(false)
+		return run(context.WithValue(ctx, key, scope))
+	}
+	return tools, before
 }

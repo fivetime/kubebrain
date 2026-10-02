@@ -54,6 +54,9 @@ type FaultLifecycle struct {
 	// Concrete runtime brackets the entire synchronous observation admission.
 	// Standalone lifecycles retain their existing ownership checks below.
 	observationAdmission func(context.Context, func(context.Context) error) error
+	// Native command only: one fresh source boundary around the synchronous
+	// read-only Own/nonce/original-pending phase. Activation is outside it.
+	beforeActivation func(context.Context, func(context.Context) error) error
 }
 
 type LifecycleResult struct {
@@ -160,16 +163,28 @@ func runAdmittedFaultLifecycle(ctx context.Context, l FaultLifecycle) (Lifecycle
 				return l.Metrics.Baseline(ctx, index, ready)
 			}
 			hooks.Inject = func(faultCtx context.Context, origin time.Time) error {
-				if err := l.Preparation.Own(faultCtx); err != nil {
-					return err
-				}
 				// The single fault clock already runs and has been dispatched to
 				// metric workers. No preparation or activation gets a fresh budget.
-				if err := l.Preparation.NoncesSafe(faultCtx); err != nil {
-					return fmt.Errorf("pre-activation nonce admission: %w", err)
+				pending := func(ctx context.Context) error {
+					if err := l.Preparation.Own(ctx); err != nil {
+						return err
+					}
+					if err := l.Preparation.NoncesSafe(ctx); err != nil {
+						return fmt.Errorf("pre-activation nonce admission: %w", err)
+					}
+					if err := l.OriginalPending(ctx, origin); err != nil {
+						return fmt.Errorf("pre-activation original probe admission: %w", err)
+					}
+					return ctx.Err()
 				}
-				if err := l.OriginalPending(faultCtx, origin); err != nil {
-					return fmt.Errorf("pre-activation original probe admission: %w", err)
+				var pendingErr error
+				if l.beforeActivation != nil {
+					pendingErr = l.beforeActivation(faultCtx, pending)
+				} else {
+					pendingErr = pending(faultCtx)
+				}
+				if pendingErr != nil {
+					return pendingErr
 				}
 				if err := ActivateNetwork(faultCtx, l.Preparation.Client, l.Preparation.Directory, l.Preparation.Network, origin, func(ctx context.Context) error {
 					return l.Preparation.checkIdentity(ctx, NetworkLabelOwned)
