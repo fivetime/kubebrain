@@ -1,11 +1,13 @@
 package testcluster_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -14,7 +16,7 @@ import (
 
 func TestObserveLocalNonces(t *testing.T) {
 	slots := make(chan struct{}, 4)
-	for _, mode := range []string{"success", "collision", "missing-agent", "agent-restart", "node-replaced", "cep-replaced", "wrong-namespace", "wrong-controller", "foreign-label", "incomplete-list", "expired"} {
+	for _, mode := range []string{"success", "concurrent-success", "concurrent-failure", "concurrent-cancel", "collision", "missing-agent", "agent-restart", "node-replaced", "cep-replaced", "wrong-namespace", "wrong-controller", "foreign-label", "incomplete-list", "expired"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Parallel()
 			slots <- struct{}{}
@@ -43,12 +45,37 @@ func TestObserveLocalNonces(t *testing.T) {
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "bash", "observe-local-nonces.sh", owner, expected, "term-test", "reserved-test", fmt.Sprint(deadline))
 			cmd.Env = env
-			out, err := cmd.CombinedOutput()
+			var out []byte
+			if mode == "concurrent-cancel" {
+				// Match the native caller's whole-process-group cancellation.
+				cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+				var output bytes.Buffer
+				cmd.Stdout, cmd.Stderr = &output, &output
+				require.NoError(t, cmd.Start())
+				waited := false
+				defer func() {
+					if !waited {
+						_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+						_ = cmd.Wait()
+					}
+				}()
+				require.Eventually(t, func() bool {
+					_, first := os.Stat(filepath.Join(owner, "started.cilium-worker1"))
+					_, second := os.Stat(filepath.Join(owner, "started.cilium-worker2"))
+					return first == nil && second == nil
+				}, 5*time.Second, 10*time.Millisecond)
+				require.NoError(t, syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM))
+				err = cmd.Wait()
+				waited = true
+				out = output.Bytes()
+			} else {
+				out, err = cmd.CombinedOutput()
+			}
 			require.NoError(t, ctx.Err(), string(out))
 			// A malformed fixture must not masquerade as a safety rejection.
 			require.NotContains(t, string(out), "compile error")
 			require.NotContains(t, string(out), "syntax error")
-			if mode == "success" {
+			if mode == "success" || mode == "concurrent-success" {
 				require.NoError(t, err, string(out))
 				require.Contains(t, string(out), "COMPLETE_AGENT_NONCE_SNAPSHOT_NOT_CONTINUOUS_ABSENCE_OR_ENFORCEMENT")
 			} else {
@@ -76,13 +103,19 @@ func TestObserveLocalNonces(t *testing.T) {
 			}
 			code, err := os.ReadFile(filepath.Join(captures[0], "observation.exit"))
 			require.NoError(t, err)
-			if mode == "success" {
+			if mode == "success" || mode == "concurrent-success" {
 				require.Equal(t, "0\n", string(code))
 				verify := exec.Command("sha256sum", "-c", filepath.Join(captures[0], "evidence.sha256"))
 				out, err := verify.CombinedOutput()
 				require.NoError(t, err, string(out))
 			} else {
 				require.NotEqual(t, "0\n", string(code))
+			}
+			if mode == "concurrent-success" || mode == "concurrent-failure" || mode == "concurrent-cancel" {
+				for _, agent := range []string{"cilium-worker1", "cilium-worker2"} {
+					_, statErr := os.Stat(filepath.Join(owner, "completed."+agent))
+					require.NoError(t, statErr, "all started collectors must finish before return")
+				}
 			}
 		})
 	}
@@ -97,6 +130,29 @@ pod() {
 }
 if [[ $1 == fixture-pod ]]; then pod app 0; exit; fi
 if [[ $1 == exec ]]; then
+ if [[ $NONCE_MODE == concurrent-* ]]; then
+  if [[ $NONCE_MODE == concurrent-cancel ]]; then
+   task_agent=$2
+   trap 'touch "$NONCE_FIXTURE/completed.$task_agent"; exit 143' TERM
+   touch "$NONCE_FIXTURE/started.$2"
+   sleep 10
+   exit 89
+  fi
+  touch "$NONCE_FIXTURE/started.$2"
+  if [[ $2 == cilium-worker1 ]]; then
+   for n in {1..60}; do
+    [[ ! -e $NONCE_FIXTURE/started.cilium-worker2 ]] || break
+    sleep 0.05
+   done
+   [[ -e $NONCE_FIXTURE/started.cilium-worker2 ]] || exit 89
+   sleep 0.1
+  fi
+  touch "$NONCE_FIXTURE/completed.$2"
+  if [[ $2 == cilium-worker2 ]]; then
+   [[ $NONCE_MODE != concurrent-failure ]] || exit 23
+   echo '[]'; exit
+  fi
+ fi
  jq -n --arg mode "$NONCE_MODE" '[{id:42,status:{identity:{labels:(["k8s:app=brain"]+(if $mode=="collision" then ["container:kubebrain.io/fault-owner=reserved-test"] else [] end))},"external-identifiers":{"k8s-namespace":"kubebrain-dbaas-test","k8s-pod-name":"kubebrain-local-0"},networking:{addressing:[{ipv4:"10.0.0.1"}]}}}]'
  exit
 fi
@@ -115,13 +171,13 @@ case $2 in
   uid=node
   if [[ -e $NONCE_FIXTURE/nodes-seen && $NONCE_MODE == node-replaced ]]; then uid=other; fi
   touch "$NONCE_FIXTURE/nodes-seen"
-  jq -n --arg uid "$uid" '{items:[{metadata:{name:"worker1",uid:$uid},status:{conditions:[{type:"Ready",status:"True"}]}}]}';;
+  jq -n --arg uid "$uid" --arg mode "$NONCE_MODE" '{items:([{metadata:{name:"worker1",uid:$uid},status:{conditions:[{type:"Ready",status:"True"}]}}]+(if ($mode|startswith("concurrent-")) then [{metadata:{name:"worker2",uid:"node2"},status:{conditions:[{type:"Ready",status:"True"}]}}] else [] end))}';;
  pods)
   if [[ $NONCE_MODE == missing-agent ]]; then echo '{"items":[]}'; exit; fi
   restarts=0
   if [[ -e $NONCE_FIXTURE/agents-seen && $NONCE_MODE == agent-restart ]]; then restarts=1; fi
   touch "$NONCE_FIXTURE/agents-seen"
-  pod agent "$restarts" | jq --arg mode "$NONCE_MODE" '{metadata:{continue:(if $mode=="incomplete-list" then "next" else "" end)},items:[.]}' ;;
+  pod agent "$restarts" | jq --arg mode "$NONCE_MODE" '. as $agent | {metadata:{continue:(if $mode=="incomplete-list" then "next" else "" end)},items:([$agent]+(if ($mode|startswith("concurrent-")) then [($agent|.metadata.name="cilium-worker2"|.metadata.uid="agent2"|.spec.nodeName="worker2"|.status.podIP="10.0.0.2")] else [] end))}' ;;
  ciliumendpoint)
   uid=cep
   if [[ -e $NONCE_FIXTURE/cep-seen && $NONCE_MODE == cep-replaced ]]; then uid=other; fi

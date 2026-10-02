@@ -20,7 +20,17 @@ budget >/dev/null
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 out=$(mktemp -d "$owner/nonce-observation.XXXXXXXX")
 echo "EVIDENCE=$out"
-trap 'printf "%s\n" "$?" > "$out/observation.exit"' EXIT
+collector_pids=()
+finish() {
+ local rc=$? pid
+ trap - EXIT
+ # Join collectors on normal/error shell exit. Whole-group cancellation and
+ # adopted-child reaping remain the native caller's responsibility.
+ for pid in "${collector_pids[@]}"; do wait "$pid" || true; done
+ printf '%s\n' "$rc" > "$out/observation.exit"
+ exit "$rc"
+}
+trap finish EXIT
 trap 'exit 143' TERM
 trap 'exit 130' INT
 k() {
@@ -81,10 +91,32 @@ membership "$out/nodes.json" "$out/agents.json"
 jq -r '.items[].metadata.name' "$out/agents.json" > "$out/agent-names"
 while IFS= read -r agent; do
  [[ $agent =~ ^[a-z0-9][a-z0-9-]*$ ]] || exit 2
+done < "$out/agent-names"
+collect_agent() {
+ local agent=$1
  k -n kube-system exec "$agent" -c cilium-agent -- cilium-dbg endpoint list -o json > "$out/$agent.endpoints.json"
  jq --arg name "$agent" --slurpfile endpoints "$out/$agent.endpoints.json" \
   '.items[]|select(.metadata.name==$name)|{uid:.metadata.uid,node:.spec.nodeName,endpoints:$endpoints[0]}' "$out/agents.json" > "$out/$agent.snapshot.json"
+}
+join_collectors() {
+ local pid rc=0 observed
+ for pid in "${collector_pids[@]}"; do
+  if wait "$pid"; then :; else
+   observed=$?
+   if [[ $rc == 0 ]]; then rc=$observed; fi
+  fi
+ done
+ collector_pids=()
+ return "$rc"
+}
+# At most two read-only execs; every agent is still collected and checked
+# against the same before/after inventory, with the original absolute deadline.
+while IFS= read -r agent; do
+ collect_agent "$agent" &
+ collector_pids+=("$!")
+ if [[ ${#collector_pids[@]} == 2 ]]; then join_collectors; fi
 done < "$out/agent-names"
+join_collectors
 jq -s '.' "$out"/*.snapshot.json > "$out/snapshots.json"
 jq -n --slurpfile agents "$out/agents.json" --slurpfile snapshots "$out/snapshots.json" \
  --slurpfile pod "$out/pod.json" --slurpfile cep "$out/cep.json" \
