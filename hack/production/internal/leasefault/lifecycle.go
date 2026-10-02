@@ -172,7 +172,7 @@ func runAdmittedFaultLifecycle(ctx context.Context, l FaultLifecycle) (Lifecycle
 					return fmt.Errorf("pre-activation original probe admission: %w", err)
 				}
 				if err := ActivateNetwork(faultCtx, l.Preparation.Client, l.Preparation.Directory, l.Preparation.Network, origin, func(ctx context.Context) error {
-					return CheckNetworkIdentity(ctx, l.Preparation.Client, l.Preparation.Network, l.Preparation.StatefulSetName, NetworkLabelOwned, l.Preparation.Own)
+					return l.Preparation.checkIdentity(ctx, NetworkLabelOwned)
 				}); err != nil {
 					return fmt.Errorf("activate reserved fault policy: %w", err)
 				}

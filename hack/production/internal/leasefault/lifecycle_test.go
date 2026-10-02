@@ -62,10 +62,22 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	evidenceRead := false
 	var origin time.Time
 	activationCalls := 0
+	activationIdentityChecks := 0
 	pendingChecks := 0
+	identityPreparation := prep
+	prep.identityCheck = func(checkCtx context.Context, phase NetworkLabelPhase) error {
+		if !origin.IsZero() {
+			activationIdentityChecks++
+			require.Equal(t, NetworkLabelOwned, phase)
+		}
+		return identityPreparation.checkIdentity(checkCtx, phase)
+	}
 	client := prep.Client.(*fake.FakeDynamicClient)
 	client.PrependReactor("patch", "ciliumnetworkpolicies", func(a ktesting.Action) (bool, runtime.Object, error) {
 		activationCalls++
+		if mode == "lifecycle-success" {
+			require.Equal(t, 2, activationIdentityChecks, "activation must use both complete identity admission boundaries")
+		}
 		require.Equal(t, 1, pendingChecks, "activation requires fresh original probe admission")
 		require.False(t, origin.IsZero(), "activation must follow original clock selection")
 		_, err := os.Stat(filepath.Join(dir, "fault.origin"))
