@@ -145,6 +145,50 @@ func TestNativeCommandPlanLoad(t *testing.T) {
 	}
 }
 
+func TestSealNativeCommandPlanDraftOnlyPinsInputs(t *testing.T) {
+	p := serializedCommandFixture(t)
+	for path := range p.Files {
+		p.Files[path] = ""
+	}
+	draft, err := json.Marshal(p)
+	require.NoError(t, err)
+	sealed, err := SealNativeCommandPlanDraft(context.Background(), draft)
+	require.NoError(t, err)
+	var got NativeCommandPlan
+	require.NoError(t, json.Unmarshal(sealed, &got))
+	for path, digest := range got.Files {
+		require.Equal(t, planinput.SHA256(mustReadPlanTestFile(t, path)), digest)
+	}
+	require.NoError(t, got.CheckLocal())
+
+	withApproval := p
+	withApproval.Files = make(map[string]string, len(p.Files))
+	for path := range p.Files {
+		withApproval.Files[path] = strings.Repeat("a", 64)
+	}
+	approvedBytes, err := json.Marshal(withApproval)
+	require.NoError(t, err)
+	_, err = SealNativeCommandPlanDraft(context.Background(), approvedBytes)
+	require.ErrorContains(t, err, "must not contain file digests")
+
+	public := serializedCommandFixture(t)
+	for path := range public.Files {
+		public.Files[path] = ""
+	}
+	require.NoError(t, os.Chmod(public.Kubeconfig, 0644))
+	publicBytes, err := json.Marshal(public)
+	require.NoError(t, err)
+	_, err = SealNativeCommandPlanDraft(context.Background(), publicBytes)
+	require.Error(t, err)
+}
+
+func mustReadPlanTestFile(t *testing.T, path string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return data
+}
+
 func TestCommandPlanAdmitsBoundedToolDependencies(t *testing.T) {
 	for _, mode := range []string{"large-tool", "changed-tool", "oversized-tool", "large-config", "large-script"} {
 		t.Run(mode, func(t *testing.T) {

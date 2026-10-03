@@ -83,10 +83,28 @@ func TestRejectIncompleteOrExecutingPlan(t *testing.T) {
 		nil, {"--bindings", path}, {"--bindings", path, "--approve-sha256", planinput.SHA256(data)},
 		{"--command-plan", path}, {"--command-plan", path, "--approve-sha256", planinput.SHA256(data)},
 		{"--bindings", path, "--command-plan", path, "--approve-sha256", planinput.SHA256(data)},
+		{"--seal-command-draft", path}, {"--write-command-plan", filepath.Join(t.TempDir(), "sealed.json")},
+		{"--seal-command-draft", path, "--write-command-plan", filepath.Join(t.TempDir(), "sealed.json"), "--approve-sha256", planinput.SHA256(data)},
 		{"--execute"}, {"extra"},
 	} {
 		var out bytes.Buffer
 		require.Error(t, run(args, &out))
 		require.Empty(t, out.String(), "invalid/incomplete input must not produce success marker")
 	}
+}
+
+func TestWritePrivatePlanCreatesOnlyNewPrivateFile(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.Chmod(dir, 0700))
+	path := filepath.Join(dir, "command.json")
+	data := []byte(`{"version":1}`)
+	require.NoError(t, writePrivatePlan(path, data))
+	st, err := os.Lstat(path)
+	require.NoError(t, err)
+	require.True(t, st.Mode().IsRegular())
+	require.Equal(t, os.FileMode(0600), st.Mode().Perm())
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, data, got)
+	require.Error(t, writePrivatePlan(path, []byte(`{"version":2}`)), "existing plans are never overwritten")
 }

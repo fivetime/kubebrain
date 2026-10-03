@@ -2,6 +2,7 @@ package leasefault
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"sort"
@@ -95,6 +96,55 @@ func LoadNativeCommandPlan(path, digest string) (NativeCommandPlan, error) {
 		return NativeCommandPlan{}, err
 	}
 	return p, nil
+}
+
+// SealNativeCommandPlanDraft fills only the file digests of an explicitly
+// reviewed draft, then runs the same offline checks used by the runtime. Every
+// Files value in the draft must be empty: this operation computes integrity
+// pins, not independent approval, provenance, live admission or execution.
+func SealNativeCommandPlanDraft(ctx context.Context, data []byte) ([]byte, error) {
+	if ctx == nil || ctx.Err() != nil {
+		return nil, errors.New("sealing command draft requires an active context")
+	}
+	if len(data) == 0 || len(data) > 4<<20 {
+		return nil, errors.New("invalid native command plan draft")
+	}
+	var p NativeCommandPlan
+	strict, err := strictjson.UnmarshalStrict(data, &p, strictjson.DisallowDuplicateFields, strictjson.DisallowUnknownFields)
+	if err != nil || len(strict) != 0 || len(p.Files) == 0 || len(p.Files) > 128 {
+		return nil, errors.New("invalid native command plan draft")
+	}
+	for path, digest := range p.Files {
+		if digest != "" {
+			return nil, errors.New("command plan draft must not contain file digests")
+		}
+		limit := int64(128 << 20)
+		for _, dataPath := range []string{p.CA, p.Certificate, p.Key, p.Kubeconfig, p.StackExecutable, p.MetricExecutable, p.JoinScript, p.Processes.Predicate, filepath.Join(p.OwnerDirectory, "observer-pod.json"), filepath.Join(p.OwnerDirectory, "observer-targets.json")} {
+			if path == dataPath {
+				limit = 1 << 20
+			}
+		}
+		private := path == p.Key || path == p.Kubeconfig || path == filepath.Join(p.OwnerDirectory, "observer-pod.json") || path == filepath.Join(p.OwnerDirectory, "observer-targets.json") || path == filepath.Join(p.OwnerDirectory, IsolatedJoinIdentity)
+		if path == filepath.Join(p.OwnerDirectory, IsolatedJoinIdentity) {
+			limit = 256
+		}
+		actual, err := planinput.FileSHA256(ctx, path, private, limit)
+		if err != nil {
+			return nil, err
+		}
+		p.Files[path] = actual
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := p.CheckLocal(); err != nil {
+		return nil, err
+	}
+	sealed, err := json.Marshal(p)
+	if err != nil || len(sealed) > 4<<20 {
+		return nil, errors.New("could not encode sealed native command plan")
+	}
+	return sealed, nil
 }
 
 // CheckLocal reads pinned files and creates then closes lazy transports. It
