@@ -22,6 +22,11 @@ func TestExpiredLeaseWaitFramesRequireReviewedSourceAndExactTopWaitSite(t *testi
 		fail                     bool
 	}{
 		{"matching", frame, source, hash, 1, false},
+		{"expired loop runnable at exact wait site", strings.Replace(frame, "[select]", "[runnable]", 1), source, hash, 1, false},
+		{"runnable wrong line", strings.Replace(strings.Replace(frame, "[select]", "[runnable]", 1), ":1645", ":1646", 1), source, hash, 0, false},
+		{"runnable other function", strings.Replace(strings.Replace(frame, "[select]", "[runnable]", 1), "refreshLeaseHoldingLocks(", "refreshLeaseHoldingLocksOther(", 1), source, hash, 0, false},
+		{"runnable deeper frame", strings.Replace(frame, "[select]:\n", "[runnable]:\nother.Wait()\n\t/src/other.go:1\n", 1), source, hash, 0, false},
+		{"runnable unsupported source", strings.Replace(frame, "[select]", "[runnable]", 1), strings.Repeat("a", 40), hash, 0, true},
 		{"fixed candidate", frame, "4906a5f87b4282d860c5fd748be69ca68d42e898", hash, 1, false},
 		{"current product candidate", frame, "6c295888a8ef5ea0763eb8d0b1c0597b83211a3e", hash, 1, false},
 		{"current product wrong file", frame, "6c295888a8ef5ea0763eb8d0b1c0597b83211a3e", strings.Repeat("b", 64), 0, true},

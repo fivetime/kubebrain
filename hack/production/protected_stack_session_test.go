@@ -85,11 +85,14 @@ func TestProtectedStackSessionWithoutRipgrep(t *testing.T) {
 func TestProtectedStackSessionExpiredWait(t *testing.T) {
 	library, err := filepath.Abs("protected-stack-session.sh")
 	require.NoError(t, err)
-	for _, mode := range []string{"success", "zero", "wrong-count", "unknown-source", "wrong-hash", "missing-binding", "expired"} {
+	for _, mode := range []string{"success", "runnable", "runnable-wrong-count", "zero", "wrong-count", "unknown-source", "wrong-hash", "missing-binding", "expired"} {
 		t.Run(mode, func(t *testing.T) {
 			owner := t.TempDir()
 			require.NoError(t, os.Mkdir(filepath.Join(owner, "bin"), 0700))
 			frame := "goroutine 17 [select]:\ngithub.com/kubewharf/kubebrain/pkg/server/etcd.(*leaseManager).refreshLeaseHoldingLocks(0xc)\n\t/work/pkg/server/etcd/lease.go:1645 +0x1\n"
+			if strings.HasPrefix(mode, "runnable") {
+				frame = strings.Replace(frame, "[select]", "[runnable]", 1)
+			}
 			if mode == "zero" {
 				frame = "goroutine 17 [running]:\nmain.main()\n\t/work/main.go:1 +0x1\n"
 			}
@@ -106,7 +109,7 @@ file_sha=3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88
 count=1
 clock=$(date +%s%N)
 case $4 in
- zero|wrong-count) count=0;;
+ zero|wrong-count|runnable-wrong-count) count=0;;
  unknown-source) source_sha=0000000000000000000000000000000000000000;;
  wrong-hash) file_sha=0000000000000000000000000000000000000000000000000000000000000000;;
  expired) clock=$((clock-30000000001));;
@@ -120,7 +123,7 @@ sha256sum -c "$stack_wait/evidence.sha256"
 			require.NoError(t, ctx.Err(), string(out))
 			complete, globErr := filepath.Glob(filepath.Join(owner, "expired-wait.*", "COMPLETE"))
 			require.NoError(t, globErr)
-			if mode == "success" || mode == "zero" {
+			if mode == "success" || mode == "runnable" || mode == "zero" {
 				require.NoError(t, err, string(out))
 				require.Len(t, complete, 1)
 			} else {
