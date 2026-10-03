@@ -234,7 +234,7 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 	}
 }
 
-// Only the selected existing Range/Lease/Txn scenarios use this configuration.
+// Only the selected existing Range/Lease/Txn/Watch scenarios use this configuration.
 // HTTPS must never silently skip a selected scenario or disable verification.
 func rangeLeaseDifferentialConfig(t *testing.T, endpoint, instance string) clientv3.Config {
 	t.Helper()
@@ -244,7 +244,7 @@ func rangeLeaseDifferentialConfig(t *testing.T, endpoint, instance string) clien
 		if instance == "kubebrain" {
 			prefix = "KUBEBRAIN"
 		} else {
-			require.Equal(t, "etcd", instance)
+			require.Contains(t, []string{"etcd", "reference"}, instance)
 		}
 		for _, suffix := range []string{"_TLS_CA_FILE", "_TLS_CERT_FILE", "_TLS_KEY_FILE", "_TLS_SERVER_NAME"} {
 			require.NotEmpty(t, strings.TrimSpace(os.Getenv(prefix+suffix)), "HTTPS requires %s%s", prefix, suffix)

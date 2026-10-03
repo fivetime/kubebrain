@@ -347,10 +347,10 @@ func runWatchStreamSlowestProgressScenario(t *testing.T, endpoint, instance stri
 
 func runWatchTxnPartialFilterScenario(t *testing.T, endpoint, instance string) watchTxnPartialFilterOutcome {
 	t.Helper()
-	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	cli, err := clientv3.New(rangeLeaseDifferentialConfig(t, endpoint, instance))
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	conn := cli.ActiveConnection()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 	kv := etcdserverpb.NewKVClient(conn)
@@ -489,10 +489,10 @@ func runWatchFutureFilteredRevisionScenario(t *testing.T, endpoint, instance str
 
 func runWatchMixedFilterReplayScenario(t *testing.T, endpoint, instance string) watchMixedFilterReplayOutcome {
 	t.Helper()
-	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	cli, err := clientv3.New(rangeLeaseDifferentialConfig(t, endpoint, instance))
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	conn := cli.ActiveConnection()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 	kv := etcdserverpb.NewKVClient(conn)
@@ -551,10 +551,10 @@ func runWatchMixedFilterReplayScenario(t *testing.T, endpoint, instance string) 
 
 func runWatchHistoricalAllFiltersScenario(t *testing.T, endpoint, instance string) watchHistoricalAllFiltersOutcome {
 	t.Helper()
-	endpoint = strings.TrimPrefix(strings.TrimPrefix(endpoint, "http://"), "https://")
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	cli, err := clientv3.New(rangeLeaseDifferentialConfig(t, endpoint, instance))
 	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+	t.Cleanup(func() { require.NoError(t, cli.Close()) })
+	conn := cli.ActiveConnection()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 	kv := etcdserverpb.NewKVClient(conn)
