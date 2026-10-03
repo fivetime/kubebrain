@@ -30,10 +30,10 @@ import (
 	strictjson "sigs.k8s.io/json"
 )
 
-// Image workflow 37047141026, attempt 1; release artifact 11246525614.
+// Product image workflow 37102923988; release artifact 11268090967.
 // This is the product candidate, not the independently built executor source.
-const candidateSource = "6c295888a8ef5ea0763eb8d0b1c0597b83211a3e"
-const candidateImage = "ghcr.io/fivetime/kubebrain@sha256:76e25a1e6dea2fcd9e4bffdc01317d1c74ef43dcd0d6e797f40a257a3c48b1b8"
+const candidateSource = "024b447015f74b35c86ce69997c8d506abca0810"
+const candidateImage = "ghcr.io/fivetime/kubebrain@sha256:29d419148b7aa234709c51b47e037c027f3d9dd09775cd53ae7246729f925704"
 const leaseSourceHash = "3c98f802359a5f185dc6e618691ad6098641a54afa528668c6dfcaf8091ccd88"
 const namespace = "kubebrain-dbaas-test"
 const namespaceUID = "6c57c242-912b-41bb-9020-f4fdb3225ef3"

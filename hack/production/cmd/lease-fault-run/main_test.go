@@ -118,18 +118,18 @@ func TestCaseScopeBindsCurrentReviewedProductCandidate(t *testing.T) {
 	p.Bindings.Network.NamespaceUID = namespaceUID
 	p.Bindings.Network.StatefulSetUID = stsUID
 	p.Bindings.Network.PodName = "kubebrain-local-0"
-	p.Bindings.Source = "6c295888a8ef5ea0763eb8d0b1c0597b83211a3e"
-	p.Bindings.Image = "ghcr.io/fivetime/kubebrain@sha256:76e25a1e6dea2fcd9e4bffdc01317d1c74ef43dcd0d6e797f40a257a3c48b1b8"
+	p.Bindings.Source = candidateSource
+	p.Bindings.Image = candidateImage
 	p.Bindings.SourceHash = leaseSourceHash
 	p.Kubeconfig = "/root/.kube/kubebrain-test-10.32.32.66.conf"
 	p.KubeContext = "kubebrain-test-10.32.32.66"
 	p.APIServer = "https://10.224.33.1:6443"
 	// Identity admission succeeds, but missing pinned inputs still refuse execution.
 	require.ErrorContains(t, checkScope(p, owner, identity), "exact reviewed observer environment")
-	p.Bindings.Source = "4906a5f87b4282d860c5fd748be69ca68d42e898"
+	p.Bindings.Source = "6c295888a8ef5ea0763eb8d0b1c0597b83211a3e"
 	require.ErrorContains(t, checkScope(p, owner, identity), "restricted")
 	p.Bindings.Source = candidateSource
-	p.Bindings.Image = "ghcr.io/fivetime/kubebrain@sha256:611caa13c3403edd98c92e3fa605ebe31edeb62b52b4172004b5698527c7fe51"
+	p.Bindings.Image = "ghcr.io/fivetime/kubebrain@sha256:76e25a1e6dea2fcd9e4bffdc01317d1c74ef43dcd0d6e797f40a257a3c48b1b8"
 	require.ErrorContains(t, checkScope(p, owner, identity), "restricted")
 }
 
