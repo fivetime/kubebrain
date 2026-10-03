@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"google.golang.org/grpc"
 )
 
 type leaseDifferentialResult struct {
@@ -133,7 +135,7 @@ func requireLeaseListExpiryOrder(t *testing.T, endpoint string) {
 
 func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) leaseDifferentialResult {
 	t.Helper()
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(rangeLeaseDifferentialConfig(t, endpoint, instance))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -230,4 +232,26 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 		ReusedRevokeRevision:   reusedRevoke.Header.Revision - baseRev,
 		ReusedGrantedTTL:       reused.GrantedTTL,
 	}
+}
+
+// Only the existing Range/Lease scenarios use this connection configuration.
+// HTTPS must never silently skip a selected scenario or disable verification.
+func rangeLeaseDifferentialConfig(t *testing.T, endpoint, instance string) clientv3.Config {
+	t.Helper()
+	config := clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second}
+	if strings.HasPrefix(endpoint, "https://") {
+		prefix := "REFERENCE_ETCD"
+		if instance == "kubebrain" {
+			prefix = "KUBEBRAIN"
+		} else {
+			require.Equal(t, "etcd", instance)
+		}
+		for _, suffix := range []string{"_TLS_CA_FILE", "_TLS_CERT_FILE", "_TLS_KEY_FILE", "_TLS_SERVER_NAME"} {
+			require.NotEmpty(t, strings.TrimSpace(os.Getenv(prefix+suffix)), "HTTPS requires %s%s", prefix, suffix)
+		}
+		config.TLS = loadExternalL4ClientTLS(t, prefix)
+		// Port forwarding changes the dial address, not the certificate identity.
+		config.DialOptions = []grpc.DialOption{grpc.WithAuthority(config.TLS.ServerName)}
+	}
+	return config
 }

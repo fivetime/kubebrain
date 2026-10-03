@@ -109,7 +109,7 @@ func TestRangeDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 func runRangeDifferentialScenario(t *testing.T, endpoint, instance string) rangeDifferentialResult {
 	t.Helper()
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(rangeLeaseDifferentialConfig(t, endpoint, instance))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 
