@@ -103,7 +103,7 @@ func TestTxnUnconditionalFailureBranchDifferentialAgainstReferenceEtcd(t *testin
 
 func runUnconditionalTxnScenario(t *testing.T, endpoint, instance string) unconditionalTxnResult {
 	t.Helper()
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(rangeLeaseDifferentialConfig(t, endpoint, instance))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -179,7 +179,7 @@ func TestHistoricalLeaseDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 func runHistoricalLeaseScenario(t *testing.T, endpoint, instance string) historicalLeaseResult {
 	t.Helper()
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(rangeLeaseDifferentialConfig(t, endpoint, instance))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -278,7 +278,7 @@ func TestTxnLeaseAttachmentDifferentialAgainstReferenceEtcd(t *testing.T) {
 
 func runTxnLeaseScenario(t *testing.T, endpoint, instance string) txnLeaseResult {
 	t.Helper()
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(rangeLeaseDifferentialConfig(t, endpoint, instance))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -356,7 +356,7 @@ type concurrentCreateAttempt struct {
 
 func runConcurrentCreateScenario(t *testing.T, endpoint, instance string) concurrentCreateResult {
 	t.Helper()
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(rangeLeaseDifferentialConfig(t, endpoint, instance))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 
@@ -427,7 +427,7 @@ func runConcurrentCreateScenario(t *testing.T, endpoint, instance string) concur
 
 func runTxnDifferentialScenario(t *testing.T, endpoint, instance string) txnDifferentialResult {
 	t.Helper()
-	cli, err := clientv3.New(clientv3.Config{Endpoints: []string{endpoint}, DialTimeout: 3 * time.Second})
+	cli, err := clientv3.New(rangeLeaseDifferentialConfig(t, endpoint, instance))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, cli.Close()) })
 

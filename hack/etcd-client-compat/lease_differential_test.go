@@ -234,7 +234,7 @@ func runLeaseDifferentialScenario(t *testing.T, endpoint, instance string) lease
 	}
 }
 
-// Only the existing Range/Lease scenarios use this connection configuration.
+// Only the selected existing Range/Lease/Txn scenarios use this configuration.
 // HTTPS must never silently skip a selected scenario or disable verification.
 func rangeLeaseDifferentialConfig(t *testing.T, endpoint, instance string) clientv3.Config {
 	t.Helper()
