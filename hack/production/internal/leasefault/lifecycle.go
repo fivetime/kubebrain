@@ -236,10 +236,10 @@ func runAdmittedFaultLifecycle(ctx context.Context, l FaultLifecycle) (Lifecycle
 				l.OriginalPending = original.Pending
 				l.OriginalEvidence = original.Evidence
 				return execute(runCtx, func(faultCtx context.Context, origin time.Time) error {
-					if err := l.Preparation.Own(faultCtx); err != nil {
-						return err
-					}
 					observe := func(ctx context.Context) error {
+						if err := l.Preparation.Own(ctx); err != nil {
+							return err
+						}
 						term, err := l.ObserveFault(ctx, origin)
 						if err != nil {
 							return err

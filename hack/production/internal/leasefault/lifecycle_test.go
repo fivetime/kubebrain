@@ -68,6 +68,17 @@ printf 'CAPTURED\t%s/metrics.ijklmnop\t%s/metrics-schedule.abcdefgh\n' "$1" "$1"
 	pendingScopeCalls := 0
 	observationScopeActive := false
 	observationScopeCalls := 0
+	postActivationOwnSeen := false
+	if strings.HasPrefix(mode, "lifecycle-native-") {
+		own := prep.Own
+		prep.Own = func(checkCtx context.Context) error {
+			if activationCalls > 0 && !postActivationOwnSeen {
+				postActivationOwnSeen = true
+				require.True(t, observationScopeActive, "first post-activation read-only ownership check shares the fresh observation source boundary")
+			}
+			return own(checkCtx)
+		}
+	}
 	identityPreparation := prep
 	prep.identityCheck = func(checkCtx context.Context, phase NetworkLabelPhase) error {
 		if !origin.IsZero() {
