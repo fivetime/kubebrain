@@ -161,13 +161,21 @@ func TestKubeBrainSnapshotLeaseHistoryRestoresIntoOfficialEtcd(t *testing.T) {
 	require.NoError(t, err)
 
 	snapshotPath := filepath.Join(t.TempDir(), "kubebrain-snapshot.db")
-	require.NoError(t, os.WriteFile(snapshotPath, downloadSnapshotArtifact(t, endpoint), 0o600))
+	artifact := downloadSnapshotArtifact(t, endpoint)
+	require.Greater(t, len(artifact), sha256.Size)
+	digest := sha256.Sum256(artifact[:len(artifact)-sha256.Size])
+	require.Equal(t, digest[:], artifact[len(artifact)-sha256.Size:])
+	require.NoError(t, os.WriteFile(snapshotPath, artifact, 0o600))
 	type offlineHashKV struct {
 		HashRevision    int64 `json:"hashRevision"`
 		CompactRevision int64 `json:"compactRevision"`
 	}
 	checkHashKV := func(revision int64) offlineHashKV {
-		args := []string{"--write-out=json", "hashkv", snapshotPath}
+		// etcdutl calculateHashKV opens a writable backend and mvcc store.
+		// Hash a fresh copy; never mutate the signed artifact used by Restore.
+		hashPath := filepath.Join(t.TempDir(), "hashkv.db")
+		require.NoError(t, os.WriteFile(hashPath, artifact, 0o600))
+		args := []string{"--write-out=json", "hashkv", hashPath}
 		if revision != 0 {
 			args = append(args, "--rev", fmt.Sprint(revision))
 		}
@@ -180,10 +188,15 @@ func TestKubeBrainSnapshotLeaseHistoryRestoresIntoOfficialEtcd(t *testing.T) {
 	}
 	latestHash := checkHashKV(0)
 	require.Equal(t, latest.Header.Revision, latestHash.HashRevision)
-	require.Zero(t, latestHash.CompactRevision)
+	// etcd 5cd9f4ee: etcdutl/etcdutl/hashkv_command_test.go expects -1
+	// for an uncompacted database, including a database with data.
+	require.Equal(t, int64(-1), latestHash.CompactRevision)
 	historicalHash := checkHashKV(first.Header.Revision)
 	require.Equal(t, first.Header.Revision, historicalHash.HashRevision)
-	require.Zero(t, historicalHash.CompactRevision)
+	require.Equal(t, int64(-1), historicalHash.CompactRevision)
+	unchangedArtifact, err := os.ReadFile(snapshotPath)
+	require.NoError(t, err)
+	require.Equal(t, artifact, unchangedArtifact)
 
 	restoredDir := filepath.Join(t.TempDir(), "restored.etcd")
 	const restoredEndpoint = "127.0.0.1:42479"
