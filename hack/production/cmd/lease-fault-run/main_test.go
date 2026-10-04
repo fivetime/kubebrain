@@ -62,6 +62,10 @@ func TestExecutionRequestDeadlineInterruptsBlockedHandshake(t *testing.T) {
 	require.NoError(t, reader.Close())
 }
 
+func TestCommandReviewWindowLeavesTimeForHashApproval(t *testing.T) {
+	require.Equal(t, 15*time.Minute, commandReviewWindow)
+}
+
 func executorFixture(t *testing.T) *unstructured.Unstructured {
 	t.Helper()
 	p := &unstructured.Unstructured{}

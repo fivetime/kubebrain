@@ -39,6 +39,8 @@ const namespace = "kubebrain-dbaas-test"
 const namespaceUID = "6c57c242-912b-41bb-9020-f4fdb3225ef3"
 const stsUID = "7d760f53-5bb5-4429-a2f8-651b89665616"
 
+const commandReviewWindow = 15 * time.Minute
+
 // The controller must finish staging and exit all exec sessions before sending
 // this single record followed by EOF on stdin. A digest discovered by the
 // driver is not substituted for either independently approved digest.
@@ -419,7 +421,7 @@ func main() {
 	// Bound the external staging handshake. Do not rely on closing stdin from a
 	// second goroutine: that does not reliably interrupt an already-blocked pipe
 	// read on Linux. Returning from main on timeout terminates the PID-1 process.
-	staging, cancelStaging := context.WithTimeout(ctx, 5*time.Minute)
+	staging, cancelStaging := context.WithTimeout(ctx, commandReviewWindow)
 	r, err := readRequestBeforeDeadline(staging, os.Stdin)
 	cancelStaging()
 	if err == nil {
