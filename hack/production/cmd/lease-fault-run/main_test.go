@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,6 +48,18 @@ func TestExecutionRequestRequiresIndependentDigests(t *testing.T) {
 		_, err := readRequest(strings.NewReader(input))
 		require.Error(t, err)
 	}
+}
+
+func TestExecutionRequestDeadlineInterruptsBlockedHandshake(t *testing.T) {
+	reader, writer := io.Pipe()
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	_, err := readRequestBeforeDeadline(ctx, reader)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	// The production caller exits PID 1 after this result. Close the fixture
+	// writer here so the deliberately detached read goroutine can also finish.
+	require.NoError(t, writer.Close())
+	require.NoError(t, reader.Close())
 }
 
 func executorFixture(t *testing.T) *unstructured.Unstructured {

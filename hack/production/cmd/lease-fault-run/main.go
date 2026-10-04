@@ -67,6 +67,29 @@ func readRequest(in io.Reader) (request, error) {
 	return r, nil
 }
 
+type requestResult struct {
+	request request
+	err     error
+}
+
+// readRequestBeforeDeadline bounds a potentially blocking stdin read. Closing
+// an os.File from another goroutine does not reliably interrupt a read already
+// blocked in the kernel on Linux pipes. The result channel is buffered so the
+// reader goroutine can finish without depending on the timeout caller.
+func readRequestBeforeDeadline(ctx context.Context, in io.Reader) (request, error) {
+	result := make(chan requestResult, 1)
+	go func() {
+		r, err := readRequest(in)
+		result <- requestResult{request: r, err: err}
+	}()
+	select {
+	case got := <-result:
+		return got.request, got.err
+	case <-ctx.Done():
+		return request{}, ctx.Err()
+	}
+}
+
 func checkScope(p leasefault.NativeCommandPlan, owner, identity string) error {
 	n := p.Bindings.Network
 	if p.OwnerDirectory != owner || p.Files[filepath.Join(owner, leasefault.IsolatedJoinIdentity)] != identity ||
@@ -393,16 +416,13 @@ func main() {
 	if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"startup_identity_sha256": identity, "owner": *owner}); err != nil {
 		os.Exit(1)
 	}
-	// Bound the external staging handshake; close stdin to unblock ReadAll on
-	// cancellation. The watcher is joined before any execution goroutine starts.
+	// Bound the external staging handshake. Do not rely on closing stdin from a
+	// second goroutine: that does not reliably interrupt an already-blocked pipe
+	// read on Linux. Returning from main on timeout terminates the PID-1 process.
 	staging, cancelStaging := context.WithTimeout(ctx, 5*time.Minute)
-	joined := make(chan struct{})
-	go func() { defer close(joined); <-staging.Done(); _ = os.Stdin.Close() }()
-	r, err := readRequest(os.Stdin)
-	stagingErr := staging.Err()
+	r, err := readRequestBeforeDeadline(staging, os.Stdin)
 	cancelStaging()
-	<-joined
-	if err = errors.Join(err, stagingErr); err == nil {
+	if err == nil {
 		// CI authentication and repeated live admission precede activation.
 		// Use the preparation API's existing hard bound for the whole attempt;
 		// this does not change the independent 30-second fault clock or retries.
