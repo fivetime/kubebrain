@@ -30,7 +30,7 @@ env:
 
 jobs:
   image:
-    runs-on: ubuntu-24.04
+    runs-on: raas-ubuntu-24.04-8c
     timeout-minutes: 45
     steps:
       - name: Check out repository
