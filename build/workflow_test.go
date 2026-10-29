@@ -93,7 +93,7 @@ func TestProbeRegressionCIExecutesUncachedRaceSuite(t *testing.T) {
 	require.Len(t, workflow.Jobs, 1)
 	job := workflow.Jobs["probe-tests"]
 	require.Equal(t, "github.ref == 'refs/heads/dbaas'", job.If)
-	require.Equal(t, "self-hosted", job.RunsOn)
+	require.Equal(t, "raas-ubuntu-24.04", job.RunsOn)
 	require.Equal(t, 30, job.Timeout)
 	var commands string
 	for _, step := range job.Steps {
@@ -242,7 +242,7 @@ func TestBackendCIExecutesIsolatedRealProtocolGate(t *testing.T) {
 	require.NoError(t, yaml.Unmarshal(data, &workflow))
 	job, ok := workflow.Jobs["real-protocol"]
 	require.True(t, ok)
-	require.Equal(t, "self-hosted", job.RunsOn)
+	require.Equal(t, "raas-ubuntu-24.04", job.RunsOn)
 	require.Equal(t, "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository", job.If)
 	var commands string
 	for _, step := range job.Steps {
@@ -414,7 +414,7 @@ func TestDBaaSImageWorkflowUsesSelfHostedAndIsolatesTestTags(t *testing.T) {
 	for _, required := range []string{
 		"branches: [dbaas]",
 		"if: github.ref == 'refs/heads/dbaas'",
-		"runs-on: self-hosted",
+		"runs-on: raas-ubuntu-24.04",
 		"persist-credentials: false",
 		"file: Dockerfile",
 		"platforms: linux/amd64,linux/arm64",

@@ -45,7 +45,7 @@ func TestLeaseFaultToolsWorkflowBoundaries(t *testing.T) {
 	job := w.Jobs["build-tools"]
 	require.Contains(t, job.If, "github.event_name == 'workflow_dispatch'")
 	require.Equal(t, "github.event_name == 'push'", w.Jobs["register"].If)
-	require.Equal(t, "self-hosted", job.RunsOn)
+	require.Equal(t, "raas-ubuntu-24.04", job.RunsOn)
 	order := map[string]int{}
 	for i, step := range job.Steps {
 		order[step.Name] = i
