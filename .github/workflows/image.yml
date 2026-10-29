@@ -20,7 +20,7 @@ defaults:
 jobs:
   build-and-push:
     if: github.ref == 'refs/heads/dbaas'
-    runs-on: self-hosted
+    runs-on: raas-ubuntu-24.04
     timeout-minutes: 90
     steps:
       - name: Check out source

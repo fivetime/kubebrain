@@ -64,7 +64,7 @@ defaults:
 jobs:
   probe-tests:
     if: github.ref == 'refs/heads/dbaas'
-    runs-on: self-hosted
+    runs-on: raas-ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Check out source
