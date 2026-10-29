@@ -23,7 +23,7 @@ func TestProductModulesDeclareReviewedGoToolchain(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			content, err := os.ReadFile(path)
 			require.NoError(t, err)
-			require.Regexp(t, `(?m)^toolchain go1\.26\.8$`, string(content))
+			require.Regexp(t, `(?m)^toolchain go1\.26\.10$`, string(content))
 		})
 	}
 }
@@ -32,7 +32,7 @@ func TestDBaaSImageScansShippedModulesBeforePublishing(t *testing.T) {
 	content, err := os.ReadFile("../.github/workflows/image.yml")
 	require.NoError(t, err)
 	workflow := string(content)
-	require.Contains(t, workflow, `go-version: '1.26.8'`)
+	require.Contains(t, workflow, `go-version: '1.26.10'`)
 	require.Contains(t, workflow, "go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...")
 	require.Contains(t, workflow, "cd hack/backup/objectstore")
 	require.Contains(t, workflow, "cd hack/kubectl")

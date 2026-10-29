@@ -45,7 +45,7 @@ jobs:
       - name: Set up Go for security checks
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.26.8'
+          go-version: '1.26.10'
           cache-dependency-path: |
             go.sum
             hack/backup/objectstore/go.sum
@@ -159,7 +159,7 @@ jobs:
           kubectl_version="$(docker run --rm --platform linux/amd64 --entrypoint /usr/local/bin/kubectl "$amd64_reference" version --client -o json)"
           jq -e --arg revision "${{ steps.vars.outputs.revision }}" --arg created "${{ steps.vars.outputs.created }}" \
             '.clientVersion.gitVersion == "v1.36.4+kubebrain" and
-             .clientVersion.goVersion == "go1.26.8" and
+             .clientVersion.goVersion == "go1.26.10" and
              .clientVersion.gitCommit == $revision and
              .clientVersion.buildDate == $created and
              .clientVersion.gitTreeState == "dirty"' <<<"$kubectl_version"

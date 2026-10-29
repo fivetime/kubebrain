@@ -73,7 +73,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 printf 'LOCAL_PROTOCOL_START evidence=%s owner=%s\n' "$evidence" "$owner"
-export GOFLAGS='' GOWORK=off GOTOOLCHAIN=go1.26.8
+export GOFLAGS='' GOWORK=off GOTOOLCHAIN=go1.26.10
 cd "$root_dir"
 timeout --signal=TERM --kill-after=10s 300s go test "${race[@]}" -c -o "$evidence/protocol.test" ./pkg/storage/tikv
 timeout --signal=TERM --kill-after=10s 300s go test "${race[@]}" -c -o "$evidence/election.test" ./pkg/backend/election

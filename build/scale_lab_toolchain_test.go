@@ -18,9 +18,9 @@ func TestScaleLabRejectsInsecureGoToolchains(t *testing.T) {
 		ok      bool
 	}{
 		{name: "vulnerable old baseline", version: "go1.26.5"},
-		{name: "previous patch", version: "go1.26.7"},
-		{name: "minimum", version: "go1.26.8", ok: true},
-		{name: "newer patch", version: "go1.26.9", ok: true},
+		{name: "previous patch", version: "go1.26.9"},
+		{name: "minimum", version: "go1.26.10", ok: true},
+		{name: "newer patch", version: "go1.26.11", ok: true},
 		{name: "newer minor", version: "go1.27.0", ok: true},
 		{name: "unstable string", version: "go1.27rc1"},
 	} {
@@ -80,7 +80,7 @@ func TestScaleLabLocalToolsNeverLoadDeploymentEnvironment(t *testing.T) {
 	require.NoError(t, os.WriteFile(envFile, []byte("echo deployment-config-must-not-run >&2\nexit 99\n"), 0600))
 	cmd := exec.Command("bash", "../hack/scale-lab/setup.sh", "tools")
 	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "BUILD_CALLS="+calls,
-		"LAB_ENV="+envFile, "SCALE_LAB_BIN_DIR="+filepath.Join(dir, "bin"), "SCALE_LAB_GO_VERSION_OVERRIDE=go1.26.8")
+		"LAB_ENV="+envFile, "SCALE_LAB_BIN_DIR="+filepath.Join(dir, "bin"), "SCALE_LAB_GO_VERSION_OVERRIDE=go1.26.10")
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 	data, err := os.ReadFile(calls)

@@ -177,7 +177,7 @@ func TestDockerfileMetadataDoesNotInvalidateDependencyOrRuntimePackageLayers(t *
 	require.NoError(t, err)
 	content := string(dockerfile)
 
-	buildStart := strings.Index(content, "FROM --platform=${BUILDPLATFORM} golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81")
+	buildStart := strings.Index(content, "FROM --platform=${BUILDPLATFORM} golang:1.26.10-bookworm@sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb")
 	require.NotEqual(t, -1, buildStart)
 	sourceCopy := strings.Index(content[buildStart:], "COPY . .")
 	require.NotEqual(t, -1, sourceCopy)
@@ -213,7 +213,7 @@ func TestDockerfileUsesNativeBuildPlatformForCrossCompilation(t *testing.T) {
 	require.NotRegexp(t, `(?m)^ARG BUILDPLATFORM=`, content,
 		"the compiler must inherit the actual builder platform, including native arm64 runners")
 	require.Contains(t, content,
-		"FROM --platform=${BUILDPLATFORM} golang:1.26.8-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81")
+		"FROM --platform=${BUILDPLATFORM} golang:1.26.10-bookworm@sha256:23ce71337b726608afb1bc00986e630a05034a87a87ea1fc2cd1ae5cf33387eb")
 	require.Equal(t, 1, strings.Count(content, "--platform=${BUILDPLATFORM}"),
 		"only the compiler stage should use the build platform; runtime must use the target platform")
 }
