@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  GO_VERSION: "1.26.5"
+  GO_VERSION: "1.26.10"
   CLUSTER_NAME: kubebrain-ci
   IMAGE_NAME: kubebrain:ci
   KIND_NODE_IMAGE: ${{ github.event.inputs.k8s_node_image || 'kindest/node:v1.36.1' }}
